@@ -34,3 +34,5 @@ All other ADR-0001 decisions stand (Stario, Datastar, SQLite, Piccolo, LanceDB, 
 The `pydantic` + `pydantic-ai` + `pydantic-settings` tree is removed. One struct/validation library covers domain models, the API boundary, and configuration. The agent runtime is fully under Lumio's control, with no pre-1.0 framework churn, and the retrieval-before-answer invariant lives in owned code.
 
 Trade-off: Lumio must implement and maintain the loop (classification, provider calls, structured-output parsing, retry, streaming) and loses some Pydantic AI ergonomics. msgspec is stricter than Pydantic on coercion (no implicit `str`→`int`) and has no cross-field model validators, so invariants like `valid_until > valid_from` become explicit post-construction checks. Structured-output retry logic is now owned and must be tested.
+
+> **Note:** Lumio's direct removal of `pydantic-ai` and `pydantic-settings` stands. However, the `openai` SDK transitively reintroduces `pydantic` into the resolved dependency tree. This is accepted because ADR-0002 mandates an OpenAI-compatible provider client, and the `openai` client is the chosen implementation.
