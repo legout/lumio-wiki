@@ -17,7 +17,7 @@ Set these environment variables to enable a real provider:
 
 - `LUMIO_PROVIDER_BASE_URL` — OpenAI-compatible API base URL (e.g. `http://localhost:11434/v1` for Ollama)
 - `LUMIO_PROVIDER_MODEL` — model name (e.g. `llama3`)
-- `LUMIO_PROVIDER_API_KEY` — API key (leave empty or set a dummy value for local servers that do not require one)
+- `LUMIO_PROVIDER_API_KEY` — API key (leave empty for local servers that do not require one; a dummy value also works)
 
 Secrets are loaded from the environment only and are never committed or logged.
 
