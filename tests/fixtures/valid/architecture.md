@@ -14,9 +14,15 @@ sources:
 relationships:
   - target: "Lumio Overview"
     type: "relates-to"
+  - target: "Technology Stack"
+    type: "relates-to"
 synthetic: false
 ---
 
 # Architecture
 
 Lumio is built as a modular monolith with a framework-independent Core SDK.
+
+## Storage
+
+Lumio uses LanceDB for the derived lexical index.
