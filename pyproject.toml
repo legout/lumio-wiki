@@ -7,6 +7,7 @@ dependencies = [
     "GitPython>=3.1.0",
     "lancedb>=0.34.0",
     "msgspec[yaml]>=0.21.1",
+    "openai>=1.40.0",
     "pyarrow>=24.0.0",
     "stario>=3.3.0",
 ]
