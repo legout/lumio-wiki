@@ -13,3 +13,6 @@ build/
 .codegraph/
 .scratch/
 .tmp/
+*.sqlite
+*.sqlite3
+*.sqlite-*
