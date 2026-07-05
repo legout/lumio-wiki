@@ -1,0 +1,34 @@
+[project]
+name = "lumio"
+version = "0.1.0"
+description = "Deployable chat for trusted knowledge and data."
+requires-python = ">=3.14"
+dependencies = [
+    "stario>=3.3.0",
+]
+
+[project.scripts]
+lumio = "lumio.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lumio"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
