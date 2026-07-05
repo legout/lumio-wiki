@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Deployable chat for trusted knowledge and data."
 requires-python = ">=3.14"
 dependencies = [
+    "GitPython>=3.1.0",
     "lancedb>=0.34.0",
     "msgspec[yaml]>=0.21.1",
     "pyarrow>=24.0.0",
