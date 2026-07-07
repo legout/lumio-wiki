@@ -13,7 +13,7 @@ sources:
     title: "Technology choices"
 relationships:
   - target: "Architecture"
-    type: "depends-on"
+    type: "uses"
 synthetic: false
 ---
 

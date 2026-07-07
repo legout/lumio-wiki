@@ -52,10 +52,10 @@ file under the root path and validates them together.
 | `lifecycle` | yes | string | One of `draft`, `review`, `approved`, `deprecated`. |
 | `visibility` | yes | string | One of `public`, `internal`, `restricted`. |
 | `aliases` | no | list\[string\] | Alternate lookup phrases. Each must be **unique across the Knowledge Base**. |
-| `summary` | no | string | Human-readable one-line summary. |
+| `summary` | no | string | Human-readable one-line summary. **Recommended for new pages** — cheap retrieval depends on it. |
 | `sources` | conditional | list\[mapping\] | **Required unless `synthetic: true`.** Each source is a mapping (see below). A non-synthetic page must declare at least one. |
 | `relationships` | no | list\[mapping\] | Typed, directed edges to other pages (see below). Each `target` must resolve to an existing canonical title. |
-| `synthetic` | no | boolean | Default `false`. Declares the page is generated from other compiled knowledge; a synthetic page may omit `sources`. |
+| `synthetic` | no | boolean | Default `false`. Declares the page is generated from other compiled knowledge; a synthetic page may omit `sources`. Synthetic pages promoted from cited answers include a `retrieval_trace` key recording the Retrieval Trace stages that produced the original answer. |
 
 ### `sources` entries
 
@@ -70,12 +70,14 @@ file under the root path and validates them together.
 | Key | Required | Type | Notes |
 |---|---|---|---|
 | `target` | no | string | Canonical title of the target page. **Must resolve** to an existing page title, or validation fails. |
-| `type` | no | string | Edge type (e.g. `relates-to`). Free-form string. |
+| `type` | no | string | Edge type. The preferred vocabulary is: `relates-to`, `uses`, `extends`, `implements`, `contradicts`, `derived-from`, `replaces`. Unknown types still load for backward compatibility, but they produce a validation warning suggesting the preferred vocabulary. |
 
 ## Validation rules (the contract)
 
 Lumio collects every issue across the whole Knowledge Base rather than failing
-on the first one. A Knowledge Base is **valid** only when the report is empty.
+on the first one. A Knowledge Base is **valid** when the report contains no
+error-severity issues. Warnings (for example, an unknown relationship type) do
+not block loading, indexing, or publishing.
 
 Per page:
 
