@@ -97,7 +97,7 @@ Requirements: **Python ≥ 3.14** and [uv](https://docs.astral.sh/uv/).
 ```bash
 uv sync                       # install dependencies + the package
 uv run lumio validate tests/fixtures/valid   # smoke-test the SDK against the sample KB
-uv run lumio serve --port 8000               # serve the web app (chat, library, admin)
+uv run lumio serve --port 8000               # serve the web app (Chat, Library, Owner workspace)
 ```
 
 See [Development](#development) for tests, linting, and codebase layout.
@@ -144,11 +144,15 @@ lumio --version
 lumio validate <kb-path>                          # exit 0 if valid, 1 otherwise
 lumio retrieve <kb-path> "<query>" [--limit N]    # lexical/frontmatter/graph retrieval
 lumio ask <kb-path> "<question>"                  # cited answer via the Agent Runtime
-lumio serve [--host HOST] [--port PORT]          # run the web app (chat /chat, library /kb, admin /admin)
+lumio sync <source> "<query>" --working-dir <path>  # sync a storage source, then retrieve
+lumio serve [--host HOST] [--port PORT]          # run the web app (Chat /chat, Library /kb, Owner /admin)
 ```
 
 All commands work offline against any valid KB; `ask` uses the FakeProvider
 when no provider is configured.
+
+In a checked-out repository, prefix any command with `uv run`, for example
+`uv run lumio sync <source> "<query>" --working-dir <path>`.
 
 ## Knowledge Base format
 
@@ -223,6 +227,19 @@ uv run ruff check .                  # lint
 uv run lumio validate tests/fixtures/valid   # sanity check the sample KB
 ```
 
+### Browser smoke
+
+The real-browser smoke is a dev-environment check: `playwright` is installed
+by `uv sync`. Run it through the project environment:
+
+```bash
+uv run playwright install chromium            # once, when no system Chromium is available
+uv run python scripts/smoke_browser.py
+```
+
+The smoke prefers `LUMIO_SMOKE_CHROMIUM` or a discovered system Chromium; it
+otherwise uses Playwright's bundled Chromium.
+
 Testing philosophy (from PRD-0001): tests exercise modules **only through their
 public seams**; the Core SDK's public surface is the same one every client
 uses; agent/runtime evals use the **FakeProvider**, never a live LLM call.
@@ -257,7 +274,7 @@ remains framework-independent (ADR-0001, ADR-0002).
   synthesis, refusal of unsupported claims, trace exposure.
 - **Chat Gateway + web UI** — first-run owner setup, login/logout, Reader chat,
   Maintainer ingest (upload → proposal → review → publish/discard, plus
-  direct-write), Owner admin (users/roles, write-mode, storage-mode, audit),
+  direct-write), Owner administration (users/roles, write-mode, storage-mode, audit),
   KB export.
 - **OpenAI-compatible endpoint** — `/v1/chat/completions` routed through the
   same `answer()` path (same citations, refusal, and guardrails as `/chat`).
