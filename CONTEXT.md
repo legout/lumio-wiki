@@ -102,6 +102,44 @@ _Avoid_: user/admin/superuser (use the canonical role names).
 The rules the Chat Gateway enforces: domain claims require citation; unsupported questions return "not covered"; out-of-scope questions are rejected or narrowed; external clients cannot bypass retrieval and citation; raw sources stay out of public exports.
 _Avoid_: rules, policies.
 
+### Web UI interaction model
+
+**Chat + Citation Workspace**:
+The Reader's default surface: a chat-first workspace that keeps Citations,
+Compiled Pages, and Retrieval Trace access close to the conversation. Chat is
+the entrypoint; evidence remains first-class.
+_Avoid_: chatbot screen, ask page, Q&A panel.
+
+**Reading Room**:
+An inline evidence-inspection state opened from a Citation or Compiled Page.
+It keeps the chat thread available while promoting source text, cited line
+ranges, and page- or passage-grounded follow-up questions.
+_Avoid_: document viewer, article view, citation popup.
+
+**Constellation**:
+A contextual Relationship lens seeded from an answer, Citation, Compiled Page,
+or Maintainer/Owner diagnostic task. It explains how Compiled Pages relate; it
+is not the Reader home.
+_Avoid_: graph homepage, mind map, knowledge graph app.
+
+**Workshop**:
+The Maintainer surface for ingest, validation, Ingest Proposal review, and
+publish decisions.
+_Avoid_: admin panel, CMS, moderation queue.
+
+**Progressive Console**:
+The Maintainer interaction model where ordinary Workshop tasks remain readable
+and approachable, while ingest, validation, sync, proposal review, and power
+navigation reveal Console affordances such as panes, operation logs, status
+lines, and a command palette.
+_Avoid_: terminal mode, developer console, power-user-only UI.
+
+**Operational Disclosure**:
+The Owner interaction model where settings and administration remain calm by
+default, while audit, diagnostics, risky changes, and troubleshooting reveal
+deeper operational detail only when needed.
+_Avoid_: operations cockpit, control center, debug dashboard.
+
 ### Platform capabilities
 
 These named capabilities are part of Lumio's ubiquitous language. Each is a seam, not a module dictate.

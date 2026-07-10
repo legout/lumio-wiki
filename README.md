@@ -97,7 +97,7 @@ Requirements: **Python ≥ 3.14** and [uv](https://docs.astral.sh/uv/).
 ```bash
 uv sync                       # install dependencies + the package
 uv run lumio validate tests/fixtures/valid   # smoke-test the SDK against the sample KB
-uv run stario serve lumio.app:bootstrap      # serve the web app on :8000
+uv run lumio serve --port 8000               # serve the web app (chat, library, admin)
 ```
 
 See [Development](#development) for tests, linting, and codebase layout.
@@ -144,7 +144,7 @@ lumio --version
 lumio validate <kb-path>                          # exit 0 if valid, 1 otherwise
 lumio retrieve <kb-path> "<query>" [--limit N]    # lexical/frontmatter/graph retrieval
 lumio ask <kb-path> "<question>"                  # cited answer via the Agent Runtime
-lumio sync <git-source> "<query>" --working-dir <dir> [--mode git|shared|hybrid] [--ref REF]
+lumio serve [--host HOST] [--port PORT]          # run the web app (chat /chat, library /kb, admin /admin)
 ```
 
 All commands work offline against any valid KB; `ask` uses the FakeProvider
