@@ -6,7 +6,9 @@ from subprocess import run
 
 from lumio.core import (
     Citation,
+    CompiledPage,
     Evidence,
+    KnowledgeBase,
     RetrievalResult,
     RetrievalTrace,
     SourceFingerprint,
@@ -195,3 +197,111 @@ def test_cli_retrieve_returns_cited_results():
     assert "Architecture" in result.stdout
     assert "Lumio uses LanceDB" in result.stdout
     assert "architecture.md" in result.stdout
+
+
+def _search_page(
+    path: str,
+    title: str,
+    *,
+    aliases: list[str] | None = None,
+    tags: list[str] | None = None,
+    summary: str = "",
+    body: str = "",
+) -> CompiledPage:
+    return CompiledPage(
+        path=path,
+        title=title,
+        aliases=aliases or [],
+        tags=tags or [],
+        summary=summary,
+        lifecycle="approved",
+        visibility="public",
+        body=body,
+    )
+
+
+def test_page_search_matches_all_supported_fields():
+    pages = [
+        _search_page(
+            "title.md",
+            "Canonical Phoenix",
+            summary="unrelated",
+            body="unrelated",
+        ),
+        _search_page(
+            "alias.md",
+            "Alias Page",
+            aliases=["Alias Quartz"],
+            summary="unrelated",
+            body="unrelated",
+        ),
+        _search_page(
+            "tag.md",
+            "Tag Page",
+            tags=["tag-ruby"],
+            summary="unrelated",
+            body="unrelated",
+        ),
+        _search_page(
+            "summary.md",
+            "Summary Page",
+            summary="Summary Indigo",
+            body="unrelated",
+        ),
+        _search_page(
+            "body.md",
+            "Body Page",
+            summary="unrelated",
+            body="Body Copper appears in prose.",
+        ),
+    ]
+    kb = KnowledgeBase(root=Path("."), pages=pages)
+
+    expected = {
+        "Phoenix": "title",
+        "Quartz": "alias",
+        "ruby": "tag",
+        "Indigo": "summary",
+        "Copper": "body",
+    }
+    for query, field in expected.items():
+        results = kb.search_pages(query)
+        assert len(results) == 1
+        assert results[0].matched_fields == [field]
+        assert query.casefold() in results[0].snippet.casefold()
+
+
+def test_page_search_ranks_title_before_body_and_tie_breaks_stably():
+    pages = [
+        _search_page(
+            "z-body.md",
+            "Zeta",
+            summary="unrelated",
+            body="shared token",
+        ),
+        _search_page(
+            "a-title.md",
+            "Shared Token",
+            summary="unrelated",
+            body="unrelated",
+        ),
+    ]
+    kb = KnowledgeBase(root=Path("."), pages=pages)
+    results = kb.search_pages("shared token")
+
+    assert [result.page.title for result in results] == ["Shared Token", "Zeta"]
+    assert results[0].score > results[1].score
+
+
+def test_page_search_normalizes_empty_and_rejects_excessive_queries():
+    kb = KnowledgeBase(
+        root=Path("."),
+        pages=[_search_page("page.md", "Page", body="body")],
+    )
+    assert kb.search_pages("   \t\n") == []
+    try:
+        kb.search_pages("x" * 257)
+    except ValueError as exc:
+        assert "too long" in str(exc)
+    else:
+        raise AssertionError("expected excessive query to fail safely")

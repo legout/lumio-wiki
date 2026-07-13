@@ -110,6 +110,18 @@ Compiled Pages, and Retrieval Trace access close to the conversation. Chat is
 the entrypoint; evidence remains first-class.
 _Avoid_: chatbot screen, ask page, Q&A panel.
 
+**Chat Context**:
+A temporary, Reader-owned conversation scope retained for the active retention
+window. It carries chat state and any attached Conversation Source; it is not a
+published Knowledge Base artifact.
+
+**Conversation Source**:
+A temporary private text or Markdown source attached to one Chat Context. Its
+converted text and stable sections are retrievable only by its owning Reader
+within that context and are removed independently of the published Knowledge
+Base. It is distinct from both a raw Knowledge Source used by ingest and a
+published Compiled Page.
+
 **Reading Room**:
 An inline evidence-inspection state opened from a Citation or Compiled Page.
 It keeps the chat thread available while promoting source text, cited line
