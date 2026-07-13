@@ -189,7 +189,7 @@ Role gates are enforced as middleware.
 | `GET /health` | _(none)_ | Liveness probe. |
 | `GET/POST /setup` | _(first-run only)_ | Create the Owner account; disabled once one exists. |
 | `GET/POST /login` · `POST /logout` | _(auth)_ | Session login / logout. |
-| `GET/POST /chat` · `POST /chat/ask` | Reader | Chat UI + cited answer with retrieval trace. |
+| `GET/POST /chat` · `POST /chat/ask` · `GET /chat/threads` · `GET /chat/threads/{id}` | Reader | Chat UI + cited answer with retrieval trace. Threads persist Reader-owned question/answer exchanges; list and reopen your own. |
 | `GET /kb/export` | Reader | Export the compiled wiki as a Markdown bundle (raw sources excluded). |
 | `POST /v1/chat/completions` | Reader | OpenAI-compatible endpoint; same retrieval, citation, refusal, and guardrails as `/chat`. Returns a `lumio` extension block with citations, trace, and `covered`. |
 | `POST /ingest` · `GET /ingest/proposals` · `GET /ingest/proposals/{id}` · `POST /ingest/proposals/{id}/{publish,discard}` · `POST /ingest/publish` · `GET /ingest/write-mode` | Maintainer | Ingest workflow: stage → review → publish (or direct-write). |

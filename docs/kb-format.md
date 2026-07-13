@@ -97,6 +97,38 @@ Across pages:
 10. **Relationship targets resolve** — every `relationships[].target` must
     equal an existing page's canonical title.
 
+## Navigation Indexes (reserved derived artifacts)
+
+The case-insensitive basename `index.md` is reserved in every Knowledge Base
+directory for a **Navigation Index**: a derived guide to the Compiled Pages
+beneath that directory. It is **not** a Compiled Page.
+
+A Navigation Index declares its reserved role with a `lumio` marker:
+
+```yaml
+---
+lumio:
+  artifact: navigation-index
+  version: 1
+---
+```
+
+Publishing regenerates one root `index.md` — an exhaustive catalog of every
+Compiled Page grouped by directory — and one `index.md` per directory
+containing Compiled Pages, listing immediate child directories followed by
+immediate pages. Each page entry carries the Canonical Page Title, a portable
+relative Markdown link, and summary. Generated indexes are deterministic
+(byte-identical for unchanged content), declare format version 1, and omit
+timestamps, tags, provenance, relationships, and exchange-only metadata.
+
+The Core SDK excludes valid marked Navigation Indexes from Compiled Page
+loading, validation, retrieval, Evidence, and the canonical content
+fingerprint. An `index.md` (or `INDEX.md`) without the valid marker is a
+blocking validation error — authored Markdown cannot claim the reserved
+basename without occupying the derived-artifact role. Direct edits to a marked
+index are overwritten on the next publish. See
+[ADR-0007](adr/0007-navigation-indexes-and-okf-exchange-profile.md).
+
 ## Checking a Knowledge Base
 
 ```bash
