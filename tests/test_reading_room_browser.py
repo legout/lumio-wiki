@@ -162,3 +162,85 @@ def test_browser_reading_room_history_reload_and_copy(lumio_server):
                 invalid.close()
     except ModuleNotFoundError:
         pytest.skip("Playwright is unavailable")
+
+
+
+def test_browser_search_result_navigation_through_compiled_pages(lumio_server):
+    """Search results open Compiled Pages with query context; prev/next move
+    through the ranked order and Back returns to the same result set (#47)."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    try:
+        with playwright.sync_playwright() as p:
+            try:
+                launch_kwargs = {}
+                if chromium_path := os.environ.get("LUMIO_CHROMIUM_PATH"):
+                    launch_kwargs["executable_path"] = chromium_path
+                browser = p.chromium.launch(headless=True, **launch_kwargs)
+            except Exception as exc:  # pragma: no cover
+                pytest.skip(f"Chromium is unavailable: {exc}")
+            with browser:
+                context = browser.new_context()
+                context.request.post(
+                    f"{lumio_server}/setup",
+                    data=json.dumps(
+                        {"username": "owner", "password": "browser-secret", "role": "owner"}
+                    ),
+                    headers={"content-type": "application/json"},
+                )
+                context.request.post(
+                    f"{lumio_server}/login",
+                    data=json.dumps({"username": "owner", "password": "browser-secret"}),
+                    headers={"content-type": "application/json"},
+                )
+                page = context.new_page()
+
+                # Browse the Reading Room and search.
+                page.goto(f"{lumio_server}/kb")
+                page.locator("#reading-room-search").fill("Lumio")
+                page.locator("#reading-room-search").press("Enter")
+                page.locator(".card--search").first.wait_for(state="visible", timeout=10_000)
+                assert "q=Lumio" in page.url
+                # Three results for "Lumio".
+                assert page.locator(".card--search").count() == 3
+
+                # Open the middle result (Architecture) from search.
+                page.locator(".card--search").filter(has_text="Architecture").click()
+                page.locator(".article h1").wait_for(state="visible", timeout=10_000)
+                assert "Architecture" in page.locator(".article h1").inner_text()
+                assert "q=Lumio" in page.url
+                # Middle result has both prev and next.
+                assert page.locator(".doc__prev").is_visible()
+                assert page.locator(".doc__next").is_visible()
+                assert "Result 2 of 3" in page.locator(".doc__nav").inner_text()
+
+                # Next moves to the last result (Technology Stack).
+                page.locator(".doc__next").click()
+                page.locator(".article h1").wait_for(state="visible", timeout=10_000)
+                assert "Technology Stack" in page.locator(".article h1").inner_text()
+                assert "q=Lumio" in page.url
+                # Last result: no next.
+                assert not page.locator(".doc__next").is_visible()
+                assert page.locator(".doc__prev").is_visible()
+
+                # Previous moves back to Architecture.
+                page.locator(".doc__prev").click()
+                page.locator(".article h1").wait_for(state="visible", timeout=10_000)
+                assert "Architecture" in page.locator(".article h1").inner_text()
+
+                # Previous again moves to the first result (Lumio Overview).
+                page.locator(".doc__prev").click()
+                page.locator(".article h1").wait_for(state="visible", timeout=10_000)
+                assert "Lumio Overview" in page.locator(".article h1").inner_text()
+                # First result: no prev.
+                assert not page.locator(".doc__prev").is_visible()
+                assert page.locator(".doc__next").is_visible()
+
+                # Back to Reading Room returns to the same search results.
+                page.locator(".doc__back").click()
+                page.locator(".card--search").first.wait_for(state="visible", timeout=10_000)
+                assert "q=Lumio" in page.url
+                assert page.locator(".card--search").count() == 3
+
+                page.close()
+    except ModuleNotFoundError:
+        pytest.skip("Playwright is unavailable")

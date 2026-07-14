@@ -1,0 +1,324 @@
+"""Real-browser coverage for the responsive Reading Room sheet (issue #45).
+
+These tests drive Chromium at constrained and resized viewports to verify the
+chat-side Reading Room adapts from a desktop side column into a full-height,
+focus-managed sheet without losing the URL/history-aware behaviour from #44.
+
+They skip gracefully when Playwright or Chromium is unavailable.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+import pytest
+
+# A content width below the 880px container threshold forces the sheet; well
+# above it forces the desktop two-column split. The rail consumes some width,
+# so the viewport is set with headroom around the threshold.
+_NARROW = 600
+_WIDE = 1400
+
+
+@pytest.fixture
+def lumio_server(tmp_path: Path):
+    """Start an isolated Lumio HTTP server for Chromium-level interaction."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    base = f"http://127.0.0.1:{port}"
+    env = os.environ.copy()
+    env.update(
+        {
+            "LUMIO_KB_PATH": str(Path(__file__).parent / "fixtures" / "valid"),
+            "LUMIO_METADATA_DB_PATH": str(tmp_path / "metadata.sqlite"),
+            "LUMIO_CONFIG_PATH": str(tmp_path / "config"),
+            "LUMIO_INGEST_PATH": str(tmp_path / "ingest"),
+            "LUMIO_PUBLISH_PATH": str(tmp_path / "publish"),
+        }
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-m", "lumio.cli", "serve", "--host", "127.0.0.1", "--port", str(port)],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    deadline = time.monotonic() + 20
+    try:
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(f"{base}/health", timeout=1) as response:
+                    if response.status == 200:
+                        break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            raise RuntimeError("Lumio browser-test server did not become ready")
+        yield base
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def _launch(p):
+    try:
+        launch_kwargs = {}
+        if chromium_path := os.environ.get("LUMIO_CHROMIUM_PATH"):
+            launch_kwargs["executable_path"] = chromium_path
+        return p.chromium.launch(headless=True, **launch_kwargs)
+    except Exception as exc:  # pragma: no cover - depends on host install
+        pytest.skip(f"Chromium is unavailable: {exc}")
+
+
+def _setup(context, base):
+    """Create accounts and seed a Reader session cookie on the context."""
+    context.request.post(
+        f"{base}/setup",
+        data=json.dumps({"username": "owner", "password": "sheet-secret", "role": "owner"}),
+        headers={"content-type": "application/json"},
+    )
+    context.request.post(
+        f"{base}/login",
+        data=json.dumps({"username": "owner", "password": "sheet-secret"}),
+        headers={"content-type": "application/json"},
+    )
+    context.request.post(
+        f"{base}/admin/users",
+        data=json.dumps({"username": "reader", "password": "reader-secret", "role": "reader"}),
+        headers={"content-type": "application/json"},
+    )
+
+
+def _login_reader(context, base):
+    context.request.post(
+        f"{base}/login",
+        data=json.dumps({"username": "reader", "password": "reader-secret"}),
+        headers={"content-type": "application/json"},
+    )
+
+
+def _open_room(page, base):
+    """Ask a question and open the first citation's Reading Room."""
+    page.goto(f"{base}/chat")
+    page.locator("#question").fill("What technology does Lumio use for retrieval?")
+    page.locator("#chat-form button[type=submit]").click()
+    page.locator(".cite-card__open").first.wait_for(state="visible", timeout=15_000)
+    page.locator(".cite-card__open").first.click()
+    page.locator("#reading-room-inner").wait_for(state="visible", timeout=15_000)
+
+
+def test_narrow_viewport_opens_sheet_overlay_with_inert_chat(lumio_server):
+    """On a constrained width the room is a fixed sheet and the chat is inert."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context(viewport={"width": _NARROW, "height": 800})
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            _open_room(page, lumio_server)
+            # The slot lifts out of the grid as a fixed full-height overlay.
+            assert page.evaluate(
+                "getComputedStyle(document.getElementById('reading-room')).position"
+            ) == "fixed"
+            # The underlying chat column is inert (removed from the a11y tree).
+            assert page.locator(".chat__main").get_attribute("inert") is not None
+            # Focus has moved into the named sheet.
+            assert page.evaluate(
+                "document.getElementById('reading-room').contains(document.activeElement)"
+            )
+
+
+def test_focus_restored_to_citation_when_sheet_dismissed(lumio_server):
+    """Closing the sheet returns focus to the citation that opened it."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context(viewport={"width": _NARROW, "height": 800})
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            _open_room(page, lumio_server)
+            page.locator(".rr__close").click()
+            page.locator("#reading-room-inner").wait_for(state="detached", timeout=5_000)
+            # The citation button regained focus.
+            assert page.evaluate(
+                "document.activeElement && document.activeElement.classList"
+                " && document.activeElement.classList.contains('cite-card__open')"
+            )
+            assert page.url.endswith("/chat")
+
+
+def test_escape_dismisses_sheet_via_history(lumio_server):
+    """Escape dismisses the sheet through the same URL/history path."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context(viewport={"width": _NARROW, "height": 800})
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            _open_room(page, lumio_server)
+            page.keyboard.press("Escape")
+            page.locator("#reading-room-inner").wait_for(state="detached", timeout=5_000)
+            assert page.url.endswith("/chat")
+
+
+def test_resize_between_sheet_and_column_preserves_page(lumio_server):
+    """Resizing across the threshold repositions one room; no duplicate."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context(viewport={"width": _NARROW, "height": 800})
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            _open_room(page, lumio_server)
+            assert page.evaluate(
+                "getComputedStyle(document.getElementById('reading-room')).position"
+            ) == "fixed"
+
+            # Widen: the same page reverts to a side column; chat is interactive again.
+            page.set_viewport_size({"width": _WIDE, "height": 800})
+            page.wait_for_function(
+                "getComputedStyle(document.getElementById('reading-room')).position !== 'fixed'",
+                timeout=5_000,
+            )
+            assert page.locator(".chat__main").get_attribute("inert") is None
+            assert "Technology Stack" in page.locator("#reading-room").inner_text()
+
+            # Narrow again: back to a sheet, still one reader with the same page.
+            page.set_viewport_size({"width": _NARROW, "height": 800})
+            page.wait_for_function(
+                "getComputedStyle(document.getElementById('reading-room')).position === 'fixed'",
+                timeout=5_000,
+            )
+            assert page.locator("#reading-room-inner").count() == 1
+            assert "Technology Stack" in page.locator("#reading-room").inner_text()
+
+
+def test_no_horizontal_overflow_in_sheet(lumio_server):
+    """The sheet never produces a horizontal scrollbar on a narrow display."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context(viewport={"width": 360, "height": 640})
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            _open_room(page, lumio_server)
+            page.wait_for_function(
+                "document.documentElement.scrollWidth <= window.innerWidth + 1",
+                timeout=5_000,
+            )
+
+
+def test_reload_restores_sheet_on_constrained_display(lumio_server):
+    """A direct reload of a URL with an active page rehydrates the sheet."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context(viewport={"width": _NARROW, "height": 800})
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            _open_room(page, lumio_server)
+            assert "page=" in page.url
+            page.reload()
+            page.locator("#reading-room-inner").wait_for(state="visible", timeout=15_000)
+            assert page.evaluate(
+                "getComputedStyle(document.getElementById('reading-room')).position"
+            ) == "fixed"
+            assert page.locator(".chat__main").get_attribute("inert") is not None
+
+
+def test_tab_is_trapped_within_sheet(lumio_server):
+    """Tab cycles inside the sheet and never reaches the underlying chat."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context(viewport={"width": _NARROW, "height": 800})
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            _open_room(page, lumio_server)
+            # Tab several times: focus must remain inside the sheet.
+            for _ in range(6):
+                page.keyboard.press("Tab")
+                assert page.evaluate(
+                    "document.getElementById('reading-room').contains(document.activeElement)"
+                ), "focus escaped the sheet"
+
+
+def test_forward_restores_sheet_on_constrained_display(lumio_server):
+    """After Back dismisses the sheet, Forward reopens it as a fixed sheet."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context(viewport={"width": _NARROW, "height": 800})
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            _open_room(page, lumio_server)
+            assert "page=" in page.url
+            # Back dismisses the sheet into the preserved chat.
+            page.go_back()
+            page.locator("#reading-room-inner").wait_for(state="detached", timeout=5_000)
+            assert page.url.endswith("/chat")
+            # Forward restores the room as a fixed sheet on the narrow display.
+            page.go_forward()
+            page.locator("#reading-room-inner").wait_for(state="visible", timeout=15_000)
+            assert page.evaluate(
+                "getComputedStyle(document.getElementById('reading-room')).position"
+            ) == "fixed"
+            assert page.locator(".chat__main").get_attribute("inert") is not None
+
+
+def test_chat_state_preserved_while_sheet_open(lumio_server):
+    """The composer draft, answer, Citations, and Trace stay intact under the sheet."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context(viewport={"width": _NARROW, "height": 800})
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            page.goto(f"{lumio_server}/chat")
+            page.locator("#question").fill("What technology does Lumio use for retrieval?")
+            page.locator("#chat-form button[type=submit]").click()
+            page.locator(".cite-card__open").first.wait_for(state="visible", timeout=15_000)
+            # Capture the rendered answer, Citations, and Trace before opening.
+            answer_text = page.locator("#answer").inner_text()
+            assert page.locator("#citations .cite-card__row").count() >= 1
+            trace_html = page.locator("#trace").inner_html()
+            # Type a follow-up draft (not submitted) to prove it survives the sheet.
+            page.locator("#question").fill("Tell me more about the stack")
+            draft = page.locator("#question").input_value()
+            # Open the sheet over the preserved chat.
+            page.locator(".cite-card__open").first.click()
+            page.locator("#reading-room-inner").wait_for(state="visible", timeout=15_000)
+            # The chat thread, draft, answer, Citations, and Trace are untouched.
+            assert page.locator("#question").input_value() == draft
+            assert page.locator("#answer").inner_text() == answer_text
+            assert page.locator("#citations .cite-card__row").count() >= 1
+            assert page.locator("#trace").inner_html() == trace_html
