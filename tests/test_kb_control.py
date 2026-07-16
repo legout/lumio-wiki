@@ -294,8 +294,11 @@ def test_unsupported_control_file_mode_is_blocking(tmp_path):
         load_control_file(root)
 
 
-def test_legacy_flat_mode_is_supported(tmp_path):
-    """``legacy-flat`` is a documented supported mode and validates cleanly."""
+def test_legacy_flat_mode_in_present_control_file_is_blocking(tmp_path):
+    """``legacy-flat`` means there is no Control File; a present Control File
+    that declares ``mode: legacy-flat`` is contradictory and must be rejected
+    as a blocking error. Legacy Flat Mode is entered only by omitting the
+    Control File entirely (ADR-0008, issue #77)."""
     root = tmp_path / "kb"
     root.mkdir()
     _write_page(root, "overview.md", "Overview", "An overview")
@@ -303,7 +306,13 @@ def test_legacy_flat_mode_is_supported(tmp_path):
         "version: 1\nmode: legacy-flat\ncategories:\n  - concepts\n"
     )
     _, report = load_knowledge_base(root)
-    assert report.is_valid
+    assert not report.is_valid
+    issue = next(i for i in report.issues if i.field == "mode")
+    assert "legacy-flat" in issue.message
+    assert "no control file" in issue.message
+    # The parse seam raises rather than returning a control record.
+    with pytest.raises(ControlFileError):
+        load_control_file(root)
 
 
 def test_duplicate_category_is_blocking(tmp_path):
@@ -338,6 +347,41 @@ def test_resolved_hot_index_pins_are_valid(tmp_path):
     root = _build_categorized_kb(tmp_path, pins=["Lumio Overview"])
     _, report = load_knowledge_base(root)
     assert report.is_valid
+
+
+def test_blank_bare_hot_index_pin_title_is_blocking():
+    """A bare-string Hot Index pin with a blank/whitespace title is rejected
+    structurally, not silently admitted as a nameless pin (issue #77)."""
+    proposed = KnowledgeBaseControlFile(
+        version=1,
+        categories=[ContentCategory(name="concepts")],
+        hot_index=[HotIndexPin(title="   ")],
+        mode="categorized",
+    )
+    issues = validate_proposed_control_file(proposed, None)
+    assert any(
+        i.field == "hot_index" and "non-empty" in i.message for i in issues
+    )
+
+
+def test_whitespace_mapping_hot_index_pin_title_is_blocking(tmp_path):
+    """A mapping Hot Index pin with a whitespace-only ``title`` is rejected as
+    structurally invalid, matching the bare-string form (issue #77)."""
+    root = tmp_path / "kb"
+    root.mkdir()
+    _write_page(root, "overview.md", "Overview", "An overview")
+    (root / CONTROL_FILE_BASENAME).write_text(
+        "version: 1\nmode: categorized\ncategories:\n  - concepts\n"
+        "hot_index:\n  - title: \"   \"\n    note: \"pinned\"\n"
+    )
+    _, report = load_knowledge_base(root)
+    assert not report.is_valid
+    assert any(
+        i.field == "hot_index" and "non-empty" in i.message for i in report.issues
+    )
+    # The parse seam raises rather than returning a control record with a blank pin.
+    with pytest.raises(ControlFileError):
+        load_control_file(root)
 
 
 # ---------------------------------------------------------------------------
