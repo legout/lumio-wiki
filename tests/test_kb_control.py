@@ -52,6 +52,7 @@ from lumio.core import (
     regenerate_reserved_artifacts,
     seeded_control_file,
     validate,
+    validate_proposed_control_file,
     write_control_file,
 )
 
@@ -245,6 +246,64 @@ def test_empty_categories_is_blocking(tmp_path):
     assert any(
         i.field == "categories" and "empty" in i.message for i in report.issues
     )
+
+
+def test_empty_bare_category_name_is_blocking(tmp_path):
+    """An empty bare-string category (``- ""``) is rejected, not silently
+    admitted as a nameless category (issue #77)."""
+    root = tmp_path / "kb"
+    root.mkdir()
+    (root / CONTROL_FILE_BASENAME).write_text(
+        'version: 1\nmode: categorized\ncategories:\n  - ""\n  - concepts\n'
+    )
+    _, report = load_knowledge_base(root)
+    assert not report.is_valid
+    assert any(
+        i.field == "categories" and "non-empty" in i.message for i in report.issues
+    )
+    # The parse seam raises rather than returning a control record carrying "".
+    with pytest.raises(ControlFileError):
+        load_control_file(root)
+
+
+def test_whitespace_bare_category_name_is_blocking(tmp_path):
+    """A whitespace-only bare-string category is treated as empty (issue #77)."""
+    root = tmp_path / "kb"
+    root.mkdir()
+    (root / CONTROL_FILE_BASENAME).write_text(
+        'version: 1\nmode: categorized\ncategories:\n  - "   "\n'
+    )
+    _, report = load_knowledge_base(root)
+    assert not report.is_valid
+
+
+def test_unsupported_control_file_mode_is_blocking(tmp_path):
+    """A Control File ``mode`` outside the supported set is a blocking error,
+    not silently accepted (issue #77)."""
+    root = tmp_path / "kb"
+    root.mkdir()
+    (root / CONTROL_FILE_BASENAME).write_text(
+        "version: 1\nmode: bogus-mode\ncategories:\n  - concepts\n"
+    )
+    _, report = load_knowledge_base(root)
+    assert not report.is_valid
+    issue = next(i for i in report.issues if i.field == "mode")
+    assert "not supported" in issue.message
+    assert "categorized" in issue.message
+    with pytest.raises(ControlFileError):
+        load_control_file(root)
+
+
+def test_legacy_flat_mode_is_supported(tmp_path):
+    """``legacy-flat`` is a documented supported mode and validates cleanly."""
+    root = tmp_path / "kb"
+    root.mkdir()
+    _write_page(root, "overview.md", "Overview", "An overview")
+    (root / CONTROL_FILE_BASENAME).write_text(
+        "version: 1\nmode: legacy-flat\ncategories:\n  - concepts\n"
+    )
+    _, report = load_knowledge_base(root)
+    assert report.is_valid
 
 
 def test_duplicate_category_is_blocking(tmp_path):
@@ -639,3 +698,59 @@ def test_publish_then_validate_categorized_kb_is_portable(tmp_path):
     assert (root / "index.md").exists()
     assert (root / HOT_INDEX_BASENAME).exists()
     assert (root / ACTIVITY_LOG_BASENAME).exists()
+
+
+# ---------------------------------------------------------------------------
+# Maintainer proposal/validation seam for the Control File (issue #77). A
+# proposed Control File is validated against the current Compiled Pages without
+# ever touching the live Knowledge Base.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_proposed_control_file_reports_unresolved_pins(tmp_path):
+    """A proposed Control File with an unresolved Hot Index pin is flagged
+    against the current Compiled Pages (issue #77)."""
+    root = tmp_path / "kb"
+    root.mkdir()
+    _write_page(root, "concepts/overview.md", "Overview", "An overview")
+    kb, report = load_knowledge_base(root)
+    assert report.is_valid
+
+    proposed = KnowledgeBaseControlFile(
+        version=1,
+        categories=[ContentCategory(name="concepts")],
+        hot_index=[HotIndexPin(title="Ghost Page")],
+        mode="categorized",
+    )
+    issues = validate_proposed_control_file(proposed, kb.pages)
+    assert any(
+        getattr(i, "field", "") == "hot_index" and "Ghost Page" in getattr(i, "message", "")
+        for i in issues
+    )
+
+    # A resolved pin validates cleanly.
+    valid = KnowledgeBaseControlFile(
+        version=1,
+        categories=[ContentCategory(name="concepts")],
+        hot_index=[HotIndexPin(title="Overview")],
+        mode="categorized",
+    )
+    assert validate_proposed_control_file(valid, kb.pages) == []
+
+    # The proposed Control File never touched the live Knowledge Base.
+    assert (root / CONTROL_FILE_BASENAME).exists() is False
+
+
+def test_validate_proposed_control_file_rejects_empty_catalog(tmp_path):
+    """An empty proposed category catalog is a blocking issue (issue #77)."""
+    proposed = KnowledgeBaseControlFile(
+        version=1,
+        categories=[],
+        hot_index=[],
+        mode="categorized",
+    )
+    issues = validate_proposed_control_file(proposed, None)
+    assert any(
+        getattr(i, "field", "") == "categories" and "empty" in getattr(i, "message", "")
+        for i in issues
+    )
