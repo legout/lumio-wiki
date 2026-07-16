@@ -222,7 +222,8 @@ orchestrator's secret mechanism.
 
 ```bash
 uv sync                              # install (dev extras included)
-uv run pytest -q                     # test suite
+uv run pytest -q -n 4                # full test suite (four parallel workers)
+uv run pytest -q tests/test_chat.py  # focused tests stay serial
 uv run ruff check .                  # lint
 uv run lumio validate tests/fixtures/valid   # sanity check the sample KB
 ```

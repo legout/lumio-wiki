@@ -12,6 +12,12 @@ Before implementation work, read:
 
 The intended architecture is an SDK-centered modular monolith: one deployable app for the MVP, with a reusable Knowledge Base Core SDK and thin clients for web, external chat UIs, future CLI, and local coding agents.
 
+## Validation
+
+- Run focused tests serially while developing: `uv run pytest -q <test paths>`.
+- Run the full suite with four workers: `uv run pytest -q -n 4`.
+- Do not use `-n auto`; a fixed worker count keeps local and CI resource use predictable.
+
 ## Agent skills
 
 ### Issue tracker

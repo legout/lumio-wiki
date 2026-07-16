@@ -1,6 +1,6 @@
 [project]
 name = "lumio"
-version = "0.1.0"
+version = "0.1.1"
 description = "Deployable chat for trusted knowledge and data."
 requires-python = ">=3.14"
 dependencies = [
@@ -22,6 +22,7 @@ lumio = "lumio.cli:main"
 dev = [
     "playwright>=1.61.0",
     "pytest>=8.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.5.0",
 ]
 
