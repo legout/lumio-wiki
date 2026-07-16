@@ -19,6 +19,7 @@ For the *why* and the vision, read the domain docs — this README documents
 - [`docs/prd/0002-core-sdk.md`](docs/prd/0002-core-sdk.md) — Core SDK PRD.
 - [`docs/adr/`](docs/adr/) — architectural decisions.
 - [`docs/kb-format.md`](docs/kb-format.md) — canonical Compiled Page frontmatter reference.
+- [`docs/chat-sources.md`](docs/chat-sources.md) — private document chat (Chat Sources): retention, scope, submission, promotion, limits.
 
 ## Contents
 
@@ -179,6 +180,15 @@ For the full field table (required vs optional, allowed `lifecycle` /
 `visibility` values, the non-synthetic-needs-a-source rule, and cross-page
 uniqueness/resolution rules), see **[`docs/kb-format.md`](docs/kb-format.md)**.
 
+A categorized Knowledge Base additionally carries a versioned root Control File
+(`lumio.yaml`) declaring its Content Category catalog and Maintainer-pinned Hot
+Index titles, and a Published Version carries marked reserved artifacts:
+regenerated Navigation Indexes (`index.md`) and Hot Index (`hot.md`), and an
+append-only Activity Log (`log.md`). Knowledge Bases without a Control File
+load in Legacy Flat Mode with a non-blocking migration warning. See
+[`docs/kb-format.md`](docs/kb-format.md) and
+[ADR-0008](docs/adr/0008-knowledge-base-control-file-and-published-artifacts.md).
+
 ## HTTP surface
 
 All routes except `/health` and first-run `/setup` require authentication.
@@ -277,6 +287,10 @@ remains framework-independent (ADR-0001, ADR-0002).
   Maintainer ingest (upload → proposal → review → publish/discard, plus
   direct-write), Owner administration (users/roles, write-mode, storage-mode, audit),
   KB export.
+- **Private document chat** — Readers attach private text/Markdown/PDF/DOCX
+  files to a chat session (add button or drag/drop), cite them as "This chat"
+  alongside the Knowledge Base, choose retrieval scope, and submit a file for
+  Maintainer review. See [`docs/chat-sources.md`](docs/chat-sources.md).
 - **OpenAI-compatible endpoint** — `/v1/chat/completions` routed through the
   same `answer()` path (same citations, refusal, and guardrails as `/chat`).
 - **Auth & roles** — Reader / Maintainer / Owner with session auth and

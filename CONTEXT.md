@@ -92,6 +92,32 @@ _Avoid_: release, commit (too VCS-specific).
 How ingestion reaches the Knowledge Base. `proposal-first` (default: stage → review → publish) or `direct-write` (trusted: publish immediately, validation still runs).
 _Avoid_: edit mode, commit mode.
 
+### Knowledge Base controls and published artifacts
+
+**Knowledge Base Control File**:
+A versioned root `lumio.yaml` that declares a categorized Knowledge Base's Content Category catalog and Hot Index pins. It is KB-local content control: portable with the Knowledge Base, validated and fingerprinted by the Core SDK, but neither a Compiled Page nor an OKF concept.
+_Avoid_: config file, settings file, kb.json.
+
+**Content Category**:
+A broad navigation-routing label declared by the Control File (the seeded catalog is concepts, entities, references, procedures, tables, datasets, synthesis). Distinct from a Compiled Page's free-form `type`, which is specific semantics. No Lumio-wide type taxonomy exists.
+_Avoid_: folder, section, classification (too generic).
+
+**Hot Index**:
+A regenerated, Maintainer-pinned navigation surface (`hot.md`) listing exactly the Compiled Pages whose Canonical Titles the Control File pins. Curated only; citation/access-frequency ranking is deferred.
+_Avoid_: favorites, popular pages, recommendations.
+
+**Activity Log**:
+An append-only portable record (`log.md`) of successful published Knowledge Base state transitions. One grep-friendly entry per publish, appended only after the KB state succeeds. Excludes Reader queries, failed/discarded proposals, unpublished uploads, and private audit events. Distinct from the SQLite audit log and OKF's preview-only exchange history.
+_Avoid_: changelog, audit log (the audit log is private), history file.
+
+**Legacy Flat Mode**:
+The mode a Knowledge Base with no Control File loads in: existing root-level Compiled Pages remain valid with a non-blocking migration warning, and only Navigation Indexes are published until a reviewed migration establishes the Control File.
+_Avoid_: old mode, unmanaged mode.
+
+**Reserved Artifact**:
+A marked, reserved derived Markdown file the Core SDK recognizes by basename and `lumio` marker (Navigation Index `index.md`, Hot Index `hot.md`, Activity Log `log.md`). Valid marked artifacts are excluded from Compiled Page loading, retrieval, and fingerprinting; an unmarked or malformed collision is a blocking error.
+_Avoid_: generated file, cache file.
+
 ### Platform roles and guardrails
 
 **Reader / Maintainer / Owner**:

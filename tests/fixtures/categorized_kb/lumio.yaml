@@ -1,0 +1,20 @@
+version: 1
+mode: "categorized"
+categories:
+  - name: concepts
+    description: "Core ideas, definitions, and mental models."
+  - name: entities
+    description: "Named people, organizations, products, tools, projects, and standards."
+  - name: references
+    description: "Reference landing pages for independently useful Knowledge Sources."
+  - name: procedures
+    description: "Runbooks, methods, and checklists."
+  - name: tables
+    description: "Documentation for database and warehouse table relations."
+  - name: datasets
+    description: "Documentation for file, extract, collection, and data-lake assets."
+  - name: synthesis
+    description: "Cross-source conclusions and synthesized knowledge."
+hot_index:
+  - title: "Lumio Overview"
+  - title: "Acme Corp"

@@ -72,7 +72,10 @@ def test_preferred_types_validate_without_warnings(tmp_path: Path):
 
     report = validate(kb_dir)
     assert report.is_valid
-    warnings = [issue for issue in report.issues if issue.severity == "warning"]
+    warnings = [
+        issue for issue in report.issues
+        if issue.severity == "warning" and issue.field == "relationships"
+    ]
     assert warnings == []
 
 
@@ -88,10 +91,12 @@ def test_unknown_relationship_type_produces_warning(tmp_path: Path):
 
     report = validate(kb_dir)
 
-    warnings = [issue for issue in report.issues if issue.severity == "warning"]
+    warnings = [
+        issue for issue in report.issues
+        if issue.severity == "warning" and issue.field == "relationships"
+    ]
     assert len(warnings) == 1
     warning = warnings[0]
-    assert warning.field == "relationships"
     assert "depends-on" in warning.message
     assert "preferred" in warning.message.lower()
 
@@ -109,7 +114,10 @@ def test_unknown_type_warning_does_not_make_invalid(tmp_path: Path):
     report = validate(kb_dir)
 
     assert report.is_valid
-    warnings = [issue for issue in report.issues if issue.severity == "warning"]
+    warnings = [
+        issue for issue in report.issues
+        if issue.severity == "warning" and issue.field == "relationships"
+    ]
     assert len(warnings) == 1
 
 
@@ -131,7 +139,10 @@ def test_free_form_relationship_types_remain_loadable(tmp_path: Path):
     assert source.relationships[0].type == "custom-edge"
     assert source.relationships[0].target == "Target Page"
 
-    warnings = [issue for issue in report.issues if issue.severity == "warning"]
+    warnings = [
+        issue for issue in report.issues
+        if issue.severity == "warning" and issue.field == "relationships"
+    ]
     assert len(warnings) == 1
     assert "custom-edge" in warnings[0].message
 

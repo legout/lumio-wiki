@@ -325,6 +325,152 @@ def test_browser_combined_citations_present_chat_without_compiled_page_controls(
             expect(kb_rows.filter(has_text="Technology Stack").first).to_be_visible()
 
 
+def _drop_source(page, filename: str, body: str, *, content_type: str = "text/markdown"):
+    """Drop a file onto the chat-sources panel and wait for its chip to render.
+
+    Dispatches a synthetic DataTransfer drop so drag/drop gets the same
+    server-side treatment as the Add files button (#39). Falls back to reading
+    ``items`` because synthetic ``DataTransfer.files`` snapshots vary by engine.
+    """
+    sync_api = pytest.importorskip("playwright.sync_api")
+    expect = sync_api.expect
+    payload = {"name": filename, "body": body, "type": content_type}
+    page.evaluate(
+        """(d) => {
+          const dt = new DataTransfer();
+          dt.items.add(new File([d.body], d.name, { type: d.type }));
+          const el = document.querySelector('.chat-sources');
+          el.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true }));
+          el.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
+          el.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true }));
+        }""",
+        payload,
+    )
+    expect(page.locator(".chat-source", has_text=filename)).to_have_count(1)
+    expect(page.locator(".chat-source__name", has_text=filename)).to_be_visible()
+
+
+def test_browser_drag_and_drop_attaches_source_equivalently(lumio_server):
+    """Dragging a supported file onto the chat panel attaches it with the same
+    validation and status behavior as the Add files button (#39)."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context()
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            page.goto(f"{lumio_server}/chat")
+
+            # Drop a valid Markdown file; it attaches as a ready chip.
+            _drop_source(page, "dropped.md", "# Dropped\nThe dropped code is Nova.")
+            expect(page.locator(".chat-source", has_text="dropped.md")).to_have_count(1)
+            # The dropped source answers a chat-grounded question like a button upload.
+            _ask(page, "What is the dropped code?")
+            _answer_includes(page, "Nova")
+
+
+def test_browser_drag_and_drop_rejects_unsupported_type(lumio_server):
+    """An unsupported dropped file surfaces an isolated error chip, matching the
+    Add files button's validation outcome (#39)."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context()
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            page.goto(f"{lumio_server}/chat")
+
+            _drop_source(
+                page, "mystery.bin", "not a real document", content_type="application/octet-stream"
+            )
+            # The failed upload persists as an isolated error chip.
+            expect(page.locator(".chat-source--error", has_text="mystery.bin")).to_have_count(1)
+            # A non-color alert glyph accompanies the error state.
+            expect(page.locator(".chat-source__state-icon").first).to_be_visible()
+
+
+def test_browser_smoke_full_reader_journey(lumio_server):
+    """The complete Reader document-chat journey: upload, ask, inspect a
+    citation, switch scope, and remove — end to end in a real browser (#39)."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context()
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            page.goto(f"{lumio_server}/chat")
+
+            _upload_source(page, "journey.md", "The journey code is Helios.")
+            _ask(page, "What is the journey code?")
+            _answer_includes(page, "Helios")
+            # Citation inspection: a chat-file citation carries the This chat origin.
+            page.locator(".cite-card__row").first.wait_for(state="visible", timeout=15_000)
+            expect(page.locator(".cite-card__origin", has_text="This chat")).to_be_visible()
+
+            # Scope switch: chat-only still answers; KB-only does not cover it.
+            _select_scope(page, "kb_only")
+            _ask(page, "What is the journey code?")
+            _answer_includes(page, "not covered")
+
+            # Removal clears the chat.
+            page.locator(".chat-source__remove[aria-label='Remove journey.md']").click()
+            expect(page.locator(".chat-source", has_text="journey.md")).to_have_count(0)
+
+
+def test_browser_maintainer_promotion_stages_proposal(lumio_server):
+    """A Maintainer promotion under proposal-first (default Write Mode) stages an
+    Ingest Proposal and links the chat chip to its review — the Maintainer
+    document-chat promotion outcome (#39)."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context()
+            # Owner session seeds a Maintainer account, then logs in as Maintainer.
+            _setup(context, lumio_server)
+            context.request.post(
+                f"{lumio_server}/admin/users",
+                data=json.dumps(
+                    {
+                        "username": "maintainer",
+                        "password": "maintainer-secret",
+                        "role": "maintainer",
+                    }
+                ),
+                headers={"content-type": "application/json"},
+            )
+            context.request.post(
+                f"{lumio_server}/login",
+                data=json.dumps({"username": "maintainer", "password": "maintainer-secret"}),
+                headers={"content-type": "application/json"},
+            )
+            page = context.new_page()
+            page.goto(f"{lumio_server}/chat")
+
+            _upload_source(page, "promote.md", "# Promote\nThe promote code is Selene.")
+            # A Maintainer sees the direct promotion action.
+            submit_btn = page.locator(".chat-source__submit-btn", has_text="Add to Knowledge Base")
+            expect(submit_btn).to_be_visible()
+            submit_btn.click()
+
+            # The chip reflects the staged proposal outcome (non-color label).
+            expect(
+                page.locator(".chat-source__state", has_text="Submitted for review")
+            ).to_be_visible()
+            # And links to the Workshop review surface.
+            expect(page.locator(".chat-source__proposal", has_text="Open review")).to_be_visible()
+
+
 def test_browser_source_chips_wrap_within_narrow_viewport(lumio_server):
     """On a narrow viewport, source chips reflow onto multiple rows without
     producing any horizontal overflow — the mobile-safe wrapping from #34."""
