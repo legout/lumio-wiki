@@ -1,0 +1,2 @@
+These are plain-text notes that are not Markdown knowledge.
+They must be listed and skipped by the importer.
