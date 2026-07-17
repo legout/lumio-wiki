@@ -1,0 +1,1 @@
+This is a non-Markdown file and must be listed as skipped, never imported as a Compiled Page.
