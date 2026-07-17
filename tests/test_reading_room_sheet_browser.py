@@ -322,3 +322,146 @@ def test_chat_state_preserved_while_sheet_open(lumio_server):
             assert page.locator("#answer").inner_text() == answer_text
             assert page.locator("#citations .cite-card__row").count() >= 1
             assert page.locator("#trace").inner_html() == trace_html
+
+
+def test_resize_preserves_cited_range_scroll_and_actions(lumio_server):
+    """Resizing between sheet and column preserves the cited range, scroll position,
+    full-page action, page title, and follow-up affordances."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            # Use a shorter viewport so the Compiled Page body is actually scrollable.
+            context = browser.new_context(viewport={"width": _NARROW, "height": 500})
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            _open_room(page, lumio_server)
+            page.locator("#rr-cited-passage").wait_for(state="visible", timeout=5_000)
+            passage_text = page.locator("#rr-cited-passage").inner_text()
+            full_page_href = page.locator(".rr__open").get_attribute("href")
+            title_text = page.locator("#reading-room-title").inner_text()
+            chips = page.locator(".rr__chip").all_inner_texts()
+            assert full_page_href and full_page_href.startswith("/kb/page/")
+            assert chips
+
+            scroll = page.locator("#reading-room-inner .rr__scroll")
+            scroll.evaluate("el => el.scrollTop = 60")
+            scroll_before = scroll.evaluate("el => el.scrollTop")
+            assert scroll_before > 0, "Compiled Page body is not scrollable; scroll preservation cannot be exercised"
+
+            # Widen to column: the same range, title, actions, and scroll survive.
+            page.set_viewport_size({"width": _WIDE, "height": 500})
+            page.wait_for_function(
+                "getComputedStyle(document.getElementById('reading-room')).position !== 'fixed'",
+                timeout=5_000,
+            )
+            assert page.locator("#rr-cited-passage").inner_text() == passage_text
+            assert page.locator(".rr__open").get_attribute("href") == full_page_href
+            assert page.locator("#reading-room-title").inner_text() == title_text
+            assert page.locator(".rr__chip").all_inner_texts() == chips
+            scroll_after_wide = scroll.evaluate("el => el.scrollTop")
+            assert scroll_after_wide == scroll_before
+
+            # Narrow back to sheet: still one Reading Room instance with the same state.
+            page.set_viewport_size({"width": _NARROW, "height": 500})
+            page.wait_for_function(
+                "getComputedStyle(document.getElementById('reading-room')).position === 'fixed'",
+                timeout=5_000,
+            )
+            assert page.locator("#reading-room-inner").count() == 1
+            assert page.locator("#rr-cited-passage").inner_text() == passage_text
+            assert page.locator(".rr__open").get_attribute("href") == full_page_href
+            assert page.locator("#reading-room-title").inner_text() == title_text
+            assert page.locator(".rr__chip").all_inner_texts() == chips
+            scroll_after_narrow = scroll.evaluate("el => el.scrollTop")
+            assert scroll_after_narrow == scroll_before
+
+
+def _fixed_sheet_rule_text(page):
+    """Return the CSS rule text for the fixed-sheet .reading-room-slot, or ''."""
+    return page.evaluate(
+        """
+        () => {
+          for (const sheet of Array.from(document.styleSheets)) {
+            try {
+              for (const rule of Array.from(sheet.cssRules || [])) {
+                const text = rule.cssText || "";
+                if (text.includes(".reading-room-slot") && text.includes("position: fixed")) {
+                  return text;
+                }
+              }
+            } catch (e) {}
+          }
+          return "";
+        }
+        """
+    )
+
+
+def test_sheet_respects_safe_area_insets(lumio_server):
+    """The fixed-sheet rule declares safe-area padding so notches cannot clip content."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context(viewport={"width": _NARROW, "height": 800})
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            _open_room(page, lumio_server)
+            rule_text = _fixed_sheet_rule_text(page)
+            assert "position: fixed" in rule_text, "fixed sheet CSS rule not found"
+            assert "env(safe-area-inset" in rule_text, "sheet CSS does not declare safe-area padding"
+
+
+def test_sheet_opens_with_reduced_motion(lumio_server):
+    """A reader who prefers reduced motion can still open and read the sheet."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context(viewport={"width": _NARROW, "height": 800})
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            page.emulate_media(reduced_motion="reduce")
+            _open_room(page, lumio_server)
+            assert page.evaluate(
+                "getComputedStyle(document.getElementById('reading-room')).position"
+            ) == "fixed"
+            assert page.locator("#reading-room-inner").is_visible()
+            assert page.locator("#rr-cited-passage").is_visible()
+            # No layout transition or animation is driving the sheet itself.
+            rule_text = _fixed_sheet_rule_text(page)
+            assert not ("transition" in rule_text or "animation" in rule_text)
+
+
+def test_chat_scroll_position_preserved_while_sheet_open(lumio_server):
+    """Opening the Reading Room sheet does not reset the underlying chat scroll."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context(viewport={"width": _NARROW, "height": 800})
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            page.goto(f"{lumio_server}/chat")
+            page.locator("#question").fill("What technology does Lumio use for retrieval?")
+            page.locator("#chat-form button[type=submit]").click()
+            page.locator(".cite-card__open").first.wait_for(state="visible", timeout=15_000)
+            # Constrain the chat scroll area so the button has a non-zero scroll offset,
+            # then scroll the button to the top of the visible area.
+            chat_scroll = page.locator(".chat__scroll")
+            chat_scroll.evaluate("el => el.style.maxHeight = '120px'")
+            button = page.locator(".cite-card__open").first
+            button.evaluate("el => el.scrollIntoView({ block: 'start', behavior: 'instant' })")
+            chat_scroll_before = chat_scroll.evaluate("el => el.scrollTop")
+            assert chat_scroll_before > 0
+            # Open the sheet from the citation, which is already in view.
+            button.click()
+            page.locator("#reading-room-inner").wait_for(state="visible", timeout=15_000)
+            # The chat scroll position is unchanged.
+            assert chat_scroll.evaluate("el => el.scrollTop") == chat_scroll_before
+
