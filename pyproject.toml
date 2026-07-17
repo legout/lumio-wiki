@@ -15,6 +15,12 @@ dependencies = [
     "stario>=3.3.0",
 ]
 
+[project.optional-dependencies]
+# Optional semantic/hybrid Knowledge Base retrieval backend (#75). Lexical-only
+# images and deployments do not install this group and never require Torch.
+semantic = [
+    "sentence-transformers>=2.6.0",
+]
 [project.scripts]
 lumio = "lumio.cli:main"
 
