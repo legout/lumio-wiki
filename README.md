@@ -82,7 +82,8 @@ Once an Operator has deployed Lumio (above) or you are running locally:
 
 1. Browse to `http://localhost:8000/setup` (first run) to create the Owner.
 2. `/login` as the Owner, then create users under `/admin/users`
-   (Readers, Maintainers, or additional Owners).
+   (Readers, Maintainers, or additional Owners). Readers can also
+   self-register at `/register` (each account is created as a Reader).
 3. **Reader** → `/chat` (Chat + Citation Workspace): ask a question, get a
    cited answer, inspect the retrieval trace, and open any Citation into the
    Reading Room — a persistent evidence surface beside the chat (or a
@@ -201,7 +202,7 @@ Role gates are enforced as middleware.
 |---|---|---|
 | `GET /health` | _(none)_ | Liveness probe. |
 | `GET/POST /setup` | _(first-run only)_ | Create the Owner account; disabled once one exists. |
-| `GET/POST /login` · `POST /logout` | _(auth)_ | Session login / logout. |
+| `GET/POST /login` · `GET/POST /register` · `POST /logout` | _(auth)_ | Session login / logout; self-service Reader registration (disabled until an Owner exists). |
 | `GET/POST /chat` · `POST /chat/ask` · `GET /chat/reading-room` · `GET /chat/threads` · `GET /chat/threads/{id}` | Reader | Chat + Citation Workspace: cited answer with retrieval trace. Selecting a Citation opens the cited Compiled Page in the Reading Room column (or a responsive sheet on narrower displays); the page and cited range are URL-addressable and survive reload, Back/Forward, and shared deep links. |
 | `GET /kb` · `GET /kb/page/{title}` · `GET /kb/export` | Reader | Reading Room: browse published Compiled Pages, deterministic lexical search (title, alias, tag, summary, body) with prev/next ranked-result navigation, full-width standalone document reading, and Markdown export (raw sources excluded). No chat composer or generated answer on the standalone surface. |
 | `POST /v1/chat/completions` | Reader | OpenAI-compatible endpoint; same retrieval, citation, refusal, and guardrails as `/chat`. Returns a `lumio` extension block with citations, trace, and `covered`. |
