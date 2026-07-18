@@ -97,7 +97,8 @@ def test_browser_reading_room_history_reload_and_copy(lumio_server):
                     "const originalFetch = window.fetch;"
                     "window.fetch = function(...args) {"
                     " const target = String(args[0]);"
-                    " if (target.includes('/chat/reading-room')) window.__lumioFetches.push(target);"
+                    " if (target.includes('/chat/reading-room'))"
+                    " window.__lumioFetches.push(target);"
                     " return originalFetch.apply(this, args); };"
                     "for (const method of ['pushState','replaceState','back']) {"
                     " const original = history[method];"
@@ -157,12 +158,13 @@ def test_browser_reading_room_history_reload_and_copy(lumio_server):
                 assert page.evaluate("window.__lumioHistory") == ["back"]
 
                 invalid = context.new_page()
-                invalid.goto(f"{lumio_server}/chat?page=Technology%20Stack&line_start=1&line_end=9999")
+                invalid.goto(
+                    f"{lumio_server}/chat?page=Technology%20Stack&line_start=1&line_end=9999"
+                )
                 assert "outside this Compiled Page" in invalid.locator("#reading-room").inner_text()
                 invalid.close()
     except ModuleNotFoundError:
         pytest.skip("Playwright is unavailable")
-
 
 
 def test_browser_search_result_navigation_through_compiled_pages(lumio_server):

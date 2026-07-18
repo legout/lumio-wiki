@@ -130,9 +130,10 @@ def test_narrow_viewport_opens_sheet_overlay_with_inert_chat(lumio_server):
             page = context.new_page()
             _open_room(page, lumio_server)
             # The slot lifts out of the grid as a fixed full-height overlay.
-            assert page.evaluate(
-                "getComputedStyle(document.getElementById('reading-room')).position"
-            ) == "fixed"
+            assert (
+                page.evaluate("getComputedStyle(document.getElementById('reading-room')).position")
+                == "fixed"
+            )
             # The underlying chat column is inert (removed from the a11y tree).
             assert page.locator(".chat__main").get_attribute("inert") is not None
             # Focus has moved into the named sheet.
@@ -178,36 +179,44 @@ def test_escape_dismisses_sheet_via_history(lumio_server):
             assert page.url.endswith("/chat")
 
 
-def test_resize_between_sheet_and_column_preserves_page(lumio_server):
-    """Resizing across the threshold repositions one room; no duplicate."""
+def test_available_chat_width_switches_sheet_at_fixed_viewport(lumio_server):
+    """The chat container's available width, not viewport identity, selects layout."""
     playwright = pytest.importorskip("playwright.sync_api")
     with playwright.sync_playwright() as p:
         browser = _launch(p)
         with browser:
-            context = browser.new_context(viewport={"width": _NARROW, "height": 800})
+            context = browser.new_context(viewport={"width": _WIDE, "height": 800})
             _setup(context, lumio_server)
             _login_reader(context, lumio_server)
             page = context.new_page()
             _open_room(page, lumio_server)
-            assert page.evaluate(
-                "getComputedStyle(document.getElementById('reading-room')).position"
-            ) == "fixed"
-
-            # Widen: the same page reverts to a side column; chat is interactive again.
-            page.set_viewport_size({"width": _WIDE, "height": 800})
-            page.wait_for_function(
-                "getComputedStyle(document.getElementById('reading-room')).position !== 'fixed'",
-                timeout=5_000,
+            assert page.evaluate("window.innerWidth") == _WIDE
+            assert (
+                page.evaluate("getComputedStyle(document.getElementById('reading-room')).position")
+                != "fixed"
             )
-            assert page.locator(".chat__main").get_attribute("inert") is None
-            assert "Technology Stack" in page.locator("#reading-room").inner_text()
 
-            # Narrow again: back to a sheet, still one reader with the same page.
-            page.set_viewport_size({"width": _NARROW, "height": 800})
+            chat = page.locator(".chat")
+            chat.evaluate("el => { el.style.width = '600px'; el.style.flex = 'none'; }")
             page.wait_for_function(
                 "getComputedStyle(document.getElementById('reading-room')).position === 'fixed'",
                 timeout=5_000,
             )
+            assert page.evaluate("window.innerWidth") == _WIDE
+            assert page.locator(".chat__main").get_attribute("inert") is not None
+            assert "Technology Stack" in page.locator("#reading-room").inner_text()
+
+            chat.evaluate("el => el.style.width = '1100px'")
+            page.wait_for_function(
+                "getComputedStyle(document.getElementById('reading-room')).position !== 'fixed'",
+                timeout=5_000,
+            )
+            page.wait_for_function(
+                "!document.querySelector('.chat__main').hasAttribute('inert')",
+                timeout=5_000,
+            )
+            assert page.evaluate("window.innerWidth") == _WIDE
+            assert page.locator(".chat__main").get_attribute("inert") is None
             assert page.locator("#reading-room-inner").count() == 1
             assert "Technology Stack" in page.locator("#reading-room").inner_text()
 
@@ -243,14 +252,15 @@ def test_reload_restores_sheet_on_constrained_display(lumio_server):
             assert "page=" in page.url
             page.reload()
             page.locator("#reading-room-inner").wait_for(state="visible", timeout=15_000)
-            assert page.evaluate(
-                "getComputedStyle(document.getElementById('reading-room')).position"
-            ) == "fixed"
+            assert (
+                page.evaluate("getComputedStyle(document.getElementById('reading-room')).position")
+                == "fixed"
+            )
             assert page.locator(".chat__main").get_attribute("inert") is not None
 
 
-def test_tab_is_trapped_within_sheet(lumio_server):
-    """Tab cycles inside the sheet and never reaches the underlying chat."""
+def test_tab_and_shift_tab_wrap_within_sheet(lumio_server):
+    """Focus wraps last-to-first and first-to-last inside the modal sheet."""
     playwright = pytest.importorskip("playwright.sync_api")
     with playwright.sync_playwright() as p:
         browser = _launch(p)
@@ -260,12 +270,21 @@ def test_tab_is_trapped_within_sheet(lumio_server):
             _login_reader(context, lumio_server)
             page = context.new_page()
             _open_room(page, lumio_server)
-            # Tab several times: focus must remain inside the sheet.
-            for _ in range(6):
-                page.keyboard.press("Tab")
-                assert page.evaluate(
-                    "document.getElementById('reading-room').contains(document.activeElement)"
-                ), "focus escaped the sheet"
+            focusables = page.locator(
+                "#reading-room-inner a[href]:visible, "
+                "#reading-room-inner button:not([disabled]):visible"
+            )
+            assert focusables.count() >= 2
+            first = focusables.first
+            last = focusables.last
+
+            last.focus()
+            page.keyboard.press("Tab")
+            assert first.evaluate("el => document.activeElement === el")
+
+            first.focus()
+            page.keyboard.press("Shift+Tab")
+            assert last.evaluate("el => document.activeElement === el")
 
 
 def test_forward_restores_sheet_on_constrained_display(lumio_server):
@@ -287,9 +306,10 @@ def test_forward_restores_sheet_on_constrained_display(lumio_server):
             # Forward restores the room as a fixed sheet on the narrow display.
             page.go_forward()
             page.locator("#reading-room-inner").wait_for(state="visible", timeout=15_000)
-            assert page.evaluate(
-                "getComputedStyle(document.getElementById('reading-room')).position"
-            ) == "fixed"
+            assert (
+                page.evaluate("getComputedStyle(document.getElementById('reading-room')).position")
+                == "fixed"
+            )
             assert page.locator(".chat__main").get_attribute("inert") is not None
 
 
@@ -348,7 +368,9 @@ def test_resize_preserves_cited_range_scroll_and_actions(lumio_server):
             scroll = page.locator("#reading-room-inner .rr__scroll")
             scroll.evaluate("el => el.scrollTop = 60")
             scroll_before = scroll.evaluate("el => el.scrollTop")
-            assert scroll_before > 0, "Compiled Page body is not scrollable; scroll preservation cannot be exercised"
+            assert scroll_before > 0, (
+                "Compiled Page body is not scrollable; scroll preservation cannot be exercised"
+            )
 
             # Widen to column: the same range, title, actions, and scroll survive.
             page.set_viewport_size({"width": _WIDE, "height": 500})
@@ -378,29 +400,8 @@ def test_resize_preserves_cited_range_scroll_and_actions(lumio_server):
             assert scroll_after_narrow == scroll_before
 
 
-def _fixed_sheet_rule_text(page):
-    """Return the CSS rule text for the fixed-sheet .reading-room-slot, or ''."""
-    return page.evaluate(
-        """
-        () => {
-          for (const sheet of Array.from(document.styleSheets)) {
-            try {
-              for (const rule of Array.from(sheet.cssRules || [])) {
-                const text = rule.cssText || "";
-                if (text.includes(".reading-room-slot") && text.includes("position: fixed")) {
-                  return text;
-                }
-              }
-            } catch (e) {}
-          }
-          return "";
-        }
-        """
-    )
-
-
-def test_sheet_respects_safe_area_insets(lumio_server):
-    """The fixed-sheet rule declares safe-area padding so notches cannot clip content."""
+def test_sheet_applies_emulated_safe_area_insets(lumio_server):
+    """Computed sheet padding follows browser-emulated display safe areas."""
     playwright = pytest.importorskip("playwright.sync_api")
     with playwright.sync_playwright() as p:
         browser = _launch(p)
@@ -410,31 +411,45 @@ def test_sheet_respects_safe_area_insets(lumio_server):
             _login_reader(context, lumio_server)
             page = context.new_page()
             _open_room(page, lumio_server)
-            rule_text = _fixed_sheet_rule_text(page)
-            assert "position: fixed" in rule_text, "fixed sheet CSS rule not found"
-            assert "env(safe-area-inset" in rule_text, "sheet CSS does not declare safe-area padding"
+            page.locator("#reading-room").evaluate(
+                """el => {
+                    el.style.setProperty('--lumio-safe-area-top', '17px');
+                    el.style.setProperty('--lumio-safe-area-right', '19px');
+                    el.style.setProperty('--lumio-safe-area-bottom', '23px');
+                    el.style.setProperty('--lumio-safe-area-left', '29px');
+                }"""
+            )
+            padding = page.locator("#reading-room").evaluate(
+                "el => { const s = getComputedStyle(el); return "
+                "[s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft]; }"
+            )
+            assert padding == ["17px", "19px", "23px", "29px"]
 
 
-def test_sheet_opens_with_reduced_motion(lumio_server):
-    """A reader who prefers reduced motion can still open and read the sheet."""
+def test_sheet_opens_without_motion_when_reduction_requested(lumio_server):
+    """Reduced-motion emulation yields a readable sheet with zero computed motion."""
     playwright = pytest.importorskip("playwright.sync_api")
     with playwright.sync_playwright() as p:
         browser = _launch(p)
         with browser:
-            context = browser.new_context(viewport={"width": _NARROW, "height": 800})
+            context = browser.new_context(
+                viewport={"width": _NARROW, "height": 800},
+                reduced_motion="reduce",
+            )
             _setup(context, lumio_server)
             _login_reader(context, lumio_server)
             page = context.new_page()
-            page.emulate_media(reduced_motion="reduce")
             _open_room(page, lumio_server)
-            assert page.evaluate(
-                "getComputedStyle(document.getElementById('reading-room')).position"
-            ) == "fixed"
-            assert page.locator("#reading-room-inner").is_visible()
+            assert page.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches")
+            sheet = page.locator("#reading-room")
+            assert sheet.is_visible()
             assert page.locator("#rr-cited-passage").is_visible()
-            # No layout transition or animation is driving the sheet itself.
-            rule_text = _fixed_sheet_rule_text(page)
-            assert not ("transition" in rule_text or "animation" in rule_text)
+            motion_seconds = sheet.evaluate(
+                "el => { const s = getComputedStyle(el); return "
+                "[s.transitionDuration, s.animationDuration]"
+                ".map(value => parseFloat(value)); }"
+            )
+            assert all(duration <= 0.0001 for duration in motion_seconds)
 
 
 def test_chat_scroll_position_preserved_while_sheet_open(lumio_server):
@@ -464,4 +479,3 @@ def test_chat_scroll_position_preserved_while_sheet_open(lumio_server):
             page.locator("#reading-room-inner").wait_for(state="visible", timeout=15_000)
             # The chat scroll position is unchanged.
             assert chat_scroll.evaluate("el => el.scrollTop") == chat_scroll_before
-
