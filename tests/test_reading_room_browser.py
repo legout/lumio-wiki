@@ -354,3 +354,210 @@ def test_browser_search_result_navigation_direct_deep_link(lumio_server):
                 page.close()
     except ModuleNotFoundError:
         pytest.skip("Playwright is unavailable")
+
+
+def _wide_owner_context(browser, lumio_server):
+    """Authenticated Owner browser context for wide-viewport journeys."""
+    context = browser.new_context(viewport={"width": 1400, "height": 900})
+    context.request.post(
+        f"{lumio_server}/setup",
+        data=json.dumps({"username": "owner", "password": "browser-secret", "role": "owner"}),
+        headers={"content-type": "application/json"},
+    )
+    context.request.post(
+        f"{lumio_server}/login",
+        data=json.dumps({"username": "owner", "password": "browser-secret"}),
+        headers={"content-type": "application/json"},
+    )
+    return context
+
+
+def _launch_chromium(p):
+    """Launch headless Chromium, skipping the test when it is unavailable."""
+    launch_kwargs = {}
+    if chromium_path := os.environ.get("LUMIO_CHROMIUM_PATH"):
+        launch_kwargs["executable_path"] = chromium_path
+    return p.chromium.launch(headless=True, **launch_kwargs)
+
+
+def test_browser_wide_journey_persistent_replacement_close_and_standalone(lumio_server):
+    """One unified wide-viewport Reader journey (#48).
+
+    Ask → Citation open with cited range → another question leaves the page
+    open (persistence) → selecting another Citation replaces the active page
+    → Close restores chat width → the chat-side 'Open in Reading Room'
+    affordance opens the standalone full-width document. The persistent-column
+    (#43) and replacement contracts are exercised end to end at the
+    real-browser seam, complementing the HTTP-level persistence tests.
+    """
+    playwright = pytest.importorskip("playwright.sync_api")
+    try:
+        with playwright.sync_playwright() as p:
+            try:
+                browser = _launch_chromium(p)
+            except Exception as exc:  # pragma: no cover - depends on host install
+                pytest.skip(f"Chromium is unavailable: {exc}")
+            with browser:
+                context = _wide_owner_context(browser, lumio_server)
+                page = context.new_page()
+                page.goto(f"{lumio_server}/chat")
+
+                # Ask → cited answer.
+                page.locator("#question").fill("What technology does Lumio use for retrieval?")
+                page.locator("#chat-form button[type=submit]").click()
+                page.locator(".cite-card__open").first.wait_for(state="visible", timeout=15_000)
+
+                # Citation open with a cited range → the passage is inspectable.
+                page.locator(".cite-card__row").filter(has_text="Technology Stack").locator(
+                    ".cite-card__open"
+                ).first.click()
+                page.locator("#reading-room-inner").wait_for(state="visible", timeout=15_000)
+                assert "Technology Stack" in page.locator("#reading-room").inner_text()
+                assert page.locator("#rr-cited-passage").is_visible()
+                assert "Cited lines" in page.locator("#rr-cited-passage").inner_text()
+
+                # Another question leaves the explicitly opened page in place.
+                # Wait for the second answer to actually arrive (the #answer
+                # region's text changes) so the persistence assertion runs only
+                # after the new answer — not against the first answer's already-
+                # visible Citations. The chat refreshes Citations but never
+                # patches #reading-room, so the Reader's page survives (#43).
+                answer_before = page.locator("#answer").inner_text()
+                page.locator("#question").fill("What is Lumio?")
+                page.locator("#chat-form button[type=submit]").click()
+                page.wait_for_function(
+                    "(prev) => (document.getElementById('answer')||{}).innerText !== prev",
+                    arg=answer_before,
+                    timeout=15_000,
+                )
+                page.locator(".cite-card__open").first.wait_for(state="visible", timeout=15_000)
+                assert "Technology Stack" in page.locator("#reading-room").inner_text()
+                # Still exactly one Reading Room surface — no duplicated columns.
+                assert page.locator("#reading-room-inner").count() == 1
+
+                # Selecting another Citation replaces the single active page.
+                page.locator(".cite-card__row").filter(has_text="Lumio Overview").locator(
+                    ".cite-card__open"
+                ).first.click()
+                page.locator("#reading-room-inner").wait_for(state="visible", timeout=15_000)
+                assert "Lumio Overview" in page.locator("#reading-room").inner_text()
+                # Still exactly one Reading Room surface after replacement.
+                assert page.locator("#reading-room-inner").count() == 1
+
+                # Close restores chat width (the slot empties and the URL resets).
+                page.locator(".rr__close").click()
+                page.locator("#reading-room-inner").wait_for(state="detached", timeout=5_000)
+                assert page.url.endswith("/chat")
+
+                # Reopen and move into the standalone full-width document via the
+                # chat-side 'Open in Reading Room' affordance — the same shared
+                # article interface, presented without chat.
+                page.locator(".cite-card__row").filter(has_text="Technology Stack").locator(
+                    ".cite-card__open"
+                ).first.click()
+                page.locator("#reading-room-inner").wait_for(state="visible", timeout=15_000)
+                page.locator(".rr__open").first.click()
+                page.locator(".article h1").wait_for(state="visible", timeout=10_000)
+                assert "Technology Stack" in page.locator(".article h1").inner_text()
+                # The standalone document is chat-free.
+                assert page.locator("#chat-form").count() == 0
+                assert page.locator("#composer").count() == 0
+
+                page.close()
+    except ModuleNotFoundError:
+        pytest.skip("Playwright is unavailable")
+
+
+def test_browser_standalone_journey_browse_search_select_prevnext_back_and_deep_link(lumio_server):
+    """One unified standalone Reading Room journey (#48).
+
+    Browse the index → lexical search returns ranked results → a no-match query
+    produces a deliberate no-results state with a way back → clearing the query
+    restores browse → selecting a result opens the standalone document with
+    prev/next ranked navigation → Back restores the same result set → a direct
+    deep link opens the standalone document.
+    """
+    playwright = pytest.importorskip("playwright.sync_api")
+    try:
+        with playwright.sync_playwright() as p:
+            try:
+                browser = _launch_chromium(p)
+            except Exception as exc:  # pragma: no cover - depends on host install
+                pytest.skip(f"Chromium is unavailable: {exc}")
+            with browser:
+                context = _wide_owner_context(browser, lumio_server)
+                page = context.new_page()
+
+                # Browse landing: published Compiled Pages, no chat composer.
+                page.goto(f"{lumio_server}/kb")
+                page.locator(".card").first.wait_for(state="visible", timeout=10_000)
+                assert page.locator("#chat-form").count() == 0
+                browse_count = page.locator(".card").count()
+                assert browse_count >= 1
+
+                # Lexical search returns ranked results; query is in the URL.
+                page.locator("#reading-room-search").fill("Lumio")
+                page.locator("#reading-room-search").press("Enter")
+                page.locator(".card--search").first.wait_for(state="visible", timeout=10_000)
+                assert "q=Lumio" in page.url
+                result_count = page.locator(".card--search").count()
+                assert result_count >= 1
+
+                # A no-match query produces a deliberate, recoverable empty state.
+                page.locator("#reading-room-search").fill("zzznomatchxyz")
+                page.locator("#reading-room-search").press("Enter")
+                page.locator(".search-state").wait_for(state="visible", timeout=10_000)
+                assert "No matching Compiled Pages" in page.locator(".search-state").inner_text()
+                # The empty state offers a way back to browsing (not a hard 404).
+                assert page.locator(".search-state a").get_attribute("href") == "/kb"
+
+                # The empty-state link restores browse mode.
+                page.locator(".search-state a").click()
+                page.locator(".card").first.wait_for(state="visible", timeout=10_000)
+                assert "q=" not in page.url
+                # Clearing search restored the same browse index cardinality.
+                assert page.locator(".card").count() == browse_count
+
+                # Re-run the ranked search and select a result → standalone
+                # document with prev/next ranked navigation for this query.
+                page.locator("#reading-room-search").fill("Lumio")
+                page.locator("#reading-room-search").press("Enter")
+                page.locator(".card--search").first.wait_for(state="visible", timeout=10_000)
+                page.locator(".card--search").filter(has_text="Architecture").click()
+                page.locator(".article h1").wait_for(state="visible", timeout=10_000)
+                assert "Architecture" in page.locator(".article h1").inner_text()
+                assert "q=Lumio" in page.url
+                # With multiple ranked results the document carries prev/next
+                # and reports its position in the ranked set.
+                if result_count > 1:
+                    assert page.locator(".doc__prev").is_visible()
+                    assert page.locator(".doc__next").is_visible()
+
+                    # Next moves to another result in the same ranked set.
+                    page.locator(".doc__next").click()
+                    page.locator(".article h1").wait_for(state="visible", timeout=10_000)
+                    assert "q=Lumio" in page.url
+                    # Previous returns to the first selected result.
+                    page.locator(".doc__prev").click()
+                    page.locator(".article h1").wait_for(state="visible", timeout=10_000)
+                    assert "Architecture" in page.locator(".article h1").inner_text()
+
+                # Back to Reading Room restores the same ranked result set.
+                page.locator(".doc__back").click()
+                page.locator(".card--search").first.wait_for(state="visible", timeout=10_000)
+                assert "q=Lumio" in page.url
+                assert page.locator(".card--search").count() == result_count
+
+                # A direct standalone deep link opens the full-width document.
+                page.goto(f"{lumio_server}/kb/page/Architecture")
+                page.locator(".article h1").wait_for(state="visible", timeout=10_000)
+                assert "Architecture" in page.locator(".article h1").inner_text()
+                # Standalone document carries Back to Reading Room.
+                assert page.locator(".doc__back").is_visible()
+                # No search context → no prev/next navigation.
+                assert page.locator(".doc__prev").count() == 0
+                assert page.locator(".doc__next").count() == 0
+
+                page.close()
+    except ModuleNotFoundError:
+        pytest.skip("Playwright is unavailable")

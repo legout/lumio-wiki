@@ -479,3 +479,49 @@ def test_chat_scroll_position_preserved_while_sheet_open(lumio_server):
             page.locator("#reading-room-inner").wait_for(state="visible", timeout=15_000)
             # The chat scroll position is unchanged.
             assert chat_scroll.evaluate("el => el.scrollTop") == chat_scroll_before
+
+
+def test_cited_range_highlight_survives_forced_colors(lumio_server):
+    """The cited-range highlight stays understandable when color is removed (#48).
+
+    Source highlighting must not rely on color alone. Under forced-colors
+    (Windows High Contrast / monochrome), the cited passage keeps a visible
+    text label and a structural left bar on each cited line, so the Reader can
+    still tell which passage a Citation points at without the gold tint.
+    """
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        browser = _launch(p)
+        with browser:
+            context = browser.new_context(
+                viewport={"width": _NARROW, "height": 800},
+                forced_colors="active",
+            )
+            _setup(context, lumio_server)
+            _login_reader(context, lumio_server)
+            page = context.new_page()
+            _open_room(page, lumio_server)
+
+            assert page.evaluate("matchMedia('(forced-colors: active)').matches")
+            passage = page.locator("#rr-cited-passage")
+            assert passage.is_visible()
+            # The textual label is the primary non-color cue and always survives.
+            assert "Cited lines" in passage.inner_text()
+
+            # Each cited line keeps a structural left bar (not only a tint) so
+            # the highlighted range stays visible when the gold background is
+            # mapped to the system canvas color.
+            line_bar = page.locator(".rr__ln").first.evaluate(
+                "el => { const s = getComputedStyle(el); "
+                "return { style: s.borderLeftStyle, width: parseFloat(s.borderLeftWidth) }; }"
+            )
+            assert line_bar["style"] != "none"
+            assert line_bar["width"] > 0
+
+            # The passage container itself stays visibly bounded.
+            container_border = passage.evaluate(
+                "el => { const s = getComputedStyle(el); "
+                "return { style: s.borderTopStyle, width: parseFloat(s.borderTopWidth) }; }"
+            )
+            assert container_border["style"] != "none"
+            assert container_border["width"] > 0

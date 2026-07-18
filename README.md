@@ -83,22 +83,25 @@ Once an Operator has deployed Lumio (above) or you are running locally:
 1. Browse to `http://localhost:8000/setup` (first run) to create the Owner.
 2. `/login` as the Owner, then create users under `/admin/users`
    (Readers, Maintainers, or additional Owners).
-3. **Reader** → `/chat`: ask a question, get a cited answer, and inspect the
-   retrieval trace.
-4. **Maintainer** → `/ingest`: upload a raw Knowledge Source, review the staged
+3. **Reader** → `/chat` (Chat + Citation Workspace): ask a question, get a
+   cited answer, inspect the retrieval trace, and open any Citation into the
+   Reading Room — a persistent evidence surface beside the chat (or a
+   responsive sheet over it on narrower displays).
+4. **Reader** → `/kb` (Reading Room): browse and deterministically search
+   published Compiled Pages, then read a selected page full-width without chat.
+5. **Maintainer** → `/ingest`: upload a raw Knowledge Source, review the staged
    Markdown proposal, then publish or discard. Direct-write is an
    Owner-enabled alternative.
-5. Any Reader can export the compiled wiki at `/kb/export` (raw sources are
+6. Any Reader can export the compiled wiki at `/kb/export` (raw sources are
    excluded).
 
 ### Developer — run locally
 
 Requirements: **Python ≥ 3.14** and [uv](https://docs.astral.sh/uv/).
-
 ```bash
 uv sync                       # install dependencies + the package
 uv run lumio validate tests/fixtures/valid   # smoke-test the SDK against the sample KB
-uv run lumio serve --port 8000               # serve the web app (Chat, Library, Owner workspace)
+uv run lumio serve --port 8000               # serve the web app (Chat, Reading Room, Owner workspace)
 ```
 
 See [Development](#development) for tests, linting, and codebase layout.
@@ -146,7 +149,7 @@ lumio validate <kb-path>                          # exit 0 if valid, 1 otherwise
 lumio retrieve <kb-path> "<query>" [--limit N]    # lexical/frontmatter/graph retrieval
 lumio ask <kb-path> "<question>"                  # cited answer via the Agent Runtime
 lumio sync <source> "<query>" --working-dir <path>  # sync a storage source, then retrieve
-lumio serve [--host HOST] [--port PORT]          # run the web app (Chat /chat, Library /kb, Owner /admin)
+lumio serve [--host HOST] [--port PORT]          # run the web app (Chat /chat, Reading Room /kb, Owner /admin)
 ```
 
 All commands work offline against any valid KB; `ask` uses the FakeProvider
@@ -199,8 +202,8 @@ Role gates are enforced as middleware.
 | `GET /health` | _(none)_ | Liveness probe. |
 | `GET/POST /setup` | _(first-run only)_ | Create the Owner account; disabled once one exists. |
 | `GET/POST /login` · `POST /logout` | _(auth)_ | Session login / logout. |
-| `GET/POST /chat` · `POST /chat/ask` · `GET /chat/threads` · `GET /chat/threads/{id}` | Reader | Chat UI + cited answer with retrieval trace. Threads persist Reader-owned question/answer exchanges; list and reopen your own. |
-| `GET /kb/export` | Reader | Export the compiled wiki as a Markdown bundle (raw sources excluded). |
+| `GET/POST /chat` · `POST /chat/ask` · `GET /chat/reading-room` · `GET /chat/threads` · `GET /chat/threads/{id}` | Reader | Chat + Citation Workspace: cited answer with retrieval trace. Selecting a Citation opens the cited Compiled Page in the Reading Room column (or a responsive sheet on narrower displays); the page and cited range are URL-addressable and survive reload, Back/Forward, and shared deep links. |
+| `GET /kb` · `GET /kb/page/{title}` · `GET /kb/export` | Reader | Reading Room: browse published Compiled Pages, deterministic lexical search (title, alias, tag, summary, body) with prev/next ranked-result navigation, full-width standalone document reading, and Markdown export (raw sources excluded). No chat composer or generated answer on the standalone surface. |
 | `POST /v1/chat/completions` | Reader | OpenAI-compatible endpoint; same retrieval, citation, refusal, and guardrails as `/chat`. Returns a `lumio` extension block with citations, trace, and `covered`. |
 | `POST /ingest` · `GET /ingest/proposals` · `GET /ingest/proposals/{id}` · `POST /ingest/proposals/{id}/{publish,discard}` · `POST /ingest/publish` · `GET /ingest/write-mode` | Maintainer | Ingest workflow: stage → review → publish (or direct-write). |
 | `GET/POST /admin/users` · `POST /admin/write-mode` · `GET/POST /admin/storage-mode` · `GET /admin/audit` | Owner | User/role management, write-mode, storage-mode, audit log. |
@@ -287,6 +290,17 @@ remains framework-independent (ADR-0001, ADR-0002).
   Maintainer ingest (upload → proposal → review → publish/discard, plus
   direct-write), Owner administration (users/roles, write-mode, storage-mode, audit),
   KB export.
+- **Reading Room** — the unified Reader surface for trusted Compiled Pages, in
+  three presentations that share one document renderer: a persistent chat-side
+  evidence column (opens from a Citation, highlights the cited line range,
+  survives later questions, and is URL-addressable so reload, Back/Forward,
+  and shared deep links restore the same page and range), a focus-managed
+  responsive sheet over chat when the content area cannot fit two readable
+  columns, and a standalone chat-free destination at `/kb` for browsing,
+  deterministic lexical search (title, alias, tag, summary, body), and
+  full-width reading with ranked prev/next navigation. Auth and Visibility are
+  enforced at every presentation; temporary Conversation Sources never appear
+  there. Existing `/kb` and `/kb/page/{title}` links remain stable.
 - **Private document chat** — Readers attach private text/Markdown/PDF/DOCX
   files to a chat session (add button or drag/drop), cite them as "This chat"
   alongside the Knowledge Base, choose retrieval scope, and submit a file for

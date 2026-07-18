@@ -121,7 +121,7 @@ _Avoid_: generated file, cache file.
 ### Platform roles and guardrails
 
 **Reader / Maintainer / Owner**:
-The three Lumio roles. Reader asks questions and views citations. Maintainer runs ingest and reviews staged changes. Owner configures storage, auth, model provider, write mode, secrets, and users.
+The three Lumio roles. Reader asks questions and views citations. Maintainer runs ingest, reviews staged changes, and administers Reader accounts only (cannot see or target Owner/Maintainer accounts, themselves, or any role assignment). Owner configures storage, auth, model provider, write mode, secrets, and all accounts and roles. Owner is a first-run role created only through setup; the account-administration surface can never create, promote to, update, or delete an Owner.
 _Avoid_: user/admin/superuser (use the canonical role names).
 
 **Guardrails**:
@@ -149,10 +149,17 @@ Base. It is distinct from both a raw Knowledge Source used by ingest and a
 published Compiled Page.
 
 **Reading Room**:
-An inline evidence-inspection state opened from a Citation or Compiled Page.
-It keeps the chat thread available while promoting source text, cited line
-ranges, and page- or passage-grounded follow-up questions.
-_Avoid_: document viewer, article view, citation popup.
+The unified Reader surface for browsing, searching, and reading published
+Compiled Pages, presented three ways from one shared document-rendering module:
+a persistent chat-side evidence column opened from a Citation (it keeps the
+chat thread available while promoting source text, cited line ranges, and
+page- or passage-grounded follow-up questions), a focus-managed responsive
+sheet over chat when the content area cannot fit two readable columns, and a
+standalone chat-free destination for browse, deterministic lexical search, and
+full-width reading. Selecting a Citation, asking another question, and the
+column's URL/history state are all explicit Reader actions.
+_Avoid_: document viewer, article view, citation popup, Library (the retired
+Reader browse/reading concept; stable `/kb` routes remain for compatibility).
 
 **Constellation**:
 A contextual Relationship lens seeded from an answer, Citation, Compiled Page,
