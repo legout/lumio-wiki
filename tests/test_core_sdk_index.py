@@ -16,6 +16,7 @@ from lumio.core import (
     is_fresh,
     load_knowledge_base,
 )
+from tests.retrieval_testutil import build_lancedb_kb
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -47,14 +48,14 @@ def test_rebuilding_restores_freshness():
         shutil.copytree(FIXTURES / "valid", source)
 
         kb, _ = load_knowledge_base(source)
-        kb = kb.build_index(index_dir)
+        kb = build_lancedb_kb(kb, index_dir)
         assert is_fresh(kb.stored_fingerprint(), fingerprint_sources(source))
 
         overview = source / "overview.md"
         overview.write_text(overview.read_text() + "\n")
         assert not is_fresh(kb.stored_fingerprint(), fingerprint_sources(source))
 
-        kb = kb.build_index(index_dir)
+        kb = build_lancedb_kb(kb, index_dir)
         assert is_fresh(kb.stored_fingerprint(), fingerprint_sources(source))
 
 
@@ -65,12 +66,12 @@ def test_rebuilding_from_source_reproduces_index():
         shutil.copytree(FIXTURES / "valid", source)
 
         kb, _ = load_knowledge_base(source)
-        kb = kb.build_index(index_dir)
+        kb = build_lancedb_kb(kb, index_dir)
         before = kb.retrieve("Lumio uses LanceDB", limit=5)
         assert before
 
         shutil.rmtree(index_dir)
-        kb = kb.build_index(index_dir)
+        kb = build_lancedb_kb(kb, index_dir)
         after = kb.retrieve("Lumio uses LanceDB", limit=5)
         assert after
 
@@ -140,7 +141,7 @@ def test_retrieve_lexical_returns_cited_results():
 
     with tempfile.TemporaryDirectory() as tmp:
         index_dir = Path(tmp)
-        kb = kb.build_index(index_dir)
+        kb = build_lancedb_kb(kb, index_dir)
         results = kb.retrieve("Lumio uses LanceDB", limit=5)
 
     assert len(results) >= 1
@@ -160,7 +161,7 @@ def test_retrieve_unknown_fact_returns_no_results():
     kb, _ = load_knowledge_base(FIXTURES / "valid")
     with tempfile.TemporaryDirectory() as tmp:
         index_dir = Path(tmp)
-        kb = kb.build_index(index_dir)
+        kb = build_lancedb_kb(kb, index_dir)
         results = kb.retrieve("banana", limit=5)
     assert results == []
 
@@ -169,7 +170,7 @@ def test_retrieval_result_source_type_is_free_string():
     kb, _ = load_knowledge_base(FIXTURES / "valid")
     with tempfile.TemporaryDirectory() as tmp:
         index_dir = Path(tmp)
-        kb = kb.build_index(index_dir)
+        kb = build_lancedb_kb(kb, index_dir)
         results = kb.retrieve("Lumio uses LanceDB", limit=5)
     assert results
     assert all(isinstance(r.evidence.source_type, str) for r in results)
@@ -305,3 +306,18 @@ def test_page_search_normalizes_empty_and_rejects_excessive_queries():
         assert "too long" in str(exc)
     else:
         raise AssertionError("expected excessive query to fail safely")
+
+
+def test_lancedb_adapter_retrieve_via_kb_slot():
+    from lumio.core.index import LanceDBRetrievalAdapter
+
+    kb, report = load_knowledge_base(FIXTURES / "valid")
+    assert report.is_valid
+    with tempfile.TemporaryDirectory() as tmp:
+        kb = kb.build_index(tmp, retrieval=LanceDBRetrievalAdapter())
+        results = kb.retrieve("Lumio uses LanceDB", limit=5)
+    assert results
+    details = " ".join(s.detail for r in results for s in r.trace.stages)
+    assert "LanceDB" in details or "BM25" in details or any(
+        "BM25" in r.reason for r in results
+    )
