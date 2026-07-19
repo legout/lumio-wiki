@@ -4,9 +4,10 @@ The canonical reference for a Lumio **Compiled Page**: the Markdown + YAML
 frontmatter shape the Core SDK loads, validates, indexes, and retrieves from.
 
 This document mirrors the validation rules enforced in
-`src/lumio/core/knowledge_base.py` and the record types in
-`src/lumio/core/records.py`. When they disagree, **the code is correct** —
-update this page to match. For the *language* behind these terms (what a
+`packages/lumio-wiki/src/lumio_wiki/knowledge_base.py` and the record types in
+`packages/lumio-wiki/src/lumio_wiki/records.py`. When they disagree, **the code
+is correct** — update this page to match.
+For the *language* behind these terms (what a
 Compiled Page, Source, or Relationship *means*), see
 [`CONTEXT.md`](../CONTEXT.md).
 

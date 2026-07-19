@@ -6,6 +6,12 @@ resolution-markers = [
     "sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "lumio",
+    "lumio-wiki",
+]
+
 [[package]]
 name = "aiofiles"
 version = "25.1.0"
@@ -687,6 +693,7 @@ dependencies = [
     { name = "gitpython" },
     { name = "lancedb" },
     { name = "liteparse" },
+    { name = "lumio-wiki" },
     { name = "markitdown", extra = ["docx"] },
     { name = "msgspec", extra = ["yaml"] },
     { name = "openai" },
@@ -713,6 +720,7 @@ requires-dist = [
     { name = "gitpython", specifier = ">=3.1.0" },
     { name = "lancedb", specifier = ">=0.34.0" },
     { name = "liteparse", specifier = ">=2.4.0" },
+    { name = "lumio-wiki", editable = "packages/lumio-wiki" },
     { name = "markitdown", extras = ["docx"], specifier = ">=0.1.6" },
     { name = "msgspec", extras = ["yaml"], specifier = ">=0.21.1" },
     { name = "openai", specifier = ">=1.40.0" },
@@ -730,6 +738,17 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "ruff", specifier = ">=0.5.0" },
 ]
+
+[[package]]
+name = "lumio-wiki"
+version = "0.1.1"
+source = { editable = "packages/lumio-wiki" }
+dependencies = [
+    { name = "msgspec", extra = ["yaml"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "msgspec", extras = ["yaml"], specifier = ">=0.21.1" }]
 
 [[package]]
 name = "lxml"

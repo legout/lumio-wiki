@@ -27,6 +27,8 @@ For the *why* and the vision, read the domain docs — this README documents
   - [Operator / Owner — deploy with Docker](#operator--owner--deploy-with-docker)
   - [Reader / Maintainer — use the web app](#reader--maintainer--use-the-web-app)
   - [Developer — run locally](#developer--run-locally)
+  - [Coding agent / library user — install the portable foundation](#coding-agent--library-user--install-the-portable-foundation)
+  - [Temporary Core SDK compatibility](#temporary-core-sdk-compatibility)
 - [Configuration](#configuration)
 - [CLI reference](#cli-reference)
 - [Knowledge Base format](#knowledge-base-format)
@@ -39,11 +41,12 @@ For the *why* and the vision, read the domain docs — this README documents
 
 ## Quick start
 
-Lumio has three audiences. Pick yours.
+Lumio has four audiences. Pick yours.
 
 - **Operator / Owner** — deploy and configure the app (Docker-first).
 - **Reader / Maintainer** — ask questions, review ingest, publish (web UI).
 - **Developer** — extend the Core SDK, runtime, or app.
+- **Coding agent / library user** — install the portable Knowledge Base foundation.
 
 ### Operator / Owner — deploy with Docker
 
@@ -106,6 +109,31 @@ uv run lumio serve --port 8000               # serve the web app (Chat, Reading 
 ```
 
 See [Development](#development) for tests, linting, and codebase layout.
+
+### Coding agent / library user — install the portable foundation
+
+`lumio-wiki` is an independently installable, model-free wheel for loading,
+validating, fingerprinting, searching, reading, relating, traversing, and
+regenerating portable Knowledge Base artifacts:
+
+```bash
+pip install lumio-wiki
+python -c "from lumio_wiki import load_knowledge_base; print(load_knowledge_base('tests/fixtures/valid')[1])"
+```
+
+The base wheel depends only on `msgspec[yaml]`; it does not install the web
+application, LanceDB/PyArrow, Stario/Piccolo, OpenAI, LiteParse, or MarkItDown.
+The existing `lumio` distribution remains the deployable application and has an
+explicit workspace dependency on `lumio-wiki`.
+
+### Temporary Core SDK compatibility
+
+Canonical Knowledge Base behavior now lives under `lumio_wiki`. Existing
+`lumio.core` and `lumio.core.<module>` imports are temporary pre-1.0 re-exports
+so current consumers continue to work during migration. New consumers must
+import from `lumio_wiki`. The compatibility surface owns no duplicate
+implementation and will be removed only through a separately documented
+migration issue.
 
 ## Configuration
 
@@ -236,6 +264,9 @@ orchestrator's secret mechanism.
 
 ```bash
 uv sync                              # install (dev extras included)
+uv lock --check                      # verify the workspace lockfile is current
+uv build --package lumio-wiki --wheel  # build the portable foundation wheel
+uv run pytest -q packages/lumio-wiki/tests  # test the portable foundation directly
 uv run pytest -q -n 4                # full test suite (four parallel workers)
 uv run pytest -q tests/test_chat.py  # focused tests stay serial
 uv run ruff check .                  # lint
@@ -262,8 +293,10 @@ uses; agent/runtime evals use the **FakeProvider**, never a live LLM call.
 ### Codebase layout
 
 ```
+packages/lumio-wiki/src/lumio_wiki/
+│                    # Canonical portable Knowledge Base owner
 src/lumio/
-├── core/            # Core SDK (framework-independent): records, knowledge_base, index
+├── core/            # Temporary compatibility re-exports + app-owned index.py
 ├── runtime.py       # Agent Runtime: classify → retrieve → synthesize → cite → refuse → trace
 ├── app.py           # Chat Gateway + web UI (Stario routes, auth, guardrails)
 ├── guardrails.py    # Citation-required / not-covered / out-of-scope enforcement
@@ -277,8 +310,9 @@ src/lumio/
 └── cli.py           # `lumio` CLI: validate / retrieve / ask / sync
 ```
 
-The Stario/Piccolo-specific code stays inside the app boundary; the Core SDK
-remains framework-independent (ADR-0001, ADR-0002).
+The canonical `lumio_wiki` package remains framework-independent. The
+Stario/Piccolo-specific code and retrieval index stay inside the app boundary;
+`lumio.core` is a temporary compatibility surface (ADR-0001, ADR-0002).
 
 ## What works today
 

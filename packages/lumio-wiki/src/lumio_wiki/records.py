@@ -1,0 +1,249 @@
+"""Domain records for the Lumio Core SDK."""
+
+import msgspec
+
+
+class Source(msgspec.Struct, frozen=True):
+    """A provenance reference for a Compiled Page."""
+
+    id: str = ""
+    title: str = ""
+    url: str | None = None
+
+
+class RegistryEntry(msgspec.Struct, frozen=True):
+    """A compact, navigable summary of a Compiled Page for registry views."""
+
+    title: str = ""
+    aliases: list[str] = msgspec.field(default_factory=list)
+    tags: list[str] = msgspec.field(default_factory=list)
+    summary: str = ""
+    lifecycle: str = ""
+    visibility: str = ""
+    path: str = ""
+    source_count: int = 0
+    relationship_count: int = 0
+
+
+class Relationship(msgspec.Struct, frozen=True):
+    """A typed, directed edge to another Compiled Page."""
+
+    target: str = ""
+    type: str = ""
+
+
+class CompiledPage(msgspec.Struct, frozen=True):
+    """A loaded Markdown page from a Knowledge Base."""
+
+    path: str
+    title: str = ""
+    aliases: list[str] = msgspec.field(default_factory=list)
+    tags: list[str] = msgspec.field(default_factory=list)
+    summary: str | None = None
+    lifecycle: str | None = None
+    visibility: str | None = None
+    sources: list[Source] = msgspec.field(default_factory=list)
+    relationships: list[Relationship] = msgspec.field(default_factory=list)
+    synthetic: bool = False
+    body: str = ""
+    body_start_line: int = 1
+
+
+class ValidationIssue(msgspec.Struct, frozen=True):
+    """A single validation problem, naming the file and field involved."""
+
+    file: str
+    field: str
+    message: str
+    severity: str = "error"
+
+
+class ValidationReport(msgspec.Struct, frozen=True):
+    """Aggregated validation result for a Knowledge Base."""
+
+    issues: list[ValidationIssue] = msgspec.field(default_factory=list)
+
+    @property
+    def is_valid(self) -> bool:
+        return not any(issue.severity == "error" for issue in self.issues)
+
+    def __str__(self) -> str:
+        if self.is_valid:
+            return "Knowledge base is valid."
+        return "\n".join(
+            (
+                f"WARNING: {issue.file}: {issue.field}: {issue.message}"
+                if issue.severity == "warning"
+                else f"{issue.file}: {issue.field}: {issue.message}"
+            )
+            for issue in self.issues
+        )
+
+
+
+
+class SourceFileDigest(msgspec.Struct, frozen=True):
+    """A single source file path and its deterministic digest."""
+
+    path: str
+    digest: str
+
+
+class SourceFingerprint(msgspec.Struct, frozen=True):
+    """Deterministic digest of a Knowledge Base source tree."""
+
+    digest: str
+    sources: list[SourceFileDigest] = msgspec.field(default_factory=list)
+
+
+class TraceStage(msgspec.Struct, frozen=True):
+    """One named stage in a Retrieval Trace."""
+
+    name: str
+    detail: str
+
+
+class RetrievalTrace(msgspec.Struct, frozen=True):
+    """Structured explanation of the retrieval stages that produced a result."""
+
+    stages: list[TraceStage] = msgspec.field(default_factory=list)
+
+
+
+class EmbeddingModelInfo(msgspec.Struct, frozen=True):
+    """Identity/version/dimension of the embedding model backing a vector index.
+
+    Persisted alongside the derived index so the Core SDK can detect when the
+    configured embedding model changed and rebuild vectors from source (#75).
+    """
+
+    name: str
+    dimension: int
+
+
+class Evidence(msgspec.Struct, frozen=True):
+    """A retrievable unit derived from a Compiled Page."""
+
+    id: str
+    source_type: str
+    page_path: str
+    page_title: str
+    section_title: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    text: str = ""
+
+
+class Citation(msgspec.Struct, frozen=True):
+    """Metadata that lets an answer point back to its source content.
+
+    ``origin`` distinguishes temporary Chat Context evidence from a published
+    Compiled Page without changing the citation contract shared by clients.
+    ``page_number`` carries an exact document page when the converter supplies
+    one (e.g. a PDF page). It is never invented: when absent, the citation
+    falls back to a stable ``section_title`` instead (#35).
+    """
+
+    page_title: str
+    relative_path: str
+    source: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    origin: str = "knowledge_base"
+    section_title: str | None = None
+    page_number: int | None = None
+
+
+class RetrievalResult(msgspec.Struct, frozen=True):
+    """A citation-ready retrieval result."""
+
+    evidence: Evidence
+    citation: Citation
+    snippet: str
+    score: float
+    reason: str
+    trace: RetrievalTrace
+
+
+class PageSearchResult(msgspec.Struct, frozen=True):
+    """A deterministic, page-oriented lexical search result."""
+
+    page: CompiledPage
+    score: float
+    matched_fields: list[str] = msgspec.field(default_factory=list)
+    matched_terms: list[str] = msgspec.field(default_factory=list)
+    snippet: str = ""
+
+
+class HealthReport(msgspec.Struct, frozen=True):
+    """Deterministic, zero-LLM summary of Knowledge Base structural health."""
+
+    stale_index: bool = False
+    missing_summaries: list[str] = msgspec.field(default_factory=list)
+    broken_relationships: list[str] = msgspec.field(default_factory=list)
+    duplicate_aliases: list[str] = msgspec.field(default_factory=list)
+    duplicate_titles: list[str] = msgspec.field(default_factory=list)
+    invalid_fields: list[str] = msgspec.field(default_factory=list)
+    unknown_relationship_types: list[str] = msgspec.field(default_factory=list)
+    is_healthy: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Base Control File and reserved published artifacts (issue #77).
+#
+# A categorized Knowledge Base carries a versioned root Control File
+# (``lumio.yaml``) that declares KB-local Content Categories and Maintainer-
+# pinned Hot Index titles. It is portable with the KB but is neither a Compiled
+# Page nor an OKF concept: it is a Lumio-native content control. Publication
+# regenerates the reserved Navigation Index hierarchy and Hot Index and appends
+# an append-only Activity Log entry. See ADR-0008.
+# ---------------------------------------------------------------------------
+
+
+class ContentCategory(msgspec.Struct, frozen=True):
+    """A KB-local navigation category declared by the Control File.
+
+    Category is broad navigation routing; a Compiled Page's free-form ``type``
+    is specific semantics. The seeded catalog lives in
+    :func:`lumio_wiki.knowledge_base.SEED_CATEGORY_CATALOG`.
+    """
+
+    name: str
+    description: str | None = None
+
+
+class HotIndexPin(msgspec.Struct, frozen=True):
+    """A Maintainer-pinned Hot Index entry, expressed by Canonical Page Title."""
+
+    title: str
+    note: str | None = None
+
+
+class KnowledgeBaseControlFile(msgspec.Struct, frozen=True):
+    """The versioned root Knowledge Base Control File (``lumio.yaml``).
+
+    Carries the controlled Content Category catalog and Maintainer-pinned Hot
+    Index titles. Travels with the KB; validated as a KB-local content control,
+    not a Compiled Page or an application-only setting. A Knowledge Base with
+    no Control File loads in Legacy Flat Mode (ADR-0008).
+    """
+
+    version: int
+    categories: list[ContentCategory] = msgspec.field(default_factory=list)
+    hot_index: list[HotIndexPin] = msgspec.field(default_factory=list)
+    mode: str = "categorized"
+    path: str = "lumio.yaml"
+
+
+class ActivityLogEntry(msgspec.Struct, frozen=True):
+    """One grep-friendly Activity Log line recording a published KB transition.
+
+    The portable Activity Log (reserved ``log.md``) records only successful
+    published Knowledge Base state transitions. It never carries Reader
+    queries, failed or discarded proposals, unpublished uploads, or private
+    audit events (ADR-0008).
+    """
+
+    timestamp: str
+    operation: str
+    description: str
