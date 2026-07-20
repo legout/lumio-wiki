@@ -36,6 +36,7 @@ no OpenAI client is required for text and Markdown ingestion.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -275,7 +276,12 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         converted_by=normalized.converted_by,
         source_hash=normalized.source_hash,
     )
-    distilled = PassthroughMarkdownDistiller().distill(normalized)
+    distiller = _build_distiller(args)
+    if kb.control is not None:
+        categories = [category.name for category in kb.control.categories]
+    else:
+        categories = None
+    distilled = distiller.distill(normalized, categories=categories)
     # Document sources produce extracted text, not authored page Markdown.
     # Wrap it in minimal frontmatter so the Proposal Pipeline can process it
     # (same logic as create_proposal_without_provider, issue #100 AC3).
@@ -447,6 +453,48 @@ def _detect_module(name: str) -> bool:
         return True
     except ImportError:
         return False
+
+def _build_distiller(args: argparse.Namespace):
+    """Construct the Distiller selected by ``--distiller`` (issue #101).
+
+    ``passthrough`` (default) uses the model-free
+    :class:`PassthroughMarkdownDistiller` so the base wheel's journey is
+    unchanged. ``llm`` uses the unattended :class:`OpenAIDistiller` behind the
+    ``[llm]`` extra; the OpenAI client is configured from the standard
+    ``LUMIO_PROVIDER_*`` environment variables so an operator points the CLI
+    at an OpenAI-compatible endpoint without extra CLI plumbing. When the
+    ``[llm]`` extra is absent the actionable error names the exact install
+    command (PRD user story 18).
+    """
+    choice = getattr(args, "distiller", None) or "passthrough"
+    if choice == "passthrough":
+        return PassthroughMarkdownDistiller()
+    if choice == "llm":
+        from lumio_wiki import OpenAIDistiller, OpenAIDistillerError
+
+        # Detect the [llm] extra BEFORE validating provider configuration so a
+        # base-install request for unattended distillation fails actionably
+        # with the exact install command (ADR-0010, PRD user story 18), never
+        # a masked missing-config error that hides the required extra.
+        if not _detect_module("openai"):
+            raise CliError(
+                "cannot use --distiller llm with the base install; "
+                "install the unattended-distillation extra:\n"
+                "  pip install 'lumio-wiki[llm]'"
+            )
+        base_url = os.environ.get("LUMIO_PROVIDER_BASE_URL") or None
+        model = os.environ.get("LUMIO_PROVIDER_MODEL")
+        api_key = os.environ.get("LUMIO_PROVIDER_API_KEY") or None
+        if not model:
+            raise CliError(
+                "--distiller llm requires LUMIO_PROVIDER_MODEL "
+                "(set LUMIO_PROVIDER_BASE_URL / LUMIO_PROVIDER_API_KEY for an "
+                "OpenAI-compatible endpoint)."
+            )
+        try:
+            return OpenAIDistiller(model=model, base_url=base_url, api_key=api_key)
+        except OpenAIDistillerError as exc:
+            raise CliError(str(exc)) from exc
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -662,9 +710,11 @@ def build_parser() -> argparse.ArgumentParser:
         "ingest",
         help="Ingest a text or Markdown Knowledge Source into a staged proposal.",
         description=(
-            "Read a text or Markdown file, distill it through the model-free "
-            "PassthroughMarkdownDistiller (the host coding agent is the Distiller), "
-            "and stage a reviewable Ingest Proposal. No OpenAI client required."
+            "Read a text or Markdown file, distill it, and stage a reviewable "
+            "Ingest Proposal. The default ``passthrough`` Distiller is "
+            "model-free (the host coding agent is the Distiller); "
+            "``--distiller llm`` uses the unattended OpenAI-compatible "
+            "Distiller behind the ``lumio-wiki[llm]`` extra (issue #101)."
         ),
     )
     _add_kb_argument(ingest_parser)
@@ -674,6 +724,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Override content type (default: inferred from file extension).",
+    )
+    ingest_parser.add_argument(
+        "--distiller",
+        type=str,
+        default="passthrough",
+        choices=["passthrough", "llm"],
+        help=(
+            "Distiller for the source: 'passthrough' (default, model-free) or "
+            "'llm' (unattended OpenAI-compatible; requires lumio-wiki[llm] and "
+            "LUMIO_PROVIDER_* env vars)."
+        ),
     )
     _add_ingest_dir_argument(ingest_parser)
     ingest_parser.set_defaults(func=_cmd_ingest)

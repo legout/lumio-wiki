@@ -2,6 +2,8 @@
 
 from lumio_wiki.distiller import (  # noqa: I001
     Distiller,
+    OpenAIDistiller,
+    OpenAIDistillerError,
     PassthroughMarkdownDistiller,
 )
 from lumio_wiki.embeddings import (
@@ -200,6 +202,8 @@ __all__ = [
     "MissingDocumentExtraError",
     "NormalizedSection",
     "NormalizedSource",
+    "OpenAIDistiller",
+    "OpenAIDistillerError",
     "OKF_PROFILE1_QUERY",
     "OKF_PROFILE_NAME",
     "OKF_PROFILE_VERSION",

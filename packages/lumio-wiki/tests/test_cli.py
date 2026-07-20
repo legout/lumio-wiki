@@ -328,6 +328,91 @@ def test_lumio_dot_dir_does_not_pollute_fingerprint(kb_root: Path, source_file: 
 
 
 # ---------------------------------------------------------------------------
+# ingest --distiller (issue #101)
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_distiller_passthrough_is_the_default(kb_root: Path, source_file: Path):
+    """The default distiller is the model-free passthrough (unchanged journey)."""
+    parser = build_parser()
+    args = parser.parse_args(["ingest", str(kb_root), str(source_file)])
+    assert args.distiller == "passthrough"
+
+
+def test_ingest_distiller_llm_without_extra_fails_actionably(
+    kb_root: Path, source_file: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+):
+    """AC4: requesting the llm distiller without the extra names the exact install.
+
+    The base install (no ``openai`` module) must fail with the exact install
+    command before any provider configuration is validated, so a missing extra
+    is never masked by a missing-config error (ADR-0010, PRD user story 18).
+    """
+    # Ensure the extra is reported as absent (the dev env may or may not have
+    # openai installed; force the missing-extra path deterministically).
+    monkeypatch.setattr("lumio_wiki.cli._detect_module", lambda name: False)
+    monkeypatch.setenv("LUMIO_PROVIDER_MODEL", "fake-model")
+    rc = main(["ingest", str(kb_root), str(source_file), "--distiller", "llm"])
+    assert rc == 2  # CliError exit code
+    err = capsys.readouterr().err
+    assert "pip install 'lumio-wiki[llm]'" in err, (
+        "the missing-extra error must name the exact install command"
+    )
+
+
+def test_ingest_distiller_llm_with_fake_provider_stages_proposal(
+    kb_root: Path,
+    source_file: Path,
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """AC2/AC3: ``--distiller llm`` with a fake provider stages a proposal."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    provider_md = (
+        "---\n"
+        'title: "LLM CLI Page"\n'
+        "aliases: []\n"
+        "tags:\n"
+        "  - \"llm\"\n"
+        "summary: \"Distilled via the llm extra.\"\n"
+        "lifecycle: \"draft\"\n"
+        "visibility: \"internal\"\n"
+        "sources:\n"
+        "  - id: \"llm\"\n"
+        "    title: \"LLM source\"\n"
+        "relationships: []\n"
+        "---\n\n# LLM CLI Page\n\nBody.\n"
+    )
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=provider_md))]
+    )
+
+    # Bypass real OpenAI client construction by patching the Distiller factory.
+    import lumio_wiki
+
+    real_openai_distiller = lumio_wiki.OpenAIDistiller
+
+    class _StubDistiller(real_openai_distiller):
+        def __init__(self, **kwargs):
+            filtered = {
+                k: v for k, v in kwargs.items()
+                if k not in {"model", "base_url", "api_key"}
+            }
+            super().__init__(model="fake", client=fake_client, **filtered)
+
+    monkeypatch.setattr(lumio_wiki, "OpenAIDistiller", _StubDistiller)
+    monkeypatch.setenv("LUMIO_PROVIDER_MODEL", "fake-model")
+    rc = main(["ingest", str(kb_root), str(source_file), "--distiller", "llm"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Staged proposal" in out
+    assert "LLM CLI Page" in out
+
+
+# ---------------------------------------------------------------------------
 # health + doctor
 # ---------------------------------------------------------------------------
 
