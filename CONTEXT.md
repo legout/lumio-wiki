@@ -53,8 +53,12 @@ A provenance reference on a Compiled Page (an identifier, a title, and an option
 _Avoid_: reference, link.
 
 **Relationship**:
-A typed, directed edge from one Compiled Page to another, expressed in frontmatter by canonical title.
+A typed, directed edge from one Compiled Page to another, expressed in frontmatter by canonical title. It is a reviewed semantic claim, not an ordinary body link.
 _Avoid_: link (too generic), connection.
+
+**Extracted Reference**:
+A deterministic, non-canonical directed reference derived from an internal Markdown link in a Compiled Page body. It supports navigation and context discovery but does not assert Relationship semantics.
+_Avoid_: inferred relationship, automatic relationship, link edge.
 
 ### Retrieval
 
@@ -71,8 +75,12 @@ A citation-ready object the Core SDK returns: evidence identity, citation, snipp
 _Avoid_: hit, match.
 
 **Retrieval Trace**:
-A structured explanation of the retrieval stages (validation, lexical search, ranking) that produced a result. Exposed for admin and power-user inspection.
+A structured explanation of the retrieval stages (validation, lexical search, graph expansion, ranking) that produced a result. Exposed for admin and power-user inspection.
 _Avoid_: debug log, explanation.
+
+**Discovery Graph**:
+The derived graph used to find context, containing canonical Relationships plus Extracted References. Its topology selects Evidence to inspect; an Extracted Reference is never Evidence and cannot support an answer claim by itself.
+_Avoid_: knowledge graph (ambiguous), assertion graph, link graph.
 
 **Index Freshness**:
 Whether the derived index still reflects the current source Markdown. Lumio detects staleness after a sync or source change and rebuilds from source.

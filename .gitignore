@@ -16,3 +16,6 @@ build/
 *.sqlite
 *.sqlite3
 *.sqlite-*
+
+# Local runtime state (indexes, mode files, health)
+data/
