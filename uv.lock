@@ -777,11 +777,32 @@ dependencies = [
     { name = "msgspec", extra = ["yaml"] },
 ]
 
+[package.optional-dependencies]
+all = [
+    { name = "liteparse" },
+    { name = "markitdown", extra = ["docx"] },
+    { name = "openai" },
+]
+documents = [
+    { name = "liteparse" },
+    { name = "markitdown", extra = ["docx"] },
+]
+llm = [
+    { name = "openai" },
+]
+
 [package.metadata]
 requires-dist = [
+    { name = "liteparse", marker = "extra == 'all'", specifier = ">=2.4.0" },
+    { name = "liteparse", marker = "extra == 'documents'", specifier = ">=2.4.0" },
+    { name = "markitdown", extras = ["docx"], marker = "extra == 'all'", specifier = ">=0.1.6" },
+    { name = "markitdown", extras = ["docx"], marker = "extra == 'documents'", specifier = ">=0.1.6" },
     { name = "msgpack", specifier = ">=1.0" },
     { name = "msgspec", extras = ["yaml"], specifier = ">=0.21.1" },
+    { name = "openai", marker = "extra == 'all'", specifier = ">=1.40.0" },
+    { name = "openai", marker = "extra == 'llm'", specifier = ">=1.40.0" },
 ]
+provides-extras = ["documents", "llm", "all"]
 
 [[package]]
 name = "lxml"

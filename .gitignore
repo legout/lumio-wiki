@@ -18,4 +18,4 @@ build/
 *.sqlite-*
 
 # Local runtime state (indexes, mode files, health)
-data/
+/data/
