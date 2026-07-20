@@ -16,6 +16,7 @@ extra is absent (issue #101, AC1/AC4, PRD user story 18).
 
 from __future__ import annotations
 
+import importlib
 import time
 from typing import Any, Protocol, runtime_checkable
 
@@ -156,7 +157,7 @@ class OpenAIDistiller:
         when the ``[llm]`` extra is not installed (AC4).
         """
         try:
-            from openai import OpenAI  # type: ignore[import-not-found]
+            openai_module = importlib.import_module("openai")
         except ImportError as exc:
             raise OpenAIDistillerError(
                 f"cannot build the OpenAI client: {_LLM_EXTRA_HINT}"
@@ -166,7 +167,7 @@ class OpenAIDistiller:
             kwargs["base_url"] = self._base_url
         if self._api_key:
             kwargs["api_key"] = self._api_key
-        return OpenAI(**kwargs)
+        return openai_module.OpenAI(**kwargs)
 
     def distill(
         self, normalized: NormalizedSource, *, categories: list[str] | None = None

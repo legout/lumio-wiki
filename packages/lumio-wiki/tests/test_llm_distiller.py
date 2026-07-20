@@ -114,17 +114,21 @@ def test_openai_distiller_raises_actionable_error_when_openai_missing(monkeypatc
     ``OpenAIDistiller`` without an injected client must therefore raise an
     error that tells the user exactly what to install.
     """
-    # Simulate the base install where ``openai`` is absent.
-    import builtins
+    import importlib
 
-    real_import = builtins.__import__
+    # Simulate the base install where ``openai`` is absent. ``OpenAIDistiller``
+    # resolves the SDK lazily via ``importlib.import_module("openai")`` to
+    # satisfy the ADR-0010 source invariant (no top-level forbidden AST import),
+    # so we intercept that exact call rather than ``builtins.__import__`` (which
+    # ``importlib.import_module`` bypasses in CPython).
+    real_import_module = importlib.import_module
 
     def _block_openai(name, *args, **kwargs):
         if name == "openai":
             raise ImportError("simulated missing extra")
-        return real_import(name, *args, **kwargs)
+        return real_import_module(name, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, "__import__", _block_openai)
+    monkeypatch.setattr(importlib, "import_module", _block_openai)
     with pytest.raises(OpenAIDistillerError) as exc_info:
         OpenAIDistiller(model="fake-model")  # no client injected
     message = str(exc_info.value)
