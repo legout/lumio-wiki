@@ -1,12 +1,13 @@
 """Knowledge Base loading, validation, indexing, and retrieval."""
 
 import hashlib
+import heapq
 import os
 import re
 import tempfile
 import uuid
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -54,6 +55,64 @@ PREFERRED_RELATIONSHIP_TYPES = frozenset(
         "replaces",
     }
 )
+
+# ---------------------------------------------------------------------------
+# Public graph traversal seam (issue #106, ADR-0011).
+#
+# The canonical graph contains only reviewed, typed Relationships resolved by
+# Canonical Page Title. Traversal is direction-aware, cycle-safe, bounded by
+# explicit depth / expanded-edge / result limits, and restricted to a
+# caller-supplied authorized candidate page set so endpoint resolution and
+# expansion can never surface a page the caller has no visibility to. The
+# ``scope`` parameter is canonical-only here; ``discovery`` (canonical
+# Relationships plus Extracted References) is a known, reserved value populated
+# by a later task, so its signature is stable.
+# ---------------------------------------------------------------------------
+GRAPH_SCOPE_CANONICAL = "canonical"
+GRAPH_SCOPE_DISCOVERY = "discovery"
+GRAPH_SCOPE_VALUES = frozenset({GRAPH_SCOPE_CANONICAL, GRAPH_SCOPE_DISCOVERY})
+GRAPH_DIRECTION_OUTGOING = "outgoing"
+GRAPH_DIRECTION_INCOMING = "incoming"
+GRAPH_DIRECTION_BOTH = "both"
+GRAPH_DIRECTIONS = frozenset(
+    {GRAPH_DIRECTION_OUTGOING, GRAPH_DIRECTION_INCOMING, GRAPH_DIRECTION_BOTH}
+)
+# Default bounds keep traversal deterministic and terminating without caller
+# tuning. Depth is measured in Relationship hops from the start title.
+DEFAULT_GRAPH_MAX_DEPTH = 5
+DEFAULT_GRAPH_MAX_EDGES = 1000
+DEFAULT_GRAPH_MAX_RESULTS = 50
+
+
+def _require_graph_scope(scope: str) -> None:
+    """Validate the graph scope, isolating the not-yet-implemented discovery case."""
+    if scope == GRAPH_SCOPE_DISCOVERY:
+        raise NotImplementedError(
+            "discovery graph scope (Extracted References and the Discovery "
+            "Graph) is not available yet; it is populated by a later task "
+            "(ADR-0011). Use scope='canonical'."
+        )
+    if scope not in GRAPH_SCOPE_VALUES:
+        raise ValueError(
+            f"unknown graph scope {scope!r}; expected one of {sorted(GRAPH_SCOPE_VALUES)}"
+        )
+
+
+def _require_graph_direction(direction: str) -> None:
+    """Validate the traversal direction value."""
+    if direction not in GRAPH_DIRECTIONS:
+        raise ValueError(
+            f"unknown graph direction {direction!r}; expected one of "
+            f"{sorted(GRAPH_DIRECTIONS)}"
+        )
+
+
+def _require_non_negative_limit(name: str, value: int) -> None:
+    """Validate that a graph traversal limit is a non-negative integer."""
+    if value < 0:
+        raise ValueError(
+            f"{name} must be a non-negative integer, got {value}"
+        )
 
 # Navigation Index reserved derived-artifact semantics (issue #64).
 #
@@ -128,6 +187,30 @@ SEED_CATEGORY_CATALOG: list[ContentCategory] = [
         name="synthesis", description="Cross-source conclusions and synthesized knowledge."
     ),
 ]
+
+# ---------------------------------------------------------------------------
+# Extensible Content Category catalog (ADR-0009, issue #84).
+#
+# The category catalog is data, not a fixed enum: a KB's Control File may
+# declare additional slug-valid categories beyond the seed. When the
+# declaration is absent or empty the Core SDK applies ``SEED_CATEGORY_CATALOG``
+# as the default. Declared category names must:
+#
+#   * be valid slugs — lowercase ASCII letters, digits, and hyphens;
+#     beginning with a letter; 1..64 chars (``CATEGORY_SLUG_RE``);
+#   * be unique within the catalog (checked in the loader); and
+#   * not collide with reserved basenames/markers (``RESERVED_CATEGORY_NAMES``).
+#
+# Adding, renaming, or removing a category is an explicit, reviewed Maintainer
+# action expressed as a Control File change — never automatic (ADR-0009).
+# ---------------------------------------------------------------------------
+CATEGORY_MAX_LENGTH = 64
+CATEGORY_SLUG_RE = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
+# Category names that collide with reserved derived-artifact basenames
+# (``index``, ``hot``, ``log``) or the ``lumio`` marker system. A category
+# with one of these names would shadow a reserved path or marker and is
+# rejected (ADR-0007 and ADR-0009).
+RESERVED_CATEGORY_NAMES = frozenset({"index", "hot", "log", "lumio"})
 
 # Reserved Activity Log artifact: append-only portable history of successful
 # published Knowledge Base state transitions. Never regenerated or pruned; only
@@ -269,6 +352,203 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
                     queue.append((next_title, path + [next_title]))
 
         return None
+
+    # ------------------------------------------------------------------
+    # Public graph traversal seam (issue #106, ADR-0011).
+    #
+    # ``related_pages`` and ``shortest_path`` expose canonical-graph traversal
+    # that is direction-aware, cycle-safe, bounded, and restricted to a
+    # caller-supplied authorized candidate page set. They are the seam a later
+    # task populates with Extracted References (``scope="discovery"``); the
+    # legacy ``graph_path`` and ``related_from`` keep their existing behavior.
+    # ------------------------------------------------------------------
+
+    def related_pages(
+        self,
+        title: str,
+        *,
+        direction: str = GRAPH_DIRECTION_OUTGOING,
+        scope: str = GRAPH_SCOPE_CANONICAL,
+        candidate_titles: Iterable[str] | None = None,
+        relationship_type: str | None = None,
+        max_depth: int = 1,
+        max_edges: int = DEFAULT_GRAPH_MAX_EDGES,
+        max_results: int = DEFAULT_GRAPH_MAX_RESULTS,
+    ) -> list[str]:
+        """Return the bounded, authorized Canonical Page Titles related to ``title``.
+
+        Expands canonical-graph neighbors breadth-first up to ``max_depth``
+        Relationship hops, following ``direction`` (``"outgoing"``,
+        ``"incoming"``, or ``"both"``). Only ``scope="canonical"`` (typed
+        Relationships) is supported; ``"discovery"`` is reserved for Extracted
+        References and the Discovery Graph (ADR-0011) and is populated by a
+        later task.
+
+        Traversal operates ONLY over ``candidate_titles`` — the
+        already-authorized Canonical Page Titles the caller has visibility to.
+        Endpoint resolution and expansion never return a page outside that set;
+        when ``candidate_titles`` is ``None`` every loaded Compiled Page title
+        is the authorized universe. ``title`` itself is never included in the
+        result.
+
+        ``max_edges`` bounds the number of Relationship edges inspected/expanded
+        and ``max_results`` bounds the returned title count; both truncate
+        deterministically (results are sorted by Canonical Page Title).
+        ``max_depth``, ``max_edges``, and ``max_results`` must all be
+        non-negative. When ``title`` is not in the authorized candidate set the
+        result is empty.
+        """
+        _require_graph_scope(scope)
+        _require_graph_direction(direction)
+        _require_non_negative_limit("max_depth", max_depth)
+        _require_non_negative_limit("max_edges", max_edges)
+        _require_non_negative_limit("max_results", max_results)
+        candidate = self._graph_candidate(candidate_titles)
+        if title not in candidate:
+            return []
+        neighbors = self._graph_neighbor_fn(direction)
+
+        visited = {title}
+        found: list[str] = []
+        frontier: deque[tuple[str, int]] = deque([(title, 0)])
+        edges_expanded = 0
+        while frontier:
+            current, depth = frontier.popleft()
+            if depth >= max_depth:
+                continue
+            # Iterate raw Relationship edges in deterministic order and debit
+            # the expanded-edge budget per ELIGIBLE edge inspected (after the
+            # relationship-type and candidate-set filters), not per unique
+            # endpoint. Parallel edges to the same endpoint each consume the
+            # budget; non-candidate / wrong-type / self edges are filtered in
+            # O(1) without expanding the graph.
+            for endpoint, rtype in neighbors(current):
+                if relationship_type is not None and rtype != relationship_type:
+                    continue
+                if endpoint == title or endpoint not in candidate:
+                    continue
+                edges_expanded += 1
+                if edges_expanded > max_edges:
+                    frontier.clear()
+                    break
+                if endpoint not in visited:
+                    visited.add(endpoint)
+                    found.append(endpoint)
+                    frontier.append((endpoint, depth + 1))
+
+        # Deterministic truncation: sort all discovered titles, then cap.
+        # max_results is validated non-negative above, so the slice always binds.
+        return sorted(found)[:max_results]
+
+    def shortest_path(
+        self,
+        source_title: str,
+        target_title: str,
+        *,
+        direction: str = GRAPH_DIRECTION_OUTGOING,
+        scope: str = GRAPH_SCOPE_CANONICAL,
+        candidate_titles: Iterable[str] | None = None,
+        max_depth: int = DEFAULT_GRAPH_MAX_DEPTH,
+        max_edges: int = DEFAULT_GRAPH_MAX_EDGES,
+    ) -> list[str] | None:
+        """Return the directed shortest path between two Canonical Page Titles.
+
+        Performs a cycle-safe breadth-first search over the canonical graph,
+        following ``direction`` (``"outgoing"``, ``"incoming"``, or
+        ``"both"``). ``"outgoing"`` follows Relationship source->target edges;
+        ``"incoming"`` follows them in reverse; ``"both"`` treats them as
+        undirected. Only ``scope="canonical"`` is supported here.
+
+        Traversal operates ONLY over ``candidate_titles``: both endpoints and
+        every intermediate title must be in the authorized set, or ``None`` is
+        returned. When ``candidate_titles`` is ``None`` every loaded Compiled
+        Page title is authorized. The path is bounded by ``max_depth`` hops and
+        ``max_edges`` expanded edges; ``[source_title]`` is returned when source
+        equals target (and is authorized). Tie-breaking is deterministic
+        (lexicographic neighbor order), so repeated loads of unchanged Compiled
+        Pages yield identical paths.
+        """
+        _require_graph_scope(scope)
+        _require_graph_direction(direction)
+        _require_non_negative_limit("max_depth", max_depth)
+        _require_non_negative_limit("max_edges", max_edges)
+        candidate = self._graph_candidate(candidate_titles)
+        if source_title == target_title:
+            return [source_title] if source_title in candidate else None
+        if source_title not in candidate or target_title not in candidate:
+            return None
+        neighbors = self._graph_neighbor_fn(direction)
+
+        visited = {source_title}
+        queue: deque[tuple[str, list[str]]] = deque(
+            [(source_title, [source_title])]
+        )
+        edges_expanded = 0
+        while queue:
+            current, path = queue.popleft()
+            if len(path) - 1 >= max_depth:
+                continue
+            # Debit the expanded-edge budget per ELIGIBLE edge inspected (after
+            # the candidate-set filter), not per unique endpoint.
+            # ``shortest_path`` does not filter by relationship type, so every
+            # candidate edge counts.
+            for endpoint, _rtype in neighbors(current):
+                if endpoint == current or endpoint not in candidate:
+                    continue
+                edges_expanded += 1
+                if edges_expanded > max_edges:
+                    return None
+                if endpoint == target_title:
+                    return path + [endpoint]
+                if endpoint not in visited:
+                    visited.add(endpoint)
+                    queue.append((endpoint, path + [endpoint]))
+        return None
+
+    def _graph_candidate(self, candidate_titles: Iterable[str] | None) -> frozenset[str]:
+        """Return the authorized candidate title set, defaulting to all titles."""
+        if candidate_titles is None:
+            return frozenset(
+                page.title for page in self.pages if page.title
+            )
+        return frozenset(candidate_titles)
+
+    def _graph_neighbor_fn(self, direction: str):
+        """Return a ``title -> iterable[(endpoint, relationship_type)]`` closure.
+
+        Yields the RAW canonical Relationship edges reachable from ``title``
+        per ``direction`` in deterministic ``(endpoint, relationship_type)``
+        order, WITHOUT materializing, de-duplicating, or sorting a per-node
+        neighbor list. The caller debits its expanded-edge budget per eligible
+        edge as it inspects them, applying the relationship-type, candidate-set,
+        and self-loop filters itself (those filters do not expand the graph).
+
+        Determinism comes from the adjacency being stored pre-sorted by
+        ``(endpoint, relationship_type)`` in ``_KnowledgeIndex``; ``both``
+        direction lazily merges the two pre-sorted streams via ``heapq.merge``.
+        """
+        index = self._knowledge_index()
+        outgoing = index.adjacency
+        incoming = index.incoming
+
+        if direction == GRAPH_DIRECTION_OUTGOING:
+
+            def neighbors(title: str):
+                return outgoing.get(title, ())
+
+        elif direction == GRAPH_DIRECTION_INCOMING:
+
+            def neighbors(title: str):
+                return incoming.get(title, ())
+
+        else:  # GRAPH_DIRECTION_BOTH
+
+            def neighbors(title: str):
+                return heapq.merge(
+                    outgoing.get(title, ()), incoming.get(title, ())
+                )
+
+        return neighbors
 
     def build_index(
         self,
@@ -492,6 +772,11 @@ class _KnowledgeIndex:
         self.by_source: dict[str, list[CompiledPage]] = {}
         self.by_lifecycle: dict[str, list[CompiledPage]] = {}
         self.adjacency: dict[str, list[tuple[str, str]]] = {}
+        # Reverse adjacency: target title -> [(source title, relationship type)].
+        # Built alongside the outgoing adjacency so incoming traversal and
+        # ``both`` direction are derived from the same Relationship set without
+        # a second pass (issue #106).
+        self.incoming: dict[str, list[tuple[str, str]]] = {}
 
         for page in pages:
             self.by_title.setdefault(page.title, []).append(page)
@@ -505,6 +790,17 @@ class _KnowledgeIndex:
             self.adjacency.setdefault(page.title, []).extend(
                 (rel.target, rel.type) for rel in page.relationships
             )
+            for rel in page.relationships:
+                self.incoming.setdefault(rel.target, []).append(
+                    (page.title, rel.type)
+                )
+        # Canonical adjacency is stored pre-sorted by ``(endpoint, type)`` so
+        # graph traversal iterates Relationship edges deterministically without
+        # per-node materialization/sorting (ADR-0011, issue #106).
+        for edges in self.adjacency.values():
+            edges.sort()
+        for edges in self.incoming.values():
+            edges.sort()
 
 
 class FrontmatterError(Exception):
@@ -1022,6 +1318,28 @@ def _as_categories(value: Any) -> tuple[list[ContentCategory], bool]:
     return categories, True
 
 
+def _category_name_issue(name: str) -> str | None:
+    """Return a blocking-issue message for an invalid Content Category name.
+
+    Validates the slug shape and the reserved-name guard from ADR-0009:
+    lowercase ASCII letters/digits/hyphens, leading letter, bounded length,
+    and no collision with reserved basenames/markers (``index``, ``hot``,
+    ``log``, ``lumio``). Returns ``None`` when the name is acceptable.
+    """
+    if name in RESERVED_CATEGORY_NAMES:
+        return (
+            f"content category {name!r} collides with a reserved basename or "
+            f"marker (index, hot, log, lumio); see ADR-0007 and ADR-0009"
+        )
+    if not CATEGORY_SLUG_RE.match(name):
+        return (
+            f"content category {name!r} is not a valid slug: use lowercase "
+            f"ASCII letters, digits, and hyphens; begin with a letter; "
+            f"1..{CATEGORY_MAX_LENGTH} characters (ADR-0009)"
+        )
+    return None
+
+
 def _as_hot_index_pins(value: Any) -> tuple[list[HotIndexPin], bool]:
     """Build ``HotIndexPin`` records from raw YAML, reporting structural validity.
 
@@ -1060,10 +1378,15 @@ def _load_and_validate_control_file(
     issues. An absent Control File yields a single non-blocking migration
     warning — Legacy Flat Mode keeps existing root-level pages valid. When
     present, the file is validated as a KB-local content control: supported
-    version, well-formed non-empty category catalog with unique names, and Hot
-    Index pins that resolve to existing Canonical Page Titles (analogous to
-    Relationship target resolution). Pass ``pages=None`` to skip cross-page pin
-    resolution (the lightweight parse seam used by :func:`load_control_file`).
+    version, a Content Category catalog that is either absent/empty (applies
+    the seeded default) or a well-formed list of slug-valid, reserved-name-
+    safe, unique category names (ADR-0009), and Hot Index pins that resolve
+    to existing Canonical Page Titles (analogous to Relationship target
+    resolution). Declared categories are first-class for navigation,
+    validation, and retrieval alongside seeded ones; each Compiled Page's
+    path-derived category must resolve to a declared entry. Pass
+    ``pages=None`` to skip cross-page pin and category resolution (the
+    lightweight parse seam used by :func:`load_control_file`).
     """
     path = _control_file_path(root)
     if not path.exists():
@@ -1161,38 +1484,87 @@ def _load_and_validate_control_file(
         )
         mode = KB_MODE_CATEGORIZED
 
-    categories, categories_ok = _as_categories(raw.get("categories"))
-    if not categories_ok:
-        issues.append(
-            ValidationIssue(
-                file=CONTROL_FILE_BASENAME,
-                field="categories",
-                message=(
-                    "control file categories must be a non-empty list of mappings "
-                    "with a non-empty 'name' (and optional 'description')"
-                ),
-            )
-        )
-    elif not categories:
-        issues.append(
-            ValidationIssue(
-                file=CONTROL_FILE_BASENAME,
-                field="categories",
-                message="control file categories must not be empty",
-            )
-        )
+    # Content Category catalog (ADR-0009): the catalog is data, not a fixed
+    # enum. An absent or empty declaration applies the seeded default; a
+    # present declaration is validated for slug shape, reserved-name safety,
+    # and uniqueness. Declared categories are first-class for navigation,
+    # validation, and retrieval alongside seeded ones.
+    raw_categories = raw.get("categories")
+    categories: list[ContentCategory] = []
+    catalog_structurally_valid = True
+    if raw_categories is None or (
+        isinstance(raw_categories, list) and not raw_categories
+    ):
+        # Absent or empty declaration applies the seeded default (ADR-0009).
+        categories = list(SEED_CATEGORY_CATALOG)
     else:
-        seen: set[str] = set()
-        for category in categories:
-            if category.name in seen:
+        parsed_categories, categories_ok = _as_categories(raw_categories)
+        if not categories_ok:
+            catalog_structurally_valid = False
+            issues.append(
+                ValidationIssue(
+                    file=CONTROL_FILE_BASENAME,
+                    field="categories",
+                    message=(
+                        "control file categories must be a list of mappings "
+                        "with a non-empty 'name' (and optional 'description') "
+                        "or bare name strings (ADR-0009)"
+                    ),
+                )
+            )
+            # Use the seeded default as the effective catalog so downstream
+            # page-category checks remain meaningful despite the parse error.
+            categories = list(SEED_CATEGORY_CATALOG)
+        else:
+            categories = parsed_categories
+            seen: set[str] = set()
+            for category in categories:
+                name_issue = _category_name_issue(category.name)
+                if name_issue is not None:
+                    issues.append(
+                        ValidationIssue(
+                            file=CONTROL_FILE_BASENAME,
+                            field="categories",
+                            message=name_issue,
+                        )
+                    )
+                elif category.name in seen:
+                    issues.append(
+                        ValidationIssue(
+                            file=CONTROL_FILE_BASENAME,
+                            field="categories",
+                            message=f"duplicate content category: {category.name}",
+                        )
+                    )
+                seen.add(category.name)
+
+    # Page path-category validation (ADR-0009): a Compiled Page's category is
+    # the first segment of its path. In a categorized Knowledge Base every
+    # page with a directory component must live under a declared Content
+    # Category; otherwise validation fails. Skipped on the structural parse
+    # seam (pages is None) and when the catalog itself failed to parse.
+    if catalog_structurally_valid and pages is not None:
+        declared_category_names = {category.name for category in categories}
+        for page in pages:
+            parts = PurePosixPath(page.path).parts
+            if len(parts) <= 1:
+                # Root-level page: no category routing (Legacy Flat Mode
+                # compatibility; migration routes every page to a category).
+                continue
+            page_category = parts[0]
+            if page_category not in declared_category_names:
                 issues.append(
                     ValidationIssue(
-                        file=CONTROL_FILE_BASENAME,
-                        field="categories",
-                        message=f"duplicate content category: {category.name}",
+                        file=page.path,
+                        field="category",
+                        message=(
+                            f"page category {page_category!r} is not in the "
+                            f"Knowledge Base's declared catalog; declare it in "
+                            f"lumio.yaml or move the page under a declared "
+                            f"category (ADR-0009)"
+                        ),
                     )
                 )
-            seen.add(category.name)
 
     pins, pins_ok = _as_hot_index_pins(raw.get("hot_index", []))
     if not pins_ok:

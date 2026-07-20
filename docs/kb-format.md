@@ -97,6 +97,10 @@ Across pages:
 9. **Aliases are unique** — no alias may repeat across the Knowledge Base.
 10. **Relationship targets resolve** — every `relationships[].target` must
     equal an existing page's canonical title.
+11. **Page categories resolve (categorized Knowledge Bases)** — every
+    Compiled Page whose path has a directory component must live under a
+    Content Category declared in the Knowledge Base's Control File (or the
+    seeded default when the catalog is absent/empty). See ADR-0009.
 
 ## Navigation Indexes (reserved derived artifacts)
 
@@ -154,6 +158,8 @@ categories:
   - name: concepts
     description: "Core ideas, definitions, and mental models."
   - name: entities
+  - name: projects
+    description: "Tracked projects and their status."
 hot_index:
   - title: "Lumio Overview"
   - title: "Acme Corp"
@@ -164,13 +170,56 @@ hot_index:
 |---|---|---|---|
 | `version` | yes | integer | Currently `1`. Unsupported versions are a blocking error. |
 | `mode` | no | string | `categorized` (default). |
-| `categories` | yes | list\[mapping\|string\] | Non-empty. Each entry is a mapping with a non-empty `name` (and optional `description`) or a bare name string. Names must be unique. The seeded catalog is `concepts`, `entities`, `references`, `procedures`, `tables`, `datasets`, `synthesis`. |
+| `categories` | no | list\[mapping\|string\] | Declares the complete Content Category catalog for this Knowledge Base. Each entry is a mapping with a `name` (and optional `description`) or a bare name string. **Absent or empty applies the seeded default** (`concepts`, `entities`, `references`, `procedures`, `tables`, `datasets`, `synthesis`). When present, names must be valid slugs, unique, and free of reserved-name collisions (see below). |
 | `hot_index` | no | list\[mapping\|string\] | Each entry is a mapping with a non-empty `title` (and optional `note`) or a bare title string. Every pinned `title` must resolve to an existing Canonical Page Title, or validation fails (analogous to Relationship targets). |
 
 Category is broad navigation routing; a page's free-form `type` remains specific
 semantics and no Lumio-wide type taxonomy is introduced. Establishing or
 migrating the Control File is an explicit, reviewed Maintainer action — never an
 automatic upgrade.
+
+### Extensible Content Category catalog (ADR-0009)
+
+The Content Category catalog is **extensible per Knowledge Base**: a KB's
+Control File may declare additional slug-valid Content Categories beyond the
+seeded defaults. The seeded catalog remains the default and the recommended
+set. Declared categories are first-class for navigation, validation, and
+retrieval — identical to seeded ones — and carry no Lumio-wide type semantics.
+
+**Default.** When `categories` is absent or empty, the Core SDK applies the
+seeded default (`concepts`, `entities`, `references`, `procedures`, `tables`,
+`datasets`, `synthesis`). The resolved Control File carries the seed so
+downstream loading, validation, and Navigation Index generation treat it as the
+declared catalog.
+
+**Slug validation.** Each declared category `name` must:
+
+1. be a valid slug — lowercase ASCII letters, digits, and hyphens; beginning
+   with a letter; 1..64 characters (e.g. `projects`, `data-sets`, `journal`);
+2. be unique within the catalog (duplicate names are a blocking error); and
+3. not collide with reserved basenames or markers — `index`, `hot`, `log`
+   (the reserved derived-artifact basenames from ADR-0007/ADR-0008), and
+   `lumio` (the marker system).
+
+**Page category resolution.** A Compiled Page's Content Category is the first
+segment of its path (e.g. `projects/launch.md` → `projects`). In a categorized
+Knowledge Base, every page whose path has a directory component must live under
+a declared category, or validation fails with an actionable message. Root-level
+pages have no category routing (Legacy Flat Mode compatibility; migration
+routed every page to a category).
+
+**Maintainer gate.** Adding, renaming, or removing a declared category is an
+explicit, reviewed Maintainer action expressed as a Control File change —
+never automatic, never inferred, and never created silently from content,
+frontmatter, or import. External-vault import MAY propose adding declared
+categories to preserve imported structure, but that proposal is reviewed like
+any Control File change.
+
+**Unaffected.** The Hot Index is pin-based and unaffected by catalog changes.
+The Activity Log, OKF Exchange Profile (ADR-0007), retrieval routing, and
+Legacy Flat Mode are unchanged. Navigation Indexes render declared categories
+as first-class directories exactly like seeded ones. See
+[ADR-0009](adr/0009-extensible-knowledge-base-category-catalog.md).
 
 A Knowledge Base with **no Control File** loads in **Legacy Flat Mode**: existing
 root-level Compiled Pages remain valid, and validation emits a single

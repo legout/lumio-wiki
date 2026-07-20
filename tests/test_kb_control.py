@@ -235,17 +235,38 @@ def test_unsupported_control_file_version_is_blocking(tmp_path):
     assert "99" in issue.message
 
 
-def test_empty_categories_is_blocking(tmp_path):
+def test_absent_categories_falls_back_to_seed(tmp_path):
+    """An absent ``categories`` declaration applies the seeded default
+    catalog and validates clean (ADR-0009). The Control File carries the
+    resolved seed catalog so downstream loading, validation, and Navigation
+    Index generation treat the seed as first-class declared categories."""
     root = tmp_path / "kb"
     root.mkdir()
+    _write_page(root, "concepts/overview.md", "Overview", "An overview")
     (root / CONTROL_FILE_BASENAME).write_text(
-        "version: 1\nmode: categorized\ncategories: []\n"
+        'version: 1\nmode: "categorized"\n'
     )
-    _, report = load_knowledge_base(root)
-    assert not report.is_valid
-    assert any(
-        i.field == "categories" and "empty" in i.message for i in report.issues
+    kb, report = load_knowledge_base(root)
+    assert report.is_valid, [i.message for i in report.issues]
+    assert [c.name for c in kb.control.categories] == [
+        c.name for c in SEED_CATEGORY_CATALOG
+    ]
+
+
+def test_empty_categories_falls_back_to_seed(tmp_path):
+    """An explicit empty ``categories: []`` declaration applies the seeded
+    default catalog and validates clean (ADR-0009)."""
+    root = tmp_path / "kb"
+    root.mkdir()
+    _write_page(root, "concepts/overview.md", "Overview", "An overview")
+    (root / CONTROL_FILE_BASENAME).write_text(
+        'version: 1\nmode: "categorized"\ncategories: []\n'
     )
+    kb, report = load_knowledge_base(root)
+    assert report.is_valid, [i.message for i in report.issues]
+    assert [c.name for c in kb.control.categories] == [
+        c.name for c in SEED_CATEGORY_CATALOG
+    ]
 
 
 def test_empty_bare_category_name_is_blocking(tmp_path):
@@ -785,8 +806,10 @@ def test_validate_proposed_control_file_reports_unresolved_pins(tmp_path):
     assert (root / CONTROL_FILE_BASENAME).exists() is False
 
 
-def test_validate_proposed_control_file_rejects_empty_catalog(tmp_path):
-    """An empty proposed category catalog is a blocking issue (issue #77)."""
+def test_validate_proposed_control_file_empty_catalog_falls_back_to_seed(tmp_path):
+    """An empty proposed category catalog applies the seeded default and is
+    valid (ADR-0009). A Maintainer proposing a Control File without an
+    explicit catalog gets the seed, just like an absent declaration."""
     proposed = KnowledgeBaseControlFile(
         version=1,
         categories=[],
@@ -794,7 +817,215 @@ def test_validate_proposed_control_file_rejects_empty_catalog(tmp_path):
         mode="categorized",
     )
     issues = validate_proposed_control_file(proposed, None)
-    assert any(
-        getattr(i, "field", "") == "categories" and "empty" in getattr(i, "message", "")
-        for i in issues
+    assert issues == [], [i.message for i in issues]
+
+
+# ---------------------------------------------------------------------------
+# Extensible Content Category catalog (ADR-0009, issue #84). A KB's Control
+# File may declare additional slug-valid Content Categories beyond the seeded
+# default; declared categories are first-class for loading, validation,
+# Navigation Index generation, and retrieval. Categories are never auto-created
+# from content — declaring, adding, or removing one is a reviewed Maintainer
+# action via Control File change.
+# ---------------------------------------------------------------------------
+
+
+def _write_declared_catalog_kb(
+    tmp_path: Path,
+    catalog: str,
+    *,
+    pages: list[tuple[str, str, str]] | None = None,
+) -> Path:
+    """Build a categorized KB with an explicit declared catalog and pages.
+
+    ``catalog`` is the raw YAML under ``categories:``; ``pages`` is a list of
+    ``(relative_path, title, summary)`` tuples written as minimal valid
+    Compiled Pages.
+    """
+    root = tmp_path / "kb"
+    root.mkdir()
+    for rel, title, summary in pages or []:
+        _write_page(root, rel, title, summary)
+    (root / CONTROL_FILE_BASENAME).write_text(
+        f'version: 1\nmode: "categorized"\ncategories:\n{catalog}'
     )
+    return root
+
+
+def test_declared_non_seed_categories_load_and_validate_clean(tmp_path):
+    """A Control File declaring categories beyond the seed loads and validates
+    clean (ADR-0009). ``projects`` and ``journal`` are not in the seed but are
+    first-class once declared."""
+    root = _write_declared_catalog_kb(
+        tmp_path,
+        "  - projects\n  - journal\n  - concepts\n",
+        pages=[
+            ("projects/launch.md", "Launch Plan", "A project plan"),
+            ("journal/2026-01.md", "January Notes", "Journal entries"),
+            ("concepts/overview.md", "Overview", "An overview"),
+        ],
+    )
+    kb, report = load_knowledge_base(root)
+    assert report.is_valid, [i.message for i in report.issues]
+    assert [c.name for c in kb.control.categories] == [
+        "projects",
+        "journal",
+        "concepts",
+    ]
+
+
+def test_page_in_declared_non_seed_category_validates(tmp_path):
+    """A Compiled Page whose path-derived category is a declared non-seed
+    category validates clean (ADR-0009)."""
+    root = _write_declared_catalog_kb(
+        tmp_path,
+        "  - projects\n",
+        pages=[("projects/launch.md", "Launch Plan", "A project plan")],
+    )
+    _, report = load_knowledge_base(root)
+    assert report.is_valid, [i.message for i in report.issues]
+
+
+def test_page_in_undeclared_category_fails_validation(tmp_path):
+    """A Compiled Page whose path-derived category is not in the KB's declared
+    catalog fails validation with an actionable message (ADR-0009)."""
+    root = _write_declared_catalog_kb(
+        tmp_path,
+        "  - concepts\n",
+        pages=[("projects/secret.md", "Secret Project", "Undeclared")],
+    )
+    _, report = load_knowledge_base(root)
+    assert not report.is_valid
+    issue = next(i for i in report.issues if i.field == "category")
+    assert "projects" in issue.message
+    assert "projects/secret.md" == issue.file
+    assert "ADR-0009" in issue.message
+
+
+def test_page_in_undeclared_category_fails_under_seed_default(tmp_path):
+    """When the catalog falls back to seed, a page under a non-seed category
+    still fails validation (ADR-0009). The seed is the effective catalog."""
+    root = tmp_path / "kb"
+    root.mkdir()
+    _write_page(root, "projects/secret.md", "Secret Project", "Undeclared")
+    (root / CONTROL_FILE_BASENAME).write_text(
+        'version: 1\nmode: "categorized"\n'
+    )
+    _, report = load_knowledge_base(root)
+    assert not report.is_valid
+    issue = next(i for i in report.issues if i.field == "category")
+    assert "projects" in issue.message
+
+
+def test_invalid_category_slugs_are_blocking(tmp_path):
+    """Invalid category slugs are rejected with clear messages (ADR-0009).
+    Slugs must be lowercase ASCII letters/digits/hyphens, leading letter,
+    bounded length."""
+    catalog = "  - Projects\n  - 1bad\n  - 'has space'\n  - concepts\n"
+    root = _write_declared_catalog_kb(tmp_path, catalog)
+    _, report = load_knowledge_base(root)
+    assert not report.is_valid
+    messages = " | ".join(i.message for i in report.issues if i.field == "categories")
+    assert "'Projects'" in messages
+    assert "'1bad'" in messages
+    assert "'has space'" in messages
+    # ``concepts`` is valid and not flagged.
+    assert "'concepts'" not in messages
+
+
+def test_reserved_category_names_are_blocking(tmp_path):
+    """Category names colliding with reserved basenames/markers are rejected
+    (ADR-0007, ADR-0009): ``index``, ``hot``, ``log``, and the ``lumio``
+    marker system."""
+    catalog = "  - index\n  - hot\n  - log\n  - lumio\n  - concepts\n"
+    root = _write_declared_catalog_kb(tmp_path, catalog)
+    _, report = load_knowledge_base(root)
+    assert not report.is_valid
+    messages = " | ".join(i.message for i in report.issues if i.field == "categories")
+    for reserved in ("index", "hot", "log", "lumio"):
+        assert reserved in messages
+
+
+def test_extensible_catalog_appears_in_navigation_indexes(tmp_path):
+    """Declared categories render as first-class directories in Navigation
+    Indexes, identical to seeded ones (ADR-0009). A page under a declared
+    non-seed category produces a per-directory index just like a seed one."""
+    from lumio.core import generate_navigation_indexes
+
+    root = _write_declared_catalog_kb(
+        tmp_path,
+        "  - concepts\n  - projects\n",
+        pages=[
+            ("concepts/overview.md", "Overview", "An overview"),
+            ("projects/launch.md", "Launch Plan", "A project plan"),
+        ],
+    )
+    kb, report = load_knowledge_base(root)
+    assert report.is_valid, [i.message for i in report.issues]
+    indexes = generate_navigation_indexes(kb.pages)
+    # Both category directories get a per-directory index alongside the root.
+    assert "index.md" in indexes
+    assert "concepts/index.md" in indexes
+    assert "projects/index.md" in indexes
+    assert "Launch Plan" in indexes["projects/index.md"]
+    assert "Overview" in indexes["concepts/index.md"]
+    # The root index catalogs both declared categories equally.
+    assert "## concepts" in indexes["index.md"]
+    assert "## projects" in indexes["index.md"]
+
+
+def test_legacy_flat_mode_unaffected_by_extensible_catalog(tmp_path):
+    """A Knowledge Base with no Control File (Legacy Flat Mode) is unaffected:
+    root-level pages load valid and no category routing is enforced
+    (ADR-0008, ADR-0009)."""
+    root = tmp_path / "kb"
+    root.mkdir()
+    _write_page(root, "overview.md", "Overview", "Root-level page")
+    _write_page(root, "notes.md", "Notes", "Another root-level page")
+    kb, report = load_knowledge_base(root)
+    assert kb.control is None
+    warnings = [i for i in report.issues if i.severity == "warning"]
+    assert warnings and "Legacy Flat Mode" in warnings[0].message
+    assert report.is_valid
+    # No category-path validation fires in Legacy Flat Mode.
+    assert not any(i.field == "category" for i in report.issues)
+
+
+def test_categories_never_auto_created_from_content(tmp_path):
+    """Categories are never inferred from page paths or frontmatter: a page
+    under an undeclared directory does not add the directory to the catalog
+    (ADR-0009 Maintainer gate). The Control File catalog is unchanged."""
+    root = _write_declared_catalog_kb(
+        tmp_path,
+        "  - concepts\n",
+        pages=[("projects/secret.md", "Secret Project", "Undeclared")],
+    )
+    kb, report = load_knowledge_base(root)
+    assert not report.is_valid
+    # The catalog still carries only ``concepts`` — never auto-extended.
+    assert [c.name for c in kb.control.categories] == ["concepts"]
+
+
+def test_load_control_file_parse_seam_validates_declared_catalog(tmp_path):
+    """The parse seam (``load_control_file``) applies the same slug and
+    reserved-name validation as the full loader (ADR-0009)."""
+    root = tmp_path / "kb"
+    root.mkdir()
+    (root / CONTROL_FILE_BASENAME).write_text(
+        'version: 1\nmode: "categorized"\ncategories:\n  - Projects\n'
+    )
+    with pytest.raises(ControlFileError) as exc_info:
+        load_control_file(root)
+    assert "Projects" in str(exc_info.value)
+
+
+def test_load_control_file_parse_seam_accepts_declared_non_seed(tmp_path):
+    """The parse seam accepts a declared non-seed category (ADR-0009)."""
+    root = tmp_path / "kb"
+    root.mkdir()
+    (root / CONTROL_FILE_BASENAME).write_text(
+        'version: 1\nmode: "categorized"\ncategories:\n  - projects\n'
+    )
+    control = load_control_file(root)
+    assert control is not None
+    assert [c.name for c in control.categories] == ["projects"]
