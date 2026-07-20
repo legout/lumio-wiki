@@ -22,6 +22,12 @@ from lumio_wiki.embeddings import (
     RetrievalMode,
 )
 from lumio_wiki.fingerprint_store import load_stored_fingerprint
+from lumio_wiki.graph_state import (
+    GRAPH_ARTIFACT_FILENAME,
+    build_graph_state,
+    load_graph_artifact,
+    write_graph_artifact,
+)
 from lumio_wiki.page_search import search_pages as search_pages_over
 from lumio_wiki.records import (
     EXTRACTOR_VERSION,
@@ -29,6 +35,8 @@ from lumio_wiki.records import (
     CompiledPage,
     ContentCategory,
     ExtractedReference,
+    GraphHealthReport,
+    GraphState,
     HealthReport,
     HotIndexPin,
     KnowledgeBaseControlFile,
@@ -36,9 +44,11 @@ from lumio_wiki.records import (
     RegistryEntry,
     Relationship,
     RetrievalResult,
+    RetrievalTrace,
     Source,
     SourceFileDigest,
     SourceFingerprint,
+    TraceStage,
     ValidationIssue,
     ValidationReport,
 )
@@ -599,6 +609,127 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         """
         return list(self._knowledge_index().extraction_diagnostics)
 
+    # ------------------------------------------------------------------
+    # Graph materialization (issue #108, ADR-0011).
+    #
+    # The Discovery Graph adjacency is materialized as a versioned
+    # MessagePack artifact in the derived index directory so startup can
+    # skip re-extraction when the Knowledge Base fingerprint and extractor
+    # version are unchanged. A missing, stale, corrupt, partial, or
+    # incompatible artifact is ignored and the graph is rebuilt
+    # deterministically in memory. The artifact lives outside the Knowledge
+    # Base source tree and is never a Compiled Page, Reserved Artifact,
+    # fingerprint input, or OKF export entry. Works without LanceDB or an
+    # operational database.
+    # ------------------------------------------------------------------
+
+    def materialize_graph(self, index_dir: str | Path) -> Path:
+        """Materialize the Discovery Graph as a MessagePack artifact.
+
+        Serializes the current Discovery Graph adjacency (canonical
+        Relationships plus Extracted References, both outgoing and incoming)
+        alongside the Knowledge Base fingerprint and extractor version, and
+        writes it atomically into ``index_dir``. Returns the artifact path.
+        The artifact is rebuildable: deleting it and re-running this method
+        over unchanged Markdown reproduces byte-identical adjacency and
+        identical public traversal results.
+        """
+        fingerprint = fingerprint_sources(self.root)
+        index = self._knowledge_index()
+        return write_graph_artifact(
+            index_dir,
+            index=index,
+            fingerprint=fingerprint,
+            extractor_version=EXTRACTOR_VERSION,
+        )
+
+    def load_or_derive_graph(self, index_dir: str | Path) -> GraphState:
+        """Return the Discovery Graph state, loading the artifact when fresh.
+
+        Loads the persisted MessagePack artifact when it exists and its
+        fingerprint and extractor version match the current Knowledge Base;
+        otherwise derives the same adjacency deterministically in memory.
+        Never raises on a bad artifact: stale, corrupt, partial, or
+        incompatible artifacts fall back to in-memory derivation.
+        """
+        fingerprint = fingerprint_sources(self.root)
+        state = load_graph_artifact(
+            index_dir,
+            fingerprint=fingerprint,
+            extractor_version=EXTRACTOR_VERSION,
+        )
+        if state is not None:
+            return state
+        return build_graph_state(
+            self._knowledge_index(),
+            fingerprint=fingerprint,
+            extractor_version=EXTRACTOR_VERSION,
+        )
+
+    def graph_health(self, index_dir: str | Path) -> GraphHealthReport:
+        """Return aggregate health + observability signals for the Discovery Graph.
+
+        Reports whether the persisted artifact is fresh (fingerprint and
+        extractor version match), whether it is materialized, the discovery
+        edge count, the materialized artifact size in bytes, an observable
+        graph startup time, and a bounded traversal latency signal. Does NOT
+        expose MessagePack layout, raw adjacency, or internal artifact keys.
+        Timing fields are observability signals, not correctness invariants.
+        """
+        import time
+
+        index_dir_path = Path(index_dir)
+        fingerprint = fingerprint_sources(self.root)
+        artifact_path = index_dir_path / GRAPH_ARTIFACT_FILENAME
+        materialized = artifact_path.is_file()
+        materialized_size_bytes = artifact_path.stat().st_size if materialized else None
+
+        start = time.perf_counter()
+        state = load_graph_artifact(
+            index_dir_path,
+            fingerprint=fingerprint,
+            extractor_version=EXTRACTOR_VERSION,
+        )
+        graph_fresh = state is not None
+        if state is None:
+            state = build_graph_state(
+                self._knowledge_index(),
+                fingerprint=fingerprint,
+                extractor_version=EXTRACTOR_VERSION,
+            )
+        startup_ms = int((time.perf_counter() - start) * 1000)
+
+        return GraphHealthReport(
+            graph_fresh=graph_fresh,
+            materialized=materialized,
+            edge_count=state.edge_count,
+            materialized_size_bytes=materialized_size_bytes,
+            startup_ms=startup_ms,
+            traversal_latency_ms=self._graph_traversal_latency_ms(),
+            fingerprint_digest=fingerprint.digest,
+        )
+
+    def _graph_traversal_latency_ms(self) -> int | None:
+        """Return a tiny bounded discovery traversal latency in ms, or ``None``.
+
+        Measures one single-hop ``related_pages`` expansion over the in-memory
+        Discovery Graph so the signal reflects the traversal cost an operator
+        would observe, not the artifact decode cost.
+        """
+        import time
+
+        titles = [page.title for page in self.pages if page.title]
+        if not titles:
+            return None
+        start = time.perf_counter()
+        self.related_pages(
+            titles[0],
+            scope=GRAPH_SCOPE_DISCOVERY,
+            max_depth=1,
+            max_results=1,
+        )
+        return int((time.perf_counter() - start) * 1000)
+
     def build_index(
         self,
         index_dir: str | Path | None = None,
@@ -639,6 +770,62 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             retrieval=adapter,
         )
 
+    def _eligible_pages_for_graph(
+        self,
+        seed_titles: Sequence[str],
+        *,
+        scope: str,
+        direction: str,
+        max_depth: int,
+    ) -> list[CompiledPage]:
+        """Return the graph-expanded eligible Compiled Pages for retrieval.
+
+        Discovery Graph expansion (issue #112, ADR-0011): for each seed title,
+        expand authorized neighbors (scope / direction / depth bounded) through
+        the existing :meth:`related_pages` seam, union the results with the
+        seeds, and resolve to the loaded Compiled Pages. Authorization is the
+        set of loaded page titles, so an unloaded page can never enter the
+        eligible set. The graph selects page identities; the retrieval adapter
+        ranks citation-ready Evidence from them and never imports graph code.
+        """
+        authorized = {page.title for page in self.pages if page.title}
+        eligible_titles: set[str] = set()
+        for seed in seed_titles:
+            if seed in authorized:
+                eligible_titles.add(seed)
+            eligible_titles.update(
+                self.related_pages(
+                    seed,
+                    direction=direction,
+                    scope=scope,
+                    candidate_titles=authorized,
+                    max_depth=max_depth,
+                )
+            )
+        return [page for page in self.pages if page.title in eligible_titles]
+
+    @staticmethod
+    def _with_prepended_stages(
+        result: RetrievalResult, stages: list[TraceStage]
+    ) -> RetrievalResult:
+        """Return ``result`` with ``stages`` prepended to its Retrieval Trace.
+
+        Retrieval traces are built inside the adapter (frozen records); the
+        Knowledge Base annotates the graph-expansion / fingerprint stages it
+        owns on top of the adapter's lexical / semantic / fusion stages so the
+        composed trace stays truthful without the adapter knowing about graphs.
+        """
+        if not stages:
+            return result
+        return RetrievalResult(
+            evidence=result.evidence,
+            citation=result.citation,
+            snippet=result.snippet,
+            score=result.score,
+            reason=result.reason,
+            trace=RetrievalTrace(stages=[*stages, *result.trace.stages]),
+        )
+
     def retrieve(
         self,
         query: str,
@@ -649,6 +836,10 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         mode: RetrievalMode = "lexical",
         embedder: Embedder | None = None,
         score_threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
+        graph_seed_titles: Sequence[str] | None = None,
+        graph_scope: str = GRAPH_SCOPE_DISCOVERY,
+        graph_direction: str = GRAPH_DIRECTION_OUTGOING,
+        graph_max_depth: int = 2,
     ) -> list[RetrievalResult]:
         """Retrieve citation-ready Evidence for ``query``.
 
@@ -656,8 +847,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         always-available zero-index lexical adapter. The default lexical path
         works over the loaded Compiled Pages and needs no ``index_dir``; the
         LanceDB BM25 / semantic / hybrid paths require the LanceDB retrieval
-        adapter to be bound via :meth:`build_index` (``retrieval=...``) and are
-        wired in a later task.
+        adapter to be bound via :meth:`build_index` (``retrieval=...``).
 
         This is fresh retrieval over Compiled Pages / Knowledge Base Evidence.
         It is distinct from Conversation Recall (#59): no persisted Reader
@@ -670,6 +860,17 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         the original ``query`` always participates. Callers must keep the hint
         set bounded and sanitized (significant tokens only) so it cannot be
         abused as a second free-form query (issue #55).
+
+        Graph expansion (issue #112, ADR-0011): when ``graph_seed_titles`` is
+        provided, the Discovery Graph selects eligible page identities (canonical
+        Relationships plus Extracted References) BEFORE the adapter ranks
+        Evidence. Only eligible pages are passed to the adapter; an Extracted
+        Reference is never Evidence. An empty eligible set returns ``[]`` with
+        a truthful trace (no fallback to all pages). ``graph_seed_titles=None``
+        preserves the exact pre-expansion behavior. Before composing the
+        in-memory graph with a built adapter index, the stored index fingerprint
+        is checked against the current source fingerprint; a mismatch triggers a
+        rebuild so graph and Evidence never disagree.
         """
         chosen_dir = Path(index_dir) if index_dir is not None else self.index_dir
         effective_query = query
@@ -678,7 +879,53 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             if extra:
                 effective_query = f"{query} {extra}".strip()
         resolved = chosen_dir.resolve() if chosen_dir is not None else None
-        return self._retrieval_adapter().retrieve(
+
+        graph_active = graph_seed_titles is not None
+        eligible_pages: Sequence[CompiledPage] | None = None
+        prepended_stages: list[TraceStage] = []
+
+        if graph_active:
+            _require_graph_scope(graph_scope)
+            _require_graph_direction(graph_direction)
+            _require_non_negative_limit("graph_max_depth", graph_max_depth)
+            seeds = list(graph_seed_titles)
+            eligible_pages = self._eligible_pages_for_graph(
+                seeds,
+                scope=graph_scope,
+                direction=graph_direction,
+                max_depth=graph_max_depth,
+            )
+            prepended_stages.append(
+                TraceStage(
+                    "graph-expansion",
+                    f"{graph_scope} scope; {len(eligible_pages)} eligible pages "
+                    f"from {len(seeds)} seeds",
+                )
+            )
+            # Fingerprint gate: the in-memory graph is inherently current; a
+            # built adapter index may be stale. Before composing them, assert the
+            # stored fingerprint matches the current source. A mismatch (or a
+            # missing fingerprint) is stale and triggers a rebuild so graph and
+            # Evidence never disagree (issue #112, ADR-0011).
+            if resolved is not None:
+                current_fp = fingerprint_sources(self.root)
+                stored_fp = load_stored_fingerprint(resolved)
+                if stored_fp is None or stored_fp.digest != current_fp.digest:
+                    self._retrieval_adapter().build_index(
+                        self.pages,
+                        resolved,
+                        embedder=embedder,
+                        fingerprint=current_fp,
+                    )
+                    prepended_stages.append(
+                        TraceStage(
+                            "fingerprint-check",
+                            "stale derived index rebuilt from current source "
+                            "before compose",
+                        )
+                    )
+
+        results = self._retrieval_adapter().retrieve(
             self.pages,
             effective_query,
             limit=limit,
@@ -686,7 +933,15 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             mode=mode,
             embedder=embedder,
             score_threshold=score_threshold,
+            eligible_pages=eligible_pages,
         )
+
+        if prepended_stages:
+            results = [
+                KnowledgeBase._with_prepended_stages(result, prepended_stages)
+                for result in results
+            ]
+        return results
 
 
     def fingerprint(self) -> SourceFingerprint:

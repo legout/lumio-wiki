@@ -12,6 +12,10 @@ from lumio_wiki.embeddings import (
     EmbeddingNotBuiltError,
     RetrievalMode,
 )
+from lumio_wiki.graph_state import (
+    GRAPH_ARTIFACT_FILENAME,
+    GRAPH_ARTIFACT_VERSION,
+)
 from lumio_wiki.ingest import (
     BlastRadius,
     IngestProposal,
@@ -113,6 +117,8 @@ from lumio_wiki.records import (
     EmbeddingModelInfo,
     Evidence,
     ExtractedReference,
+    GraphHealthReport,
+    GraphState,
     HotIndexPin,
     PageSearchResult,
     RegistryEntry,
@@ -163,8 +169,12 @@ __all__ = [
     "Evidence",
     "ExportVisibilityScope",
     "ExtractedReference",
+    "GRAPH_ARTIFACT_FILENAME",
+    "GRAPH_ARTIFACT_VERSION",
     "GRAPH_SCOPE_CANONICAL",
     "GRAPH_SCOPE_DISCOVERY",
+    "GraphHealthReport",
+    "GraphState",
     "HOT_INDEX_ARTIFACT",
     "HOT_INDEX_BASENAME",
     "HOT_INDEX_VERSION",

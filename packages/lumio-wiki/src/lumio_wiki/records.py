@@ -215,6 +215,55 @@ class HealthReport(msgspec.Struct, frozen=True):
     is_healthy: bool = True
 
 
+
+# ---------------------------------------------------------------------------
+# Materialized Discovery Graph (issue #108, ADR-0011).
+#
+# The Discovery Graph adjacency is materialized as a versioned MessagePack
+# artifact in the derived index directory so startup can skip re-extraction
+# when the Knowledge Base fingerprint and extractor version are unchanged.
+# ``GraphState`` is the in-memory representation loaded from the artifact or
+# derived directly; ``GraphHealthReport`` is the aggregate observability
+# surface. Neither exposes MessagePack layout.
+# ---------------------------------------------------------------------------
+
+
+class GraphState(msgspec.Struct, frozen=True):
+    """Materialized Discovery Graph adjacency (loaded from artifact or derived).
+
+    Carries the versioned, fingerprint-bound discovery adjacency in both
+    outgoing and incoming directions. Edges are ``(endpoint, type)`` tuples;
+    extracted references carry an empty type. Built deterministically from a
+    ``_KnowledgeIndex`` and rebuildable byte-identically from unchanged
+    Markdown.
+    """
+
+    version: int
+    fingerprint_digest: str
+    extractor_version: str
+    outgoing: dict[str, list[tuple[str, str]]]
+    incoming: dict[str, list[tuple[str, str]]]
+    edge_count: int
+
+
+class GraphHealthReport(msgspec.Struct, frozen=True):
+    """Aggregate health + observability signals for the Discovery Graph.
+
+    Reports whether the persisted graph artifact is fresh, whether it is
+    materialized, the discovery edge count, the materialized artifact size in
+    bytes, an observable graph startup time, and a bounded traversal latency
+    signal. Does NOT expose MessagePack layout, raw adjacency, or internal
+    artifact keys. Timing fields are observability signals, not correctness.
+    """
+
+    graph_fresh: bool = False
+    materialized: bool = False
+    edge_count: int = 0
+    materialized_size_bytes: int | None = None
+    startup_ms: int = 0
+    traversal_latency_ms: int | None = None
+    fingerprint_digest: str = ""
+
 # ---------------------------------------------------------------------------
 # Knowledge Base Control File and reserved published artifacts (issue #77).
 #
