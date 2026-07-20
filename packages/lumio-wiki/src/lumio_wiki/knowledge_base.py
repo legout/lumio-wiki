@@ -1960,8 +1960,43 @@ def _load_pages_and_validate(
     return pages, issues
 
 
-def _cross_page_issues(pages: list[CompiledPage]) -> list[ValidationIssue]:
-    """Return duplicate title, duplicate alias, and unresolved relationship issues."""
+def _cross_page_issues(
+    pages: list[CompiledPage],
+    index: _KnowledgeIndex,
+) -> list[ValidationIssue]:
+    """Return cross-page validation issues including QA issue kinds (issue #86).
+
+    Surfaces the pre-existing structural checks (duplicate title, duplicate
+    alias, unresolved relationship target) PLUS the Maintainer QA issue kinds
+    defined in ADR-0011 and issue #86:
+
+    * **orphan** — pages with no inbound topology. The finding discloses
+      whether it uses canonical-graph scope (no reviewed inbound
+      Relationships) or Discovery-Graph scope (no inbound topology at all,
+      including Extracted References), so a page reachable only via body
+      links is not confused with one having reviewed semantic inbound.
+    * **broken-internal-link** — broken/ambiguous/escaping/duplicate/
+      unsupported link outcomes from the shared Extracted Reference
+      resolver, carried with source page, severity, and location context.
+      Exactly-resolved links are derived state, never broken (ADR-0011).
+    * **stale** — pages in the ``deprecated`` Lifecycle, surfaced as
+      content-health signals for Maintainer review.
+    * **contradiction** — ``contradicts`` typed Relationships, surfaced so
+      active contradiction claims are visible at a glance.
+
+    Missing-frontmatter issues are already produced per-page by
+    ``_validate_page``; this function does not duplicate them.
+
+    All new QA findings are non-blocking ``warning`` severity, consistent
+    with ADR-0011's rule that derived reference state and content-health
+    advisories never block validation. The checks are deterministic and
+    model-free.
+
+    ``index`` is the Discovery Graph index from issue #107, carrying the
+    canonical and discovery adjacency plus the shared resolver's extraction
+    diagnostics. The caller builds it once so every QA check consumes the
+    same derived outcomes.
+    """
     issues: list[ValidationIssue] = []
 
     titles_by_page: dict[str, list[CompiledPage]] = {}
@@ -2008,6 +2043,145 @@ def _cross_page_issues(pages: list[CompiledPage]) -> list[ValidationIssue]:
                     )
                 )
 
+    issues.extend(_orphan_issues(pages, index))
+    issues.extend(_broken_internal_link_issues(index))
+    issues.extend(_stale_issues(pages))
+    issues.extend(_contradiction_issues(pages))
+
+    return issues
+
+
+def _orphan_issues(
+    pages: list[CompiledPage], index: _KnowledgeIndex
+) -> list[ValidationIssue]:
+    """Return orphan-page findings with canonical vs discovery scope disclosure.
+
+    A page is an orphan when it has no inbound topology from OTHER pages.
+    Two scopes are distinguished (ADR-0011, issue #86 AC2):
+
+    * **Discovery scope** — the page has no inbound topology at all: no
+      reviewed Relationship and no Extracted Reference targets it. This is
+      the stronger orphan signal.
+    * **Canonical scope** — the page has inbound Extracted References (body
+      links) but no reviewed inbound Relationships. It has navigational
+      context but no semantic inbound; it is an orphan of the reviewed
+      canonical graph only.
+
+    Self-targeting edges (a Relationship or body link from a page to itself)
+    do not count as inbound topology and do not mask orphan status.
+    """
+    issues: list[ValidationIssue] = []
+    for page in pages:
+        title = page.title
+        if not title:
+            continue
+        has_canonical_inbound = any(
+            src != title for src, _ in index.incoming.get(title, [])
+        )
+        has_discovery_inbound = any(
+            src != title for src, _ in index.discovery_incoming.get(title, [])
+        )
+        if has_discovery_inbound:
+            # Has inbound topology (at least via body links). If it also has
+            # canonical inbound it is not an orphan at all; otherwise it is
+            # an orphan of the canonical graph only.
+            if not has_canonical_inbound:
+                issues.append(
+                    ValidationIssue(
+                        file=page.path,
+                        field="topology",
+                        severity="warning",
+                        message=(
+                            "orphan page (canonical scope): no reviewed inbound "
+                            "Relationships; has inbound Extracted References"
+                        ),
+                    )
+                )
+        else:
+            # No inbound topology from any other page in either graph scope.
+            issues.append(
+                ValidationIssue(
+                    file=page.path,
+                    field="topology",
+                    severity="warning",
+                    message=(
+                        "orphan page (discovery scope): no inbound topology at all"
+                    ),
+                )
+            )
+    return issues
+
+
+def _broken_internal_link_issues(
+    index: _KnowledgeIndex,
+) -> list[ValidationIssue]:
+    """Surface shared-resolver link diagnostics as broken-internal-link findings.
+
+    Consumes the ``ExtractionDiagnostic`` outcomes produced by the shared
+    Extracted Reference resolver (issue #107, ADR-0011) and surfaces each as
+    a non-blocking ``warning`` with source page, target, kind, and line
+    location so a Maintainer can act. Exactly-resolved links produce Extracted
+    References, NOT diagnostics, and are therefore never reported here
+    (issue #86 AC4). External, escaping, and reserved-artifact targets are
+    expected, correct exclusions and are intentionally silent in the
+    resolver; this function does not re-introduce them.
+    """
+    issues: list[ValidationIssue] = []
+    for diag in index.extraction_diagnostics:
+        issues.append(
+            ValidationIssue(
+                file=diag.source_path,
+                field="internal-links",
+                severity="warning",
+                message=(
+                    f"{diag.kind} internal link to '{diag.target}' "
+                    f"(line {diag.line_start}): {diag.detail}"
+                ),
+            )
+        )
+    return issues
+
+
+def _stale_issues(pages: list[CompiledPage]) -> list[ValidationIssue]:
+    """Return non-blocking findings for pages in the ``deprecated`` Lifecycle.
+
+    A deprecated page is valid content that has been deliberately marked as
+    superseded or outdated. Surfacing it as ``stale`` gives Maintainers a
+    content-health signal without blocking validation.
+    """
+    issues: list[ValidationIssue] = []
+    for page in pages:
+        if (page.lifecycle or "") == "deprecated":
+            issues.append(
+                ValidationIssue(
+                    file=page.path,
+                    field="lifecycle",
+                    severity="warning",
+                    message="stale page: deprecated lifecycle",
+                )
+            )
+    return issues
+
+
+def _contradiction_issues(pages: list[CompiledPage]) -> list[ValidationIssue]:
+    """Return non-blocking findings for ``contradicts`` typed Relationships.
+
+    A ``contradicts`` relationship is a valid, reviewed semantic claim. It is
+    surfaced here so active contradiction claims are visible at a glance in
+    the QA report, supporting review-by-exception (#111).
+    """
+    issues: list[ValidationIssue] = []
+    for page in pages:
+        for rel in page.relationships:
+            if rel.type == "contradicts" and rel.target:
+                issues.append(
+                    ValidationIssue(
+                        file=page.path,
+                        field="relationships",
+                        severity="warning",
+                        message=f"contradiction claim: {rel.target}",
+                    )
+                )
     return issues
 
 
@@ -2492,7 +2666,7 @@ def _load_and_validate(path: Path) -> tuple[KnowledgeBase, ValidationReport]:
     """Load and fully validate a Knowledge Base from an existing directory."""
     root = path.resolve()
     pages, issues = _load_pages_and_validate(root)
-    issues.extend(_cross_page_issues(pages))
+    issues.extend(_cross_page_issues(pages, _KnowledgeIndex(pages)))
     control, control_issues = _load_and_validate_control_file(root, pages)
     issues.extend(control_issues)
     return KnowledgeBase(root=root, pages=pages, control=control), ValidationReport(issues=issues)

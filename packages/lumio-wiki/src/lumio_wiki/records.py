@@ -95,16 +95,28 @@ class ValidationReport(msgspec.Struct, frozen=True):
         return not any(issue.severity == "error" for issue in self.issues)
 
     def __str__(self) -> str:
-        if self.is_valid:
+        lines: list[str] = []
+        warnings = [i for i in self.issues if i.severity == "warning"]
+        errors = [i for i in self.issues if i.severity != "warning"]
+        if not self.issues:
             return "Knowledge base is valid."
-        return "\n".join(
-            (
-                f"WARNING: {issue.file}: {issue.field}: {issue.message}"
-                if issue.severity == "warning"
-                else f"{issue.file}: {issue.field}: {issue.message}"
+        if errors:
+            lines.extend(
+                f"{issue.file}: {issue.field}: {issue.message}"
+                for issue in self.issues
+                if issue.severity != "warning"
             )
-            for issue in self.issues
-        )
+        if warnings:
+            if self.is_valid:
+                lines.append("Knowledge base is valid.")
+            lines.extend(
+                f"WARNING: {issue.file}: {issue.field}: {issue.message}"
+                for issue in self.issues
+                if issue.severity == "warning"
+            )
+        if not lines:
+            return "Knowledge base is valid."
+        return "\n".join(lines)
 
 
 

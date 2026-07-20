@@ -985,7 +985,9 @@ def test_legacy_flat_mode_unaffected_by_extensible_catalog(tmp_path):
     kb, report = load_knowledge_base(root)
     assert kb.control is None
     warnings = [i for i in report.issues if i.severity == "warning"]
-    assert warnings and "Legacy Flat Mode" in warnings[0].message
+    assert any("Legacy Flat Mode" in w.message for w in warnings), [
+        w.message for w in warnings
+    ]
     assert report.is_valid
     # No category-path validation fires in Legacy Flat Mode.
     assert not any(i.field == "category" for i in report.issues)
