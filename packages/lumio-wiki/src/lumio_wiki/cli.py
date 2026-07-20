@@ -50,7 +50,6 @@ from lumio_wiki import (
     ProposalPipeline,
     ProposalPipelineError,
     SourceProvenance,
-    TextMarkdownSourceProcessor,
     is_reviewable_proposal,
     load_knowledge_base,
     seeded_control_file,
@@ -232,26 +231,27 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     content_type = args.content_type
     if content_type is None:
         suffix = source_path.suffix.lower()
-        content_type = "text/markdown" if suffix in {".md", ".markdown"} else "text/plain"
+        if suffix in {".md", ".markdown"}:
+            content_type = "text/markdown"
+        else:
+            content_type = "text/plain"
 
     ingest_dir = _resolve_ingest_dir(args, kb.root)
     ingest_dir.mkdir(parents=True, exist_ok=True)
     store = IngestStore(ingest_dir)
 
-    # The base wheel handles only text and Markdown Knowledge Sources. A
-    # non-text file requires a document converter (LiteParse / MarkItDown);
-    # name the exact extra the user must install rather than attempting a
-    # UTF-8 decode that would produce a garbage proposal (ADR-0010, PRD #93
-    # user story 18).
-    document_suffixes = {".pdf", ".docx", ".doc", ".html", ".htm", ".png", ".jpg",
-                         ".jpeg", ".gif", ".bmp", ".tiff", ".xls", ".xlsx",
-                         ".ppt", ".pptx", ".odt", ".ods", ".odp"}
-    if source_path.suffix.lower() in document_suffixes and not _detect_module("liteparse"):
-        raise CliError(
-            f"cannot ingest {source_path.suffix} file with the base install; "
-            f"install the document-converter extra:\n"
-            f"  pip install 'lumio-wiki[documents]'"
-        )
+    # Route through select_source_processor so text/Markdown uses the
+    # dependency-free processor and document sources (PDF, image, DOCX, HTML,
+    # ...) use LiteParse/MarkItDown from the [documents] extra (issue #100).
+    # When the extra is absent, the processor raises MissingDocumentExtraError
+    # with the exact install command; we surface it as an actionable CliError.
+    from lumio_wiki.ingest import select_source_processor
+    from lumio_wiki.source_processor import (
+        MissingDocumentExtraError,
+        SourceProcessorError,
+    )
+
+    processor = select_source_processor(source_path.name, content_type)
 
     # Stage through the public pipeline WITHOUT persisting raw bytes into the
     # ingest store. The default ingest store lives under ``<kb>/.lumio/ingest``
@@ -263,9 +263,12 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     # provenance, which is everything the review surface needs. Callers who
     # need raw-byte isolation can point ``--ingest-dir`` outside the KB root
     # and use ``create_proposal_without_provider`` directly.
-    normalized = TextMarkdownSourceProcessor().process(
-        source_path.name, content_type, raw_bytes
-    )
+    try:
+        normalized = processor.process(source_path.name, content_type, raw_bytes)
+    except MissingDocumentExtraError as exc:
+        raise CliError(str(exc)) from exc
+    except SourceProcessorError as exc:
+        raise CliError(str(exc)) from exc
     provenance = SourceProvenance(
         original_filename=source_path.name,
         content_type=content_type,
@@ -273,6 +276,13 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         source_hash=normalized.source_hash,
     )
     distilled = PassthroughMarkdownDistiller().distill(normalized)
+    # Document sources produce extracted text, not authored page Markdown.
+    # Wrap it in minimal frontmatter so the Proposal Pipeline can process it
+    # (same logic as create_proposal_without_provider, issue #100 AC3).
+    if normalized.converted_by in ("liteparse", "markitdown"):
+        from lumio_wiki.ingest import _ensure_page_frontmatter
+
+        distilled = _ensure_page_frontmatter(distilled, source_path.name)
     pipeline = ProposalPipeline(kb, store=store)
     proposal = pipeline.assemble(distilled, provenance, source_path.name)
     # Stage without raw_bytes so no .md file is written inside the KB root.

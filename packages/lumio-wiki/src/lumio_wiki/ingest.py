@@ -4,9 +4,12 @@ The canonical proposal model, page-extraction / diff / validation / blast-radius
 glue, the model-free ingestion entry point, and the filesystem-backed
 :class:`IngestStore` live here so a ``lumio-wiki``-only environment can run the
 full ingestion -> distill -> propose -> validate -> review -> publish -> discard
-journey. This module never imports LiteParse, MarkItDown, or an OpenAI provider:
-the document-converter routing and the provider Distiller are adapters that live
-in the full application (``lumio.ingest`` / ``lumio.distiller``).
+journey. This module never imports LiteParse, MarkItDown, or an OpenAI provider
+at the module level. Source-processor routing (including document formats via
+the ``[documents]`` extra) is handled by :func:`select_source_processor` (issue
+#100); the actual converter implementations live in
+:mod:`lumio_wiki.source_processor`. An OpenAI-compatible Distiller is an
+adapter in the full application (``lumio.distiller``).
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import difflib
 import tempfile
 from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import msgspec
 import msgspec.yaml as yaml
@@ -33,6 +37,9 @@ from lumio_wiki.records import (
     ValidationIssue,
     ValidationReport,
 )
+
+if TYPE_CHECKING:
+    from lumio_wiki.source_processor import SourceProcessor
 
 
 class SourceProvenance(msgspec.Struct, frozen=True):
@@ -151,6 +158,45 @@ def _provenance_for(normalized, filename, content_type):
         source_hash=normalized.source_hash,
     )
 
+def _ensure_page_frontmatter(text: str, filename: str | None) -> str:
+    """Wrap extracted document text in minimal page frontmatter.
+
+    Document converters (LiteParse, MarkItDown) produce extracted text, not
+    authored page Markdown. The Proposal Pipeline expects frontmatter; this
+    helper derives a title from the filename and wraps the text so it flows
+    through the same pipeline as text/Markdown sources. The host agent
+    refines the page during review (issue #100, AC3).
+    """
+    if text.startswith("---"):
+        return text
+    stem = Path(filename or "Extracted Source").stem
+    title = stem.replace("_", " ").replace("-", " ").strip().title() or "Extracted Source"
+    return f'---\ntitle: "{title}"\n---\n\n{text}'
+
+
+def select_source_processor(
+    filename: str | None, content_type: str | None
+) -> SourceProcessor:
+    """Route a Knowledge Source to its Source Processor (issue #100).
+
+    Text and Markdown sources use the dependency-free
+    :class:`TextMarkdownSourceProcessor`. Document sources (PDF, image, DOCX,
+    HTML, and broad document formats) use :class:`PdfSourceProcessor`
+    (LiteParse) or :class:`MarkItDownSourceProcessor` (MarkItDown) from the
+    ``[documents]`` extra. When the extra is absent, the document processor's
+    ``process`` raises :class:`MissingDocumentExtraError` with the exact
+    install command.
+    """
+    from lumio_wiki.source_processor import (
+        TextMarkdownSourceProcessor,
+        select_document_processor,
+    )
+
+    document_processor = select_document_processor(filename, content_type)
+    if document_processor is not None:
+        return document_processor
+    return TextMarkdownSourceProcessor()
+
 
 def create_proposal_without_provider(
     raw_bytes: bytes,
@@ -160,23 +206,30 @@ def create_proposal_without_provider(
     *,
     store: IngestStore | None = None,
 ) -> IngestProposal:
-    """Model-free ingestion for text and Markdown Knowledge Sources (issue #95, AC4).
+    """Model-free ingestion for text, Markdown, and document Knowledge Sources.
 
-    Uses the dependency-free :class:`TextMarkdownSourceProcessor` and the
-    :class:`PassthroughMarkdownDistiller` so a text or Markdown source reaches
-    a reviewable Ingest Proposal without LiteParse, MarkItDown, or an
-    OpenAI-compatible provider. When ``store`` is given, the proposal and raw
-    bytes are staged for review (raw bytes isolated from the Knowledge Base).
-    The host coding agent authors the Compiled Page Markdown; this entry
-    packages it through the same Proposal Pipeline.
+    Routes the source through :func:`select_source_processor` (text/Markdown →
+    :class:`TextMarkdownSourceProcessor`; documents → LiteParse/MarkItDown via
+    the ``[documents]`` extra) and distills through the
+    :class:`PassthroughMarkdownDistiller` so a source reaches a reviewable
+    Ingest Proposal without an OpenAI-compatible provider (issue #95, AC4;
+    document support added by issue #100). When ``store`` is given, the
+    proposal and raw bytes are staged for review (raw bytes isolated from the
+    Knowledge Base). The host coding agent authors the Compiled Page Markdown;
+    this entry packages it through the same Proposal Pipeline.
     """
     from lumio_wiki.distiller import PassthroughMarkdownDistiller
     from lumio_wiki.proposal_pipeline import ProposalPipeline
-    from lumio_wiki.source_processor import TextMarkdownSourceProcessor
 
-    normalized = TextMarkdownSourceProcessor().process(filename, content_type, raw_bytes)
+    processor = select_source_processor(filename, content_type)
+    normalized = processor.process(filename, content_type, raw_bytes)
     provenance = _provenance_for(normalized, filename, content_type)
     distilled = PassthroughMarkdownDistiller().distill(normalized)
+    # Document sources produce extracted text, not authored page Markdown.
+    # Wrap it in minimal frontmatter so the Proposal Pipeline can process it;
+    # the host agent refines the page during review (issue #100, AC3).
+    if normalized.converted_by in ("liteparse", "markitdown"):
+        distilled = _ensure_page_frontmatter(distilled, filename)
     pipeline = ProposalPipeline(kb, store=store)
     proposal = pipeline.assemble(distilled, provenance, filename)
     if store is not None:

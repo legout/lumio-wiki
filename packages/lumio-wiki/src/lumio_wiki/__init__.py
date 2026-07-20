@@ -25,6 +25,7 @@ from lumio_wiki.ingest import (
     compute_blast_radius,
     create_proposal_without_provider,
     is_reviewable_proposal,
+    select_source_processor,
 )
 from lumio_wiki.knowledge_base import (
     ACTIVITY_LOG_ARTIFACT,
@@ -134,12 +135,18 @@ from lumio_wiki.retrieval import (
     default_retrieval_adapter,
 )
 from lumio_wiki.source_processor import (
+    DOCUMENTS_EXTRA_HINT,
     DocumentSourceProcessor,
+    MarkItDownSourceProcessor,
+    MissingDocumentExtraError,
     NormalizedSection,
     NormalizedSource,
+    PdfSourceProcessor,
     SourceProcessor,
     SourceProcessorError,
     TextMarkdownSourceProcessor,
+    is_document_source,
+    select_document_processor,
 )
 
 __all__ = [
@@ -161,6 +168,7 @@ __all__ = [
     "ControlFileError",
     "DEFAULT_SEMANTIC_THRESHOLD",
     "Distiller",
+    "DOCUMENTS_EXTRA_HINT",
     "DocumentSourceProcessor",
     "Embedder",
     "EmbeddingDimensionMismatch",
@@ -188,6 +196,8 @@ __all__ = [
     "KnowledgeBaseControlFile",
     "KnowledgeBaseError",
     "NavigationIndexCollisionError",
+    "MarkItDownSourceProcessor",
+    "MissingDocumentExtraError",
     "NormalizedSection",
     "NormalizedSource",
     "OKF_PROFILE1_QUERY",
@@ -204,6 +214,7 @@ __all__ = [
     "OkfProfile1Import",
     "PageSearchResult",
     "PassthroughMarkdownDistiller",
+    "PdfSourceProcessor",
     "ProposalBlockedError",
     "ProposalPipeline",
     "ProposalPipelineError",
@@ -238,6 +249,7 @@ __all__ = [
     "import_okf_profile1",
     "is_fresh",
     "is_reviewable_proposal",
+    "is_document_source",
     "load_control_file",
     "load_knowledge_base",
     "make_activity_log_entry",
@@ -252,6 +264,8 @@ __all__ = [
     "regenerate_reserved_artifacts",
     "seeded_control_file",
     "select_export_pages",
+    "select_document_processor",
+    "select_source_processor",
     "validate",
     "validate_candidate_knowledge_base",
     "validate_proposed_control_file",

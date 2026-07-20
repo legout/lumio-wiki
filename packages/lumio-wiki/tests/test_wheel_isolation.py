@@ -471,3 +471,102 @@ def test_isolated_skill_install(isolated_wheel_env: dict, tmp_path: Path):
     from lumio_wiki.skill import resolve_skill_path
 
     assert (dest / "SKILL.md").read_text() == resolve_skill_path().read_text()
+
+
+
+# ---------------------------------------------------------------------------
+# Issue #100: [documents] extra isolation (AC4 + AC6)
+# ---------------------------------------------------------------------------
+
+
+def test_base_install_rejects_pdf_with_actionable_missing_extra_error(
+    isolated_wheel_env: dict, tmp_path: Path
+):
+    """AC4 + AC6: a base install (no documents extra) produces an actionable
+    error naming ``pip install 'lumio-wiki[documents]'`` when a PDF is
+    ingested, rather than a raw ImportError (PRD #93 user story 18)."""
+    python = isolated_wheel_env["python"]
+
+    # Verify liteparse/markitdown are genuinely absent in the isolated venv.
+    for module in ("liteparse", "markitdown"):
+        check = subprocess.run(
+            [str(python), "-c", f"import {module}"],
+            capture_output=True,
+            text=True,
+        )
+        assert check.returncode != 0, f"{module} should NOT be installed in base wheel"
+
+    # Init a KB so the ingest command can load it.
+    kb_root = tmp_path / "kb"
+    init_cmd = (
+        "from lumio_wiki.cli import main; import sys; "
+        f'sys.exit(main(["init", "{kb_root}"]))'
+    )
+    subprocess.run(
+        [str(python), "-c", init_cmd],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    # Write a minimal PDF and attempt to ingest it.
+    pdf_file = tmp_path / "source.pdf"
+    pdf_file.write_bytes(
+        b"%PDF-1.4\n1 0 obj<<>>endobj\nxref\n0 1\n"
+        b"0000000000 65535 f \ntrailer<<>>\nstartxref\n0\n%%EOF"
+    )
+    bin_dir = python.parent
+    script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
+    result = subprocess.run(
+        [str(script), "ingest", str(kb_root), str(pdf_file)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, "base install must NOT silently process a PDF"
+    combined = result.stdout + result.stderr
+    assert "lumio-wiki[documents]" in combined, (
+        f"missing-extra error must name the exact install command; got:\n{combined}"
+    )
+
+
+def test_base_install_rejects_docx_with_actionable_missing_extra_error(
+    isolated_wheel_env: dict, tmp_path: Path
+):
+    """AC4 + AC6: a base install produces the actionable error for DOCX too."""
+    python = isolated_wheel_env["python"]
+    kb_root = tmp_path / "kb"
+    init_cmd = (
+        "from lumio_wiki.cli import main; import sys; "
+        f'sys.exit(main(["init", "{kb_root}"]))'
+    )
+    subprocess.run(
+        [str(python), "-c", init_cmd],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    docx_file = tmp_path / "source.docx"
+    # Build a valid DOCX archive structure so the signature check passes
+    # and the converter (MarkItDown) is reached, triggering the missing-extra
+    # error rather than a format-validation error.
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "word/document.xml",
+            '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/></w:body></w:document>',
+        )
+    docx_file.write_bytes(buf.getvalue())
+    bin_dir = python.parent
+    script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
+    result = subprocess.run(
+        [str(script), "ingest", str(kb_root), str(docx_file)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "lumio-wiki[documents]" in combined
