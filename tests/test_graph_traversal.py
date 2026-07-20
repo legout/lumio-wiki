@@ -298,18 +298,29 @@ def test_edge_limit_stops_expansion_deterministically():
 
 
 # ---------------------------------------------------------------------------
-# Argument validation (scope reserved for #107, direction enforced).
+# Discovery scope (issue #107): now IMPLEMENTED, no longer reserved.
+#
+# The canonical test graph has no body links, so discovery scope traverses
+# exactly the same reviewed Relationships as canonical scope. The point of
+# these assertions is that ``scope="discovery"`` is now a valid, working value
+# that no longer raises ``NotImplementedError`` — flipping the #106 reservation.
+# Comprehensive Extracted-Reference behavior is covered in
+# ``packages/lumio-wiki/tests/test_discovery_graph.py``.
 # ---------------------------------------------------------------------------
 
 
-def test_discovery_scope_is_reserved_and_raises():
+def test_discovery_scope_is_now_implemented_and_works():
     kb = _kb()
-    # ``discovery`` scope (Extracted References / Discovery Graph) is a known
-    # scope value reserved for population in #107; not implemented here.
-    with pytest.raises(NotImplementedError):
-        kb.related_pages("Beta", scope="discovery")
-    with pytest.raises(NotImplementedError):
-        kb.shortest_path("Alpha", "Beta", scope="discovery")
+    # ``discovery`` no longer raises; over a Relationship-only graph it
+    # traverses the same edges as canonical scope.
+    assert kb.related_pages("Beta", scope="discovery") == ["Delta", "Gamma"]
+    assert kb.shortest_path("Alpha", "Delta", scope="discovery") == [
+        "Alpha",
+        "Beta",
+        "Delta",
+    ]
+    # ``shortest_path`` source == target still returns the singleton path.
+    assert kb.shortest_path("Alpha", "Alpha", scope="discovery") == ["Alpha"]
 
 
 def test_invalid_direction_raises():

@@ -1,6 +1,6 @@
 """Public interface for the portable Lumio Knowledge Base foundation."""
 
-from lumio_wiki.distiller import (
+from lumio_wiki.distiller import (  # noqa: I001
     Distiller,
     PassthroughMarkdownDistiller,
 )
@@ -28,6 +28,10 @@ from lumio_wiki.knowledge_base import (
     ACTIVITY_LOG_VERSION,
     CONTROL_FILE_BASENAME,
     CONTROL_FILE_VERSION,
+    EXTRACTOR_VERSION,
+    ExtractionDiagnostic,
+    GRAPH_SCOPE_CANONICAL,
+    GRAPH_SCOPE_DISCOVERY,
     HOT_INDEX_ARTIFACT,
     HOT_INDEX_BASENAME,
     HOT_INDEX_VERSION,
@@ -45,6 +49,7 @@ from lumio_wiki.knowledge_base import (
     ValidationReport,
     append_activity_log_entry,
     export_bundle,
+    extract_references,
     fingerprint_sources,
     generate_hot_index,
     generate_navigation_indexes,
@@ -107,6 +112,7 @@ from lumio_wiki.records import (
     ContentCategory,
     EmbeddingModelInfo,
     Evidence,
+    ExtractedReference,
     HotIndexPin,
     PageSearchResult,
     RegistryEntry,
@@ -133,6 +139,8 @@ __all__ = [
     "ACTIVITY_LOG_ARTIFACT",
     "ACTIVITY_LOG_BASENAME",
     "ACTIVITY_LOG_VERSION",
+    "EXTRACTOR_VERSION",
+    "ExtractionDiagnostic",
     "ActivityLogEntry",
     "as_sources",
     "BlastRadius",
@@ -154,6 +162,9 @@ __all__ = [
     "EmbeddingNotBuiltError",
     "Evidence",
     "ExportVisibilityScope",
+    "ExtractedReference",
+    "GRAPH_SCOPE_CANONICAL",
+    "GRAPH_SCOPE_DISCOVERY",
     "HOT_INDEX_ARTIFACT",
     "HOT_INDEX_BASENAME",
     "HOT_INDEX_VERSION",
@@ -206,6 +217,7 @@ __all__ = [
     "compute_blast_radius",
     "create_proposal_without_provider",
     "export_bundle",
+    "extract_references",
     "export_okf_profile1",
     "fingerprint_sources",
     "generate_hot_index",

@@ -24,9 +24,11 @@ from lumio_wiki.embeddings import (
 from lumio_wiki.fingerprint_store import load_stored_fingerprint
 from lumio_wiki.page_search import search_pages as search_pages_over
 from lumio_wiki.records import (
+    EXTRACTOR_VERSION,
     ActivityLogEntry,
     CompiledPage,
     ContentCategory,
+    ExtractedReference,
     HealthReport,
     HotIndexPin,
     KnowledgeBaseControlFile,
@@ -57,16 +59,19 @@ PREFERRED_RELATIONSHIP_TYPES = frozenset(
 )
 
 # ---------------------------------------------------------------------------
-# Public graph traversal seam (issue #106, ADR-0011).
+# Public graph traversal seam (issue #106, ADR-0011) and Discovery Graph
+# (issue #107).
 #
 # The canonical graph contains only reviewed, typed Relationships resolved by
-# Canonical Page Title. Traversal is direction-aware, cycle-safe, bounded by
-# explicit depth / expanded-edge / result limits, and restricted to a
-# caller-supplied authorized candidate page set so endpoint resolution and
+# Canonical Page Title. The Discovery Graph additionally contains Extracted
+# References: deterministic, non-canonical directed references derived from
+# exactly-resolved internal Markdown links and unambiguous wikilinks in
+# Compiled Page bodies (ADR-0011). Traversal is direction-aware, cycle-safe,
+# bounded by explicit depth / expanded-edge / result limits, and restricted to
+# a caller-supplied authorized candidate page set so endpoint resolution and
 # expansion can never surface a page the caller has no visibility to. The
-# ``scope`` parameter is canonical-only here; ``discovery`` (canonical
-# Relationships plus Extracted References) is a known, reserved value populated
-# by a later task, so its signature is stable.
+# ``scope`` parameter selects ``canonical`` (Relationships only) or
+# ``discovery`` (Relationships plus Extracted References).
 # ---------------------------------------------------------------------------
 GRAPH_SCOPE_CANONICAL = "canonical"
 GRAPH_SCOPE_DISCOVERY = "discovery"
@@ -85,13 +90,14 @@ DEFAULT_GRAPH_MAX_RESULTS = 50
 
 
 def _require_graph_scope(scope: str) -> None:
-    """Validate the graph scope, isolating the not-yet-implemented discovery case."""
-    if scope == GRAPH_SCOPE_DISCOVERY:
-        raise NotImplementedError(
-            "discovery graph scope (Extracted References and the Discovery "
-            "Graph) is not available yet; it is populated by a later task "
-            "(ADR-0011). Use scope='canonical'."
-        )
+    """Validate the graph scope.
+
+    Both scopes are implemented (ADR-0011, issue #107):
+    ``canonical`` contains only reviewed typed Relationships, and
+    ``discovery`` contains canonical Relationships plus Extracted References
+    derived from exactly-resolved internal links. An unknown value raises
+    ``ValueError``.
+    """
     if scope not in GRAPH_SCOPE_VALUES:
         raise ValueError(
             f"unknown graph scope {scope!r}; expected one of {sorted(GRAPH_SCOPE_VALUES)}"
@@ -377,12 +383,14 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
     ) -> list[str]:
         """Return the bounded, authorized Canonical Page Titles related to ``title``.
 
-        Expands canonical-graph neighbors breadth-first up to ``max_depth``
-        Relationship hops, following ``direction`` (``"outgoing"``,
-        ``"incoming"``, or ``"both"``). Only ``scope="canonical"`` (typed
-        Relationships) is supported; ``"discovery"`` is reserved for Extracted
-        References and the Discovery Graph (ADR-0011) and is populated by a
-        later task.
+        Expands graph neighbors breadth-first up to ``max_depth`` hops,
+        following ``direction`` (``"outgoing"``, ``"incoming"``, or
+        ``"both"``). ``scope`` selects the graph: ``"canonical"`` (default)
+        traverses only reviewed typed Relationships; ``"discovery"`` traverses
+        canonical Relationships PLUS Extracted References derived from
+        exactly-resolved internal links in Compiled Page bodies (ADR-0011,
+        issue #107). In discovery scope, equivalent edges (same
+        source_title -> target_title) are deduplicated to a single endpoint.
 
         Traversal operates ONLY over ``candidate_titles`` — the
         already-authorized Canonical Page Titles the caller has visibility to.
@@ -391,8 +399,8 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         is the authorized universe. ``title`` itself is never included in the
         result.
 
-        ``max_edges`` bounds the number of Relationship edges inspected/expanded
-        and ``max_results`` bounds the returned title count; both truncate
+        ``max_edges`` bounds the number of edges inspected/expanded and
+        ``max_results`` bounds the returned title count; both truncate
         deterministically (results are sorted by Canonical Page Title).
         ``max_depth``, ``max_edges``, and ``max_results`` must all be
         non-negative. When ``title`` is not in the authorized candidate set the
@@ -406,7 +414,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         candidate = self._graph_candidate(candidate_titles)
         if title not in candidate:
             return []
-        neighbors = self._graph_neighbor_fn(direction)
+        neighbors = self._graph_neighbor_fn(direction, scope)
 
         visited = {title}
         found: list[str] = []
@@ -453,11 +461,13 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
     ) -> list[str] | None:
         """Return the directed shortest path between two Canonical Page Titles.
 
-        Performs a cycle-safe breadth-first search over the canonical graph,
-        following ``direction`` (``"outgoing"``, ``"incoming"``, or
-        ``"both"``). ``"outgoing"`` follows Relationship source->target edges;
-        ``"incoming"`` follows them in reverse; ``"both"`` treats them as
-        undirected. Only ``scope="canonical"`` is supported here.
+        Performs a cycle-safe breadth-first search over the graph, following
+        ``direction`` (``"outgoing"``, ``"incoming"``, or ``"both"``).
+        ``"outgoing"`` follows source->target edges; ``"incoming"`` follows
+        them in reverse; ``"both"`` treats them as undirected. ``scope``
+        selects the graph: ``"canonical"`` (default) uses only reviewed typed
+        Relationships; ``"discovery"`` uses canonical Relationships PLUS
+        Extracted References (ADR-0011, issue #107).
 
         Traversal operates ONLY over ``candidate_titles``: both endpoints and
         every intermediate title must be in the authorized set, or ``None`` is
@@ -477,7 +487,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             return [source_title] if source_title in candidate else None
         if source_title not in candidate or target_title not in candidate:
             return None
-        neighbors = self._graph_neighbor_fn(direction)
+        neighbors = self._graph_neighbor_fn(direction, scope)
 
         visited = {source_title}
         queue: deque[tuple[str, list[str]]] = deque(
@@ -513,23 +523,32 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             )
         return frozenset(candidate_titles)
 
-    def _graph_neighbor_fn(self, direction: str):
+    def _graph_neighbor_fn(self, direction: str, scope: str = GRAPH_SCOPE_CANONICAL):
         """Return a ``title -> iterable[(endpoint, relationship_type)]`` closure.
 
-        Yields the RAW canonical Relationship edges reachable from ``title``
-        per ``direction`` in deterministic ``(endpoint, relationship_type)``
-        order, WITHOUT materializing, de-duplicating, or sorting a per-node
-        neighbor list. The caller debits its expanded-edge budget per eligible
-        edge as it inspects them, applying the relationship-type, candidate-set,
-        and self-loop filters itself (those filters do not expand the graph).
+        Yields the RAW edges reachable from ``title`` per ``direction`` in
+        deterministic ``(endpoint, relationship_type)`` order, WITHOUT
+        materializing, de-duplicating, or sorting a per-node neighbor list.
+        The caller debits its expanded-edge budget per eligible edge as it
+        inspects them, applying the relationship-type, candidate-set, and
+        self-loop filters itself (those filters do not expand the graph).
+
+        ``scope`` selects the graph: ``canonical`` uses only reviewed typed
+        Relationships; ``discovery`` uses canonical Relationships PLUS
+        Extracted References (equivalent edges deduplicated to a single
+        endpoint). Extracted edges carry an empty relationship type.
 
         Determinism comes from the adjacency being stored pre-sorted by
         ``(endpoint, relationship_type)`` in ``_KnowledgeIndex``; ``both``
         direction lazily merges the two pre-sorted streams via ``heapq.merge``.
         """
         index = self._knowledge_index()
-        outgoing = index.adjacency
-        incoming = index.incoming
+        if scope == GRAPH_SCOPE_DISCOVERY:
+            outgoing = index.discovery_adjacency
+            incoming = index.discovery_incoming
+        else:
+            outgoing = index.adjacency
+            incoming = index.incoming
 
         if direction == GRAPH_DIRECTION_OUTGOING:
 
@@ -549,6 +568,36 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
                 )
 
         return neighbors
+
+    # ------------------------------------------------------------------
+    # Discovery Graph inspection (issue #107, ADR-0011).
+    # ------------------------------------------------------------------
+
+    def extracted_references(self, title: str) -> list[ExtractedReference]:
+        """Return the deduplicated Extracted References whose source is ``title``.
+
+        Each Extracted Reference carries the source path and the FIRST source
+        occurrence line range as provenance for inspection. Equivalent edges
+        (same source_title -> target_title) appear once. The list is sorted by
+        ``(target_title, line_start)`` for deterministic inspection. Returns an
+        empty list when ``title`` has no extracted outgoing references.
+        """
+        refs = self._knowledge_index().extracted_references
+        owned = [ref for ref in refs if ref.source_title == title]
+        return sorted(owned, key=lambda r: (r.target_title, r.line_start, r.source_path))
+
+    def extraction_diagnostics(self) -> list[ExtractionDiagnostic]:
+        """Return non-blocking diagnostics from Extracted Reference resolution.
+
+        Broken and ambiguous link targets are excluded from the traversable
+        Discovery Graph and surfaced here as non-blocking diagnostics so a
+        Maintainer can fix the Markdown. External URLs, escaping paths, and
+        reserved-artifact targets are expected, correct exclusions and are
+        intentionally silent. These are derived-state diagnostics, not
+        blocking validation errors: a resolved link is deterministic and
+        does not require Maintainer approval (ADR-0011).
+        """
+        return list(self._knowledge_index().extraction_diagnostics)
 
     def build_index(
         self,
@@ -762,6 +811,403 @@ def export_bundle(kb: KnowledgeBase) -> str:
     return "\n".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Discovery Graph: Extracted References from internal links (issue #107,
+# ADR-0011).
+#
+# An Extracted Reference is a deterministic, non-canonical directed reference
+# derived from an internal Markdown link or unambiguous wikilink in a Compiled
+# Page body. It is produced ONLY when the link target resolves to exactly one
+# Compiled Page (by canonical title first, then alias). External URLs, escaping
+# paths, broken targets, ambiguous targets, duplicates, and valid Reserved
+# Artifacts are excluded and surfaced as non-blocking diagnostics. Extraction
+# never mutates the page body or frontmatter and never promotes a reference
+# into a typed Relationship. An Extracted Reference is never Evidence.
+# ---------------------------------------------------------------------------
+
+
+class ExtractionDiagnostic(msgspec.Struct, frozen=True):
+    """A non-blocking diagnostic from Extracted Reference resolution.
+
+    Broken, ambiguous, escaping, external, duplicate, or reserved-artifact
+    link targets are dropped from the traversable Discovery Graph and surfaced
+    here so Maintainers can act on them through existing health/validation
+    contracts. Diagnostics are never blocking validation errors: a resolved
+    link is derived state, not a semantic claim (ADR-0011).
+    """
+
+    source_path: str
+    line_start: int
+    target: str
+    kind: str
+    detail: str
+
+
+# Markdown link syntax: ``[label](destination)``. The ``!`` prefix (images) is
+# excluded explicitly so ``![alt](x.md)`` is not treated as a reference. The
+# destination is captured without the fragment/query so resolution is by path.
+_MARKDOWN_LINK_RE = re.compile(
+    r"(?<!\!)\[(?P<label>[^\]]*)\]\((?P<dest>[^)\s]+)(?:\s+\"[^\"]*\")?\)"
+)
+# Wikilink syntax: ``[[Target]]`` or ``[[Target|alias]]``.
+_WIKILINK_RE = re.compile(r"\[\[(?P<target>[^|\]]+)(?:\|[^\]]*)?\]\]")
+# Schemes that mark a destination as external (non-navigational).
+_EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto", "ftp", "ftps", "tel"})
+
+
+def _is_external_destination(dest: str) -> bool:
+    """Return whether ``dest`` is an external URL or anchor-only reference."""
+    if not dest:
+        return True
+    if dest.startswith("#"):
+        return True
+    lower = dest.lower()
+    for scheme in _EXTERNAL_SCHEMES:
+        if lower.startswith(scheme + ":"):
+            return True
+    # Protocol-relative URL (``//host``).
+    if dest.startswith("//"):
+        return True
+    return False
+
+
+def _is_escaping_destination(dest: str) -> bool:
+    """Return whether ``dest`` would leave the Knowledge Base root.
+
+    Any path containing a ``..`` segment is treated as escaping: the Discovery
+    Graph only resolves links within the Knowledge Base, and a parent
+    traversal has no defined target page. (A ``..`` that net-stays-in-root by
+    path arithmetic would still be ambiguous across reloads, so it is excluded
+    deterministically.)
+    """
+    parts = dest.replace("\\", "/").split("/")
+    return any(part == ".." for part in parts)
+
+
+def _destination_basename(dest: str) -> str:
+    """Return the case-insensitive basename of ``dest`` (for reserved checks).
+
+    The fragment and query are stripped first so ``page.md#section`` resolves
+    by its path basename. Returns the empty string for an empty/bare dest.
+    """
+    cleaned = dest.split("#", 1)[0].split("?", 1)[0].strip()
+    if not cleaned:
+        return ""
+    tail = cleaned.rstrip("/").split("/")[-1]
+    return tail.lower()
+
+
+def _destination_stem(dest: str) -> str:
+    """Return ``dest`` with any ``./`` prefix and ``.md`` suffix removed.
+
+    Used to match a link destination against a Compiled Page ``path``. Both
+    sides are compared case-insensitively after normalization so a link to
+    ``Beta.md`` resolves to a page whose path is ``beta.md``.
+    """
+    cleaned = dest.split("#", 1)[0].split("?", 1)[0].strip()
+    if cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    if cleaned.lower().endswith(".md"):
+        cleaned = cleaned[: -len(".md")]
+    return cleaned
+
+
+def _resolve_link_target(
+    dest: str,
+    by_title: dict[str, list[CompiledPage]],
+    by_alias: dict[str, list[CompiledPage]],
+    by_path: dict[str, CompiledPage],
+    source_dir: str = "",
+) -> tuple[CompiledPage | None, str]:
+    """Resolve a link destination to exactly one Compiled Page.
+
+    Returns ``(page, reason)`` where ``reason`` is ``"ok"`` on a unique match,
+    or one of ``"broken"``, ``"ambiguous"``, ``"reserved"`` describing why no
+    traversable target was produced. Canonical title is tried first, then
+    alias, then path-stem match. Exactly one match across all tried keys is
+    required; zero or more-than-one is dropped.
+    """
+    if _is_external_destination(dest):
+        return None, "external"
+    if _is_escaping_destination(dest):
+        return None, "escaping"
+
+    basename = _destination_basename(dest)
+    if basename in RESERVED_ARTIFACT_MARKERS:
+        return None, "reserved"
+
+    stem = _destination_stem(dest)
+
+    # 1. Canonical title match (case-insensitive on the stem when it looks
+    #    like a title rather than a path).
+    title_matches: list[CompiledPage] = []
+    for key, pages in by_title.items():
+        if key.casefold() == stem.casefold():
+            title_matches.extend(pages)
+    if len(title_matches) == 1:
+        return title_matches[0], "ok"
+    if len(title_matches) > 1:
+        return None, "ambiguous"
+
+    # 2. Alias match.
+    alias_matches: list[CompiledPage] = []
+    for key, pages in by_alias.items():
+        if key.casefold() == stem.casefold():
+            alias_matches.extend(pages)
+    if len(alias_matches) == 1:
+        return alias_matches[0], "ok"
+    if len(alias_matches) > 1:
+        return None, "ambiguous"
+
+    # 3. Path-stem match. Relative links resolve against the source page's
+    #    directory first (so ``[x](b.md)`` in ``guide/a.md`` finds
+    #    ``guide/b.md``), then fall back to the stem as-is. Root-absolute
+    #    links (``/guide/b.md``) match after stripping the leading slash.
+    folded = stem.casefold().lstrip("/")
+    if source_dir:
+        path_match = by_path.get(f"{source_dir}/{folded}")
+        if path_match is not None:
+            return path_match, "ok"
+    path_match = by_path.get(folded)
+    if path_match is not None:
+        return path_match, "ok"
+
+    return None, "broken"
+
+
+def _resolve_wikilink_target(
+    target: str,
+    by_title: dict[str, list[CompiledPage]],
+    by_alias: dict[str, list[CompiledPage]],
+) -> tuple[CompiledPage | None, str]:
+    """Resolve a wikilink target to exactly one Compiled Page.
+
+    Wikilinks target by canonical title or alias (never by file path). The
+    same single-match collision rule as other Knowledge Base lookup applies.
+    """
+    folded = target.strip().casefold()
+    if not folded:
+        return None, "broken"
+
+    title_matches: list[CompiledPage] = []
+    for key, pages in by_title.items():
+        if key.casefold() == folded:
+            title_matches.extend(pages)
+    if len(title_matches) == 1:
+        return title_matches[0], "ok"
+    if len(title_matches) > 1:
+        return None, "ambiguous"
+
+    alias_matches: list[CompiledPage] = []
+    for key, pages in by_alias.items():
+        if key.casefold() == folded:
+            alias_matches.extend(pages)
+    if len(alias_matches) == 1:
+        return alias_matches[0], "ok"
+    if len(alias_matches) > 1:
+        return None, "ambiguous"
+
+    return None, "broken"
+
+
+def _scan_body_links(
+    body: str, body_start_line: int
+) -> list[tuple[str, int, int]]:
+    """Return ``(destination_or_target, line_start, line_end)`` for each link.
+
+    Scans for Markdown links ``[label](dest)`` (excluding images) and
+    wikilinks ``[[Target]]`` / ``[[Target|alias]]``. Line numbers are 1-based
+    and offset by ``body_start_line`` so they map to real source file lines.
+    Links whose opening bracket is inside an inline-code span (backticks) are
+    skipped: code is not navigational.
+    """
+    # Build a set of character spans covered by inline code so we can skip
+    # links whose opening bracket lands inside code. A single-backtick span
+    # is the common case; we treat backtick runs of any length as code fences.
+    code_spans: list[tuple[int, int]] = []
+    in_code = False
+    fence_len = 0
+    code_start = 0
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "`":
+            run = 0
+            j = i
+            while j < len(body) and body[j] == "`":
+                run += 1
+                j += 1
+            if not in_code:
+                in_code = True
+                fence_len = run
+                code_start = i
+            elif run == fence_len:
+                in_code = False
+                code_spans.append((code_start, j))
+                fence_len = 0
+            i = j
+        else:
+            i += 1
+    if in_code:
+        code_spans.append((code_start, len(body)))
+
+    def in_code_span(pos: int) -> bool:
+        for start, end in code_spans:
+            if start <= pos < end:
+                return True
+        return False
+
+    # Precompute the file-line of each body character for range mapping.
+    line_starts: list[int] = [0]
+    for idx, ch in enumerate(body):
+        if ch == "\n":
+            line_starts.append(idx + 1)
+
+    def char_to_file_line(pos: int) -> int:
+        # 1-based body line of pos, then offset by body_start_line.
+        import bisect
+
+        body_line = bisect.bisect_right(line_starts, pos)
+        return body_start_line + body_line - 1
+
+    found: list[tuple[str, int, int]] = []
+
+    for match in _MARKDOWN_LINK_RE.finditer(body):
+        if in_code_span(match.start()):
+            continue
+        dest = match.group("dest")
+        start_line = char_to_file_line(match.start())
+        end_line = char_to_file_line(match.end() - 1)
+        found.append((dest, start_line, max(start_line, end_line)))
+
+    for match in _WIKILINK_RE.finditer(body):
+        if in_code_span(match.start()):
+            continue
+        target = match.group("target")
+        start_line = char_to_file_line(match.start())
+        end_line = char_to_file_line(match.end() - 1)
+        found.append((target, start_line, max(start_line, end_line)))
+
+    return found
+
+
+def _extract_references(
+    pages: Sequence[CompiledPage],
+) -> tuple[list[ExtractedReference], list[ExtractionDiagnostic]]:
+    """Derive deduplicated Extracted References from Compiled Page bodies.
+
+    Returns ``(references, diagnostics)``. References are deduplicated by
+    ``(source_title, target_title)``: the FIRST source occurrence (by file
+    line) is retained as provenance; later equivalents are dropped. Both
+    lists are returned in deterministic order (references sorted by
+    ``(source_title, target_title, line_start, source_path)``; diagnostics
+    sorted by ``(source_path, line_start, target)``).
+
+    Extraction is pure: it never mutates a page body or frontmatter and never
+    promotes a reference into a typed Relationship.
+    """
+    by_title: dict[str, list[CompiledPage]] = {}
+    by_alias: dict[str, list[CompiledPage]] = {}
+    by_path: dict[str, CompiledPage] = {}
+    for page in pages:
+        if page.title:
+            by_title.setdefault(page.title, []).append(page)
+        for alias in page.aliases:
+            if alias:
+                by_alias.setdefault(alias, []).append(page)
+        if page.path:
+            stem = page.path
+            if stem.lower().endswith(".md"):
+                stem = stem[: -len(".md")]
+            by_path.setdefault(stem.casefold(), page)
+
+    raw: list[ExtractedReference] = []
+    diagnostics: list[ExtractionDiagnostic] = []
+
+    # Iterate pages in a stable order (by path then title) so diagnostics and
+    # first-occurrence provenance are deterministic regardless of insertion
+    # order. This mirrors the canonical adjacency determinism contract.
+    ordered = sorted(pages, key=lambda p: (p.path, p.title))
+    for page in ordered:
+        if not page.body or not page.title:
+            continue
+        source_dir = _page_dir(page.path)
+        for dest, line_start, line_end in _scan_body_links(page.body, page.body_start_line):
+            # Try Markdown-link resolution first (path-aware), then wikilink
+            # resolution (title/alias only). A bare ``[[Target]]`` has no path
+            # so it is resolved as a wikilink; a ``[label](path.md)`` is
+            # resolved as a Markdown link.
+            if dest and (":" in dest or dest.startswith("/") or dest.startswith(".")):
+                target_page, reason = _resolve_link_target(
+                    dest, by_title, by_alias, by_path, source_dir
+                )
+            else:
+                # Could be a wikilink target or a bare Markdown destination.
+                target_page, reason = _resolve_link_target(
+                    dest, by_title, by_alias, by_path, source_dir
+                )
+                if reason == "broken":
+                    # Fall back to wikilink-style title/alias resolution.
+                    target_page, reason = _resolve_wikilink_target(
+                        dest, by_title, by_alias
+                    )
+
+            if target_page is not None:
+                if target_page.title == page.title:
+                    # Self-links produce no traversable edge.
+                    continue
+                raw.append(
+                    ExtractedReference(
+                        source_title=page.title,
+                        target_title=target_page.title,
+                        origin="markdown-link",
+                        source_path=page.path,
+                        line_start=line_start,
+                        line_end=line_end,
+                        extractor_version=EXTRACTOR_VERSION,
+                    )
+                )
+            elif reason in {"broken", "ambiguous"}:
+                diagnostics.append(
+                    ExtractionDiagnostic(
+                        source_path=page.path,
+                        line_start=line_start,
+                        target=dest,
+                        kind=reason,
+                        detail=(
+                            f"{reason} extracted-link target: {dest}"
+                        ),
+                    )
+                )
+            # ``external``, ``escaping``, ``reserved`` are intentionally
+            # silent: they are expected, non-actionable exclusions.
+
+    # Deduplicate by (source_title, target_title), keeping the first occurrence
+    # by (line_start, source_path) for stable provenance.
+    seen: set[tuple[str, str]] = set()
+    deduped: list[ExtractedReference] = []
+    for ref in sorted(
+        raw,
+        key=lambda r: (r.source_title, r.target_title, r.line_start, r.source_path),
+    ):
+        key = (ref.source_title, ref.target_title)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(ref)
+
+    diagnostics.sort(key=lambda d: (d.source_path, d.line_start, d.target))
+    return deduped, diagnostics
+
+
+def extract_references(pages: Sequence[CompiledPage]) -> list[ExtractedReference]:
+    """Public extraction entrypoint: return deduplicated Extracted References.
+
+    Equivalent to ``_extract_references(pages)[0]``. Exposed for inspection and
+    so callers can derive references without constructing a full KnowledgeBase.
+    """
+    return _extract_references(pages)[0]
+
 class _KnowledgeIndex:
     """In-memory exact-lookup and graph indexes derived from a list of pages."""
 
@@ -800,6 +1246,51 @@ class _KnowledgeIndex:
         for edges in self.adjacency.values():
             edges.sort()
         for edges in self.incoming.values():
+            edges.sort()
+
+        # Discovery Graph adjacency (issue #107, ADR-0011): canonical
+        # Relationships PLUS Extracted References, with equivalent edges
+        # (same source_title -> target_title) deduplicated deterministically.
+        # An extracted edge to a target already reachable via a canonical
+        # Relationship is not added again, so discovery traversal surfaces
+        # each endpoint once. Extracted edges carry an empty relationship
+        # type so the existing per-edge budget loop treats them uniformly.
+        extracted, diags = _extract_references(pages)
+        self.extracted_references = extracted
+        self.extraction_diagnostics = diags
+        self.discovery_adjacency: dict[str, list[tuple[str, str]]] = {}
+        self.discovery_incoming: dict[str, list[tuple[str, str]]] = {}
+        for source_title, edges in self.adjacency.items():
+            seen: set[str] = set()
+            merged: list[tuple[str, str]] = []
+            for endpoint, rtype in edges:
+                if endpoint in seen:
+                    continue
+                seen.add(endpoint)
+                merged.append((endpoint, rtype))
+            self.discovery_adjacency[source_title] = merged
+        for ref in extracted:
+            bucket = self.discovery_adjacency.setdefault(ref.source_title, [])
+            if any(endpoint == ref.target_title for endpoint, _ in bucket):
+                continue
+            bucket.append((ref.target_title, ""))
+        for source_title, edges in self.incoming.items():
+            seen_in: set[str] = set()
+            merged_in: list[tuple[str, str]] = []
+            for endpoint, rtype in edges:
+                if endpoint in seen_in:
+                    continue
+                seen_in.add(endpoint)
+                merged_in.append((endpoint, rtype))
+            self.discovery_incoming[source_title] = merged_in
+        for ref in extracted:
+            bucket = self.discovery_incoming.setdefault(ref.target_title, [])
+            if any(endpoint == ref.source_title for endpoint, _ in bucket):
+                continue
+            bucket.append((ref.source_title, ""))
+        for edges in self.discovery_adjacency.values():
+            edges.sort()
+        for edges in self.discovery_incoming.values():
             edges.sort()
 
 

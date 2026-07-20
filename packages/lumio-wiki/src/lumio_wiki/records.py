@@ -32,6 +32,33 @@ class Relationship(msgspec.Struct, frozen=True):
     type: str = ""
 
 
+# The version of the internal-link extractor that produced an
+# ``ExtractedReference`` (ADR-0011, issue #107). Bumped only when the
+# extraction algorithm changes in a way that would alter the derived set.
+EXTRACTOR_VERSION = "1"
+
+
+class ExtractedReference(msgspec.Struct, frozen=True):
+    """A deterministic, non-canonical directed reference derived from a body link.
+
+    An Extracted Reference is produced when an internal Markdown link or
+    unambiguous wikilink in a Compiled Page body resolves to exactly one
+    Compiled Page. It records the source and target page identity (by Canonical
+    Page Title), the ``markdown-link`` origin, the source path and 1-based line
+    range for inspection, and the extractor version. It has only
+    reference/navigation meaning: it is never Evidence, never a typed
+    Relationship, and is never written back into frontmatter (ADR-0011).
+    """
+
+    source_title: str
+    target_title: str
+    origin: str = "markdown-link"
+    source_path: str = ""
+    line_start: int = 0
+    line_end: int = 0
+    extractor_version: str = EXTRACTOR_VERSION
+
+
 class CompiledPage(msgspec.Struct, frozen=True):
     """A loaded Markdown page from a Knowledge Base."""
 
