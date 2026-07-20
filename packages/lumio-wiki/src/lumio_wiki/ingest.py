@@ -12,26 +12,24 @@ in the full application (``lumio.ingest`` / ``lumio.distiller``).
 from __future__ import annotations
 
 import difflib
-import hashlib
 import tempfile
-import uuid
 from collections.abc import Iterable
-from datetime import UTC, datetime
 from pathlib import Path
 
 import msgspec
 import msgspec.yaml as yaml
 
-from lumio_wiki import KnowledgeBaseControlFile, OkfImportDiagnostic, validate
 from lumio_wiki.knowledge_base import (
+    KnowledgeBaseControlFile,
     _as_relationships,
     _as_sources,
     _as_string_list,
     _parse_frontmatter,
+    validate,
 )
+from lumio_wiki.okf import OkfImportDiagnostic
 from lumio_wiki.records import (
     CompiledPage,
-    Source,
     ValidationIssue,
     ValidationReport,
 )
@@ -160,7 +158,7 @@ def create_proposal_without_provider(
     filename: str | None,
     kb,
     *,
-    store: "IngestStore | None" = None,
+    store: IngestStore | None = None,
 ) -> IngestProposal:
     """Model-free ingestion for text and Markdown Knowledge Sources (issue #95, AC4).
 

@@ -1,5 +1,9 @@
 """Public interface for the portable Lumio Knowledge Base foundation."""
 
+from lumio_wiki.distiller import (
+    Distiller,
+    PassthroughMarkdownDistiller,
+)
 from lumio_wiki.embeddings import (
     DEFAULT_SEMANTIC_THRESHOLD,
     Embedder,
@@ -7,6 +11,16 @@ from lumio_wiki.embeddings import (
     EmbeddingError,
     EmbeddingNotBuiltError,
     RetrievalMode,
+)
+from lumio_wiki.ingest import (
+    BlastRadius,
+    IngestProposal,
+    IngestStore,
+    ProposedPage,
+    SourceProvenance,
+    compute_blast_radius,
+    create_proposal_without_provider,
+    is_reviewable_proposal,
 )
 from lumio_wiki.knowledge_base import (
     ACTIVITY_LOG_ARTIFACT,
@@ -70,10 +84,23 @@ from lumio_wiki.okf import (
     OkfProfile1Export,
     OkfProfile1Import,
     export_okf_profile1,
+    import_external_compiled_markdown,
     import_okf_profile1,
     select_export_pages,
 )
 from lumio_wiki.page_search import normalize_search_query
+from lumio_wiki.proposal_pipeline import (
+    ProposalBlockedError,
+    ProposalPipeline,
+    ProposalPipelineError,
+)
+from lumio_wiki.publish import (
+    PublishError,
+    apply_compound_revision,
+    apply_proposed_pages,
+    merge_compound_sources,
+    validate_candidate_knowledge_base,
+)
 from lumio_wiki.records import (
     ActivityLogEntry,
     Citation,
@@ -87,32 +114,6 @@ from lumio_wiki.records import (
     RetrievalTrace,
     SourceFingerprint,
     TraceStage,
-)
-from lumio_wiki.distiller import (
-    Distiller,
-    PassthroughMarkdownDistiller,
-)
-from lumio_wiki.ingest import (
-    BlastRadius,
-    IngestProposal,
-    IngestStore,
-    ProposedPage,
-    SourceProvenance,
-    compute_blast_radius,
-    create_proposal_without_provider,
-    is_reviewable_proposal,
-)
-from lumio_wiki.proposal_pipeline import (
-    ProposalBlockedError,
-    ProposalPipeline,
-    ProposalPipelineError,
-)
-from lumio_wiki.publish import (
-    PublishError,
-    apply_compound_revision,
-    apply_proposed_pages,
-    merge_compound_sources,
-    validate_candidate_knowledge_base,
 )
 from lumio_wiki.retrieval import (
     RetrievalAdapter,
@@ -194,6 +195,7 @@ __all__ = [
     "SEED_CATEGORY_CATALOG",
     "Source",
     "SourceFingerprint",
+    "SourceProvenance",
     "SourceProcessor",
     "SourceProcessorError",
     "TextMarkdownSourceProcessor",
@@ -208,6 +210,7 @@ __all__ = [
     "fingerprint_sources",
     "generate_hot_index",
     "generate_navigation_indexes",
+    "import_external_compiled_markdown",
     "import_okf_profile1",
     "is_fresh",
     "is_reviewable_proposal",

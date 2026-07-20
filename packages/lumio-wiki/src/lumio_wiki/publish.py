@@ -22,7 +22,11 @@ import msgspec.yaml as yaml
 
 from lumio_wiki.knowledge_base import (
     _as_sources as as_sources,
+)
+from lumio_wiki.knowledge_base import (
     _parse_frontmatter as parse_frontmatter,
+)
+from lumio_wiki.knowledge_base import (
     load_knowledge_base,
     validate,
 )

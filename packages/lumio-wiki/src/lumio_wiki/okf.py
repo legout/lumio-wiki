@@ -602,11 +602,24 @@ class OkfProfile1Import(msgspec.Struct, frozen=True):
     skipped_files: list[str] = msgspec.field(default_factory=list)
 
 
-# The standard OKF frontmatter keys that carry canonical Lumio semantics. They
-# are mapped onto the proposed page; everything else (``type``, ``resource``,
-# ``timestamp``, producer extensions) is exchange-boundary and dropped at
-# canonicalization.
-_OKF_STANDARD_KEYS = {"title", "description", "tags"}
+# The generic external Compiled Page frontmatter vocabulary accepted by this
+# import boundary. It is source-shape based: no producer name receives special
+# treatment. ``description`` remains the OKF fallback for ``summary``.
+_EXTERNAL_PAGE_KEYS = {
+    "title",
+    "summary",
+    "description",
+    "tags",
+    "aliases",
+    "lifecycle",
+    "visibility",
+    "sources",
+    "relationships",
+    "synthetic",
+    "type",
+    "resource",
+    "timestamp",
+}
 # The Profile 1 identification block emitted beneath ``lumio:`` by the
 # exporter (:func:`_lumio_profile_lines`). These keys are recognized Profile 1
 # identification — ``_classify_lumio_extension`` reads ``profile_version`` to
@@ -797,18 +810,35 @@ def _humanize_filename_stem(rel: str) -> str:
     return " ".join(word.capitalize() for word in words) or stem
 
 
-def _okf_description(data: dict[str, Any]) -> str | None:
-    """Return a non-empty OKF ``description`` mapped to summary, or None.
+class _ImportParsingPolicy(StrEnum):
+    """Internal policy selecting trusted frontmatter vocabulary during import."""
 
-    A missing or blank description returns ``None`` so the importer leaves the
-    summary absent and the ordinary Core SDK summary warning stands, rather
-    than inventing semantic content.
+    GENERIC_OKF = "generic-okf"
+    EXTERNAL_COMPILED_MARKDOWN = "external-compiled-markdown"
+
+
+def _okf_description(
+    data: dict[str, Any], parsing_policy: _ImportParsingPolicy
+) -> str | None:
+    """Return a non-empty OKF description or external Compiled Page summary.
+
+    Top-level ``summary`` is canonical Compiled Page vocabulary and is accepted
+    only by the explicit external adapter. Generic OKF import maps only the
+    standard ``description`` field.
     """
-    value = data.get("description")
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
+    keys = (
+        ("summary", "description")
+        if parsing_policy is _ImportParsingPolicy.EXTERNAL_COMPILED_MARKDOWN
+        else ("description",)
+    )
+    for key in keys:
+        value = data.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
 
 
 def _classify_lumio_extension(lumio: Any) -> str:
@@ -896,6 +926,34 @@ def _diagnose_dropped_okf_fields(
         )
 
 
+def _diagnose_dropped_external_fields(
+    rel: str,
+    data: dict[str, Any],
+    diagnostics: list[OkfImportDiagnostic],
+    parsing_policy: _ImportParsingPolicy,
+) -> None:
+    """Disclose frontmatter outside the selected import policy's vocabulary."""
+    accepted_keys = (
+        _EXTERNAL_PAGE_KEYS
+        if parsing_policy is _ImportParsingPolicy.EXTERNAL_COMPILED_MARKDOWN
+        else {"title", "description", "tags", "type", "resource", "timestamp"}
+    )
+    for key in data:
+        if key == "lumio" or key in accepted_keys:
+            continue
+        diagnostics.append(
+            OkfImportDiagnostic(
+                path=rel,
+                kind="external-key",
+                severity="dropped",
+                message=(
+                    f"external frontmatter key {key!r} is not recognized; "
+                    "dropped at canonicalization while the page remains previewable"
+                ),
+            )
+        )
+
+
 def _diagnose_broken_body_links(
     rel: str,
     body: str,
@@ -969,8 +1027,10 @@ def _reserved_artifact_marker_is_valid(text: str, basename: str) -> bool:
     return version in supported_versions
 
 
-def _generic_source(rel: str, bundle_identity: str, bundle_origin: str | None) -> Source:
-    """Build the deterministic Source for a generic (no recognized lumio) page.
+def _imported_document_source(
+    rel: str, bundle_identity: str, bundle_origin: str | None
+) -> Source:
+    """Build deterministic provenance for one document in an imported tree.
 
     The identity combines the bundle digest with the document's relative path;
     the URL is the known bundle origin only when supplied. OKF ``resource`` is
@@ -1043,6 +1103,7 @@ def _parse_okf_page(
     bundle_origin: str | None,
     bundle_paths: set[str],
     diagnostics: list[OkfImportDiagnostic],
+    parsing_policy: _ImportParsingPolicy,
 ) -> OkfImportPage:
     """Parse one OKF Markdown document into a proposed Compiled Page (issue #70).
 
@@ -1107,14 +1168,24 @@ def _parse_okf_page(
                 )
             )
 
-    summary = _okf_description(data)
+    summary = _okf_description(data, parsing_policy)
     if summary is not None:
+        summary_key = (
+            "summary"
+            if parsing_policy is _ImportParsingPolicy.EXTERNAL_COMPILED_MARKDOWN
+            and str(data.get("summary") or "").strip()
+            else "description"
+        )
         diagnostics.append(
             OkfImportDiagnostic(
                 path=rel,
-                kind="description",
+                kind=summary_key,
                 severity="mapped",
-                message="OKF 'description' mapped to canonical summary",
+                message=(
+                    "external 'summary' mapped to canonical summary"
+                    if summary_key == "summary"
+                    else "OKF 'description' mapped to canonical summary"
+                ),
             )
         )
     tags = _as_string_list(data.get("tags"))
@@ -1147,12 +1218,21 @@ def _parse_okf_page(
                 )
             )
     else:
-        aliases = []
-        lifecycle = "draft"
-        visibility = "internal"
-        synthetic = False
-        sources = [_generic_source(rel, bundle_identity, bundle_origin)]
-        relationships = []
+        if parsing_policy is _ImportParsingPolicy.EXTERNAL_COMPILED_MARKDOWN:
+            aliases = _as_string_list(data.get("aliases"))
+            lifecycle = str(data.get("lifecycle") or "").strip() or "draft"
+            visibility = str(data.get("visibility") or "").strip() or "internal"
+            raw_synthetic = data.get("synthetic")
+            synthetic = raw_synthetic if isinstance(raw_synthetic, bool) else False
+            sources = _as_sources(data.get("sources"))
+            relationships = _as_relationships(data.get("relationships"))
+        else:
+            aliases = []
+            lifecycle = "draft"
+            visibility = "internal"
+            synthetic = False
+            sources = []
+            relationships = []
         if classification == "unsupported-profile":
             diagnostics.append(
                 OkfImportDiagnostic(
@@ -1182,9 +1262,17 @@ def _parse_okf_page(
                 )
             )
 
-    # Exchange-only OKF fields are dropped at canonicalization regardless of
-    # lumio classification (issue #70).
+    imported_source = _imported_document_source(rel, bundle_identity, bundle_origin)
+    if parsing_policy is _ImportParsingPolicy.EXTERNAL_COMPILED_MARKDOWN:
+        if not synthetic:
+            sources = [imported_source, *sources]
+    elif classification != "recognized":
+        sources = [imported_source]
+
+    # Exchange-only OKF fields and unknown external metadata are disclosed at
+    # canonicalization regardless of lumio classification.
     _diagnose_dropped_okf_fields(rel, data, diagnostics)
+    _diagnose_dropped_external_fields(rel, data, diagnostics, parsing_policy)
 
     # Broken internal body links are warnings and never Relationships (issue #70).
     _diagnose_broken_body_links(rel, body, bundle_paths, diagnostics)
@@ -1212,9 +1300,10 @@ def _parse_okf_page(
     return OkfImportPage(relative_path=rel, title=title, markdown=markdown)
 
 
-def import_okf_profile1(
+def _import_markdown_tree(
     bundle_path: str | Path,
-    bundle_origin: str | None = None,
+    bundle_origin: str | None,
+    parsing_policy: _ImportParsingPolicy,
 ) -> OkfProfile1Import:
     """Parse a safe OKF Exchange Profile 1 directory tree into proposed pages.
 
@@ -1270,7 +1359,13 @@ def import_okf_profile1(
         text = path.read_text(encoding="utf-8")
         proposed.append(
             _parse_okf_page(
-                rel, text, bundle_identity, bundle_origin, bundle_paths, diagnostics
+                rel,
+                text,
+                bundle_identity,
+                bundle_origin,
+                bundle_paths,
+                diagnostics,
+                parsing_policy,
             )
         )
 
@@ -1302,4 +1397,34 @@ def import_okf_profile1(
         navigation_index_count=nav_count,
         log_count=log_count,
         skipped_files=sorted(skipped),
+    )
+
+
+def import_okf_profile1(
+    bundle_path: str | Path,
+    bundle_origin: str | None = None,
+) -> OkfProfile1Import:
+    """Parse a generic OKF Profile 1 tree with safe canonical defaults."""
+    return _import_markdown_tree(
+        bundle_path,
+        bundle_origin,
+        _ImportParsingPolicy.GENERIC_OKF,
+    )
+
+
+def import_external_compiled_markdown(
+    source_path: str | Path,
+    source_origin: str | None = None,
+) -> OkfProfile1Import:
+    """Parse any external compiled-Markdown directory through Profile 1 import.
+
+    This is a source-shape adapter, not a producer-specific importer: it uses
+    the same safe tree scan, reserved-artifact classification, canonical page
+    rendering, diagnostics, and deterministic bundle identity as generic OKF
+    import. It performs no Knowledge Base mutation.
+    """
+    return _import_markdown_tree(
+        source_path,
+        source_origin,
+        _ImportParsingPolicy.EXTERNAL_COMPILED_MARKDOWN,
     )
