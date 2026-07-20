@@ -1,0 +1,46 @@
+name: lumio-lancedb-wheel
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  isolated-lumio-lancedb-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv lock --check
+      # Build the adapter wheel from the workspace.
+      - run: uv build --package lumio-lancedb --wheel --out-dir dist/lumio-lancedb
+      # Build the lumio-wiki wheel it depends on (workspace source metadata
+      # only; the lancedb wheel declares the published version range, so the
+      # isolated install resolves lumio-wiki from this built wheel, not pip).
+      - run: uv build --package lumio-wiki --wheel --out-dir dist/lumio-wiki
+      # Fresh venv with ONLY lumio-wiki + lancedb + pyarrow + msgspec. The
+      # heavy app-only deps (stario, piccolo, openai, liteparse, markitdown)
+      # must NOT be present — proves the adapter wheel is independently
+      # installable beside lumio-wiki alone (ADR-0010 / issue #99).
+      - run: uv venv --python 3.14 /tmp/lumio-lancedb-venv
+      - run: >-
+          uv pip install --python /tmp/lumio-lancedb-venv/bin/python
+          dist/lumio-lancedb/lumio_lancedb-*.whl
+          dist/lumio-wiki/lumio_wiki-*.whl
+      - name: Assert app-only deps are absent then run adapter smoke
+        run: |
+          set -e
+          for forbidden in stario piccolo openai liteparse markitdown; do
+            if /tmp/lumio-lancedb-venv/bin/python -c "import importlib, sys; sys.exit(0 if importlib.util.find_spec('$forbidden') else 1)"; then
+              echo "ERROR: $forbidden leaked into lumio-lancedb install" >&2
+              exit 1
+            fi
+          done
+          # lumio-wiki must import cleanly without lancedb present at install
+          # resolution time; it never imports lumio-lancedb.
+          /tmp/lumio-lancedb-venv/bin/python -c "import lumio_wiki; import sys; \
+            assert not any('lumio_lancedb' in m for m in sys.modules)"
+          /tmp/lumio-lancedb-venv/bin/python packages/lumio-lancedb/tests/test_lancedb_adapter.py

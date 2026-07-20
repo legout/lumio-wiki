@@ -5,19 +5,26 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 MEMBER = ROOT / "packages" / "lumio-wiki"
+LANCEDB_MEMBER = ROOT / "packages" / "lumio-lancedb"
 
 
 def _toml(path: Path) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
-def test_uv_workspace_declares_lumio_wiki_and_explicit_member_dependency():
+def test_uv_workspace_declares_members_and_explicit_member_dependencies():
     root = _toml(ROOT / "pyproject.toml")
-    assert root["tool"]["uv"]["workspace"]["members"] == ["packages/lumio-wiki"]
+    assert root["tool"]["uv"]["workspace"]["members"] == [
+        "packages/lumio-lancedb",
+        "packages/lumio-wiki",
+    ]
     assert "lumio-wiki>=0.1.1,<0.2.0" in root["project"]["dependencies"]
+    assert "lumio-lancedb>=0.1.1,<0.2.0" in root["project"]["dependencies"]
     assert root["tool"]["uv"]["sources"]["lumio-wiki"] == {"workspace": True}
+    assert root["tool"]["uv"]["sources"]["lumio-lancedb"] == {"workspace": True}
     assert root["tool"]["pytest"]["ini_options"]["testpaths"] == [
         "tests",
+        "packages/lumio-lancedb/tests",
         "packages/lumio-wiki/tests",
     ]
 
@@ -29,13 +36,38 @@ def test_uv_workspace_declares_lumio_wiki_and_explicit_member_dependency():
         "src/lumio_wiki"
     ]
 
+    lancedb_member = _toml(LANCEDB_MEMBER / "pyproject.toml")
+    assert lancedb_member["project"]["name"] == "lumio-lancedb"
+    assert lancedb_member["project"]["requires-python"] == ">=3.14"
+    assert "lumio-wiki>=0.1.1,<0.2.0" in lancedb_member["project"]["dependencies"]
+    assert "lancedb>=0.34.0" in lancedb_member["project"]["dependencies"]
+    assert "pyarrow>=24.0.0" in lancedb_member["project"]["dependencies"]
+    # Torch stays out of the base adapter (ADR-0010): the embeddings extra is
+    # the only thing that pulls in sentence-transformers.
+    assert "sentence-transformers" not in " ".join(
+        lancedb_member["project"]["dependencies"]
+    )
+    assert lancedb_member["project"]["optional-dependencies"]["embeddings"] == [
+        "sentence-transformers>=2.6.0"
+    ]
+    assert lancedb_member["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == [
+        "src/lumio_lancedb"
+    ]
+
 
 def test_workspace_has_one_root_lockfile_and_disjoint_import_roots():
     assert (ROOT / "uv.lock").is_file()
     assert not (MEMBER / "uv.lock").exists()
+    assert not (LANCEDB_MEMBER / "uv.lock").exists()
     assert (ROOT / "src" / "lumio").is_dir()
     assert (MEMBER / "src" / "lumio_wiki").is_dir()
+    assert (LANCEDB_MEMBER / "src" / "lumio_lancedb").is_dir()
+    # No two wheels may own the same concrete Python module path (ADR-0010).
     assert not (MEMBER / "src" / "lumio").exists()
+    assert not (LANCEDB_MEMBER / "src" / "lumio").exists()
+    assert not (LANCEDB_MEMBER / "src" / "lumio_wiki").exists()
+    assert not (MEMBER / "src" / "lumio_lancedb").exists()
+    assert not (ROOT / "src" / "lumio_lancedb").exists()
 
 
 def test_workspace_ci_runs_package_and_application_consumer_suites():

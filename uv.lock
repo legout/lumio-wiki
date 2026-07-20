@@ -9,6 +9,7 @@ resolution-markers = [
 [manifest]
 members = [
     "lumio",
+    "lumio-lancedb",
     "lumio-wiki",
 ]
 
@@ -693,6 +694,7 @@ dependencies = [
     { name = "gitpython" },
     { name = "lancedb" },
     { name = "liteparse" },
+    { name = "lumio-lancedb" },
     { name = "lumio-wiki" },
     { name = "markitdown", extra = ["docx"] },
     { name = "msgspec", extra = ["yaml"] },
@@ -720,6 +722,7 @@ requires-dist = [
     { name = "gitpython", specifier = ">=3.1.0" },
     { name = "lancedb", specifier = ">=0.34.0" },
     { name = "liteparse", specifier = ">=2.4.0" },
+    { name = "lumio-lancedb", editable = "packages/lumio-lancedb" },
     { name = "lumio-wiki", editable = "packages/lumio-wiki" },
     { name = "markitdown", extras = ["docx"], specifier = ">=0.1.6" },
     { name = "msgspec", extras = ["yaml"], specifier = ">=0.21.1" },
@@ -738,6 +741,32 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "ruff", specifier = ">=0.5.0" },
 ]
+
+[[package]]
+name = "lumio-lancedb"
+version = "0.1.1"
+source = { editable = "packages/lumio-lancedb" }
+dependencies = [
+    { name = "lancedb" },
+    { name = "lumio-wiki" },
+    { name = "msgspec", extra = ["yaml"] },
+    { name = "pyarrow" },
+]
+
+[package.optional-dependencies]
+embeddings = [
+    { name = "sentence-transformers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lancedb", specifier = ">=0.34.0" },
+    { name = "lumio-wiki", editable = "packages/lumio-wiki" },
+    { name = "msgspec", extras = ["yaml"], specifier = ">=0.21.1" },
+    { name = "pyarrow", specifier = ">=24.0.0" },
+    { name = "sentence-transformers", marker = "extra == 'embeddings'", specifier = ">=2.6.0" },
+]
+provides-extras = ["embeddings"]
 
 [[package]]
 name = "lumio-wiki"

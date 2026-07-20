@@ -7,6 +7,7 @@ dependencies = [
     "GitPython>=3.1.0",
     "lancedb>=0.34.0",
     "liteparse>=2.4.0",
+    "lumio-lancedb>=0.1.1,<0.2.0",
     "lumio-wiki>=0.1.1,<0.2.0",
     "markitdown[docx]>=0.1.6",
     "msgspec[yaml]>=0.21.1",
@@ -34,9 +35,10 @@ dev = [
 ]
 
 [tool.uv.workspace]
-members = ["packages/lumio-wiki"]
+members = ["packages/lumio-lancedb", "packages/lumio-wiki"]
 
 [tool.uv.sources]
+lumio-lancedb = { workspace = true }
 lumio-wiki = { workspace = true }
 
 [build-system]
@@ -47,7 +49,7 @@ build-backend = "hatchling.build"
 packages = ["src/lumio"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "packages/lumio-wiki/tests"]
+testpaths = ["tests", "packages/lumio-lancedb/tests", "packages/lumio-wiki/tests"]
 pythonpath = ["src"]
 
 [tool.ruff]

@@ -1,0 +1,27 @@
+[project]
+name = "lumio-lancedb"
+version = "0.1.1"
+description = "Optional LanceDB enhanced-retrieval adapter for the Lumio Knowledge Base."
+requires-python = ">=3.14"
+dependencies = [
+    "lumio-wiki>=0.1.1,<0.2.0",
+    "lancedb>=0.34.0",
+    "pyarrow>=24.0.0",
+    "msgspec[yaml]>=0.21.1",
+]
+
+[project.optional-dependencies]
+# Optional local embedding implementation for semantic/hybrid retrieval (#75).
+# Pulls in sentence-transformers and Torch; the base adapter and lumio-wiki
+# stay Torch-free (ADR-0010). Production deployments that route embeddings
+# through an OpenAI-compatible provider do not need this extra.
+embeddings = [
+    "sentence-transformers>=2.6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lumio_lancedb"]
