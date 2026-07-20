@@ -232,10 +232,49 @@ def build_lexical_index(pages: list[CompiledPage], index_dir: Path) -> None:
         page_table.create_index("search_text", config=FTS())
 
 
-def search_lexical_index(index_dir: Path, query: str, limit: int) -> list[RetrievalResult]:
-    """Search the lexical index and return citation-ready results."""
+def _eligible_page_predicate(paths: set[str]) -> str:
+    """Build a LanceDB SQL ``page_path IN (...)`` predicate for eligible pages.
+
+    ``paths`` is the non-empty set of eligible Compiled Page paths selected by
+    Discovery Graph expansion (issue #112). Single quotes are SQL-escaped by
+    doubling so page paths cannot break out of the string literal. The caller
+    short-circuits an empty eligible set to ``[]`` before reaching here.
+    """
+    quoted = ",".join(
+        "'" + path.replace("'", "''") + "'" for path in sorted(paths)
+    )
+    return f"page_path IN ({quoted})"
+
+
+def _apply_eligible_filter(search, eligible_paths: set[str] | None):
+    """Apply the eligible-page prefilter to a LanceDB search builder, or pass through.
+
+    Centralizes the ``eligible_paths`` -> ``.where(...)`` application so the
+    lexical and semantic ranking paths cannot drift (issue #112). ``None`` means
+    no filtering (every page eligible); the caller short-circuits an empty set.
+    """
+    if eligible_paths is not None:
+        return search.where(_eligible_page_predicate(eligible_paths))
+    return search
+
+
+def search_lexical_index(
+    index_dir: Path,
+    query: str,
+    limit: int,
+    *,
+    eligible_paths: set[str] | None = None,
+) -> list[RetrievalResult]:
+    """Search the lexical index and return citation-ready results.
+
+    When ``eligible_paths`` is provided, only Evidence from those Compiled
+    Pages is ranked (issue #112): LanceDB applies the filter as a prefilter so
+    ``limit`` binds over eligible-only Evidence. ``None`` means every page.
+    """
     index_dir = Path(index_dir)
     if not index_dir.exists():
+        return []
+    if eligible_paths is not None and not eligible_paths:
         return []
 
     db = lancedb.connect(index_dir)
@@ -250,25 +289,22 @@ def search_lexical_index(index_dir: Path, query: str, limit: int) -> list[Retrie
         ]
     )
 
-    rows = (
-        table.search(query, query_type="fts")
-        .select(
-            [
-                "evidence_id",
-                "source_type",
-                "page_path",
-                "page_title",
-                "source",
-                "section_title",
-                "line_start",
-                "line_end",
-                "text",
-                "_score",
-            ]
-        )
-        .limit(limit)
-        .to_list()
+    search = table.search(query, query_type="fts").select(
+        [
+            "evidence_id",
+            "source_type",
+            "page_path",
+            "page_title",
+            "source",
+            "section_title",
+            "line_start",
+            "line_end",
+            "text",
+            "_score",
+        ]
     )
+    search = _apply_eligible_filter(search, eligible_paths)
+    rows = search.limit(limit).to_list()
 
     return [
         _retrieval_result_from_row(
@@ -359,14 +395,20 @@ def search_semantic_index(
     query_vector: list[float],
     limit: int,
     score_threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
+    *,
+    eligible_paths: set[str] | None = None,
 ) -> list[RetrievalResult]:
     """Search the vector index and return citation-ready results above threshold.
 
     Candidates whose cosine similarity falls below ``score_threshold`` are
     dropped so unsupported questions return no results (-> "not covered by this
-    knowledge base") rather than a weak nearest-neighbour hit (#75).
+    knowledge base") rather than a weak nearest-neighbour hit (#75). When
+    ``eligible_paths`` is provided only Evidence from those Compiled Pages is
+    ranked (issue #112); ``None`` means every page.
     """
     index_dir = Path(index_dir)
+    if eligible_paths is not None and not eligible_paths:
+        return []
     if not has_semantic_index(index_dir):
         raise EmbeddingNotBuiltError(
             "semantic retrieval requires a built vector index; "
@@ -380,13 +422,9 @@ def search_semantic_index(
 
     query = normalize_vector(query_vector)
     fetch = min(table.count_rows(), max(limit * 4, limit))
-    rows = (
-        table.search(query)
-        .metric("cosine")
-        .select(_SEMANTIC_SELECT)
-        .limit(fetch)
-        .to_list()
-    )
+    search = table.search(query).metric("cosine").select(_SEMANTIC_SELECT)
+    search = _apply_eligible_filter(search, eligible_paths)
+    rows = search.limit(fetch).to_list()
 
     scored: list[tuple[float, dict]] = []
     for row in rows:
@@ -427,15 +465,22 @@ def search_hybrid_index(
     query_vector: list[float],
     limit: int,
     score_threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
+    *,
+    eligible_paths: set[str] | None = None,
 ) -> list[RetrievalResult]:
     """Hybrid retrieval: reciprocal-rank-fuse lexical and semantic results.
 
     Ranking is bounded and deterministic (fixed RRF constant, stable tie-break
     on evidence_id). Citation and trace behavior is preserved: every result is
-    a citation-ready RetrievalResult over Knowledge Base Evidence.
+    a citation-ready RetrievalResult over Knowledge Base Evidence. When
+    ``eligible_paths`` is provided both fused streams rank only Evidence from
+    those Compiled Pages, so fusion is deterministic over eligible-only (issue
+    #112).
     """
-    lexical = search_lexical_index(index_dir, query, limit)
-    semantic = search_semantic_index(index_dir, query_vector, limit, score_threshold)
+    lexical = search_lexical_index(index_dir, query, limit, eligible_paths=eligible_paths)
+    semantic = search_semantic_index(
+        index_dir, query_vector, limit, score_threshold, eligible_paths=eligible_paths
+    )
 
     fused = reciprocal_rank_fusion(
         [
@@ -510,14 +555,25 @@ class LanceDBRetrievalAdapter:
         mode="lexical",
         embedder: Embedder | None = None,
         score_threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
+        eligible_pages=None,
     ):
+        # The LanceDB index is built over every Compiled Page; when the caller
+        # supplies graph-selected eligible pages (#112), we restrict ranked
+        # Evidence to them via a LanceDB prefilter so ``limit`` binds over
+        # eligible-only Evidence. The adapter consumes only page identities: it
+        # never imports graph code or owns traversal.
+        eligible_paths = (
+            None if eligible_pages is None else {page.path for page in eligible_pages}
+        )
         del pages
         if index_dir is None:
             # Match prior KB requirement for enhanced retrieve without a built dir.
             return []
         resolved = Path(index_dir)
         if mode == "lexical":
-            return search_lexical_index(resolved, query, limit)
+            return search_lexical_index(
+                resolved, query, limit, eligible_paths=eligible_paths
+            )
         if mode not in ("semantic", "hybrid"):
             raise EmbeddingError(
                 f"unknown retrieval mode {mode!r}; use 'lexical', 'semantic', or 'hybrid'"
@@ -538,8 +594,21 @@ class LanceDBRetrievalAdapter:
             )
         query_vector = embedder.embed([query])[0]
         if mode == "semantic":
-            return search_semantic_index(resolved, query_vector, limit, score_threshold)
-        return search_hybrid_index(resolved, query, query_vector, limit, score_threshold)
+            return search_semantic_index(
+                resolved,
+                query_vector,
+                limit,
+                score_threshold,
+                eligible_paths=eligible_paths,
+            )
+        return search_hybrid_index(
+            resolved,
+            query,
+            query_vector,
+            limit,
+            score_threshold,
+            eligible_paths=eligible_paths,
+        )
 
 
 def build_lancedb_index(kb, index_dir, *, embedder: Embedder | None = None):

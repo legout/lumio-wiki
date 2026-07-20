@@ -31,7 +31,10 @@ def test_uv_workspace_declares_members_and_explicit_member_dependencies():
     member = _toml(MEMBER / "pyproject.toml")
     assert member["project"]["name"] == "lumio-wiki"
     assert member["project"]["requires-python"] == ">=3.14"
-    assert member["project"]["dependencies"] == ["msgspec[yaml]>=0.21.1"]
+    assert member["project"]["dependencies"] == [
+        "msgpack>=1.0",
+        "msgspec[yaml]>=0.21.1",
+    ]
     assert member["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == [
         "src/lumio_wiki"
     ]

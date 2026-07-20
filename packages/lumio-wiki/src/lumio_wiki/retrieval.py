@@ -52,6 +52,7 @@ class RetrievalAdapter(Protocol):
         mode: RetrievalMode = "lexical",
         embedder: Embedder | None = None,
         score_threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
+        eligible_pages: Sequence[CompiledPage] | None = None,
     ) -> list[RetrievalResult]: ...
 
 
@@ -90,6 +91,7 @@ class ZeroIndexRetrieval:
         mode: RetrievalMode = "lexical",
         embedder: Embedder | None = None,
         score_threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
+        eligible_pages: Sequence[CompiledPage] | None = None,
     ) -> list[RetrievalResult]:
         del index_dir, embedder, score_threshold
         if mode != "lexical":
@@ -97,6 +99,10 @@ class ZeroIndexRetrieval:
                 f"{mode} retrieval requires the LanceDB retrieval adapter; "
                 "zero-index only supports mode='lexical'"
             )
+        # When the caller supplies graph-selected eligible pages (issue #112),
+        # Evidence is ranked ONLY from them; otherwise every loaded page is
+        # searchable. The graph owns page selection; the adapter owns ranking.
+        search_pages = eligible_pages if eligible_pages is not None else pages
         normalized = normalize_search_query(query)
         tokens = _TOKEN_RE.findall(normalized.casefold())
         if not tokens or limit <= 0:
@@ -109,7 +115,7 @@ class ZeroIndexRetrieval:
             ]
         )
         scored: list[tuple[float, str, RetrievalResult]] = []
-        for page in pages:
+        for page in search_pages:
             for evidence, source in page_evidences(page):
                 haystack = f"{evidence.page_title}\n{evidence.text}"
                 folded = haystack.casefold()
