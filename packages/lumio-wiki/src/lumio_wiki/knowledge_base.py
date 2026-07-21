@@ -2644,6 +2644,35 @@ def validate_proposed_control_file(
         return list(issues)
 
 
+def extend_control_file_categories(
+    control: KnowledgeBaseControlFile,
+    names: Iterable[str],
+) -> KnowledgeBaseControlFile:
+    """Return a *proposed* Control File adding ``names`` to the category catalog.
+
+    A Maintainer-gated extension seam for external-vault import (ADR-0009,
+    issue #87): each unmapped external category becomes a proposed declared
+    category rather than an automatic one. Names already present are not
+    duplicated; new categories are appended in first-seen order with no
+    description (a reviewing Maintainer fills that in). The result is a
+    *proposed* Control File: it is never written automatically and must pass
+    :func:`validate_proposed_control_file` (and the Maintainer review) before
+    publish. The seeded catalog stays the default; declaring extra categories
+    is opt-in.
+    """
+    existing = [category.name for category in control.categories]
+    seen = set(existing)
+    added: list[ContentCategory] = []
+    for name in names:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        added.append(ContentCategory(name=name))
+    if not added:
+        return control
+    return msgspec.structs.replace(control, categories=[*control.categories, *added])
+
+
 def _atomic_write_text(target: Path, content: str) -> None:
     """Write ``content`` to ``target`` atomically (temp file + ``os.replace``)."""
     target.parent.mkdir(parents=True, exist_ok=True)

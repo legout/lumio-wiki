@@ -214,6 +214,41 @@ class PageSearchResult(msgspec.Struct, frozen=True):
     snippet: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Link-candidate finder (issue #90, ADR-0011).
+#
+# A LinkCandidate is a deterministic, model-free proposal for a MISSING
+# authored link: a known Canonical Page Title or Alias mentioned in a Compiled
+# Page body without being inside a Markdown link, wikilink, or inline-code
+# span. It is strictly non-canonical: it never enters the Discovery Graph and
+# never becomes an Extracted Reference until a Maintainer approves it and
+# publishes the resulting Markdown proposal (#91). Once published, the link is
+# derived as an Extracted Reference by the shared resolver on the next graph
+# derivation, without a second approval step.
+# ---------------------------------------------------------------------------
+
+
+class LinkCandidate(msgspec.Struct, frozen=True):
+    """A deterministic, non-canonical proposed authored link.
+
+    Emitted when a known Canonical Page Title or Alias appears as an unlinked
+    mention in a Compiled Page body. ``term`` is the registered title or alias
+    (original casing) that resolved to ``target``; ``line``/``column`` are
+    1-based and ``line`` is offset by the page's ``body_start_line`` so it maps
+    to the real source file. ``snippet`` carries enough surrounding context to
+    review. A candidate is never canonical and never Evidence.
+    """
+
+    source_path: str
+    source_title: str
+    target_path: str
+    target_title: str
+    term: str
+    line: int
+    column: int
+    snippet: str = ""
+
+
 class HealthReport(msgspec.Struct, frozen=True):
     """Deterministic, zero-LLM summary of Knowledge Base structural health."""
 

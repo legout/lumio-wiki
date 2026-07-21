@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import difflib
 import tempfile
+import uuid
 from collections.abc import Iterable
-from pathlib import Path
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 import msgspec
@@ -29,9 +31,15 @@ from lumio_wiki.knowledge_base import (
     _as_sources,
     _as_string_list,
     _parse_frontmatter,
+    extend_control_file_categories,
     validate,
 )
-from lumio_wiki.okf import OkfImportDiagnostic
+from lumio_wiki.okf import (
+    OKF_PROFILE1_QUERY,
+    OkfImportDiagnostic,
+    OkfImportPage,
+    OkfProfile1Import,
+)
 from lumio_wiki.records import (
     CompiledPage,
     ValidationIssue,
@@ -139,6 +147,23 @@ class IngestProposal(msgspec.Struct, frozen=True):
     blast_radius: BlastRadius | None = None
     control_file: KnowledgeBaseControlFile | None = None
     okf_diagnostics: list[OkfImportDiagnostic] = msgspec.field(default_factory=list)
+
+
+class ExternalImportCategoryMapping(msgspec.Struct, frozen=True):
+    """Category-mapping result for an external-vault import (issue #87, ADR-0009).
+
+    Carries the proposed pages routed by Content Category, a proposed Control
+    File extension that adds any unmapped external categories the Maintainer
+    has NOT declined, and per-category disclosure diagnostics. Shared/seeded
+    categories pass through unchanged; unmapped categories become a reviewed
+    Control File extension proposal rather than an automatic category or a
+    silent drop (ADR-0009). Declined categories drop their content with a
+    lossy-with-disclosure note (ADR-0007).
+    """
+
+    proposed_pages: list[ProposedPage] = msgspec.field(default_factory=list)
+    extension_control_file: KnowledgeBaseControlFile | None = None
+    diagnostics: list[OkfImportDiagnostic] = msgspec.field(default_factory=list)
 
 
 TERMINAL_PROPOSAL_STATUSES = frozenset({"discarded", "published"})
@@ -521,7 +546,12 @@ def _synthesis_cross_source_issues(page: ProposedPage) -> list[ValidationIssue]:
     ]
 
 
-def _validate_page_routing(proposed_pages: Iterable[ProposedPage], kb) -> list[ValidationIssue]:
+def _validate_page_routing(
+    proposed_pages: Iterable[ProposedPage],
+    kb,
+    *,
+    extra_categories: Iterable[str] = (),
+) -> list[ValidationIssue]:
     """Return ingest-level Content Category routing issues for a proposal.
 
     File catalog is the authority on configured Content Categories, so a page
@@ -531,10 +561,16 @@ def _validate_page_routing(proposed_pages: Iterable[ProposedPage], kb) -> list[V
     free-form type, a non-empty durability rationale (the distiller never
     fabricates one), and a synthesis-category page must be cross-source
     or cross-page. Legacy Flat Mode (no Control File) enforces none of this.
+
+    ``extra_categories`` widens the effective catalog with categories a
+    proposal carries as a Control File *extension* (issue #87, ADR-0009), so a
+    yet-to-be-published extension category does not spuriously block the
+    atomic proposal that proposes it. It does not create the categories: they
+    exist only when the extension Control File is published.
     """
     if getattr(kb, "control", None) is None:
         return []
-    configured = _configured_category_names(kb)
+    configured = _configured_category_names(kb) | set(extra_categories)
     issues: list[ValidationIssue] = []
     for page in proposed_pages:
         # Explicit category/path moves (issue #80) relocate already-valid
@@ -591,6 +627,212 @@ def _validate_page_routing(proposed_pages: Iterable[ProposedPage], kb) -> list[V
         elif category == "synthesis":
             issues.extend(_synthesis_cross_source_issues(page))
     return issues
+
+
+def import_page_category(relative_path: str) -> str | None:
+    """Return the Content Category implied by an imported page's path.
+
+    A categorized Knowledge Base routes a page by the first segment of its
+    path (its top-level directory), mirroring the loader's page-category
+    derivation. A root-level imported page (no directory component) carries
+    no category. See ADR-0009.
+    """
+    parts = PurePosixPath(relative_path).parts
+    if len(parts) <= 1:
+        return None
+    return parts[0]
+
+
+def _proposed_page_from_import(
+    page: OkfImportPage, *, category: str | None = None
+) -> ProposedPage:
+    """Build a :class:`ProposedPage` from an imported OKF page, setting its category."""
+    return ProposedPage(
+        relative_path=page.relative_path,
+        title=page.title,
+        markdown=page.markdown,
+        category=category,
+    )
+
+
+def map_external_import_categories(
+    parsed: OkfProfile1Import,
+    kb,
+    *,
+    declined_categories: Iterable[str] = (),
+) -> ExternalImportCategoryMapping:
+    """Map an external import's categories against the destination catalog.
+
+    For each imported page the category is the first segment of its path
+    (ADR-0009). A category already in the destination's configured catalog
+    (seeded or declared) passes through UNCHANGED — no rename, no
+    relocation. A category with no configured equivalent becomes a Control
+    File extension proposal: the page is kept and routed under its category
+    path, and the proposed category is added to ``extension_control_file``
+    for Maintainer review. No category is auto-created and no page is
+    silently dropped (ADR-0009).
+
+    A Maintainer may decline a proposed category via ``declined_categories``:
+    the corresponding pages are dropped from the proposal and a
+    lossy-with-disclosure note is added (ADR-0007) so the drop is reviewable
+    before publish. Declining a category that is already configured has no
+    effect: configured categories always pass through.
+
+    Legacy Flat Mode (no Control File) performs no category mapping — every
+    page passes through unchanged with no extension proposal, matching the
+    loader's non-enforcement of category routing.
+    """
+    declined = {name for name in declined_categories if name}
+    diagnostics: list[OkfImportDiagnostic] = list(parsed.diagnostics)
+
+    control = getattr(kb, "control", None)
+    if control is None:
+        # Legacy Flat Mode: no catalog to map against; pass everything
+        # through unchanged (category routing is not enforced).
+        proposed_pages = [
+            _proposed_page_from_import(page) for page in parsed.proposed_pages
+        ]
+        return ExternalImportCategoryMapping(
+            proposed_pages=proposed_pages,
+            extension_control_file=None,
+            diagnostics=diagnostics,
+        )
+
+    configured = _configured_category_names(kb)
+    proposed_pages: list[ProposedPage] = []
+    extension_names: list[str] = []
+    for page in parsed.proposed_pages:
+        category = import_page_category(page.relative_path)
+        if category is None:
+            # Root-level imported page: no category routing. Pass through.
+            proposed_pages.append(_proposed_page_from_import(page))
+            continue
+        if category in configured:
+            # Pass-through: a shared/seeded/declared category lands unchanged.
+            proposed_pages.append(
+                _proposed_page_from_import(page, category=category)
+            )
+            continue
+        # Unmapped external category.
+        if category in declined:
+            diagnostics.append(
+                OkfImportDiagnostic(
+                    path=page.relative_path,
+                    kind="category",
+                    severity="dropped",
+                    message=(
+                        f"imported content under category {category!r} dropped: "
+                        "the proposed category extension was declined by the "
+                        "Maintainer (ADR-0007 lossy-with-disclosure)"
+                    ),
+                )
+            )
+            continue
+        # Extension proposal: keep the page and propose the category for
+        # review. It is neither auto-created nor silently dropped.
+        if category not in extension_names:
+            extension_names.append(category)
+        proposed_pages.append(
+            _proposed_page_from_import(page, category=category)
+        )
+        diagnostics.append(
+            OkfImportDiagnostic(
+                path=page.relative_path,
+                kind="category",
+                severity="mapped",
+                message=(
+                    f"external category {category!r} has no configured match; "
+                    "proposed as a Control File extension for Maintainer review "
+                    "(ADR-0009). Not auto-created and not dropped."
+                ),
+            )
+        )
+
+    extension_control_file: KnowledgeBaseControlFile | None = None
+    if extension_names:
+        extension_control_file = extend_control_file_categories(
+            control, extension_names
+        )
+    return ExternalImportCategoryMapping(
+        proposed_pages=proposed_pages,
+        extension_control_file=extension_control_file,
+        diagnostics=diagnostics,
+    )
+
+
+def propose_external_import(
+    parsed: OkfProfile1Import,
+    kb,
+    provenance: SourceProvenance,
+    *,
+    declined_categories: Iterable[str] = (),
+    approve_profile: str | None = None,
+) -> IngestProposal:
+    """Assemble an external-vault import as a staged Ingest Proposal (issue #87).
+
+    Maps the parsed import's categories against the destination catalog
+    (pass-through for shared/seeded/declared categories, a Control File
+    extension proposal for unmapped categories, and a lossy-with-disclosure
+    drop for declined categories), then runs the ordinary diff / validation
+    / blast-radius assembly. The extension Control File travels on
+    ``IngestProposal.control_file`` so it is published as ONE reviewed
+    proposal alongside the pages — never auto-created (ADR-0009). The
+    mapping diagnostics travel on ``okf_diagnostics``.
+
+    Routing validates against the EXTENDED catalog (the live configured
+    categories plus the proposed extension) so a yet-to-be-published
+    extension category does not spuriously block the atomic proposal. The
+    ordinary free-form ``type`` and ``durability_rationale`` review gates
+    (issue #78) still apply to every categorized page.
+    """
+    mapping = map_external_import_categories(
+        parsed, kb, declined_categories=declined_categories
+    )
+    proposed_pages = mapping.proposed_pages
+    existing_pages = _existing_page_markdown(kb)
+    diff = _compute_diff(proposed_pages, existing_pages)
+    page_validation = _validate_proposed_pages(proposed_pages)
+    # The effective catalog includes the proposed extension so the atomic
+    # proposal is not blocked by a category it simultaneously proposes.
+    configured = _configured_category_names(kb)
+    extension_names = (
+        {c.name for c in mapping.extension_control_file.categories} - configured
+        if mapping.extension_control_file is not None
+        else set()
+    )
+    routing_issues = _validate_page_routing(
+        proposed_pages, kb, extra_categories=extension_names
+    )
+    profile_approved = approve_profile == OKF_PROFILE1_QUERY
+    okf_blocking_issues = [
+        ValidationIssue(
+            file=diag.path,
+            field="okf-import",
+            severity="error",
+            message=diag.message,
+        )
+        for diag in parsed.diagnostics
+        if diag.severity == "blocking"
+        and not (profile_approved and diag.kind == "profile")
+    ]
+    validation_report = ValidationReport(
+        issues=list(page_validation.issues) + routing_issues + okf_blocking_issues
+    )
+    blast_radius = compute_blast_radius(proposed_pages, kb)
+    return IngestProposal(
+        id=uuid.uuid4().hex,
+        status="staged",
+        created_at=datetime.now(UTC).isoformat(),
+        provenance=provenance,
+        proposed_pages=proposed_pages,
+        affected_pages=[page.title for page in proposed_pages],
+        diff=diff,
+        validation_report=validation_report,
+        blocked=not validation_report.is_valid,
+        blast_radius=blast_radius,
+        control_file=mapping.extension_control_file,
+        okf_diagnostics=mapping.diagnostics,
+    )
 
 
 def _compute_diff(
@@ -874,6 +1116,7 @@ class IngestStore:
 
 __all__ = [
     "BlastRadius",
+    "ExternalImportCategoryMapping",
     "IngestProposal",
     "IngestStore",
     "ProposedPage",
@@ -881,5 +1124,8 @@ __all__ = [
     "TERMINAL_PROPOSAL_STATUSES",
     "compute_blast_radius",
     "create_proposal_without_provider",
+    "import_page_category",
     "is_reviewable_proposal",
+    "map_external_import_categories",
+    "propose_external_import",
 ]
