@@ -11,8 +11,18 @@ The product. Deployable chat for trusted knowledge and data.
 _Avoid_: llm-wiki-agent, the wiki chatbot, the knowledge-base agent.
 
 **Knowledge Base**:
-A local filesystem tree of compiled Markdown pages that Lumio loads, validates, indexes, and retrieves from. It is the source-of-truth input, not a database and not an index.
-_Avoid_: the wiki (ambiguous — use only when "compiled Markdown artifact" is clearly meant), the corpus, the dataset.
+A portable, versioned tree of Compiled Pages that Lumio loads from a local
+filesystem or configured object storage location. It is the source-of-truth
+input, not a database and not an index.
+_Avoid_: the wiki (ambiguous — use only when "compiled Markdown artifact" is
+clearly meant), the corpus, the dataset.
+
+**Knowledge Base Location**:
+A deployment or CLI configuration that resolves a Knowledge Base's Published
+Versions from a local filesystem or object storage. Its credentials are
+deployment configuration, never portable Knowledge Base content.
+_Avoid_: Knowledge Source (raw ingest material), working copy, bucket (too
+specific).
 
 **Compiled Page**:
 A Markdown file with YAML frontmatter (structured metadata) and a body (human-readable knowledge). Source-of-truth content.
