@@ -51,11 +51,19 @@ from lumio_wiki import (
     ProposalPipeline,
     ProposalPipelineError,
     SourceProvenance,
+    generate_hot_index,
+    generate_navigation_indexes,
     is_reviewable_proposal,
     load_knowledge_base,
     seeded_control_file,
     validate,
     write_control_file,
+)
+from lumio_wiki.knowledge_base import (
+    DEFAULT_GRAPH_MAX_DEPTH,
+    DEFAULT_GRAPH_MAX_EDGES,
+    DEFAULT_GRAPH_MAX_RESULTS,
+    NAV_INDEX_BASENAME,
 )
 
 # Derived-state directory name inside a Knowledge Base root. Holds the
@@ -98,6 +106,22 @@ def _load_kb(path: str | Path) -> tuple[KnowledgeBase, object]:
         return load_knowledge_base(path)
     except (KnowledgeBaseError, ControlFileError) as exc:
         raise CliError(f"could not load Knowledge Base at {path}: {exc}") from exc
+
+
+def _format_graph_trace(
+    *, scope: str, direction: str, outcome_fields: list[str]
+) -> str:
+    """Format the one-line ``# trace:`` diagnostic shared by related/paths.
+
+    Reports ONLY what the traversal actually used: the graph scope, the edge
+    direction, and the caller-supplied outcome fields (bounds and the
+    returned/found result). Graph traversal is always served from the
+    in-memory Discovery Graph, so the trace never implies a persisted
+    artifact was the traversal source — that freshness signal belongs to the
+    dedicated ``health`` command (issue #110, ADR-0011).
+    """
+    body = " ".join(outcome_fields)
+    return f"# trace: scope={scope} direction={direction} {body}"
 
 
 # ---------------------------------------------------------------------------
@@ -195,12 +219,27 @@ def _cmd_related(args: argparse.Namespace) -> int:
         scope=args.scope,
         relationship_type=args.relationship_type,
         max_depth=args.depth,
+        max_edges=args.max_edges,
+        max_results=args.max_results,
     )
-    if not titles:
+    if titles:
+        for title in titles:
+            print(title)
+    else:
         print(f"No related pages found for: {args.title}")
-        return 0
-    for title in titles:
-        print(title)
+    if args.trace:
+        print(
+            _format_graph_trace(
+                scope=args.scope,
+                direction=args.direction,
+                outcome_fields=[
+                    f"max_depth={args.depth}",
+                    f"max_edges={args.max_edges}",
+                    f"max_results={args.max_results}",
+                    f"returned={len(titles)}",
+                ],
+            )
+        )
     return 0
 
 
@@ -211,15 +250,71 @@ def _cmd_paths(args: argparse.Namespace) -> int:
         args.target,
         direction=args.direction,
         scope=args.scope,
+        max_depth=args.max_depth,
+        max_edges=args.max_edges,
     )
-    if not path:
+    found = path is not None
+    hops = max(len(path) - 1, 0) if found else 0
+    if found:
+        print(" -> ".join(path))
+    if args.trace:
+        print(
+            _format_graph_trace(
+                scope=args.scope,
+                direction=args.direction,
+                outcome_fields=[
+                    f"max_depth={args.max_depth}",
+                    f"max_edges={args.max_edges}",
+                    f"found={'true' if found else 'false'}",
+                    f"hops={hops}",
+                ],
+            )
+        )
+    if not found:
         print(
             f"No path found from {args.source!r} to {args.target!r} "
             f"(direction={args.direction}, scope={args.scope}).",
             file=sys.stderr,
         )
         return 1
-    print(" -> ".join(path))
+    return 0
+
+
+def _cmd_hot(args: argparse.Namespace) -> int:
+    """Print the Maintainer-pinned Hot Index (retrieval-ladder step 0).
+
+    Generates the Hot Index in memory from the Control File pins so it is
+    always current and available without a prior publish. This is the curated
+    entry surface a coding agent consults first (issue #110, ADR-0011).
+    """
+    kb, _report = _load_kb(args.path)
+    content = generate_hot_index(kb.control, kb.pages)
+    if content is None:
+        print(
+            "No Hot Index pins configured. Add hot_index pins to lumio.yaml, "
+            "or run 'lumio-wiki index' for the full Navigation Index."
+        )
+        return 0
+    print(content, end="")
+    return 0
+
+
+def _cmd_index(args: argparse.Namespace) -> int:
+    """Print a generated Navigation Index (retrieval-ladder step 1).
+
+    With no ``dir`` argument prints the root Navigation Index (the exhaustive
+    page catalog grouped by directory); with ``dir`` prints that directory's
+    shallow index. Generated in memory so it is always current without a
+    prior publish (issue #110, ADR-0011).
+    """
+    kb, _report = _load_kb(args.path)
+    indexes = generate_navigation_indexes(kb.pages)
+    rel_dir = args.dir or ""
+    key = f"{rel_dir}/index.md" if rel_dir else NAV_INDEX_BASENAME
+    if key not in indexes:
+        print(f"No Navigation Index at {key!r}.", file=sys.stderr)
+        return 1
+    print(indexes[key], end="")
     return 0
 
 
@@ -422,6 +517,9 @@ def _cmd_health(args: argparse.Namespace) -> int:
         return 1
     index_dir = _resolve_index_dir(args, kb.root)
     index_dir.mkdir(parents=True, exist_ok=True)
+    if getattr(args, "rebuild", False):
+        kb.materialize_graph(index_dir)
+        print("graph_rebuilt:       ok")
     graph_health = kb.graph_health(index_dir)
     page_count = len(kb.pages)
     public_count = len(kb.public_pages())
@@ -439,6 +537,11 @@ def _cmd_health(args: argparse.Namespace) -> int:
     print(f"graph_edges:         {graph_health.edge_count}")
     if graph_health.materialized_size_bytes is not None:
         print(f"graph_artifact_bytes: {graph_health.materialized_size_bytes}")
+    if not graph_health.graph_fresh:
+        print(
+            f"graph_recovery:      run 'lumio-wiki health {args.path} --rebuild' "
+            f"to materialize the Discovery Graph"
+        )
     print(f"fingerprint:         {graph_health.fingerprint_digest}")
     for issue in issues:
         print(f"  ERROR: {issue.file}: {issue.field}: {issue.message}")
@@ -691,19 +794,85 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max traversal depth in hops (default: 1).",
     )
     _add_graph_scope_arguments(related_parser)
+    related_parser.add_argument(
+        "--max-edges",
+        type=int,
+        default=DEFAULT_GRAPH_MAX_EDGES,
+        help=f"Max edges expanded before truncation (default: {DEFAULT_GRAPH_MAX_EDGES}).",
+    )
+    related_parser.add_argument(
+        "--max-results",
+        type=int,
+        default=DEFAULT_GRAPH_MAX_RESULTS,
+        help=f"Max titles returned (default: {DEFAULT_GRAPH_MAX_RESULTS}).",
+    )
+    related_parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="Print a truthful diagnostic line (scope/direction/bounds/outcome).",
+    )
     related_parser.set_defaults(func=_cmd_related)
 
     # paths
     paths_parser = subparsers.add_parser(
         "paths",
-        help="Find the shortest typed path between two Canonical Page Titles.",
+        help="Find the shortest directed path between two Canonical Page Titles.",
         description="Graph traversal: shortest directed path from source to target.",
     )
     _add_kb_argument(paths_parser)
     paths_parser.add_argument("source", type=str, help="Source Canonical Page Title.")
     paths_parser.add_argument("target", type=str, help="Target Canonical Page Title.")
     _add_graph_scope_arguments(paths_parser)
+    paths_parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=DEFAULT_GRAPH_MAX_DEPTH,
+        help=f"Max hops in the search bound (default: {DEFAULT_GRAPH_MAX_DEPTH}).",
+    )
+    paths_parser.add_argument(
+        "--max-edges",
+        type=int,
+        default=DEFAULT_GRAPH_MAX_EDGES,
+        help=f"Max edges expanded before the search gives up (default: {DEFAULT_GRAPH_MAX_EDGES}).",
+    )
+    paths_parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="Print a truthful diagnostic line (scope/direction/bounds/found/hops).",
+    )
     paths_parser.set_defaults(func=_cmd_paths)
+
+    # hot (retrieval-ladder step 0: curated Hot Index)
+    hot_parser = subparsers.add_parser(
+        "hot",
+        help="Print the Maintainer-pinned Hot Index.",
+        description=(
+            "Generate and print the Hot Index from the Control File pins. The "
+            "curated entry surface a coding agent consults first in the "
+            "retrieval ladder (issue #110, ADR-0011)."
+        ),
+    )
+    _add_kb_argument(hot_parser)
+    hot_parser.set_defaults(func=_cmd_hot)
+
+    # index (retrieval-ladder step 1: generated Navigation Indexes)
+    index_parser = subparsers.add_parser(
+        "index",
+        help="Print a generated Navigation Index.",
+        description=(
+            "Generate and print a Navigation Index (root catalog by default, or "
+            "a directory's shallow index). The generated navigation surface a "
+            "coding agent consults second in the retrieval ladder (issue #110)."
+        ),
+    )
+    _add_kb_argument(index_parser)
+    index_parser.add_argument(
+        "dir",
+        nargs="?",
+        default=None,
+        help="Optional directory whose index to print (default: root index.md).",
+    )
+    index_parser.set_defaults(func=_cmd_index)
 
     # ingest
     ingest_parser = subparsers.add_parser(
@@ -813,6 +982,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_kb_argument(health_parser)
     _add_index_dir_argument(health_parser)
+    health_parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Materialize the Discovery Graph artifact (actionable recovery), then report.",
+    )
     health_parser.set_defaults(func=_cmd_health)
 
     # doctor

@@ -28,6 +28,8 @@ import venv
 from pathlib import Path
 
 import pytest
+from lumio_wiki import GRAPH_ARTIFACT_FILENAME
+from lumio_wiki.cli import default_index_dir
 
 # Building and installing into a fresh venv is expensive; skip under the
 # standard fast suite unless explicitly requested or running from the repo
@@ -570,3 +572,98 @@ def test_base_install_rejects_docx_with_actionable_missing_extra_error(
     assert result.returncode != 0
     combined = result.stdout + result.stderr
     assert "lumio-wiki[documents]" in combined
+
+
+# ---------------------------------------------------------------------------
+# Issue #110, AC6: the isolated wheel demonstrates the COMPLETE zero-index
+# retrieval ladder (Hot Index, Navigation Indexes, deterministic search,
+# focused page read, related-page lookup, bounded paths) without LanceDB, a
+# model provider, the web application, or internal repository imports — plus
+# graceful graph recovery (AC4).
+# ---------------------------------------------------------------------------
+
+
+def test_isolated_retrieval_ladder(isolated_wheel_env: dict, tmp_path: Path):
+    """AC2 + AC4 + AC6: the full retrieval ladder runs from the isolated wheel,
+    and a corrupt graph artifact never blocks zero-index operation."""
+    python = isolated_wheel_env["python"]
+    script = python.parent / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
+    fixtures = Path(__file__).parents[3] / "tests" / "fixtures"
+
+    def run(*args: str) -> str:
+        result = subprocess.run([str(script), *args], capture_output=True, text=True)
+        assert result.returncode == 0, f"{' '.join(args)} failed:\n{result.stderr}"
+        return result.stdout
+
+    # Ladder 0 — Hot Index (curated pins). categorized_kb has hot_index pins.
+    cat_kb = tmp_path / "cat"
+    shutil.copytree(fixtures / "categorized_kb", cat_kb)
+    hot = run("hot", str(cat_kb))
+    assert "Hot Index" in hot
+    assert "Lumio Overview" in hot and "Acme Corp" in hot
+
+    # Graph steps use the valid fixture (known canonical graph:
+    # Lumio Overview -> Architecture -> Technology Stack).
+    kb = tmp_path / "kb"
+    shutil.copytree(fixtures / "valid", kb)
+
+    # Ladder 1 — Navigation Index (generated catalog).
+    nav = run("index", str(kb))
+    assert "Lumio Overview" in nav and "Architecture" in nav and "Technology Stack" in nav
+
+    # Ladder 2 — deterministic zero-index search.
+    search = run("search", str(kb), "LanceDB")
+    assert "Architecture" in search or "Technology" in search
+
+    # Ladder 3 — focused page read.
+    page = run("page", str(kb), "Architecture")
+    assert "# Architecture" in page
+
+    # Ladder 4 — related-page lookup, discovery scope, truthful trace.
+    related = run(
+        "related",
+        str(kb),
+        "Lumio Overview",
+        "--scope",
+        "discovery",
+        "--direction",
+        "both",
+        "--depth",
+        "2",
+        "--trace",
+    )
+    assert "Architecture" in related
+    assert "# trace:" in related
+    assert "scope=discovery" in related and "direction=both" in related
+
+    # Ladder 5 — bounded paths with truthful trace.
+    paths = run(
+        "paths",
+        str(kb),
+        "Lumio Overview",
+        "Technology Stack",
+        "--scope",
+        "canonical",
+        "--max-depth",
+        "3",
+        "--trace",
+    )
+    assert "Lumio Overview -> Architecture -> Technology Stack" in paths
+    assert "# trace:" in paths and "found=true" in paths and "hops=2" in paths
+
+    index_dir = default_index_dir(kb)
+    index_dir.mkdir(parents=True, exist_ok=True)
+    (index_dir / GRAPH_ARTIFACT_FILENAME).write_bytes(b"corrupt garbage")
+    run("search", str(kb), "LanceDB")  # still works
+    run("related", str(kb), "Lumio Overview")  # still works
+    h_before = run("health", str(kb))
+    assert "graph_fresh:" in h_before and "False" in h_before
+    assert "graph_recovery:" in h_before
+    run("health", str(kb), "--rebuild")
+    h_after = run("health", str(kb))
+    assert "graph_fresh:" in h_after and "True" in h_after
+    assert "graph_recovery:" not in h_after
+
+    # AC6 invariant re-checked from the same isolated install: none of the
+    # heavyweight deps sneaked in while exercising the whole ladder.
+    _assert_heavyweight_not_importable(python)

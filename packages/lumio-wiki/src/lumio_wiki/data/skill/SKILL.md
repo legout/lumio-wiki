@@ -11,17 +11,20 @@ description: >-
   model provider is required for base text/Markdown ingestion. Triggers
   include "lumio", "knowledge base", "wiki", "compiled page", "ingest",
   "proposal", "publish", "navigation index", "hot index", "graph path",
-  "related pages", and "validate the Knowledge Base".
+  "related pages", "retrieval ladder", and "validate the Knowledge Base".
 version: 0.1.1
 user-invocable: true
-argument-hint: "[init|validate|search|page|related|paths|ingest|proposal|publish|discard|health|doctor|skill] [args]"
+argument-hint: "[init|validate|hot|index|search|page|related|paths|ingest|proposal|publish|discard|health|doctor|skill] [args]"
 license: Apache 2.0
 ---
 
 Manage a portable Lumio Knowledge Base from this coding agent. Every operation
 below invokes the public `lumio-wiki` CLI, which in turn calls the public
 `lumio_wiki` Python surface. No internal application modules, no web server,
-no LanceDB, no OpenAI client required for base behavior.
+no LanceDB, no OpenAI client required for base behavior. This skill invokes
+only public CLI/Python behavior and never parses the private MessagePack
+Discovery Graph artifact — reach graph state through `related`, `paths`, and
+`health` only.
 
 ## Setup
 
@@ -63,35 +66,53 @@ Knowledge Base root directory in every command below.
 |---|---|
 | `lumio-wiki init <path>` | Create a categorized KB root with a seeded Control File. |
 | `lumio-wiki validate <kb>` | Load and validate every page, Control File, link, and reserved artifact. Exit 1 on errors. |
+| `lumio-wiki hot <kb>` | Render the Maintainer-pinned Hot Index (ladder 0). Curated entry pages. |
+| `lumio-wiki index <kb> [dir]` | Render the generated Navigation Index (ladder 1). Root catalog, or a directory's shallow index. |
 | `lumio-wiki search <kb> <query> [--limit N]` | Deterministic lexical search over titles, aliases, tags, summaries, bodies. Zero-index; no external index. |
 | `lumio-wiki page <kb> <title>` | Read a Compiled Page by Canonical Page Title (falls back to alias). Prints frontmatter + body. |
-| `lumio-wiki related <kb> <title> [--relationship-type T] [--depth N] [--scope canonical\|discovery] [--direction outgoing\|incoming\|both]` | Bounded graph traversal of related Canonical Page Titles. |
-| `lumio-wiki paths <kb> <source> <target> [--scope ...] [--direction ...]` | Shortest typed path between two titles. |
+| `lumio-wiki related <kb> <title> [--relationship-type T] [--depth N] [--max-edges N] [--max-results N] [--scope canonical\|discovery] [--direction outgoing\|incoming\|both] [--trace]` | Bounded graph traversal of related Canonical Page Titles. |
+| `lumio-wiki paths <kb> <source> <target> [--scope canonical\|discovery] [--direction ...] [--max-depth N] [--max-edges N] [--trace]` | Shortest directed path between two titles, hop-bounded. |
 | `lumio-wiki ingest <kb> <file> [--content-type T]` | Read a text/Markdown file, distill it (you are the Distiller), stage a reviewable Ingest Proposal. |
 | `lumio-wiki proposal list <kb>` | List staged proposals. |
 | `lumio-wiki proposal inspect <kb> <id> [--json]` | Print proposal metadata, blast radius, diff (or full JSON). |
 | `lumio-wiki proposal validate <kb> <id>` | Print the proposal's validation report. Exit 1 on errors. |
 | `lumio-wiki publish <kb> <id>` | Apply a proposal's pages to the KB root, regenerate reserved artifacts, mark it terminal. |
 | `lumio-wiki discard <kb> <id>` | Mark a reviewable proposal as discarded (terminal). |
-| `lumio-wiki health <kb>` | Page counts, validation status, Discovery Graph health + fingerprint. |
+| `lumio-wiki health <kb> [--rebuild]` | Page counts, validation status, Discovery Graph health + fingerprint. `--rebuild` materializes a fresh graph artifact (actionable recovery); a bad/missing artifact never blocks zero-index operation. |
 | `lumio-wiki doctor` | Version, detected optional extras, and packaged skill location. |
 | `lumio-wiki skill path` | Absolute path of the packaged `SKILL.md` inside the installed wheel. |
 | `lumio-wiki skill protocol` | Absolute path of the packaged `PROTOCOL.md`. |
 | `lumio-wiki skill install --agent <name>` | Copy the skill + protocol into a coding agent's skill directory. Agents: `pi`, `hermes`, `codex`, `claude-code`. |
 
-## Workflow: search and cite
+## Workflow: the retrieval ladder
 
-When the user asks a question answerable from the Knowledge Base:
+Find context PROGRESSIVELY, cheapest-first, with no external index. Stop as
+soon as you have citation-ready Evidence that supports the question.
 
-1. Run `lumio-wiki search <kb> "<query>"` to find candidate pages.
-2. Read each candidate with `lumio-wiki page <kb> "<title>"` to confirm it
-   supports the answer.
-3. For multi-hop questions, use `lumio-wiki paths <kb> <source> <target>` and
-   `lumio-wiki related <kb> "<title>"` to trace typed Relationships.
-4. Cite the Canonical Page Title (and the relative path the CLI prints) for
-   every claim. If the Knowledge Base does not support a claim, say so — do
-   not fabricate. This mirrors the Lumio guardrail: domain claims require
-   citation; unsupported questions return "not covered".
+0. **Hot Index** — `lumio-wiki hot <kb>`. The curated, Maintainer-pinned entry
+   pages. Read this first.
+1. **Navigation Indexes** — `lumio-wiki index <kb> [dir]`. The generated
+   catalog of every page by directory.
+2. **Deterministic search** — `lumio-wiki search <kb> "<query>"`. Zero-index
+   lexical search; no external index.
+3. **Focused page read** — `lumio-wiki page <kb> "<title>"`. Read one page to
+   confirm it supports a claim and copy the exact passage.
+4. **Related-page lookup** — `lumio-wiki related <kb> "<title>" [--scope
+   discovery] [--direction both] [--depth N] [--trace]`. Bounded neighbors;
+   `--scope discovery` adds deterministic body-link Extracted References.
+5. **Bounded paths** — `lumio-wiki paths <kb> "<src>" "<tgt>" [--max-depth N]
+   [--trace]`. Shortest directed path, hop-bounded.
+
+Use `--scope discovery` to include Extracted References (deterministic body
+links) alongside canonical Relationships, and `--trace` on `related`/`paths`
+for a truthful diagnostic of the scope, direction, bounds, and outcome
+actually used.
+
+**Cite paths AND passages.** Every claim must cite the Canonical Page Title,
+the relative path the CLI prints, AND the supporting passage from the body.
+If the selected Evidence does not support the question, report "not covered by
+this knowledge base" — do not fabricate, and do not let graph connectivity
+manufacture support (an Extracted Reference is topology, never Evidence).
 
 ## Workflow: ingest (you are the Distiller)
 
