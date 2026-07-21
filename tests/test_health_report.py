@@ -3,8 +3,8 @@
 from pathlib import Path
 from shutil import copytree
 
-from lumio.core import KnowledgeBase, load_knowledge_base
-from lumio.core.records import HealthReport
+from lumio_wiki import KnowledgeBase, load_knowledge_base
+from lumio_wiki.records import HealthReport
 
 VALID_FIXTURES = Path(__file__).parent / "fixtures" / "valid"
 

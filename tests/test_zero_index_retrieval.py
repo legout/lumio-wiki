@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from lumio.core.embeddings import EmbeddingError
-from lumio.core.fingerprint_store import load_stored_fingerprint
-from lumio.core.knowledge_base import fingerprint_sources, load_knowledge_base
-from lumio.core.records import Citation, Evidence, RetrievalResult, RetrievalTrace
-from lumio.core.retrieval import ZeroIndexRetrieval
+from lumio_wiki.embeddings import EmbeddingError
+from lumio_wiki.fingerprint_store import load_stored_fingerprint
+from lumio_wiki.knowledge_base import fingerprint_sources, load_knowledge_base
+from lumio_wiki.records import Citation, Evidence, RetrievalResult, RetrievalTrace
+from lumio_wiki.retrieval import ZeroIndexRetrieval
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -57,7 +57,7 @@ def test_kb_zero_index_retrieve_without_index_dir():
 
 
 def test_kb_zero_index_build_index_roundtrip_freshness(tmp_path):
-    from lumio.core.knowledge_base import is_fresh
+    from lumio_wiki.knowledge_base import is_fresh
 
     kb, _ = load_knowledge_base(FIXTURES / "valid")
     indexed = kb.build_index(tmp_path / "idx")  # default zero-index

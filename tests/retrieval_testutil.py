@@ -6,7 +6,7 @@ the core level) while letting enhanced-retrieval tests opt into BM25 +
 semantic/hybrid with one call.
 """
 
-from lumio.core.index import build_lancedb_index
+from lumio_lancedb import build_lancedb_index
 
 
 def build_lancedb_kb(kb, index_dir, *, embedder=None):

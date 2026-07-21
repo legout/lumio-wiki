@@ -130,10 +130,13 @@ explicit workspace dependency on `lumio-wiki`.
 
 Canonical Knowledge Base behavior now lives under `lumio_wiki`. Existing
 `lumio.core` and `lumio.core.<module>` imports are temporary pre-1.0 re-exports
-so current consumers continue to work during migration. New consumers must
-import from `lumio_wiki`. The compatibility surface owns no duplicate
-implementation and will be removed only through a separately documented
-migration issue.
+so external consumers continue to work during migration. Internal `lumio`
+application modules and the test suite import final package owners
+(`lumio_wiki`, `lumio_lancedb`) directly. New consumers must import from
+`lumio_wiki` (and `lumio_lancedb` when enhanced retrieval is required). The
+compatibility surface owns no duplicate implementation. Removal is
+time-bounded to pre-1.0 and will ship only through a separately documented
+migration issue that replaces the re-exports with explicit migration guidance.
 
 ## Configuration
 
@@ -152,7 +155,7 @@ or logged (`.env` is gitignored).
 If `LUMIO_PROVIDER_BASE_URL` or `LUMIO_PROVIDER_MODEL` is unset, Lumio uses the
 offline FakeProvider.
 
-### Storage, paths, and metadata
+### Storage, paths, retrieval, and metadata
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -164,6 +167,7 @@ offline FakeProvider.
 | `LUMIO_INGEST_PATH` | `data/ingest` | Staged ingest proposals and uploaded raw sources. |
 | `LUMIO_PUBLISH_PATH` | `data/publish` | Published-version records. |
 | `LUMIO_METADATA_DB_PATH` | `lumio.sqlite` | SQLite database for users, roles, sessions, and audit. |
+| `LUMIO_RETRIEVAL_BACKEND` | `lancedb` | `lancedb` (enhanced BM25/semantic/hybrid via `lumio-lancedb`) or `zero-index` (deterministic in-memory retrieval owned by `lumio-wiki`). Selected through config/DI; client modules never import adapter types. |
 
 Stario itself respects `STARIO_HOST` (defaults `0.0.0.0` in the image) and
 `STARIO_PORT` (defaults `8000`).
@@ -295,24 +299,27 @@ uses; agent/runtime evals use the **FakeProvider**, never a live LLM call.
 ```
 packages/lumio-wiki/src/lumio_wiki/
 │                    # Canonical portable Knowledge Base owner
+packages/lumio-lancedb/src/lumio_lancedb/
+│                    # Optional LanceDB enhanced-retrieval adapter
 packages/lumio/src/lumio/
-├── core/            # Temporary compatibility re-exports + app-owned index.py
+├── core/            # Temporary public compatibility re-exports only
+├── retrieval.py     # App retrieval backend selection (config/DI)
 ├── runtime.py       # Agent Runtime: classify → retrieve → synthesize → cite → refuse → trace
 ├── app.py           # Chat Gateway + web UI (Stario routes, auth, guardrails)
-├── guardrails.py    # Citation-required / not-covered / out-of-scope enforcement
 ├── providers/       # OpenAI-compatible provider + offline FakeProvider
 ├── storage/         # git / shared / hybrid sync + publish
-├── ingest.py        # Knowledge Source → staged Markdown proposal
-├── publish.py       # Publish workflow + version records + freshness rebuild
+├── ingest.py        # Full-app ingestion adapters over lumio-wiki
+├── publish.py       # Publish workflow + version records + write mode
 ├── auth.py · auth_models.py      # roles (Reader/Maintainer/Owner), sessions
-├── audit.py · audit_models.py    # audit log (ingest/publish/auth/sync/config)
+├── audit_models.py  # audit log (ingest/publish/auth/sync/config)
 ├── config.py        # owner provider configuration (env → ProviderConfig)
 └── cli.py           # `lumio` CLI: validate / retrieve / ask / sync
 ```
 
 The canonical `lumio_wiki` package remains framework-independent. The
-Stario/Piccolo-specific code and retrieval index stay inside the app boundary;
-`lumio.core` is a temporary compatibility surface (ADR-0001, ADR-0002).
+Stario/Piccolo-specific code stays inside the app boundary. `lumio.core` is a
+temporary public compatibility surface only; internal callers use final package
+owners (ADR-0010, issue #103).
 
 ## What works today
 

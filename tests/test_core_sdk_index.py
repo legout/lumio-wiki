@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from subprocess import run
 
-from lumio.core import (
+from lumio_wiki import (
     Citation,
     CompiledPage,
     Evidence,
@@ -309,7 +309,7 @@ def test_page_search_normalizes_empty_and_rejects_excessive_queries():
 
 
 def test_lancedb_adapter_retrieve_via_kb_slot():
-    from lumio.core.index import LanceDBRetrievalAdapter
+    from lumio_lancedb import LanceDBRetrievalAdapter
 
     kb, report = load_knowledge_base(FIXTURES / "valid")
     assert report.is_valid

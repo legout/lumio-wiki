@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from lumio.core import (
+from lumio_wiki import (
     ACTIVITY_LOG_ARTIFACT,
     ACTIVITY_LOG_BASENAME,
     CONTROL_FILE_BASENAME,
@@ -950,7 +950,7 @@ def test_extensible_catalog_appears_in_navigation_indexes(tmp_path):
     """Declared categories render as first-class directories in Navigation
     Indexes, identical to seeded ones (ADR-0009). A page under a declared
     non-seed category produces a per-directory index just like a seed one."""
-    from lumio.core import generate_navigation_indexes
+    from lumio_wiki import generate_navigation_indexes
 
     root = _write_declared_catalog_kb(
         tmp_path,

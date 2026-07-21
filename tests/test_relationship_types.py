@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from lumio.core.knowledge_base import (
+from lumio_wiki.knowledge_base import (
     PREFERRED_RELATIONSHIP_TYPES,
     ValidationIssue,
     load_knowledge_base,

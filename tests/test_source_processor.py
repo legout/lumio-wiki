@@ -2,7 +2,7 @@
 
 import hashlib
 
-from lumio.source_processor import (
+from lumio_wiki.source_processor import (
     DocumentSourceProcessor,
     NormalizedSource,
     SourceProcessor,

@@ -21,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from lumio.core import KnowledgeBase, load_knowledge_base
-from lumio.core.records import CompiledPage, Relationship, Source
+from lumio_wiki import KnowledgeBase, load_knowledge_base
+from lumio_wiki.records import CompiledPage, Relationship, Source
 
 
 def _page(
