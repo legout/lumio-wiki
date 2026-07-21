@@ -295,7 +295,7 @@ uses; agent/runtime evals use the **FakeProvider**, never a live LLM call.
 ```
 packages/lumio-wiki/src/lumio_wiki/
 │                    # Canonical portable Knowledge Base owner
-src/lumio/
+packages/lumio/src/lumio/
 ├── core/            # Temporary compatibility re-exports + app-owned index.py
 ├── runtime.py       # Agent Runtime: classify → retrieve → synthesize → cite → refuse → trace
 ├── app.py           # Chat Gateway + web UI (Stario routes, auth, guardrails)

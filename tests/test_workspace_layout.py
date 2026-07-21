@@ -1,25 +1,32 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
+
+import tomllib
 
 ROOT = Path(__file__).parents[1]
 MEMBER = ROOT / "packages" / "lumio-wiki"
 LANCEDB_MEMBER = ROOT / "packages" / "lumio-lancedb"
+APP_MEMBER = ROOT / "packages" / "lumio"
 
 
 def _toml(path: Path) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
-def test_uv_workspace_declares_members_and_explicit_member_dependencies():
+def test_uv_workspace_root_is_coordination_only_with_three_members():
     root = _toml(ROOT / "pyproject.toml")
+    # The workspace root is coordination only: it is not itself a distributable
+    # package (ADR-0010, issue #102). No [project] table and an explicit
+    # non-package marker so uv never tries to build the root.
+    assert "project" not in root, "root pyproject.toml must not declare [project]"
+    assert root["tool"]["uv"]["package"] is False
     assert root["tool"]["uv"]["workspace"]["members"] == [
+        "packages/lumio",
         "packages/lumio-lancedb",
         "packages/lumio-wiki",
     ]
-    assert "lumio-wiki>=0.1.1,<0.2.0" in root["project"]["dependencies"]
-    assert "lumio-lancedb>=0.1.1,<0.2.0" in root["project"]["dependencies"]
+    assert root["tool"]["uv"]["sources"]["lumio"] == {"workspace": True}
     assert root["tool"]["uv"]["sources"]["lumio-wiki"] == {"workspace": True}
     assert root["tool"]["uv"]["sources"]["lumio-lancedb"] == {"workspace": True}
     assert root["tool"]["pytest"]["ini_options"]["testpaths"] == [
@@ -58,19 +65,40 @@ def test_uv_workspace_declares_members_and_explicit_member_dependencies():
     ]
 
 
+def test_full_lumio_application_is_an_independently_buildable_member():
+    app = _toml(APP_MEMBER / "pyproject.toml")
+    assert app["project"]["name"] == "lumio"
+    assert app["project"]["requires-python"] == ">=3.14"
+    # The full application depends explicitly on the standalone foundation and
+    # the LanceDB adapter (ADR-0010). It selects retrieval through config/DI,
+    # never importing adapter types in client code.
+    assert "lumio-wiki>=0.1.1,<0.2.0" in app["project"]["dependencies"]
+    assert "lumio-lancedb>=0.1.1,<0.2.0" in app["project"]["dependencies"]
+    # The backward-compatible CLI entry point survives the migration.
+    assert app["project"]["scripts"]["lumio"] == "lumio.cli:main"
+    assert app["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == [
+        "src/lumio"
+    ]
+
+
 def test_workspace_has_one_root_lockfile_and_disjoint_import_roots():
     assert (ROOT / "uv.lock").is_file()
     assert not (MEMBER / "uv.lock").exists()
     assert not (LANCEDB_MEMBER / "uv.lock").exists()
-    assert (ROOT / "src" / "lumio").is_dir()
+    assert not (APP_MEMBER / "uv.lock").exists()
+    # The application source migrated into its member (issue #102); the root no
+    # longer carries application source.
+    assert not (ROOT / "src").exists()
+    assert (APP_MEMBER / "src" / "lumio").is_dir()
     assert (MEMBER / "src" / "lumio_wiki").is_dir()
     assert (LANCEDB_MEMBER / "src" / "lumio_lancedb").is_dir()
     # No two wheels may own the same concrete Python module path (ADR-0010).
     assert not (MEMBER / "src" / "lumio").exists()
     assert not (LANCEDB_MEMBER / "src" / "lumio").exists()
+    assert not (APP_MEMBER / "src" / "lumio_wiki").exists()
+    assert not (APP_MEMBER / "src" / "lumio_lancedb").exists()
     assert not (LANCEDB_MEMBER / "src" / "lumio_wiki").exists()
     assert not (MEMBER / "src" / "lumio_lancedb").exists()
-    assert not (ROOT / "src" / "lumio_lancedb").exists()
 
 
 def test_workspace_ci_runs_package_and_application_consumer_suites():

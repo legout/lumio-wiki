@@ -1,30 +1,19 @@
-[project]
-name = "lumio"
-version = "0.1.1"
-description = "Deployable chat for trusted knowledge and data."
-requires-python = ">=3.14"
-dependencies = [
-    "GitPython>=3.1.0",
-    "lancedb>=0.34.0",
-    "liteparse>=2.4.0",
-    "lumio-lancedb>=0.1.1,<0.2.0",
-    "lumio-wiki>=0.1.1,<0.2.0",
-    "markitdown[docx]>=0.1.6",
-    "msgspec[yaml]>=0.21.1",
-    "openai>=1.40.0",
-    "piccolo[sqlite]>=1.35.0",
-    "pyarrow>=24.0.0",
-    "stario>=3.3.0",
-]
+# Workspace root — coordination only (ADR-0010, issue #102).
+# This file is NOT a distributable package: it declares the uv workspace,
+# shared dev tooling, and test/lint config. The full ``lumio`` application
+# lives in ``packages/lumio``; the standalone ``lumio-wiki`` and the
+# ``lumio-lancedb`` adapter live alongside it. Each member owns its own
+# project metadata and build backend.
+[tool.uv]
+package = false
 
-[project.optional-dependencies]
-# Optional semantic/hybrid Knowledge Base retrieval backend (#75). Lexical-only
-# images and deployments do not install this group and never require Torch.
-semantic = [
-    "sentence-transformers>=2.6.0",
-]
-[project.scripts]
-lumio = "lumio.cli:main"
+[tool.uv.workspace]
+members = ["packages/lumio", "packages/lumio-lancedb", "packages/lumio-wiki"]
+
+[tool.uv.sources]
+lumio = { workspace = true }
+lumio-lancedb = { workspace = true }
+lumio-wiki = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -34,23 +23,8 @@ dev = [
     "ruff>=0.5.0",
 ]
 
-[tool.uv.workspace]
-members = ["packages/lumio-lancedb", "packages/lumio-wiki"]
-
-[tool.uv.sources]
-lumio-lancedb = { workspace = true }
-lumio-wiki = { workspace = true }
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/lumio"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/lumio-lancedb/tests", "packages/lumio-wiki/tests"]
-pythonpath = ["src"]
 markers = [
     "slow: tests that build wheels or create isolated virtual environments",
 ]
