@@ -28,13 +28,17 @@ For the *why* and the vision, read the domain docs — this README documents
   - [Reader / Maintainer — use the web app](#reader--maintainer--use-the-web-app)
   - [Developer — run locally](#developer--run-locally)
   - [Coding agent / library user — install the portable foundation](#coding-agent--library-user--install-the-portable-foundation)
+  - [Optional capabilities](#optional-capabilities)
   - [Temporary Core SDK compatibility](#temporary-core-sdk-compatibility)
 - [Configuration](#configuration)
 - [CLI reference](#cli-reference)
+  - [`lumio-wiki` — portable Knowledge Base CLI](#lumio-wiki--portable-knowledge-base-cli)
+  - [`lumio` — application CLI](#lumio--application-cli)
 - [Knowledge Base format](#knowledge-base-format)
 - [HTTP surface](#http-surface)
 - [Deployment notes](#deployment-notes)
 - [Development](#development)
+- [Packaging, ownership, and migration](#packaging-ownership-and-migration)
 - [What works today](#what-works-today)
 - [Roadmap](#roadmap)
 - [Troubleshooting](#troubleshooting)
@@ -112,19 +116,58 @@ See [Development](#development) for tests, linting, and codebase layout.
 
 ### Coding agent / library user — install the portable foundation
 
-`lumio-wiki` is an independently installable, model-free wheel for loading,
-validating, fingerprinting, searching, reading, relating, traversing, and
-regenerating portable Knowledge Base artifacts:
+Lumio is published as three progressively enhanced wheels (ADR-0010). Pick
+the one that matches your use case; every wheel is independently installable
+and the base never pulls in the web app, a vector database, or a model
+provider.
+
+| Distribution | Installs | Use when |
+|---|---|---|
+| `lumio-wiki` | `msgspec[yaml]`, `msgpack`, plus the `lumio-wiki` CLI and packaged Agent Skill | You want a portable, model-free Knowledge Base from any coding agent (Pi, Hermes, Codex, Claude Code, …). |
+| `lumio-lancedb` | `lumio-wiki` + LanceDB + PyArrow | You want BM25 / semantic / hybrid retrieval over the same Knowledge Base. |
+| `lumio` | `lumio-wiki` + `lumio-lancedb` + the full Stario web app, providers, storage, auth | You want the deployable chat application. |
 
 ```bash
-pip install lumio-wiki
-python -c "from lumio_wiki import load_knowledge_base; print(load_knowledge_base('tests/fixtures/valid')[1])"
+pip install lumio-wiki                       # foundation: load, validate, search, traverse, ingest, publish
+pip install 'lumio-wiki[documents]'          # + LiteParse/MarkItDown for PDF/DOCX/HTML ingestion
+pip install 'lumio-wiki[llm]'                # + an unattended OpenAI-compatible Distiller
+pip install 'lumio-wiki[all]'                # documents + llm together (still no LanceDB)
+pip install lumio-lancedb                    # + enhanced BM25/semantic/hybrid retrieval
+pip install lumio                            # the full deployable web application
 ```
 
-The base wheel depends only on `msgspec[yaml]`; it does not install the web
-application, LanceDB/PyArrow, Stario/Piccolo, OpenAI, LiteParse, or MarkItDown.
-The existing `lumio` distribution remains the deployable application and has an
-explicit workspace dependency on `lumio-wiki`.
+The base wheel depends only on `msgspec[yaml]` and `msgpack`; it does not
+install the web application, LanceDB/PyArrow, Stario/Piccolo, OpenAI,
+LiteParse, or MarkItDown. Optional capabilities are described under
+Optional capabilities below; the full packaging, ownership, and migration
+contract lives in `docs/packaging.md`.
+
+```bash
+python -c "from lumio_wiki import load_knowledge_base; print(load_knowledge_base('tests/fixtures/valid')[1])"
+lumio-wiki init ./my-kb                      # scaffold a categorized Knowledge Base
+lumio-wiki doctor                            # report the install shape and packaged skill location
+```
+
+### Optional capabilities
+
+`lumio-wiki` ships capability **extras** so heavyweight implementations are
+pulled in only when needed. Each extra fails with actionable guidance naming
+the exact install command when invoked without it.
+
+| Extra | Brings | Capability |
+|---|---|---|
+| `lumio-wiki[documents]` | LiteParse, MarkItDown | PDF / scanned-PDF / image / DOCX / HTML ingestion. The base wheel handles text and Markdown. |
+| `lumio-wiki[llm]` | `openai` | Unattended Distiller backed by an OpenAI-compatible provider. The base wheel uses the host coding agent as the Distiller. |
+| `lumio-wiki[all]` | both of the above | Document conversion + unattended distillation together. Still LanceDB-free. |
+| `lumio-lancedb` | LanceDB, PyArrow | BM25 / vector / semantic / hybrid retrieval. `lumio-wiki` never imports it; install it explicitly when you want enhanced ranking. |
+| `lumio-lancedb[embeddings]` | `sentence-transformers` | Local embeddings for the LanceDB adapter. Torch stays out of the base adapter and out of `lumio-wiki`. |
+| `lumio[semantic]` | `sentence-transformers` | Local embeddings for the full app's LanceDB backend. |
+
+**Adapter selection.** The full `lumio` application selects zero-index or
+LanceDB retrieval through `LUMIO_RETRIEVAL_BACKEND` and dependency injection.
+Client modules (`app.py`, `cli.py`) call the single public seam
+`build_retrieval_index` and never import adapter types, so removing
+`lumio-lancedb` does not require a code change — only flipping the config.
 
 ### Temporary Core SDK compatibility
 
@@ -137,6 +180,7 @@ application modules and the test suite import final package owners
 compatibility surface owns no duplicate implementation. Removal is
 time-bounded to pre-1.0 and will ship only through a separately documented
 migration issue that replaces the re-exports with explicit migration guidance.
+See `docs/packaging.md` for the full migration and ownership contract.
 
 ## Configuration
 
@@ -174,7 +218,39 @@ Stario itself respects `STARIO_HOST` (defaults `0.0.0.0` in the image) and
 
 ## CLI reference
 
-`uv run lumio <command>` (or just `lumio` once installed).
+Lumio ships two CLIs. `lumio-wiki` is the portable, model-free Knowledge Base
+toolkit (installable on its own); `lumio` is the application CLI that adds
+cited answers, sync, and the web server.
+
+### `lumio-wiki` — portable Knowledge Base CLI
+
+`uv run lumio-wiki <command>` (or just `lumio-wiki` once installed). Works
+from any coding agent with no model provider and no LanceDB.
+
+```bash
+lumio-wiki --version
+lumio-wiki init <path>                           # scaffold a categorized Knowledge Base
+lumio-wiki validate <kb-path>                    # exit 0 if valid, 1 otherwise
+lumio-wiki search <kb-path> "<query>"            # lexical search over titles, aliases, tags, summaries, bodies
+lumio-wiki page <kb-path> "<title>"              # read a Compiled Page by Canonical Title or alias
+lumio-wiki related <kb-path> "<title>"           # list pages related to a title
+lumio-wiki paths <kb-path> "<src>" "<dst>"       # shortest typed path between two titles
+lumio-wiki ingest <kb-path> <source> [--distiller passthrough|llm]   # stage a Knowledge Source as a proposal
+lumio-wiki proposal list|inspect|validate <kb-path> [id]      # review staged proposals
+lumio-wiki publish <kb-path> <id>                # publish a reviewed proposal
+lumio-wiki health <kb-path>                      # Knowledge Base health and diagnostics
+lumio-wiki doctor                                # install shape: version, optionals, packaged skill location
+lumio-wiki skill [--install|--path]              # locate or install the packaged Agent Skill
+```
+
+`ingest --distiller llm` requires `lumio-wiki[llm]`; PDF/DOCX/image sources
+require `lumio-wiki[documents]`. Both fail with actionable guidance if the
+extra is missing.
+
+### `lumio` — application CLI
+
+`uv run lumio <command>` (or just `lumio` once installed). Adds the Agent
+Runtime, storage sync, and the web server on top of `lumio-wiki`.
 
 ```bash
 lumio --version
@@ -320,6 +396,34 @@ The canonical `lumio_wiki` package remains framework-independent. The
 Stario/Piccolo-specific code stays inside the app boundary. `lumio.core` is a
 temporary public compatibility surface only; internal callers use final package
 owners (ADR-0010, issue #103).
+
+## Packaging, ownership, and migration
+
+Lumio is a uv workspace with three independently buildable, independently
+installable distributions (ADR-0010). The full contract — module ownership,
+dependency direction, public compatibility strategy, optional capabilities,
+and the migration plan for the temporary `lumio.core` re-exports — lives in
+**[`docs/packaging.md`](docs/packaging.md)**.
+
+Quick reference:
+
+- **`lumio-wiki`** owns the canonical Knowledge Base model, loading,
+  validation, Navigation/Hot Indexes, deterministic zero-index retrieval,
+  typed Relationship traversal, Evidence/citations, ingestion interfaces,
+  the proposal pipeline, the `lumio-wiki` CLI, and the packaged Agent Skill.
+  It has no downward dependency on `lumio-lancedb` or `lumio`.
+- **`lumio-lancedb`** depends only on `lumio-wiki`. It owns LanceDB index
+  lifecycle, BM25, semantic/vector retrieval, and hybrid ranking, returning
+  the same `RetrievalResult` contract as zero-index retrieval.
+- **`lumio`** consumes both upward, selects zero-index or LanceDB retrieval
+  through `LUMIO_RETRIEVAL_BACKEND` + dependency injection, and owns the
+  Stario web app, the Agent Runtime, auth, storage, providers, and review
+  workflows.
+
+No two wheels own the same concrete Python module path
+(`lumio_wiki`, `lumio_lancedb`, `lumio`). Published inter-member dependencies
+declare bounded version ranges (`lumio-wiki>=0.1.1,<0.2.0`); the shared
+lockfile is a development convenience, not a public compatibility contract.
 
 ## What works today
 
