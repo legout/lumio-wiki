@@ -16,7 +16,8 @@ from pathlib import Path
 
 import lumio_wiki as lw
 import pytest
-from lumio_wiki.cli import build_parser, main
+from lumio_wiki import GRAPH_ARTIFACT_FILENAME
+from lumio_wiki.cli import build_parser, default_index_dir, main
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -104,6 +105,8 @@ def test_all_documented_commands_have_handlers():
         "page",
         "related",
         "paths",
+        "hot",
+        "index",
         "ingest",
         "proposal",
         "publish",
@@ -487,3 +490,215 @@ def test_skill_install_overwrite_replaces_existing(tmp_path: Path):
 def test_unsupported_agent_is_rejected():
     with pytest.raises(SystemExit):
         main(["skill", "install", "--agent", "unsupported-agent"])
+
+
+# ---------------------------------------------------------------------------
+# Issue #110: the zero-index retrieval ladder — graph bounds + truthful trace,
+# Hot Index / Navigation Index surfaces, and graceful graph recovery.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def categorized_kb(tmp_path: Path) -> Path:
+    """Copy the categorized fixture (has Hot Index pins) into a writable root."""
+    root = tmp_path / "kb"
+    shutil.copytree(FIXTURES / "categorized_kb", root)
+    return root
+
+
+# --- related / paths: explicit bounds + truthful trace (AC1) ---
+
+
+def test_related_trace_reports_scope_direction_and_bounds(
+    kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    """AC1: --trace emits a truthful diagnostic of scope/direction/bounds."""
+    rc = main(
+        [
+            "related",
+            str(kb_root),
+            "Lumio Overview",
+            "--scope",
+            "discovery",
+            "--direction",
+            "both",
+            "--depth",
+            "2",
+            "--max-results",
+            "5",
+            "--trace",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "# trace:" in out
+    assert "scope=discovery" in out
+    assert "direction=both" in out
+    assert "max_depth=2" in out
+    assert "max_results=5" in out
+    # The trace reports ONLY what the traversal used; it does not imply a
+    # persisted artifact was the traversal source (ADR-0011 truthfulness).
+    assert "artifact=" not in out
+
+
+def test_paths_max_depth_bounds_traversal(kb_root: Path):
+    """AC1: --max-depth is an explicit bound. A 2-hop path is unreachable at depth 1."""
+    # Canonical path Lumio Overview -> Architecture -> Technology Stack is 2 hops.
+    rc_shallow = main(
+        ["paths", str(kb_root), "Lumio Overview", "Technology Stack", "--max-depth", "1"]
+    )
+    assert rc_shallow == 1  # bounded out — no path within 1 hop
+    rc_deep = main(
+        ["paths", str(kb_root), "Lumio Overview", "Technology Stack", "--max-depth", "2"]
+    )
+    assert rc_deep == 0
+
+
+def test_paths_trace_reports_found_and_hops(
+    kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    rc = main(
+        [
+            "paths",
+            str(kb_root),
+            "Lumio Overview",
+            "Technology Stack",
+            "--scope",
+            "canonical",
+            "--max-depth",
+            "3",
+            "--trace",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "# trace:" in out
+    assert "scope=canonical" in out
+    assert "max_depth=3" in out
+    assert "found=true" in out
+    assert "hops=2" in out
+
+
+def test_paths_trace_reports_not_found(kb_root: Path, capsys: pytest.CaptureFixture[str]):
+    rc = main(
+        [
+            "paths",
+            str(kb_root),
+            "Lumio Overview",
+            "Architecture",
+            "--max-depth",
+            "0",
+            "--trace",
+        ]
+    )
+    # depth 0 forbids any hop, so no path to a different title.
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "found=false" in out
+
+
+# --- Hot Index + Navigation Index ladder entry points (AC2) ---
+
+
+def test_hot_prints_pinned_hot_index(
+    categorized_kb: Path, capsys: pytest.CaptureFixture[str]
+):
+    rc = main(["hot", str(categorized_kb)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Hot Index" in out
+    assert "Lumio Overview" in out
+    assert "Acme Corp" in out
+
+
+def test_hot_reports_when_no_pins(kb_root: Path, capsys: pytest.CaptureFixture[str]):
+    # The valid fixture has no Control File → no pins.
+    rc = main(["hot", str(kb_root)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "No Hot Index" in out
+
+
+def test_index_prints_root_navigation_index(
+    kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    rc = main(["index", str(kb_root)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Lumio Overview" in out
+    assert "Architecture" in out
+    assert "Technology Stack" in out
+
+
+def test_index_prints_subdirectory_index(
+    categorized_kb: Path, capsys: pytest.CaptureFixture[str]
+):
+    rc = main(["index", str(categorized_kb), "concepts"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Lumio Overview" in out
+
+
+# --- Graceful graph recovery (AC4) ---
+
+
+def test_corrupt_artifact_does_not_block_zero_index_operation(
+    kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    """AC4: a corrupt graph artifact never blocks search/page/related/paths."""
+    index_dir = default_index_dir(kb_root)
+    index_dir.mkdir(parents=True, exist_ok=True)
+    (index_dir / GRAPH_ARTIFACT_FILENAME).write_bytes(b"\x00\x01\x02 not msgpack")
+    capsys.readouterr()  # clear
+    # Every zero-index operation still works.
+    assert main(["search", str(kb_root), "LanceDB"]) == 0
+    assert main(["page", str(kb_root), "Architecture"]) == 0
+    assert main(["related", str(kb_root), "Lumio Overview"]) == 0
+    assert main(["paths", str(kb_root), "Lumio Overview", "Technology Stack"]) == 0
+    # health reports the graph as not fresh (corrupt → ignored).
+    rc = main(["health", str(kb_root)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "graph_fresh:" in out and "False" in out
+
+
+def test_health_reports_recovery_hint_when_graph_not_fresh(
+    kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    rc = main(["health", str(kb_root)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "graph_recovery:" in out
+    assert "--rebuild" in out
+
+
+def test_health_rebuild_materializes_fresh_graph(
+    kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    index_dir = default_index_dir(kb_root)
+    assert not (index_dir / GRAPH_ARTIFACT_FILENAME).exists()
+    rc = main(["health", str(kb_root), "--rebuild"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "graph_materialized:" in out and "True" in out
+    assert "graph_fresh:" in out and "True" in out
+    assert (index_dir / GRAPH_ARTIFACT_FILENAME).is_file()
+
+
+def test_health_rebuild_overwrites_corrupt_artifact(
+    kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    index_dir = default_index_dir(kb_root)
+    index_dir.mkdir(parents=True, exist_ok=True)
+    artifact = index_dir / GRAPH_ARTIFACT_FILENAME
+    artifact.write_bytes(b"corrupt garbage")
+    rc = main(["health", str(kb_root), "--rebuild"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "graph_fresh:" in out and "True" in out
+    # Subsequent plain health (no rebuild) stays fresh, no recovery hint.
+    capsys.readouterr()
+    assert main(["health", str(kb_root)]) == 0
+    out2 = capsys.readouterr().out
+    assert "graph_fresh:" in out2 and "True" in out2
+    assert "graph_recovery:" not in out2
