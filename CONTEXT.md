@@ -24,6 +24,12 @@ deployment configuration, never portable Knowledge Base content.
 _Avoid_: Knowledge Source (raw ingest material), working copy, bucket (too
 specific).
 
+**Shared-directory Storage**:
+A storage mode that copies Published Versions between an app's filesystem
+working copy and a directory shared by its consumers. It is neither Git
+synchronization nor object storage.
+_Avoid_: local storage (ambiguous), S3 storage, shared Knowledge Base.
+
 **Compiled Page**:
 A Markdown file with YAML frontmatter (structured metadata) and a body (human-readable knowledge). Source-of-truth content.
 _Avoid_: document, article, record.
