@@ -365,7 +365,7 @@ class UnresolvedReferenceGroup(msgspec.Struct, frozen=True):
     outcome: str
     target: str
     count: int
-    samples: list[UnresolvedReferenceSample] = msgspec.field(default_factory=list)
+    samples: tuple[UnresolvedReferenceSample, ...] = ()
 
 
 class StructuralGraphReport(msgspec.Struct, frozen=True):
@@ -398,11 +398,11 @@ class StructuralGraphReport(msgspec.Struct, frozen=True):
     weakly_connected_component_count: int
     largest_component_coverage: float
     undirected_projection_used: bool
-    top_inbound_hubs: list[GraphHub] = msgspec.field(default_factory=list)
-    top_outbound_hubs: list[GraphHub] = msgspec.field(default_factory=list)
-    unresolved_references: list[UnresolvedReferenceGroup] = msgspec.field(default_factory=list)
-    inbound_orphan_sample_titles: list[str] = msgspec.field(default_factory=list)
-    outbound_orphan_sample_titles: list[str] = msgspec.field(default_factory=list)
+    top_inbound_hubs: tuple[GraphHub, ...] = ()
+    top_outbound_hubs: tuple[GraphHub, ...] = ()
+    unresolved_references: tuple[UnresolvedReferenceGroup, ...] = ()
+    inbound_orphan_sample_titles: tuple[str, ...] = ()
+    outbound_orphan_sample_titles: tuple[str, ...] = ()
 
 # ---------------------------------------------------------------------------
 # Knowledge Base Control File and reserved published artifacts (issue #77).

@@ -248,8 +248,8 @@ def test_duplicate_canonical_edges_counted_separately():
     report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
     # Canonical adjacency keeps both parallel edges.
     assert report.edge_count == 2
-    assert report.top_outbound_hubs == [GraphHub(title="Alpha", edge_count=2)]
-    assert report.top_inbound_hubs == [GraphHub(title="Beta", edge_count=2)]
+    assert report.top_outbound_hubs == (GraphHub(title="Alpha", edge_count=2),)
+    assert report.top_inbound_hubs == (GraphHub(title="Beta", edge_count=2),)
 
 
 def test_discovery_scope_dedups_parallel_edges_to_endpoint():
@@ -263,8 +263,8 @@ def test_discovery_scope_dedups_parallel_edges_to_endpoint():
     report = kb.graph_diagnostics(scope=GRAPH_SCOPE_DISCOVERY)
     # Discovery adjacency dedups to one edge per endpoint.
     assert report.edge_count == 1
-    assert report.top_outbound_hubs == [GraphHub(title="Alpha", edge_count=1)]
-    assert report.top_inbound_hubs == [GraphHub(title="Beta", edge_count=1)]
+    assert report.top_outbound_hubs == (GraphHub(title="Alpha", edge_count=1),)
+    assert report.top_inbound_hubs == (GraphHub(title="Beta", edge_count=1),)
 
 
 # ---------------------------------------------------------------------------
@@ -316,9 +316,9 @@ def test_empty_knowledge_base():
         assert report.outbound_orphan_count == 0
         assert report.weakly_connected_component_count == 0
         assert report.largest_component_coverage == 0.0
-        assert report.top_inbound_hubs == []
-        assert report.top_outbound_hubs == []
-        assert report.unresolved_references == []
+        assert report.top_inbound_hubs == ()
+        assert report.top_outbound_hubs == ()
+        assert report.unresolved_references == ()
 
 
 # ---------------------------------------------------------------------------
@@ -358,12 +358,12 @@ def test_orphan_samples_are_bounded_and_deterministic():
     assert len(report.inbound_orphan_sample_titles) == 10
     assert len(report.outbound_orphan_sample_titles) == 10
     # Deterministic (lexicographic) ordering of the representative sample.
-    assert report.inbound_orphan_sample_titles == sorted(
+    assert report.inbound_orphan_sample_titles == tuple(sorted(
         report.inbound_orphan_sample_titles
-    )
-    assert report.outbound_orphan_sample_titles == sorted(
+    ))
+    assert report.outbound_orphan_sample_titles == tuple(sorted(
         report.outbound_orphan_sample_titles
-    )
+    ))
 
 
 def test_negative_sample_bounds_rejected():
@@ -497,7 +497,7 @@ def test_unresolved_references_empty_in_canonical_scope():
     a = _page("A", body="[x](missing.md)\n")
     kb = _kb([a])
     report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
-    assert report.unresolved_references == []
+    assert report.unresolved_references == ()
 
 
 def test_unresolved_references_filtered_by_candidate_visibility():
@@ -518,7 +518,7 @@ def test_external_and_escaping_links_are_not_unresolved():
     a = _page("A", body="[ext](https://example.com) and [up](../x.md)\n")
     kb = _kb([a])
     report = kb.graph_diagnostics(scope=GRAPH_SCOPE_DISCOVERY)
-    assert report.unresolved_references == []
+    assert report.unresolved_references == ()
 
 
 # ---------------------------------------------------------------------------
@@ -557,12 +557,13 @@ def test_self_relationship_excluded_from_structural_counts():
     assert report.outbound_orphan_count == 2
     assert report.weakly_connected_component_count == 2
     # No hub has a positive degree from a self-loop.
-    assert report.top_outbound_hubs == []
-    assert report.top_inbound_hubs == []
+    assert report.top_outbound_hubs == ()
+    assert report.top_inbound_hubs == ()
 
 
 # ---------------------------------------------------------------------------
-# Report is an immutable frozen struct (field reassignment blocked).
+# Report is an immutable frozen struct: field reassignment blocked AND
+# collection fields are immutable tuples (no list mutation).
 # ---------------------------------------------------------------------------
 
 
@@ -573,7 +574,16 @@ def test_report_is_frozen_struct():
         report.edge_count = 999  # type: ignore[misc]
     with pytest.raises((AttributeError, TypeError)):
         report.scope = "discovery"  # type: ignore[misc]
-
+    # Collection fields are tuples, not mutable lists.
+    assert isinstance(report.top_inbound_hubs, tuple)
+    assert isinstance(report.top_outbound_hubs, tuple)
+    assert isinstance(report.unresolved_references, tuple)
+    assert isinstance(report.inbound_orphan_sample_titles, tuple)
+    assert isinstance(report.outbound_orphan_sample_titles, tuple)
+    with pytest.raises(AttributeError):
+        report.top_inbound_hubs.append(GraphHub(title="X", edge_count=1))  # type: ignore[union-attr]
+    with pytest.raises(AttributeError):
+        report.inbound_orphan_sample_titles.append("X")  # type: ignore[union-attr]
 
 # ---------------------------------------------------------------------------
 # Public API surface.

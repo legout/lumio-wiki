@@ -840,7 +840,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
 
         unresolved = self._aggregate_unresolved_references(
             candidate, max_unresolved_sample
-        ) if scope == GRAPH_SCOPE_DISCOVERY else []
+        ) if scope == GRAPH_SCOPE_DISCOVERY else ()
 
         return StructuralGraphReport(
             scope=scope,
@@ -854,8 +854,8 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             top_inbound_hubs=top_inbound_hubs,
             top_outbound_hubs=top_outbound_hubs,
             unresolved_references=unresolved,
-            inbound_orphan_sample_titles=inbound_orphans[:max_orphan_sample],
-            outbound_orphan_sample_titles=outbound_orphans[:max_orphan_sample],
+            inbound_orphan_sample_titles=tuple(inbound_orphans[:max_orphan_sample]),
+            outbound_orphan_sample_titles=tuple(outbound_orphans[:max_orphan_sample]),
         )
 
     @staticmethod
@@ -863,24 +863,24 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         nodes: frozenset[str],
         degree: dict[str, int],
         max_sample: int,
-    ) -> list[GraphHub]:
+    ) -> tuple[GraphHub, ...]:
         """Return deterministic top hubs by directed degree, bounded.
 
         Ranks titles by descending degree with lexicographic title tie-break,
         excludes zero-degree titles, and caps at ``max_sample``. Hub status is
         navigational topology, never a Relationship semantic claim.
         """
-        return [
+        return tuple(
             GraphHub(title=t, edge_count=degree[t])
             for t in sorted(nodes, key=lambda x: (-degree[x], x))
             if degree[t] > 0
-        ][:max_sample]
+        )[:max_sample]
 
     def _aggregate_unresolved_references(
         self,
         candidate: frozenset[str],
         max_sample: int,
-    ) -> list[UnresolvedReferenceGroup]:
+    ) -> tuple[UnresolvedReferenceGroup, ...]:
         """Aggregate extraction diagnostics by (outcome, target).
 
         Extracted-reference outcomes (broken, ambiguous) are Discovery Graph
@@ -912,16 +912,16 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
                     outcome=outcome,
                     target=target,
                     count=len(ordered),
-                    samples=[
+                    samples=tuple(
                         UnresolvedReferenceSample(
                             source_path=d.source_path,
                             line_start=d.line_start,
                         )
                         for d in ordered[:max_sample]
-                    ],
+                    ),
                 )
             )
-        return result
+        return tuple(result)
 
     def build_index(
         self,
@@ -1986,7 +1986,7 @@ def _classify_reserved_artifact(
 
 
 def _load_page(text: str, relative: str) -> tuple[CompiledPage, dict[str, Any]]:
-    """Parse a single Markdown page into a record and raw frontmatter.
+    """Parse a single Markdown page into a Compiled Page and raw frontmatter.
 
     ``text`` is the page source and ``relative`` is its POSIX path relative to
     the Knowledge Base root. Source-agnostic so the same parser serves a
