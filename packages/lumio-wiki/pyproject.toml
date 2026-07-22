@@ -26,10 +26,19 @@ documents = [
 llm = [
     "openai>=1.40.0",
 ]
+# Issue #120, ADR-0013: the optional S3 capability reads immutable Knowledge
+# Base Snapshots directly from object storage via ``obstore``. Declared but NOT
+# installed by default: the base wheel stays lightweight and cloud-free. obstore
+# is imported lazily inside the S3 location module, so importing ``lumio-wiki``
+# never pulls it in. Missing-extra guidance names the exact install command.
+s3 = [
+    "obstore>=0.11.0",
+]
 all = [
     "liteparse>=2.4.0",
     "markitdown[docx]>=0.1.6",
     "openai>=1.40.0",
+    "obstore>=0.11.0",
 ]
 
 [build-system]

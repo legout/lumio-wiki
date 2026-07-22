@@ -10,7 +10,7 @@ from collections import deque
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import quote
 
 import msgspec
@@ -1652,6 +1652,90 @@ def _reserved_artifact_basename(file: Path) -> str | None:
     return lower if lower in RESERVED_ARTIFACT_MARKERS else None
 
 
+# ---------------------------------------------------------------------------
+# Read-only content source (issue #120, ADR-0013).
+#
+# Loading, validation, and fingerprinting read canonical Knowledge Base content
+# through this small seam so the SAME logic serves a local filesystem root and
+# an in-memory materialization of an immutable S3 Published Version. The write
+# path (reserved-artifact commit) stays filesystem-bound; only the read path is
+# source-polymorphic. Filesystem behavior is byte-for-byte unchanged.
+# ---------------------------------------------------------------------------
+
+
+class _KbSource(Protocol):
+    """Read-only source of canonical Knowledge Base content.
+
+    Canonical content is exposed as relative POSIX paths so a local filesystem
+    root and an in-memory materialization of a remote Published Version are
+    interchangeable for read-only loading, validation, and fingerprinting. The
+    ``root`` is a diagnostic label for the resolved location; read-only loading
+    never touches the filesystem through it.
+    """
+
+    root: Path
+
+    def markdown_files(self) -> list[str]:
+        """Canonical Markdown files as sorted relative POSIX paths."""
+        ...
+
+    def read_bytes(self, rel: str) -> bytes:
+        """Return the raw bytes of canonical file ``rel``."""
+        ...
+
+    def control_file_bytes(self) -> bytes | None:
+        """Return the Control File bytes, or ``None`` when absent."""
+        ...
+
+
+class _FilesystemKbSource:
+    """A :class:`_KbSource` over a local filesystem root."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def markdown_files(self) -> list[str]:
+        return [file.relative_to(self.root).as_posix() for file in _markdown_files(self.root)]
+
+    def read_bytes(self, rel: str) -> bytes:
+        return (self.root / rel).read_bytes()
+
+    def control_file_bytes(self) -> bytes | None:
+        path = _control_file_path(self.root)
+        return path.read_bytes() if path.exists() else None
+
+
+class _InMemoryKbSource:
+    """A :class:`_KbSource` over an in-memory materialization (no disk bytes).
+
+    Used by the S3 capability (issue #120): an immutable Published Version's
+    canonical content is read from object storage into memory, validated against
+    the manifest content digests, and loaded here so the Core SDK never writes a
+    managed Knowledge Base copy to local disk.
+    """
+
+    def __init__(self, files: dict[str, bytes], root: Path) -> None:
+        self.root = root
+        self._files = files
+
+    def markdown_files(self) -> list[str]:
+        return sorted(
+            rel for rel in self._files if PurePosixPath(rel).suffix.lower() == ".md"
+        )
+
+    def read_bytes(self, rel: str) -> bytes:
+        return self._files[rel]
+
+    def control_file_bytes(self) -> bytes | None:
+        return self._files.get(CONTROL_FILE_BASENAME)
+
+
+def _reserved_artifact_basename_of(relative: str) -> str | None:
+    """String form of :func:`_reserved_artifact_basename` for a relative path."""
+    lower = PurePosixPath(relative).name.lower()
+    return lower if lower in RESERVED_ARTIFACT_MARKERS else None
+
+
 def _markdown_files(root: Path) -> list[Path]:
     """Return Markdown files with case-insensitive ``.md`` extension matching."""
     return sorted(
@@ -1708,12 +1792,16 @@ def _classify_reserved_artifact(
     return ReservedArtifactClassification(valid=True)
 
 
-def _load_page(file: Path, root: Path) -> tuple[CompiledPage, dict[str, Any]]:
-    """Parse a single Markdown page into a record and raw frontmatter."""
-    text = file.read_text(encoding="utf-8")
-    data, body, body_start_line = _parse_frontmatter(text, file)
+def _load_page(text: str, relative: str) -> tuple[CompiledPage, dict[str, Any]]:
+    """Parse a single Markdown page into a record and raw frontmatter.
+
+    ``text`` is the page source and ``relative`` is its POSIX path relative to
+    the Knowledge Base root. Source-agnostic so the same parser serves a
+    filesystem root and an in-memory materialization (issue #120, ADR-0013).
+    """
+    data, body, body_start_line = _parse_frontmatter(text, Path(relative))
     page = CompiledPage(
-        path=file.relative_to(root).as_posix(),
+        path=relative,
         title=str(data.get("title", "")),
         aliases=_as_string_list(data.get("aliases")),
         tags=_as_string_list(data.get("tags")),
@@ -1889,25 +1977,30 @@ def _validate_page(
 
 
 def _load_pages_and_validate(
-    root: Path,
+    source: _KbSource,
 ) -> tuple[list[CompiledPage], list[ValidationIssue]]:
-    """Load every Markdown page under ``root`` and collect per-page issues.
+    """Load every Markdown page from ``source`` and collect per-page issues.
 
     A validly-marked reserved artifact (case-insensitive ``index.md``,
     ``log.md``, or ``hot.md`` with the matching supported ``lumio`` marker) is
     a reserved derived artifact: it is excluded from the loaded Compiled Page
     collection. A reserved path with a missing or malformed marker is a
     blocking validation error rather than being skipped (issues #64 and #77).
+
+    Source-agnostic (issue #120, ADR-0013): the same logic serves a filesystem
+    root and an in-memory materialization of an immutable S3 Published Version.
     """
     pages: list[CompiledPage] = []
     issues: list[ValidationIssue] = []
 
-    for file in _markdown_files(root):
-        relative = file.relative_to(root).as_posix()
-        reserved_basename = _reserved_artifact_basename(file)
+    for relative in source.markdown_files():
+        reserved_basename = _reserved_artifact_basename_of(relative)
+        basename = PurePosixPath(relative).name
 
         try:
-            page, data = _load_page(file, root)
+            page, data = _load_page(
+                source.read_bytes(relative).decode("utf-8"), relative
+            )
         except FrontmatterError as exc:
             # A reserved path that cannot even parse frontmatter is still a
             # blocking collision: report it as a reserved-artifact issue.
@@ -1920,7 +2013,7 @@ def _load_pages_and_validate(
                         file=relative,
                         field="lumio",
                         message=(
-                            f"reserved {label} path '{file.name}' has invalid "
+                            f"reserved {label} path '{basename}' has invalid "
                             f"frontmatter: {exc}"
                         ),
                     )
@@ -1947,7 +2040,7 @@ def _load_pages_and_validate(
                     file=relative,
                     field="lumio",
                     message=classification.issue or (
-                        f"reserved '{file.name}' is not a valid "
+                        f"reserved '{basename}' is not a valid "
                         f"{RESERVED_ARTIFACT_MARKERS[reserved_basename]} marker"
                     ),
                 )
@@ -2290,7 +2383,7 @@ def _as_hot_index_pins(value: Any) -> tuple[list[HotIndexPin], bool]:
 
 
 def _load_and_validate_control_file(
-    root: Path, pages: list[CompiledPage] | None
+    source: _KbSource, pages: list[CompiledPage] | None
 ) -> tuple[KnowledgeBaseControlFile | None, list[ValidationIssue]]:
     """Load and validate the root Control File, or signal Legacy Flat Mode.
 
@@ -2307,9 +2400,13 @@ def _load_and_validate_control_file(
     path-derived category must resolve to a declared entry. Pass
     ``pages=None`` to skip cross-page pin and category resolution (the
     lightweight parse seam used by :func:`load_control_file`).
+
+    Source-agnostic (issue #120, ADR-0013): reads canonical content through a
+    :class:`_KbSource` so the same validation serves a filesystem root and an
+    in-memory S3 materialization.
     """
-    path = _control_file_path(root)
-    if not path.exists():
+    raw_bytes = source.control_file_bytes()
+    if raw_bytes is None:
         return None, [
             ValidationIssue(
                 file=CONTROL_FILE_BASENAME,
@@ -2325,7 +2422,7 @@ def _load_and_validate_control_file(
 
     issues: list[ValidationIssue] = []
     try:
-        raw = yaml.decode(path.read_bytes())
+        raw = yaml.decode(raw_bytes)
     except Exception as exc:
         return None, [
             ValidationIssue(
@@ -2542,7 +2639,7 @@ def load_control_file(path: str | Path) -> KnowledgeBaseControlFile | None:
     whole-KB validation.
     """
     root = Path(path).resolve()
-    control, issues = _load_and_validate_control_file(root, None)
+    control, issues = _load_and_validate_control_file(_FilesystemKbSource(root), None)
     if any(i.severity == "error" for i in issues):
         raise ControlFileError(
             "; ".join(i.message for i in issues if i.severity == "error")
@@ -2640,7 +2737,7 @@ def validate_proposed_control_file(
         # Pass ``pages`` through unchanged: ``None`` selects the structural
         # parse seam (no pin resolution), while a page list resolves pins.
         page_list = list(pages) if pages is not None else None
-        _, issues = _load_and_validate_control_file(root, page_list)
+        _, issues = _load_and_validate_control_file(_FilesystemKbSource(root), page_list)
         return list(issues)
 
 
@@ -2691,14 +2788,20 @@ def _atomic_write_text(target: Path, content: str) -> None:
         raise
 
 
-def _load_and_validate(path: Path) -> tuple[KnowledgeBase, ValidationReport]:
-    """Load and fully validate a Knowledge Base from an existing directory."""
-    root = path.resolve()
-    pages, issues = _load_pages_and_validate(root)
+def _load_and_validate(source: _KbSource) -> tuple[KnowledgeBase, ValidationReport]:
+    """Load and fully validate canonical Knowledge Base content from ``source``.
+
+    Source-agnostic (issue #120, ADR-0013): the resolved ``source.root`` is the
+    Knowledge Base root carried on the returned :class:`KnowledgeBase` for
+    diagnostics; read-only loading never touches the filesystem through it.
+    """
+    pages, issues = _load_pages_and_validate(source)
     issues.extend(_cross_page_issues(pages, _KnowledgeIndex(pages)))
-    control, control_issues = _load_and_validate_control_file(root, pages)
+    control, control_issues = _load_and_validate_control_file(source, pages)
     issues.extend(control_issues)
-    return KnowledgeBase(root=root, pages=pages, control=control), ValidationReport(issues=issues)
+    return KnowledgeBase(root=source.root, pages=pages, control=control), ValidationReport(
+        issues=issues
+    )
 
 
 def load_knowledge_base(path: str | Path) -> tuple[KnowledgeBase, ValidationReport]:
@@ -2713,7 +2816,7 @@ def load_knowledge_base(path: str | Path) -> tuple[KnowledgeBase, ValidationRepo
     if not root.is_dir():
         raise KnowledgeBaseError(f"path is not a directory: {root}")
 
-    return _load_and_validate(root)
+    return _load_and_validate(_FilesystemKbSource(root))
 
 
 def validate(path: str | Path) -> ValidationReport:
@@ -2732,7 +2835,7 @@ def validate(path: str | Path) -> ValidationReport:
             ]
         )
 
-    return _load_and_validate(root)[1]
+    return _load_and_validate(_FilesystemKbSource(root))[1]
 
 
 def fingerprint_sources(root: str | Path) -> SourceFingerprint:
@@ -2747,27 +2850,36 @@ def fingerprint_sources(root: str | Path) -> SourceFingerprint:
     escape hatch from fingerprinting without occupying the valid reserved
     artifact role (issues #64 and #77).
     """
-    root = Path(root).resolve()
+    return _fingerprint_sources(_FilesystemKbSource(Path(root).resolve()))
+
+
+def _fingerprint_sources(source: _KbSource) -> SourceFingerprint:
+    """Source-agnostic fingerprint core (issue #120, ADR-0013).
+
+    Computes the same deterministic digest over canonical content whether the
+    source is a filesystem root or an in-memory materialization of an
+    immutable S3 Published Version, so a reader can validate the Published
+    Version fingerprint recorded in a remote manifest.
+    """
     sources: list[SourceFileDigest] = []
 
     # The Control File is canonical KB content: it defines the categorized-KB
     # contract and travels with the KB, so changes to it are real changes.
-    control_path = _control_file_path(root)
-    if control_path.exists():
+    control_bytes = source.control_file_bytes()
+    if control_bytes is not None:
         sources.append(
             SourceFileDigest(
                 path=CONTROL_FILE_BASENAME,
-                digest=hashlib.sha256(control_path.read_bytes()).hexdigest(),
+                digest=hashlib.sha256(control_bytes).hexdigest(),
             )
         )
 
-    for file in _markdown_files(root):
-        reserved_basename = _reserved_artifact_basename(file)
+    for relative in source.markdown_files():
+        raw = source.read_bytes(relative)
+        reserved_basename = _reserved_artifact_basename_of(relative)
         if reserved_basename is not None:
             try:
-                data, _body, _line = _parse_frontmatter(
-                    file.read_text(encoding="utf-8"), file
-                )
+                data, _body, _line = _parse_frontmatter(raw.decode("utf-8"), Path(relative))
             except FrontmatterError:
                 # Malformed reserved file: fingerprint it normally (blocking
                 # validation already reports the marker problem).
@@ -2778,13 +2890,34 @@ def fingerprint_sources(root: str | Path) -> SourceFingerprint:
                 continue
         sources.append(
             SourceFileDigest(
-                path=file.relative_to(root).as_posix(),
-                digest=hashlib.sha256(file.read_bytes()).hexdigest(),
+                path=relative,
+                digest=hashlib.sha256(raw).hexdigest(),
             )
         )
     combined = "\n".join(f"{source.path}:{source.digest}" for source in sources)
     overall = hashlib.sha256(combined.encode("utf-8")).hexdigest()
     return SourceFingerprint(digest=overall, sources=sources)
+
+
+def canonical_content(source: _KbSource) -> dict[str, bytes]:
+    """Return every canonical Knowledge Base file as ``{relative_path: bytes}``.
+
+    Canonical content is the Control File (when present) plus every Markdown
+    file under the source, including validly-marked reserved artifacts. This is
+    the complete tree a publisher materializes under an immutable version prefix
+    (ADR-0013) and the complete tree a reader must materialize to load, validate,
+    and fingerprint a Published Version byte-for-byte. Reserved-artifact
+    *exclusion* happens only at fingerprint time (:func:`_fingerprint_sources`),
+    never at materialization time — a reader needs the full tree so the loader
+    can classify reserved artifacts exactly as the filesystem loader does.
+    """
+    content: dict[str, bytes] = {}
+    control_bytes = source.control_file_bytes()
+    if control_bytes is not None:
+        content[CONTROL_FILE_BASENAME] = control_bytes
+    for relative in source.markdown_files():
+        content[relative] = source.read_bytes(relative)
+    return content
 
 
 def is_fresh(previous: SourceFingerprint, current: SourceFingerprint) -> bool:
