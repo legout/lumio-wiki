@@ -714,6 +714,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+s3 = [
+    { name = "lumio-wiki", extra = ["s3"] },
+]
 semantic = [
     { name = "sentence-transformers" },
 ]
@@ -725,6 +728,7 @@ requires-dist = [
     { name = "liteparse", specifier = ">=2.4.0" },
     { name = "lumio-lancedb", editable = "packages/lumio-lancedb" },
     { name = "lumio-wiki", editable = "packages/lumio-wiki" },
+    { name = "lumio-wiki", extras = ["s3"], marker = "extra == 's3'", editable = "packages/lumio-wiki" },
     { name = "markitdown", extras = ["docx"], specifier = ">=0.1.6" },
     { name = "msgspec", extras = ["yaml"], specifier = ">=0.21.1" },
     { name = "openai", specifier = ">=1.40.0" },
@@ -733,7 +737,7 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'semantic'", specifier = ">=2.6.0" },
     { name = "stario", specifier = ">=3.3.0" },
 ]
-provides-extras = ["semantic"]
+provides-extras = ["s3", "semantic"]
 
 [[package]]
 name = "lumio-lancedb"
