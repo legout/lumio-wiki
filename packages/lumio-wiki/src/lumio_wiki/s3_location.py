@@ -327,6 +327,17 @@ class S3Location:
         """The object-key prefix the Knowledge Base root lives under."""
         return self._prefix
 
+    @property
+    def store(self) -> ObjectStore:
+        """The obstore ObjectStore this Location reads through.
+
+        Exposed so a consumer (e.g. the app binding a remote LanceDB index for
+        the same Snapshot, ADR-0013/#124) can read derived sidecars through the
+        same authenticated store without rebuilding one. Never carries
+        credentials itself — those live on the store.
+        """
+        return self._store
+
     def describe(self) -> str:
         """Return a human-readable, secret-free description for diagnostics.
 
