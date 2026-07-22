@@ -630,6 +630,31 @@ class LanceDBRetrievalAdapter:
     snapshot and records the fallback in the Retrieval Trace (ADR-0013).
     """
 
+    def __init__(
+        self,
+        *,
+        index_location: IndexLocation | None = None,
+        expected_fingerprint: SourceFingerprint | None = None,
+    ) -> None:
+        # Bind a pre-published index location (e.g. a remote S3 index for an S3
+        # Snapshot) and the source fingerprint it must match. The Knowledge
+        # Base's default ``retrieve()`` path passes ``index_dir=None`` for an
+        # S3 Snapshot, so a bound location lets enhanced retrieval reach the
+        # published remote index without a local build (ADR-0013, #124). An
+        # explicit per-call ``index_dir`` always wins over the bound location.
+        self._index_location = index_location
+        self._expected_fingerprint = expected_fingerprint
+
+    @property
+    def index_location(self) -> IndexLocation | None:
+        """The construction-bound index location, if any (remote S3 index)."""
+        return self._index_location
+
+    @property
+    def expected_fingerprint(self):
+        """The construction-bound source fingerprint gate, if any."""
+        return self._expected_fingerprint
+
     @property
     def name(self) -> str:
         return "lancedb"
@@ -670,11 +695,19 @@ class LanceDBRetrievalAdapter:
         eligible_paths = (
             None if eligible_pages is None else {page.path for page in eligible_pages}
         )
-        if index_dir is None:
-            # No index configured: enhanced retrieval was never set up. This is
-            # distinct from a missing/unhealthy index and returns no results.
+        # A caller-supplied index_dir always wins (explicit per-call location);
+        # otherwise fall back to a location bound at construction (e.g. a remote
+        # S3 index for an S3 Snapshot, ADR-0013/#124). When neither is set,
+        # enhanced retrieval was never configured and returns no results.
+        effective_index = index_dir if index_dir is not None else self._index_location
+        if effective_index is None:
             return []
-        index = as_location(index_dir)
+        index = as_location(effective_index)
+        effective_fingerprint = (
+            expected_fingerprint
+            if expected_fingerprint is not None
+            else self._expected_fingerprint
+        )
         # Validate logic up front so configuration/programming errors raise
         # clearly instead of being masked by the availability fallback below.
         if mode not in ("lexical", "semantic", "hybrid"):
@@ -700,13 +733,13 @@ class LanceDBRetrievalAdapter:
             # so a stale remote index (built from a different Published Version)
             # is never silently served (ADR-0013, #122 AC3).
             stored_fp = _load_fingerprint(index)
-            if stored_fp is not None and expected_fingerprint is not None:
-                if stored_fp.digest != expected_fingerprint.digest:
+            if stored_fp is not None and effective_fingerprint is not None:
+                if stored_fp.digest != effective_fingerprint.digest:
                     return _zero_index_fallback(
                         pages, query, limit, eligible_pages, index,
                         exc=ValueError(
                             f"remote LanceDB fingerprint mismatch: "
-                            f"{stored_fp.digest[:12]}… != {expected_fingerprint.digest[:12]}…"
+                            f"{stored_fp.digest[:12]}… != {effective_fingerprint.digest[:12]}…"
                         ),
                     )
             if mode == "lexical":
