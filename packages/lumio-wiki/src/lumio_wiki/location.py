@@ -35,6 +35,7 @@ from lumio_wiki.knowledge_base import (
     DEFAULT_GRAPH_MAX_RESULTS,
     GRAPH_DIRECTION_OUTGOING,
     GRAPH_SCOPE_CANONICAL,
+    GRAPH_SCOPE_DISCOVERY,
     ExtractionDiagnostic,
     KnowledgeBase,
     KnowledgeBaseError,
@@ -138,9 +139,14 @@ class KnowledgeBaseSnapshot(msgspec.Struct, frozen=True):
         return self.knowledge_base.root
 
     @property
-    def pages(self) -> list[CompiledPage]:
-        """The Compiled Pages of this Published Version."""
-        return self.knowledge_base.pages
+    def pages(self) -> tuple[CompiledPage, ...]:
+        """The Compiled Pages of this Published Version (immutable view).
+
+        Returns a fresh immutable tuple so a caller cannot mutate the Snapshot's
+        page collection (append/clear/sort). The CompiledPage records themselves
+        are frozen, so the returned view is fully immutable.
+        """
+        return tuple(self.knowledge_base.pages)
 
     @property
     def control(self) -> KnowledgeBaseControlFile | None:
@@ -207,7 +213,7 @@ class KnowledgeBaseSnapshot(msgspec.Struct, frozen=True):
         embedder: Embedder | None = None,
         score_threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
         graph_seed_titles: Sequence[str] | None = None,
-        graph_scope: str = GRAPH_SCOPE_CANONICAL,
+        graph_scope: str = GRAPH_SCOPE_DISCOVERY,
         graph_direction: str = GRAPH_DIRECTION_OUTGOING,
         graph_max_depth: int = 2,
     ) -> list[RetrievalResult]:

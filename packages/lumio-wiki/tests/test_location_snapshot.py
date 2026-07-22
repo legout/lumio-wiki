@@ -84,6 +84,12 @@ def test_resolve_returns_an_immutable_snapshot(fixture):
         snapshot.knowledge_base = snapshot.knowledge_base  # type: ignore[misc]
     with pytest.raises((AttributeError, TypeError)):
         snapshot.fingerprint = snapshot.fingerprint  # type: ignore[misc]
+    # The page collection is an immutable view: mutating it cannot affect the
+    # Snapshot, and the backing list is never exposed through the seam surface.
+    immutable_pages = snapshot.pages
+    assert isinstance(immutable_pages, tuple)
+    with pytest.raises((AttributeError, TypeError)):
+        immutable_pages.append(immutable_pages[0])  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize("fixture", LOCATION_FIXTURES, ids=lambda p: p.name)
@@ -104,7 +110,8 @@ def test_snapshot_validation_report_matches_the_path_based_loader(fixture):
 def test_snapshot_pages_match_the_path_based_loader(fixture):
     direct_kb, _ = load_knowledge_base(fixture)
     snapshot = FilesystemLocation(fixture).resolve()
-    assert snapshot.pages == direct_kb.pages
+    # pages is an immutable tuple view; compare element-wise against the list.
+    assert list(snapshot.pages) == direct_kb.pages
     assert [p.title for p in snapshot.pages] == [p.title for p in direct_kb.pages]
 
 
@@ -157,6 +164,45 @@ def test_snapshot_retrieval_returns_citation_ready_results():
         assert result.citation.page_title
         assert result.citation.relative_path
         assert result.trace.stages
+
+
+def test_snapshot_graph_seeded_retrieval_matches_the_path_based_loader():
+    """Graph-seeded retrieval through the seam matches the path-based loader,
+    including the shared default ``discovery`` scope (ADR-0011, #112)."""
+    from lumio_wiki.knowledge_base import GRAPH_SCOPE_DISCOVERY
+
+    fixture = FIXTURES / "valid"
+    direct_kb, _ = load_knowledge_base(fixture)
+    snapshot = FilesystemLocation(fixture).resolve()
+    seeds = ["Lumio Overview"]
+    # Default scope (no explicit graph_scope) must match the path-based loader.
+    direct_default = direct_kb.retrieve("Lumio", limit=5, graph_seed_titles=seeds)
+    seam_default = snapshot.retrieve("Lumio", limit=5, graph_seed_titles=seeds)
+    assert _results_equal(seam_default, direct_default)
+    # Explicit discovery scope must also match.
+    direct_disc = direct_kb.retrieve(
+        "Lumio", limit=5, graph_seed_titles=seeds, graph_scope=GRAPH_SCOPE_DISCOVERY
+    )
+    seam_disc = snapshot.retrieve(
+        "Lumio", limit=5, graph_seed_titles=seeds, graph_scope=GRAPH_SCOPE_DISCOVERY
+    )
+    assert _results_equal(seam_disc, direct_disc)
+
+
+def _results_equal(seam: list[RetrievalResult], direct: list[RetrievalResult]) -> bool:
+    if len(seam) != len(direct):
+        return False
+    for s, d in zip(seam, direct, strict=True):
+        if (
+            s.evidence != d.evidence
+            or s.citation != d.citation
+            or s.snippet != d.snippet
+            or s.score != d.score
+            or s.reason != d.reason
+            or s.trace != d.trace
+        ):
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +310,16 @@ def test_resolve_a_file_path_raises_knowledge_base_error():
     location = FilesystemLocation(not_a_dir)
     with pytest.raises(KnowledgeBaseError):
         location.resolve()
+
+
+def test_snapshot_validation_of_invalid_kb_matches_the_path_based_loader():
+    """An invalid Knowledge Base surfaces the SAME validation issues through the
+    seam as the path-based loader — the seam changes no validation behavior."""
+    fixture = FIXTURES / "invalid"
+    direct_report = load_knowledge_base(fixture)[1]
+    snapshot = FilesystemLocation(fixture).resolve()
+    assert snapshot.validation_report == direct_report
+    assert snapshot.validation_report.is_valid == direct_report.is_valid
 
 
 # ---------------------------------------------------------------------------
