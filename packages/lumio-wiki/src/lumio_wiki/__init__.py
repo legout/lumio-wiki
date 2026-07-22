@@ -138,6 +138,14 @@ from lumio_wiki.records import (
     SourceFingerprint,
     TraceStage,
 )
+from lumio_wiki.location import (
+    FILESYSTEM_LOCATION_KIND,
+    FilesystemLocation,
+    KnowledgeBaseLocation,
+    KnowledgeBaseSnapshot,
+    open_filesystem_knowledge_base,
+    open_knowledge_base,
+)
 from lumio_wiki.retrieval import (
     RetrievalAdapter,
     ZeroIndexRetrieval,
@@ -188,6 +196,8 @@ __all__ = [
     "ExternalImportCategoryMapping",
     "ExportVisibilityScope",
     "ExtractedReference",
+    "FILESYSTEM_LOCATION_KIND",
+    "FilesystemLocation",
     "GRAPH_ARTIFACT_FILENAME",
     "GRAPH_ARTIFACT_VERSION",
     "GRAPH_SCOPE_CANONICAL",
@@ -205,6 +215,8 @@ __all__ = [
     "KnowledgeBase",
     "KnowledgeBaseControlFile",
     "KnowledgeBaseError",
+    "KnowledgeBaseLocation",
+    "KnowledgeBaseSnapshot",
     "LinkCandidate",
     "NavigationIndexCollisionError",
     "MarkItDownSourceProcessor",
@@ -272,6 +284,8 @@ __all__ = [
     "map_external_import_categories",
     "merge_compound_sources",
     "normalize_search_query",
+    "open_filesystem_knowledge_base",
+    "open_knowledge_base",
     "parse_frontmatter",
     "publish_hot_index",
     "publish_navigation_indexes",
