@@ -36,6 +36,7 @@ from lumio_wiki.records import (
     ContentCategory,
     ExtractedReference,
     GraphHealthReport,
+    GraphHub,
     GraphState,
     HealthReport,
     HotIndexPin,
@@ -48,7 +49,10 @@ from lumio_wiki.records import (
     Source,
     SourceFileDigest,
     SourceFingerprint,
+    StructuralGraphReport,
     TraceStage,
+    UnresolvedReferenceGroup,
+    UnresolvedReferenceSample,
     ValidationIssue,
     ValidationReport,
 )
@@ -97,6 +101,13 @@ GRAPH_DIRECTIONS = frozenset(
 DEFAULT_GRAPH_MAX_DEPTH = 5
 DEFAULT_GRAPH_MAX_EDGES = 1000
 DEFAULT_GRAPH_MAX_RESULTS = 50
+# Default bounds for structural-diagnostic REPRESENTATIVE SAMPLES (issue
+# #126). These cap payload size for large Knowledge Bases; they are NOT
+# health thresholds. Callers retain access to complete actionable details
+# via ``extraction_diagnostics``.
+DEFAULT_GRAPH_HUB_SAMPLE = 10
+DEFAULT_GRAPH_ORPHAN_SAMPLE = 25
+DEFAULT_GRAPH_UNRESOLVED_SAMPLE = 5
 
 
 def _require_graph_scope(scope: str) -> None:
@@ -729,6 +740,188 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             max_results=1,
         )
         return int((time.perf_counter() - start) * 1000)
+
+    def graph_diagnostics(
+        self,
+        *,
+        scope: str = GRAPH_SCOPE_CANONICAL,
+        candidate_titles: Iterable[str] | None = None,
+        max_hub_sample: int = DEFAULT_GRAPH_HUB_SAMPLE,
+        max_orphan_sample: int = DEFAULT_GRAPH_ORPHAN_SAMPLE,
+        max_unresolved_sample: int = DEFAULT_GRAPH_UNRESOLVED_SAMPLE,
+    ) -> StructuralGraphReport:
+        """Return deterministic structural topology diagnostics for one scope.
+
+        Computes a read-only :class:`StructuralGraphReport` over the in-memory
+        graph for EITHER scope (``canonical``: reviewed typed Relationships
+        only; ``discovery``: Relationships PLUS Extracted References). This is
+        STRUCTURAL topology analysis — orphan counts, weakly connected
+        components, directed hubs — and is distinct from the artifact/runtime
+        observability in :meth:`graph_health` (freshness, materialization,
+        latency). It never changes graph ownership, persistence, retrieval
+        semantics, or the Evidence contract (ADR-0011).
+
+        Orphan counts and hubs are DIRECTION-AWARE and directed-safe. Weakly
+        connected components and largest-component coverage use an UNDIRECTED
+        projection of the directed edges; this is disclosed via
+        ``undirected_projection_used`` and is never presented as Relationship
+        semantics. Self-loops (a page relating/linking only to itself) carry
+        no structural connectivity and are excluded from all counts.
+
+        Traversal operates ONLY over ``candidate_titles`` — the
+        already-authorized Canonical Page Titles the caller has visibility to.
+        When ``candidate_titles`` is ``None`` every loaded Compiled Page title
+        is the authorized universe; edges whose source or endpoint falls
+        outside the candidate set are excluded. ``max_hub_sample``,
+        ``max_orphan_sample``, and ``max_unresolved_sample`` bound the
+        representative samples (NOT health thresholds); callers retain access
+        to complete actionable unresolved-reference locations through
+        :meth:`extraction_diagnostics`.
+        """
+        _require_graph_scope(scope)
+        _require_non_negative_limit("max_hub_sample", max_hub_sample)
+        _require_non_negative_limit("max_orphan_sample", max_orphan_sample)
+        _require_non_negative_limit(
+            "max_unresolved_sample", max_unresolved_sample
+        )
+
+        index = self._knowledge_index()
+        if scope == GRAPH_SCOPE_DISCOVERY:
+            outgoing = index.discovery_adjacency
+        else:
+            outgoing = index.adjacency
+
+        candidate = self._graph_candidate(candidate_titles)
+        all_titles = frozenset(page.title for page in self.pages if page.title)
+        nodes = candidate & all_titles
+
+        out_degree: dict[str, int] = {t: 0 for t in nodes}
+        in_degree: dict[str, int] = {t: 0 for t in nodes}
+        undirected: dict[str, set[str]] = {t: set() for t in nodes}
+        edge_count = 0
+        for src in sorted(nodes):
+            for endpoint, _rtype in outgoing.get(src, ()):
+                if endpoint == src or endpoint not in nodes:
+                    continue
+                edge_count += 1
+                out_degree[src] += 1
+                in_degree[endpoint] += 1
+                undirected[src].add(endpoint)
+                undirected[endpoint].add(src)
+
+        page_count = len(nodes)
+        inbound_orphans = sorted(t for t in nodes if in_degree[t] == 0)
+        outbound_orphans = sorted(t for t in nodes if out_degree[t] == 0)
+
+        # Weakly connected components over the undirected projection.
+        wcc_count = 0
+        largest = 0
+        visited: set[str] = set()
+        for start in sorted(nodes):
+            if start in visited:
+                continue
+            size = 0
+            queue: deque[str] = deque([start])
+            visited.add(start)
+            while queue:
+                node = queue.popleft()
+                size += 1
+                for neighbour in undirected[node]:
+                    if neighbour not in visited:
+                        visited.add(neighbour)
+                        queue.append(neighbour)
+            wcc_count += 1
+            if size > largest:
+                largest = size
+        coverage = (largest / page_count) if page_count else 0.0
+
+        top_inbound_hubs = self._top_hubs(nodes, in_degree, max_hub_sample)
+        top_outbound_hubs = self._top_hubs(nodes, out_degree, max_hub_sample)
+
+        unresolved = self._aggregate_unresolved_references(
+            candidate, max_unresolved_sample
+        ) if scope == GRAPH_SCOPE_DISCOVERY else []
+
+        return StructuralGraphReport(
+            scope=scope,
+            page_count=page_count,
+            edge_count=edge_count,
+            inbound_orphan_count=len(inbound_orphans),
+            outbound_orphan_count=len(outbound_orphans),
+            weakly_connected_component_count=wcc_count,
+            largest_component_coverage=coverage,
+            undirected_projection_used=True,
+            top_inbound_hubs=top_inbound_hubs,
+            top_outbound_hubs=top_outbound_hubs,
+            unresolved_references=unresolved,
+            inbound_orphan_sample_titles=inbound_orphans[:max_orphan_sample],
+            outbound_orphan_sample_titles=outbound_orphans[:max_orphan_sample],
+        )
+
+    @staticmethod
+    def _top_hubs(
+        nodes: frozenset[str],
+        degree: dict[str, int],
+        max_sample: int,
+    ) -> list[GraphHub]:
+        """Return deterministic top hubs by directed degree, bounded.
+
+        Ranks titles by descending degree with lexicographic title tie-break,
+        excludes zero-degree titles, and caps at ``max_sample``. Hub status is
+        navigational topology, never a Relationship semantic claim.
+        """
+        return [
+            GraphHub(title=t, edge_count=degree[t])
+            for t in sorted(nodes, key=lambda x: (-degree[x], x))
+            if degree[t] > 0
+        ][:max_sample]
+
+    def _aggregate_unresolved_references(
+        self,
+        candidate: frozenset[str],
+        max_sample: int,
+    ) -> list[UnresolvedReferenceGroup]:
+        """Aggregate extraction diagnostics by (outcome, target).
+
+        Extracted-reference outcomes (broken, ambiguous) are Discovery Graph
+        derivation diagnostics (ADR-0011). Repeated missing targets are strong
+        page/link-repair signals. Only diagnostics whose source page is in the
+        authorized ``candidate`` set are included, preserving visibility. Full
+        diagnostic detail (kind text, raw target, context) remains available
+        through :meth:`extraction_diagnostics`; each group carries a bounded,
+        deterministic representative subset of source locations.
+        """
+        path_to_title = {
+            page.path: page.title for page in self.pages if page.title
+        }
+        groups: dict[tuple[str, str], list[ExtractionDiagnostic]] = {}
+        for diag in self._knowledge_index().extraction_diagnostics:
+            src_title = path_to_title.get(diag.source_path)
+            if src_title is None or src_title not in candidate:
+                continue
+            groups.setdefault((diag.kind, diag.target), []).append(diag)
+
+        result: list[UnresolvedReferenceGroup] = []
+        for outcome, target in sorted(groups):
+            ordered = sorted(
+                groups[(outcome, target)],
+                key=lambda d: (d.source_path, d.line_start, d.target),
+            )
+            result.append(
+                UnresolvedReferenceGroup(
+                    outcome=outcome,
+                    target=target,
+                    count=len(ordered),
+                    samples=[
+                        UnresolvedReferenceSample(
+                            source_path=d.source_path,
+                            line_start=d.line_start,
+                        )
+                        for d in ordered[:max_sample]
+                    ],
+                )
+            )
+        return result
 
     def build_index(
         self,

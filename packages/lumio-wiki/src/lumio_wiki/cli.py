@@ -630,6 +630,25 @@ def _cmd_health(args: argparse.Namespace) -> int:
             f"graph_recovery:      run 'lumio-wiki health {args.path} --rebuild' "
             f"to materialize the Discovery Graph"
         )
+    # Structural topology diagnostics (issue #126, ADR-0011): read-only,
+    # model-free, distinct from the artifact/runtime observability above.
+    # Discloses BOTH scopes so a Maintainer can distinguish missing reviewed
+    # semantic Relationships (canonical) from missing navigation topology
+    # (discovery). No fixed health threshold is applied.
+    for scope_name in ("canonical", "discovery"):
+        structural = kb.graph_diagnostics(scope=scope_name)
+        print(f"structure_scope:     {structural.scope}")
+        print(f"structure_pages:     {structural.page_count}")
+        print(f"structure_edges:     {structural.edge_count}")
+        print(f"structure_in_orphans:  {structural.inbound_orphan_count}")
+        print(f"structure_out_orphans: {structural.outbound_orphan_count}")
+        print(f"structure_components: {structural.weakly_connected_component_count}")
+        print(f"structure_coverage:  {structural.largest_component_coverage:.4f}")
+        if structural.unresolved_references:
+            unresolved_total = sum(
+                g.count for g in structural.unresolved_references
+            )
+            print(f"structure_unresolved: {unresolved_total}")
     print(f"fingerprint:         {graph_health.fingerprint_digest}")
     for issue in issues:
         print(f"  ERROR: {issue.file}: {issue.field}: {issue.message}")

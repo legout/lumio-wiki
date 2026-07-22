@@ -312,6 +312,99 @@ class GraphHealthReport(msgspec.Struct, frozen=True):
     fingerprint_digest: str = ""
 
 # ---------------------------------------------------------------------------
+# Structural graph diagnostics (issue #126, ADR-0011).
+#
+# DISTINCT from the artifact/runtime observability in ``GraphHealthReport``
+# above (graph_fresh, materialization, startup_ms, traversal_latency_ms).
+# This surface reports STRUCTURAL TOPOLOGY over the in-memory graph for
+# EITHER scope (canonical or discovery): orphan counts, weakly connected
+# components, and directed hubs. It is derived, read-only analysis and never
+# changes graph ownership, persistence, retrieval semantics, or the Evidence
+# contract. No Compiled Page body text is ever embedded.
+# ---------------------------------------------------------------------------
+
+
+class GraphHub(msgspec.Struct, frozen=True):
+    """One directed inbound/outbound hub entry in a structural report.
+
+    A Canonical Page Title paired with its directed edge count for the
+    report's scope. Hub status is navigational topology, never a
+    Relationship semantic claim: a high inbound count means many edges point
+    here, not that the page is semantically central.
+    """
+
+    title: str
+    edge_count: int
+
+
+class UnresolvedReferenceSample(msgspec.Struct, frozen=True):
+    """Bounded location detail for one unresolved reference in a group.
+
+    Carries the actionable source location (path + line) so a Maintainer can
+    find the link to repair. Full diagnostic detail (the kind text, the raw
+    target, surrounding context) remains available through the existing
+    ``extraction_diagnostics`` seam; this sample is a bounded, deterministic
+    representative subset for aggregate overviews.
+    """
+
+    source_path: str
+    line_start: int
+
+
+class UnresolvedReferenceGroup(msgspec.Struct, frozen=True):
+    """Aggregate count of one unresolved-reference (outcome, target) pair.
+
+    Groups the existing extraction diagnostics by outcome kind and target so a
+    Maintainer can spot REPEATED missing targets (strong page/link-repair
+    signals) without scanning raw diagnostics. ``count`` is the number of
+    diagnostics with this (outcome, target); ``samples`` is a bounded,
+    deterministic representative subset. No universal health threshold is
+    applied: a high count is a signal to inspect, not a correctness failure.
+    """
+
+    outcome: str
+    target: str
+    count: int
+    samples: list[UnresolvedReferenceSample] = msgspec.field(default_factory=list)
+
+
+class StructuralGraphReport(msgspec.Struct, frozen=True):
+    """Deterministic, read-only structural topology diagnostics for one scope.
+
+    Derived over the in-memory graph for EITHER the canonical graph (reviewed
+    typed Relationships only) or the Discovery Graph (Relationships PLUS
+    Extracted References). This is STRUCTURAL topology analysis, distinct
+    from the artifact/runtime observability in :class:`GraphHealthReport`.
+
+    Orphan counts and hubs are DIRECTION-AWARE (inbound vs outbound) and use
+    only directed-safe concepts. Weakly connected components and
+    largest-component coverage use an UNDIRECTED projection of the directed
+    edges: ``undirected_projection_used`` discloses this, and the projection
+    is NEVER presented as Relationship semantics.
+
+    Large Knowledge Bases return aggregate counts plus bounded,
+    deterministically ordered representative samples (hubs, orphans,
+    unresolved references). Callers retain access to complete actionable
+    details: unresolved-reference locations through ``extraction_diagnostics``.
+    No fixed universal health threshold (e.g. "N edges per page") is encoded
+    as a correctness rule. No Compiled Page body text is embedded.
+    """
+
+    scope: str
+    page_count: int
+    edge_count: int
+    inbound_orphan_count: int
+    outbound_orphan_count: int
+    weakly_connected_component_count: int
+    largest_component_coverage: float
+    undirected_projection_used: bool
+    top_inbound_hubs: list[GraphHub] = msgspec.field(default_factory=list)
+    top_outbound_hubs: list[GraphHub] = msgspec.field(default_factory=list)
+    unresolved_references: list[UnresolvedReferenceGroup] = msgspec.field(default_factory=list)
+    inbound_orphan_sample_titles: list[str] = msgspec.field(default_factory=list)
+    outbound_orphan_sample_titles: list[str] = msgspec.field(default_factory=list)
+
+# ---------------------------------------------------------------------------
 # Knowledge Base Control File and reserved published artifacts (issue #77).
 #
 # A categorized Knowledge Base carries a versioned root Control File
