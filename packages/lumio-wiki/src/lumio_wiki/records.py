@@ -405,6 +405,68 @@ class StructuralGraphReport(msgspec.Struct, frozen=True):
     outbound_orphan_sample_titles: tuple[str, ...] = ()
 
 # ---------------------------------------------------------------------------
+# Link-candidate graph-impact ranking (issue #127, ADR-0011).
+#
+# An advisory, read-only analysis that annotates each EXISTING deterministic
+# LinkCandidate with the structural improvement its approved Markdown link
+# would make to the Discovery Graph. It evaluates each candidate against the
+# current authorized graph WITHOUT mutating Compiled Pages or graph state.
+# A candidate never becomes an Extracted Reference, Relationship, Evidence, or
+# published change before the existing stage -> validate -> review -> publish
+# workflow succeeds. Approved links remain Extracted References with
+# navigation meaning only — Canonical Relationship impact is NEVER inferred
+# from a Markdown-link proposal (ADR-0011).
+# ---------------------------------------------------------------------------
+
+#: Impact signal: the link would give an inbound connection to a page that is
+#: currently a Discovery Graph orphan (zero inbound edges).
+LINK_IMPACT_KIND_ORPHAN_REPAIR = "orphan_repair"
+
+#: Impact signal: the link would connect two weakly connected components,
+#: reducing the WCC count.
+LINK_IMPACT_KIND_COMPONENT_JOIN = "component_join"
+
+#: Impact signal: the link would strengthen an existing but indirect (fragile)
+#: connection by adding a direct edge where none currently exists.
+LINK_IMPACT_KIND_FRAGILE_STRENGTHENING = "fragile_strengthening"
+
+
+class LinkImpactSignal(msgspec.Struct, frozen=True):
+    """One documented structural-impact signal for a proposed link.
+
+    ``kind`` is a stable identifier from the ``LINK_IMPACT_KIND_*`` constants.
+    ``detail`` is a human-readable explanation naming the affected topology.
+    Signals are advisory structural topology only; they never infer a
+    Relationship semantic, never mutate graph state, and never publish a link.
+    """
+
+    kind: str
+    detail: str
+
+
+class RankedLinkCandidate(msgspec.Struct, frozen=True):
+    """A LinkCandidate annotated with structural Discovery Graph impact.
+
+    Carries the original :class:`LinkCandidate` (which itself holds the source
+    path, line, column, snippet, and target identity), the graph scope the
+    impact was evaluated against, and the documented impact signals.
+    ``impact_score`` is an explicit, stable integer used for deterministic
+    ordering (higher = more structural improvement). A candidate with no
+    measured structural impact has an empty ``signals`` tuple and
+    ``impact_score == 0`` and is still returned so a Maintainer can inspect
+    ALL candidates.
+
+    The impact is ADVISORY: it does not mutate Compiled Pages or graph state
+    and never infers a Relationship. An approved link becomes an Extracted
+    Reference with navigation meaning only (ADR-0011).
+    """
+
+    candidate: LinkCandidate
+    scope: str
+    impact_score: int
+    signals: tuple[LinkImpactSignal, ...] = ()
+
+# ---------------------------------------------------------------------------
 # Knowledge Base Control File and reserved published artifacts (issue #77).
 #
 # A categorized Knowledge Base carries a versioned root Control File
