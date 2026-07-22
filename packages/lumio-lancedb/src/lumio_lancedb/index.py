@@ -660,6 +660,7 @@ class LanceDBRetrievalAdapter:
         embedder: Embedder | None = None,
         score_threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
         eligible_pages=None,
+        expected_fingerprint=None,
     ):
         # The LanceDB index is built over every Compiled Page; when the caller
         # supplies graph-selected eligible pages (#112), we restrict ranked
@@ -695,6 +696,19 @@ class LanceDBRetrievalAdapter:
                 return _zero_index_fallback(
                     pages, query, limit, eligible_pages, index, missing=True
                 )
+            # Verify the stored fingerprint matches the current Knowledge Base
+            # so a stale remote index (built from a different Published Version)
+            # is never silently served (ADR-0013, #122 AC3).
+            stored_fp = _load_fingerprint(index)
+            if stored_fp is not None and expected_fingerprint is not None:
+                if stored_fp.digest != expected_fingerprint.digest:
+                    return _zero_index_fallback(
+                        pages, query, limit, eligible_pages, index,
+                        exc=ValueError(
+                            f"remote LanceDB fingerprint mismatch: "
+                            f"{stored_fp.digest[:12]}… != {expected_fingerprint.digest[:12]}…"
+                        ),
+                    )
             if mode == "lexical":
                 return search_lexical_index(
                     index, query, limit, eligible_paths=eligible_paths
