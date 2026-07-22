@@ -750,16 +750,20 @@ dependencies = [
 embeddings = [
     { name = "sentence-transformers" },
 ]
+s3 = [
+    { name = "obstore" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "lancedb", specifier = ">=0.34.0" },
     { name = "lumio-wiki", editable = "packages/lumio-wiki" },
     { name = "msgspec", extras = ["yaml"], specifier = ">=0.21.1" },
+    { name = "obstore", marker = "extra == 's3'", specifier = ">=0.11.0" },
     { name = "pyarrow", specifier = ">=24.0.0" },
     { name = "sentence-transformers", marker = "extra == 'embeddings'", specifier = ">=2.6.0" },
 ]
-provides-extras = ["embeddings"]
+provides-extras = ["embeddings", "s3"]
 
 [[package]]
 name = "lumio-wiki"

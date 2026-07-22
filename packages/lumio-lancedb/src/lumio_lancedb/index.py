@@ -7,11 +7,20 @@ hybrid) when an embedding provider is configured. It implements the
 Knowledge Base format, Evidence, citations, or client behavior. ``lumio-wiki``
 never imports this module; callers inject it explicitly (e.g.
 ``KnowledgeBase.build_index(..., retrieval=LanceDBRetrievalAdapter())``).
+
+Indexes live either on the local filesystem (the original behavior) or under an
+immutable S3 Published Version's ``derived/lance/`` prefix. Both are expressed
+as a typed :class:`~lumio_lancedb.location.IndexLocation` so build and search
+work uniformly; a missing or unhealthy index selects truthful zero-index
+retrieval over the same snapshot and records the fallback in the Retrieval
+Trace (ADR-0013).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import msgspec
 
 # ``lancedb`` / ``pyarrow`` are required to actually build or search a derived
 # index, but importing this module is kept safe when they are absent so the
@@ -31,27 +40,37 @@ except ImportError:  # pragma: no cover - optional dependency unavailable
 from lumio_wiki import evidence, page_search
 from lumio_wiki.embeddings import (
     DEFAULT_SEMANTIC_THRESHOLD,
+    EMBEDDING_MODEL_FILE,
     RRF_K,
     Embedder,
     EmbeddingDimensionMismatch,
     EmbeddingError,
     EmbeddingNotBuiltError,
-    load_embedding_model,
+    load_embedding_model,  # noqa: F401  (re-exported for callers/tests)
     normalize_vector,
     reciprocal_rank_fusion,
-    save_embedding_model,
+    save_embedding_model,  # noqa: F401  (re-exported for callers/tests)
 )
 from lumio_wiki.fingerprint_store import (  # noqa: F401  (re-exported for KnowledgeBase)
+    FINGERPRINT_FILE,
     load_stored_fingerprint,
     save_stored_fingerprint,
 )
 from lumio_wiki.records import (
     CompiledPage,
+    EmbeddingModelInfo,
     Evidence,
     PageSearchResult,
     RetrievalResult,
     RetrievalTrace,
+    SourceFingerprint,
     TraceStage,
+)
+from lumio_wiki.retrieval import ZeroIndexRetrieval
+
+from lumio_lancedb.location import (
+    IndexLocation,
+    as_location,
 )
 
 TABLE_NAME = "evidence"
@@ -59,16 +78,89 @@ PAGE_TABLE_NAME = "pages"
 VECTOR_TABLE_NAME = "evidence_vectors"
 
 
-def _indexed_page_paths(index_dir: Path, query: str) -> set[str] | None:
+# ---------------------------------------------------------------------------
+# Location-aware metadata sidecars (fingerprint + embedding-model identity).
+#
+# The Path-based ``lumio_wiki`` helpers are re-exported above for callers that
+# still work with a local directory; internally every build/search path goes
+# through an :class:`IndexLocation` so the sidecars move beside the tables on a
+# local filesystem OR an object store (ADR-0013). A mismatch between the
+# recorded fingerprint / model identity and the current source is rejected so a
+# stale or rebuilt-with-a-different-model index can never silently serve.
+# ---------------------------------------------------------------------------
+
+
+def _save_fingerprint(index: IndexLocation, fingerprint: SourceFingerprint) -> None:
+    index.write_sidecar(FINGERPRINT_FILE, msgspec.json.encode(fingerprint))
+
+
+def _load_fingerprint(index: IndexLocation) -> SourceFingerprint | None:
+    data = index.read_sidecar(FINGERPRINT_FILE)
+    if data is None:
+        return None
+    return msgspec.json.decode(data, type=SourceFingerprint)
+
+
+def _save_model(index: IndexLocation, info: EmbeddingModelInfo) -> None:
+    index.write_sidecar(EMBEDDING_MODEL_FILE, msgspec.json.encode(info))
+
+
+def _load_model(index: IndexLocation) -> EmbeddingModelInfo | None:
+    data = index.read_sidecar(EMBEDDING_MODEL_FILE)
+    if data is None:
+        return None
+    return msgspec.json.decode(data, type=EmbeddingModelInfo)
+
+
+def _zero_index_fallback(
+    pages,
+    query: str,
+    limit: int,
+    eligible_pages,
+    index: IndexLocation,
+    *,
+    exc: BaseException | None = None,
+    missing: bool = False,
+) -> list[RetrievalResult]:
+    """Fall back to always-available zero-index retrieval and record it.
+
+    The LanceDB index is progressive enhancement: when it is missing or
+    unhealthy, retrieval must still answer over the same snapshot rather than
+    crash or return nothing. The fallback records an ``index-fallback`` stage
+    in every result's trace so the degradation is observable (ADR-0013).
+    """
+    reason = "missing" if missing else "unavailable"
+    results = ZeroIndexRetrieval().retrieve(
+        list(pages),
+        query,
+        limit=limit,
+        index_dir=None,
+        mode="lexical",
+        eligible_pages=eligible_pages,
+    )
+    if not results:
+        return []
+    detail = (
+        f"LanceDB index {reason} at {index.describe}; "
+        f"fell back to zero-index retrieval over the same snapshot"
+    )
+    if exc is not None:
+        detail += f" ({type(exc).__name__}: {exc})"
+    # Zero-index retrieval builds one shared RetrievalTrace for every result;
+    # prepend the fallback explanation once so each result records it.
+    results[0].trace.stages.insert(0, TraceStage("index-fallback", detail))
+    return results
+
+
+def _indexed_page_paths(index: IndexLocation, query: str) -> set[str] | None:
     """Return paths matched by the published page-oriented lexical index.
 
     ``None`` means the index predates page search or is unavailable; callers
     can safely use the loaded page set as a compatibility fallback.
     """
-    index_dir = Path(index_dir)
-    if not index_dir.exists():
+    if not index.has_index():
         return None
-    db = lancedb.connect(index_dir)
+    db = index.connect()
     if PAGE_TABLE_NAME not in db.list_tables().tables:
         return None
     table = db.open_table(PAGE_TABLE_NAME)
@@ -88,7 +180,7 @@ def search_pages(
     pages: list[CompiledPage],
     query: str,
     limit: int = 20,
-    index_dir: Path | None = None,
+    index_dir: str | Path | IndexLocation | None = None,
 ) -> list[PageSearchResult]:
     """Return deterministic page-oriented lexical search results.
 
@@ -98,7 +190,8 @@ def search_pages(
     back to the loaded pages so older derived indexes remain readable.
     """
     normalized = page_search.normalize_search_query(query)
-    indexed_paths = _indexed_page_paths(index_dir, normalized) if index_dir else None
+    index = as_location(index_dir)
+    indexed_paths = _indexed_page_paths(index, normalized) if index is not None else None
     candidates = (
         [page for page in pages if page.path in indexed_paths]
         if indexed_paths is not None
@@ -207,11 +300,13 @@ def _page_search_row(page: CompiledPage) -> dict[str, str]:
     }
 
 
-def build_lexical_index(pages: list[CompiledPage], index_dir: Path) -> None:
+def build_lexical_index(
+    pages: list[CompiledPage], index_dir: str | Path | IndexLocation
+) -> None:
     """Build fresh Evidence and page-oriented full-text indexes."""
-    index_dir = Path(index_dir)
-    index_dir.mkdir(parents=True, exist_ok=True)
-    db = lancedb.connect(index_dir)
+    index = as_location(index_dir)
+    index.prepare()
+    db = index.connect()
 
     rows: list[dict] = []
     page_rows: list[dict[str, str]] = []
@@ -259,7 +354,7 @@ def _apply_eligible_filter(search, eligible_paths: set[str] | None):
 
 
 def search_lexical_index(
-    index_dir: Path,
+    index_dir: str | Path | IndexLocation,
     query: str,
     limit: int,
     *,
@@ -271,13 +366,13 @@ def search_lexical_index(
     Pages is ranked (issue #112): LanceDB applies the filter as a prefilter so
     ``limit`` binds over eligible-only Evidence. ``None`` means every page.
     """
-    index_dir = Path(index_dir)
-    if not index_dir.exists():
+    index = as_location(index_dir)
+    if not index.has_index():
         return []
     if eligible_paths is not None and not eligible_paths:
         return []
 
-    db = lancedb.connect(index_dir)
+    db = index.connect()
     if TABLE_NAME not in db.list_tables().tables:
         return []
 
@@ -330,7 +425,9 @@ def _validate_embedding_vectors(
 
 
 def build_semantic_index(
-    pages: list[CompiledPage], index_dir: Path, embedder: Embedder
+    pages: list[CompiledPage],
+    index_dir: str | Path | IndexLocation,
+    embedder: Embedder,
 ) -> None:
     """Build a citation-ready vector index from Evidence text + an embedder.
 
@@ -339,11 +436,11 @@ def build_semantic_index(
     builds can detect a model change and rebuild vectors from source (#75).
     Lexical-only deployments never call this.
     """
-    index_dir = Path(index_dir)
-    index_dir.mkdir(parents=True, exist_ok=True)
+    index = as_location(index_dir)
+    index.prepare()
     info = embedder.model_info
     pairs = [pair for page in pages for pair in evidence.page_evidences(page)]
-    db = lancedb.connect(index_dir)
+    db = index.connect()
 
     if not pairs:
         rows: list[dict] = []
@@ -362,18 +459,18 @@ def build_semantic_index(
         schema=_vector_schema(info.dimension),
         mode="overwrite",
     )
-    save_embedding_model(index_dir, info)
+    _save_model(index, info)
 
 
-def has_semantic_index(index_dir: Path) -> bool:
+def has_semantic_index(index_dir: str | Path | IndexLocation) -> bool:
     """Return True when a vector table and embedding-model metadata are present."""
-    index_dir = Path(index_dir)
-    if not index_dir.exists():
+    index = as_location(index_dir)
+    if not index.has_index():
         return False
-    db = lancedb.connect(index_dir)
+    db = index.connect()
     if VECTOR_TABLE_NAME not in db.list_tables().tables:
         return False
-    return load_embedding_model(index_dir) is not None
+    return _load_model(index) is not None
 
 
 _SEMANTIC_SELECT = [
@@ -391,7 +488,7 @@ _SEMANTIC_SELECT = [
 
 
 def search_semantic_index(
-    index_dir: Path,
+    index_dir: str | Path | IndexLocation,
     query_vector: list[float],
     limit: int,
     score_threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
@@ -406,16 +503,16 @@ def search_semantic_index(
     ``eligible_paths`` is provided only Evidence from those Compiled Pages is
     ranked (issue #112); ``None`` means every page.
     """
-    index_dir = Path(index_dir)
+    index = as_location(index_dir)
     if eligible_paths is not None and not eligible_paths:
         return []
-    if not has_semantic_index(index_dir):
+    if not has_semantic_index(index):
         raise EmbeddingNotBuiltError(
             "semantic retrieval requires a built vector index; "
             "call KnowledgeBase.build_index(embedder=...) first"
         )
-    info = load_embedding_model(index_dir)
-    db = lancedb.connect(index_dir)
+    info = _load_model(index)
+    db = index.connect()
     table = db.open_table(VECTOR_TABLE_NAME)
     if table.count_rows() == 0:
         return []
@@ -460,7 +557,7 @@ def search_semantic_index(
 
 
 def search_hybrid_index(
-    index_dir: Path,
+    index_dir: str | Path | IndexLocation,
     query: str,
     query_vector: list[float],
     limit: int,
@@ -524,6 +621,13 @@ class LanceDBRetrievalAdapter:
     :func:`build_lancedb_index` helper). The canonical Knowledge Base never
     imports this class, so LanceDB/pyarrow remain optional for callers that do
     not need enhanced retrieval.
+
+    ``index_dir`` accepts a local path/URI or a typed
+    :class:`~lumio_lancedb.location.IndexLocation` (e.g. a
+    :class:`~lumio_lancedb.location.RemoteIndexLocation` pointing at an
+    immutable S3 Published Version's ``derived/lance/`` prefix). A missing or
+    unhealthy index selects truthful zero-index retrieval over the same
+    snapshot and records the fallback in the Retrieval Trace (ADR-0013).
     """
 
     @property
@@ -538,12 +642,12 @@ class LanceDBRetrievalAdapter:
         embedder: Embedder | None = None,
         fingerprint=None,
     ) -> None:
-        index_dir = Path(index_dir)
-        build_lexical_index(list(pages), index_dir)
+        index = as_location(index_dir)
+        build_lexical_index(list(pages), index)
         if fingerprint is not None:
-            save_stored_fingerprint(index_dir, fingerprint)
+            _save_fingerprint(index, fingerprint)
         if embedder is not None:
-            build_semantic_index(list(pages), index_dir, embedder)
+            build_semantic_index(list(pages), index, embedder)
 
     def retrieve(
         self,
@@ -565,15 +669,28 @@ class LanceDBRetrievalAdapter:
         eligible_paths = (
             None if eligible_pages is None else {page.path for page in eligible_pages}
         )
-        del pages
         if index_dir is None:
-            # Match prior KB requirement for enhanced retrieve without a built dir.
+            # No index configured: enhanced retrieval was never set up. This is
+            # distinct from a missing/unhealthy index and returns no results.
             return []
-        resolved = Path(index_dir)
-        if mode == "lexical":
-            return search_lexical_index(
-                resolved, query, limit, eligible_paths=eligible_paths
+        index = as_location(index_dir)
+        if not index.has_index():
+            # A missing index (local or remote) selects truthful zero-index
+            # retrieval over the same snapshot rather than returning nothing.
+            return _zero_index_fallback(
+                pages, query, limit, eligible_pages, index, missing=True
             )
+        if mode == "lexical":
+            try:
+                return search_lexical_index(
+                    index, query, limit, eligible_paths=eligible_paths
+                )
+            except Exception as exc:
+                # An unhealthy index (connect/storage failure) degrades to
+                # zero-index retrieval rather than crashing retrieval.
+                return _zero_index_fallback(
+                    pages, query, limit, eligible_pages, index, exc=exc
+                )
         if mode not in ("semantic", "hybrid"):
             raise EmbeddingError(
                 f"unknown retrieval mode {mode!r}; use 'lexical', 'semantic', or 'hybrid'"
@@ -582,7 +699,7 @@ class LanceDBRetrievalAdapter:
             raise EmbeddingError(
                 f"{mode} retrieval requires an embedder; pass embedder= to retrieve()"
             )
-        stored_model = load_embedding_model(resolved)
+        stored_model = _load_model(index)
         if stored_model is None:
             raise EmbeddingNotBuiltError(
                 "no semantic index built; call build_index(..., embedder=...) first"
@@ -593,22 +710,27 @@ class LanceDBRetrievalAdapter:
                 "rebuild the index with build_index(..., embedder=...)"
             )
         query_vector = embedder.embed([query])[0]
-        if mode == "semantic":
-            return search_semantic_index(
-                resolved,
+        try:
+            if mode == "semantic":
+                return search_semantic_index(
+                    index,
+                    query_vector,
+                    limit,
+                    score_threshold,
+                    eligible_paths=eligible_paths,
+                )
+            return search_hybrid_index(
+                index,
+                query,
                 query_vector,
                 limit,
                 score_threshold,
                 eligible_paths=eligible_paths,
             )
-        return search_hybrid_index(
-            resolved,
-            query,
-            query_vector,
-            limit,
-            score_threshold,
-            eligible_paths=eligible_paths,
-        )
+        except Exception as exc:
+            return _zero_index_fallback(
+                pages, query, limit, eligible_pages, index, exc=exc
+            )
 
 
 def build_lancedb_index(kb, index_dir, *, embedder: Embedder | None = None):
@@ -616,7 +738,9 @@ def build_lancedb_index(kb, index_dir, *, embedder: Embedder | None = None):
 
     Convenience helper for production call sites (app/CLI) and tests that want
     the full enhanced retrieval behavior (BM25 + optional semantic/hybrid) with
-    a single call.
+    a single call. Builds a local index through the Knowledge Base; for a
+    remote (S3) index, construct a :class:`~lumio_lancedb.location.RemoteIndexLocation`
+    and call :meth:`LanceDBRetrievalAdapter.build_index` directly.
     """
     return kb.build_index(
         index_dir,

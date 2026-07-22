@@ -27,10 +27,18 @@ from lumio_lancedb.index import (
     search_pages,
     search_semantic_index,
 )
+from lumio_lancedb.location import (
+    IndexLocation,
+    LocalIndexLocation,
+    RemoteIndexLocation,
+)
 
 __all__ = [
+    "IndexLocation",
     "LanceDBRetrievalAdapter",
+    "LocalIndexLocation",
     "PAGE_TABLE_NAME",
+    "RemoteIndexLocation",
     "TABLE_NAME",
     "VECTOR_TABLE_NAME",
     "build_lancedb_index",
