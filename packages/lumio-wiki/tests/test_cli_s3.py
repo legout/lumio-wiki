@@ -146,3 +146,77 @@ def test_cli_doctor_reports_the_s3_extra(capsys):
     assert rc == 0
     assert "extra[s3]" in captured.out
     assert "lumio-wiki[s3]" in captured.out or "extra[s3]: installed" in captured.out
+
+
+
+# ---------------------------------------------------------------------------
+# publish-s3: publish a local Knowledge Base to an object store (issue #121).
+# ---------------------------------------------------------------------------
+
+obstore = pytest.importorskip("obstore", reason="obstore required for publish-s3 CLI")
+
+
+def test_cli_publish_s3_writes_an_immutable_version_and_advances_the_pointer(
+    monkeypatch, capsys
+):
+    """The publish-s3 command validates, writes the version prefix, and advances
+    the pointer — routed through a real in-memory object store."""
+    store = obstore.store.MemoryStore()
+
+    def _fake_build(uri):
+        assert cli._is_object_store_uri(uri)
+        return store, "kb"
+
+    monkeypatch.setattr(cli, "_build_publish_store", _fake_build)
+    rc = cli.main(["publish-s3", str(FIXTURES / "valid"), "s3://bucket/kb", "--version", "v1"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Published v1" in captured.out
+    # The pointer advanced to v1.
+    import msgspec
+    from lumio_wiki.s3_location import CURRENT_POINTER_OBJECT, S3Pointer
+
+    raw = obstore.get(store, f"kb/{CURRENT_POINTER_OBJECT}")
+    pointer = msgspec.json.decode(bytes(raw.bytes()), type=S3Pointer)
+    assert pointer.version == "v1"
+    # The manifest and derived graph exist under the version prefix.
+    from lumio_wiki.s3_location import DERIVED_DIR, MANIFEST_OBJECT
+    from lumio_wiki.graph_state import GRAPH_ARTIFACT_FILENAME
+
+    assert f"kb/v1/{MANIFEST_OBJECT}" in _list(store, "kb/")
+    assert f"kb/v1/{DERIVED_DIR}/{GRAPH_ARTIFACT_FILENAME}" in _list(store, "kb/")
+
+
+def test_cli_publish_s3_reports_a_pointer_conflict(monkeypatch, capsys):
+    """A concurrent publication surfaces a conflict error with a nonzero exit."""
+    store = obstore.store.MemoryStore()
+
+    def _fake_build(uri):
+        return store, "kb"
+
+    monkeypatch.setattr(cli, "_build_publish_store", _fake_build)
+    # First publication from a version that does not exist yet.
+    cli.main(["publish-s3", str(FIXTURES / "valid"), "s3://bucket/kb", "--version", "v1"])
+    # A second publication expecting a bogus pointer version conflicts.
+    rc = cli.main(
+        [
+            "publish-s3",
+            str(FIXTURES / "valid"),
+            "s3://bucket/kb",
+            "--version",
+            "v2",
+            "--expected-pointer-version",
+            "does-not-exist",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "conflict" in captured.err.lower()
+
+
+def _list(store, prefix):
+    paths = []
+    for batch in obstore.list(store, prefix=prefix):
+        for obj in batch:
+            paths.append(obj["path"])
+    return sorted(paths)

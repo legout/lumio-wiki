@@ -41,6 +41,12 @@ from typing import TYPE_CHECKING, Any
 
 import msgspec
 
+from lumio_wiki.graph_state import (
+    GRAPH_ARTIFACT_FILENAME,
+    GraphState,
+    build_graph_state,
+    deserialize_graph,
+)
 from lumio_wiki.knowledge_base import (
     KnowledgeBaseError,
     _fingerprint_sources,
@@ -48,6 +54,7 @@ from lumio_wiki.knowledge_base import (
     _load_and_validate,
 )
 from lumio_wiki.location import KnowledgeBaseSnapshot
+from lumio_wiki.records import EXTRACTOR_VERSION
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
     from obstore.store import ObjectStore
@@ -62,6 +69,12 @@ S3_LOCATION_KIND = "s3"
 CURRENT_POINTER_OBJECT = "current.json"
 MANIFEST_OBJECT = "manifest.json"
 
+# The derived-artifact subdirectory under an immutable version prefix
+# (``{prefix}/{version}/derived/...``). Holds rebuildable, non-canonical state
+# such as the Discovery Graph MessagePack artifact and (later) remote LanceDB
+# tables. Never part of the manifest's canonical file list (ADR-0013).
+DERIVED_DIR = "derived"
+
 # Bounded in-memory cache defaults (the no-managed-disk-cache policy, ADR-0013).
 # A single resolved version is cached by default; the cap keeps the resident
 # byte footprint bounded. The cache is process-local and never touches disk.
@@ -72,6 +85,7 @@ __all__ = [
     "CURRENT_POINTER_OBJECT",
     "DEFAULT_MAX_CACHE_BYTES",
     "DEFAULT_MAX_CACHED_VERSIONS",
+    "DERIVED_DIR",
     "MANIFEST_OBJECT",
     "S3_LOCATION_KIND",
     "S3Location",
@@ -133,6 +147,11 @@ class S3Manifest(msgspec.Struct, frozen=True):
     Lists every canonical file with its content digest and carries the Knowledge
     Base fingerprint computed at publish time. A reader recomputes the fingerprint
     over the materialized content and rejects a mismatch as corruption.
+
+    Derived artifacts (the Discovery Graph MessagePack, and later remote LanceDB
+    tables) are rebuildable state, never canonical content (ADR-0011): they live
+    in ``derived_files`` so a reader can integrity-check them without making them
+    part of the canonical file tree or the fingerprint.
     """
 
     version: str
@@ -144,6 +163,9 @@ class S3Manifest(msgspec.Struct, frozen=True):
     files: list[S3ManifestFile]
     """Every canonical file: Control File plus all Markdown (including reserved artifacts)."""
 
+    derived_files: list[S3ManifestFile] = msgspec.field(default_factory=list)
+    """Derived (non-canonical) artifacts with their digests and sizes."""
+
 
 class S3Pointer(msgspec.Struct, frozen=True):
     """The ``current.json`` pointer to the active immutable Published Version."""
@@ -152,7 +174,11 @@ class S3Pointer(msgspec.Struct, frozen=True):
 
 
 def build_published_manifest(
-    version: str, fingerprint_digest: str, content: dict[str, bytes]
+    version: str,
+    fingerprint_digest: str,
+    content: dict[str, bytes],
+    *,
+    derived_content: dict[str, bytes] | None = None,
 ) -> S3Manifest:
     """Build a manifest for an immutable version from canonical content.
 
@@ -162,6 +188,12 @@ def build_published_manifest(
     is the Published Version identity computed at publish time
     (:func:`lumio_wiki.fingerprint_sources`); it is recorded verbatim so a reader
     can validate it without trusting the publisher.
+
+    ``derived_content`` is optional rebuildable state (e.g. the Discovery Graph
+    MessagePack artifact) keyed by its relative path under the version's
+    ``derived/`` area. It is never part of the canonical file tree or the
+    fingerprint — the reader integrity-checks it via ``derived_files`` and falls
+    back to in-memory derivation on any mismatch (ADR-0011, ADR-0013).
     """
     files = [
         S3ManifestFile(
@@ -171,7 +203,21 @@ def build_published_manifest(
         )
         for path, raw in sorted(content.items())
     ]
-    return S3Manifest(version=version, fingerprint=fingerprint_digest, files=files)
+    derived_files = []
+    for path, raw in sorted((derived_content or {}).items()):
+        derived_files.append(
+            S3ManifestFile(
+                path=path,
+                size=len(raw),
+                digest=hashlib.sha256(raw).hexdigest(),
+            )
+        )
+    return S3Manifest(
+        version=version,
+        fingerprint=fingerprint_digest,
+        files=files,
+        derived_files=derived_files,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +511,65 @@ class S3Location:
             validation_report=report,
             fingerprint=actual_fp,
             location=self,
+        )
+
+    # -- derived graph -----------------------------------------------------
+
+    def load_or_derive_graph(self) -> GraphState:
+        """Return the Discovery Graph state for the resolved version.
+
+        Loads the published MessagePack artifact when it is present, fresh
+        (fingerprint and extractor version match), and integrity-checked against
+        the manifest's ``derived_files`` digest; otherwise derives the same
+        adjacency deterministically in memory from the loaded Knowledge Base.
+        Never raises on a missing, stale, or corrupt artifact — the Discovery
+        Graph is derived state, never canonical content (ADR-0011, ADR-0013).
+
+        A coherently altered graph artifact (valid MessagePack, correct
+        fingerprint/extractor fields, but different edges) is rejected by the
+        manifest digest check and falls back to in-memory derivation, so a
+        reader can never observe a graph that disagrees with what the
+        publisher wrote.
+        """
+        snapshot = self.resolve()
+        version = self._resolve_version()
+        fingerprint = snapshot.fingerprint
+
+        # Read the manifest so we can integrity-check the graph artifact
+        # against the publisher-recorded digest before trusting it.
+        manifest = self._read_manifest(version)
+        graph_rel = f"{DERIVED_DIR}/{GRAPH_ARTIFACT_FILENAME}"
+        graph_meta = None
+        for entry in manifest.derived_files:
+            if entry.path == graph_rel:
+                graph_meta = entry
+                break
+
+        key = _join(self._prefix, version, graph_rel)
+        try:
+            data = _get_bytes(self._store, key)
+        except KnowledgeBaseError:
+            data = None
+
+        if data is not None and graph_meta is not None:
+            # Integrity-check the artifact bytes against the manifest digest
+            # BEFORE trusting its embedded fields (ADR-0013).
+            if (
+                len(data) == graph_meta.size
+                and hashlib.sha256(data).hexdigest() == graph_meta.digest
+            ):
+                state = deserialize_graph(data)
+                if (
+                    state is not None
+                    and state.fingerprint_digest == fingerprint.digest
+                    and state.extractor_version == EXTRACTOR_VERSION
+                ):
+                    return state
+
+        return build_graph_state(
+            snapshot.knowledge_base._knowledge_index(),
+            fingerprint,
+            EXTRACTOR_VERSION,
         )
 
 
