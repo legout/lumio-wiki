@@ -10,7 +10,7 @@ from collections import deque
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 from urllib.parse import quote
 
 import msgspec
@@ -41,7 +41,13 @@ from lumio_wiki.records import (
     HealthReport,
     HotIndexPin,
     KnowledgeBaseControlFile,
+    LINK_IMPACT_KIND_COMPONENT_JOIN,
+    LINK_IMPACT_KIND_FRAGILE_STRENGTHENING,
+    LINK_IMPACT_KIND_ORPHAN_REPAIR,
+    LinkCandidate,
+    LinkImpactSignal,
     PageSearchResult,
+    RankedLinkCandidate,
     RegistryEntry,
     Relationship,
     RetrievalResult,
@@ -108,6 +114,14 @@ DEFAULT_GRAPH_MAX_RESULTS = 50
 DEFAULT_GRAPH_HUB_SAMPLE = 10
 DEFAULT_GRAPH_ORPHAN_SAMPLE = 25
 DEFAULT_GRAPH_UNRESOLVED_SAMPLE = 5
+# Link-candidate graph-impact score weights (issue #127, ADR-0011).
+# Explicit, documented, stable integers. The total impact score for a
+# candidate is the sum of applicable signal weights. Higher = more structural
+# improvement. Ordering within the same score is lexicographic on the
+# candidate's identity fields (stable tie-break).
+LINK_IMPACT_WEIGHT_COMPONENT_JOIN = 100
+LINK_IMPACT_WEIGHT_ORPHAN_REPAIR = 50
+LINK_IMPACT_WEIGHT_FRAGILE_STRENGTHENING = 10
 
 
 def _require_graph_scope(scope: str) -> None:
@@ -140,6 +154,84 @@ def _require_non_negative_limit(name: str, value: int) -> None:
         raise ValueError(
             f"{name} must be a non-negative integer, got {value}"
         )
+
+class _GraphTopology(NamedTuple):
+    """Authorized directed-graph topology snapshot for structural analysis.
+
+    Computed once over the authorized node set and shared by
+    ``graph_diagnostics`` and ``rank_link_candidates_by_graph_impact`` so the
+    degree, undirected-projection, and WCC logic has a single source of
+    truth. Self-loops carry no structural connectivity and are excluded.
+    """
+
+    nodes: frozenset[str]
+    in_degree: dict[str, int]
+    out_degree: dict[str, int]
+    out_endpoints: dict[str, set[str]]
+    undirected: dict[str, set[str]]
+    edge_count: int
+    wcc_id: dict[str, int]
+    wcc_count: int
+    largest_wcc_size: int
+
+
+def _compute_graph_topology(
+    outgoing: dict[str, list[tuple[str, str]]],
+    nodes: frozenset[str],
+) -> _GraphTopology:
+    """Compute directed degrees, undirected projection, and WCC assignment.
+
+    The single shared implementation for both ``graph_diagnostics`` and
+    ``rank_link_candidates_by_graph_impact``. Iterates authorized nodes in
+    sorted order for deterministic results.
+    """
+    in_degree: dict[str, int] = {t: 0 for t in nodes}
+    out_degree: dict[str, int] = {t: 0 for t in nodes}
+    out_endpoints: dict[str, set[str]] = {t: set() for t in nodes}
+    undirected: dict[str, set[str]] = {t: set() for t in nodes}
+    edge_count = 0
+    for src in sorted(nodes):
+        for endpoint, _rtype in outgoing.get(src, ()):
+            if endpoint == src or endpoint not in nodes:
+                continue
+            edge_count += 1
+            out_degree[src] += 1
+            out_endpoints[src].add(endpoint)
+            in_degree[endpoint] += 1
+            undirected[src].add(endpoint)
+            undirected[endpoint].add(src)
+
+    wcc_id: dict[str, int] = {}
+    wcc_count = 0
+    largest = 0
+    for start in sorted(nodes):
+        if start in wcc_id:
+            continue
+        wcc_id[start] = wcc_count
+        size = 0
+        queue: deque[str] = deque([start])
+        while queue:
+            node = queue.popleft()
+            size += 1
+            for neighbour in undirected[node]:
+                if neighbour not in wcc_id:
+                    wcc_id[neighbour] = wcc_count
+                    queue.append(neighbour)
+        wcc_count += 1
+        if size > largest:
+            largest = size
+
+    return _GraphTopology(
+        nodes=nodes,
+        in_degree=in_degree,
+        out_degree=out_degree,
+        out_endpoints=out_endpoints,
+        undirected=undirected,
+        edge_count=edge_count,
+        wcc_id=wcc_id,
+        wcc_count=wcc_count,
+        largest_wcc_size=largest,
+    )
 
 # Navigation Index reserved derived-artifact semantics (issue #64).
 #
@@ -795,44 +887,16 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         all_titles = frozenset(page.title for page in self.pages if page.title)
         nodes = candidate & all_titles
 
-        out_degree: dict[str, int] = {t: 0 for t in nodes}
-        in_degree: dict[str, int] = {t: 0 for t in nodes}
-        undirected: dict[str, set[str]] = {t: set() for t in nodes}
-        edge_count = 0
-        for src in sorted(nodes):
-            for endpoint, _rtype in outgoing.get(src, ()):
-                if endpoint == src or endpoint not in nodes:
-                    continue
-                edge_count += 1
-                out_degree[src] += 1
-                in_degree[endpoint] += 1
-                undirected[src].add(endpoint)
-                undirected[endpoint].add(src)
+        topo = _compute_graph_topology(outgoing, nodes)
+        in_degree = topo.in_degree
+        out_degree = topo.out_degree
+        edge_count = topo.edge_count
+        wcc_count = topo.wcc_count
+        largest = topo.largest_wcc_size
 
         page_count = len(nodes)
         inbound_orphans = sorted(t for t in nodes if in_degree[t] == 0)
         outbound_orphans = sorted(t for t in nodes if out_degree[t] == 0)
-
-        # Weakly connected components over the undirected projection.
-        wcc_count = 0
-        largest = 0
-        visited: set[str] = set()
-        for start in sorted(nodes):
-            if start in visited:
-                continue
-            size = 0
-            queue: deque[str] = deque([start])
-            visited.add(start)
-            while queue:
-                node = queue.popleft()
-                size += 1
-                for neighbour in undirected[node]:
-                    if neighbour not in visited:
-                        visited.add(neighbour)
-                        queue.append(neighbour)
-            wcc_count += 1
-            if size > largest:
-                largest = size
         coverage = (largest / page_count) if page_count else 0.0
 
         top_inbound_hubs = self._top_hubs(nodes, in_degree, max_hub_sample)
@@ -922,6 +986,149 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
                 )
             )
         return tuple(result)
+
+    def rank_link_candidates_by_graph_impact(
+        self,
+        candidates: Iterable[LinkCandidate],
+        *,
+        scope: str = GRAPH_SCOPE_DISCOVERY,
+        candidate_titles: Iterable[str] | None = None,
+    ) -> list[RankedLinkCandidate]:
+        """Annotate and deterministically prioritize LinkCandidates by graph impact.
+
+        Evaluates each EXISTING deterministic :class:`LinkCandidate` against the
+        current authorized Discovery Graph WITHOUT mutating Compiled Pages
+        or graph state. For each candidate, computes the structural impact of
+        the link IF it were published and derived as an Extracted Reference:
+
+        * **Orphan repair** (``LINK_IMPACT_KIND_ORPHAN_REPAIR``): the link
+          would give an inbound connection to a page that is currently a graph
+          orphan (zero inbound edges).
+        * **Component joining** (``LINK_IMPACT_KIND_COMPONENT_JOIN``): the
+          link would connect two weakly connected components (reducing WCC
+          count).
+        * **Fragile-connection strengthening**
+          (``LINK_IMPACT_KIND_FRAGILE_STRENGTHENING``): source and target are
+          in the same weakly connected component but no direct edge exists
+          between them; adding a direct edge strengthens the existing indirect
+          (fragile) connection. The fragile topology is identified through the
+          same structural diagnostics seam (#126): directed inbound degrees,
+          undirected WCC projection, and direct-edge presence — the topology
+          ``graph_diagnostics`` reports.
+
+        Candidates are ordered by descending ``impact_score`` with stable
+        lexical tie-breaking on ``(source_path, line, column, target_title,
+        term)``. Repeated runs over unchanged Markdown are identical. A
+        candidate with no measured structural impact is still returned
+        (Maintainers can inspect ALL candidates).
+
+        Authorization is applied BEFORE graph impact is calculated: the graph
+        topology is computed over ``candidate_titles`` only (default: every
+        loaded Compiled Page title). A candidate whose source or target falls
+        outside the authorized set receives score 0 and no signals, and the
+        inaccessible page identity does not affect any other candidate's
+        scores, counts, reasons, or output ordering.
+
+        Only ``GRAPH_SCOPE_DISCOVERY`` is valid (the default): a published
+        Markdown link becomes an Extracted Reference, which participates in
+        the Discovery Graph only. Canonical-scope impact is rejected because
+        it would imply inferring a typed Relationship from a Markdown-link
+        proposal (ADR-0011).
+
+        The impact is ADVISORY: it never infers a typed Relationship from a
+        Markdown-link proposal. An approved link remains an Extracted
+        Reference with navigation meaning only (ADR-0011).
+        """
+        _require_graph_scope(scope)
+        if scope != GRAPH_SCOPE_DISCOVERY:
+            raise ValueError(
+                "rank_link_candidates_by_graph_impact only supports the "
+                "discovery scope; a published Markdown link becomes an "
+                "Extracted Reference (discovery-only), never a canonical "
+                "Relationship (ADR-0011)"
+            )
+
+        index = self._knowledge_index()
+        outgoing = index.discovery_adjacency
+
+        candidate_set = self._graph_candidate(candidate_titles)
+        all_titles = frozenset(page.title for page in self.pages if page.title)
+        nodes = candidate_set & all_titles
+
+        # Compute the authorized topology ONCE via the shared structural
+        # helper (same source of truth as graph_diagnostics). Each candidate
+        # is then evaluated against this snapshot without mutation.
+        topo = _compute_graph_topology(outgoing, nodes)
+        in_degree = topo.in_degree
+        out_endpoints = topo.out_endpoints
+        wcc_id = topo.wcc_id
+
+        ranked: list[RankedLinkCandidate] = []
+        for cand in candidates:
+            src_title = cand.source_title
+            tgt_title = cand.target_title
+
+            signals: list[LinkImpactSignal] = []
+            score = 0
+
+            # Authorization gate: inaccessible page identities do not affect
+            # scores, counts, reasons, or output ordering.
+            if src_title in nodes and tgt_title in nodes and src_title != tgt_title:
+                # Orphan repair: target has zero inbound edges.
+                if in_degree[tgt_title] == 0:
+                    score += LINK_IMPACT_WEIGHT_ORPHAN_REPAIR
+                    signals.append(LinkImpactSignal(
+                        kind=LINK_IMPACT_KIND_ORPHAN_REPAIR,
+                        detail=(
+                            f"gives '{tgt_title}' its first inbound "
+                            f"{scope} connection (currently an inbound orphan)"
+                        ),
+                    ))
+
+                # Component joining: source and target in different WCCs.
+                if wcc_id[src_title] != wcc_id[tgt_title]:
+                    score += LINK_IMPACT_WEIGHT_COMPONENT_JOIN
+                    signals.append(LinkImpactSignal(
+                        kind=LINK_IMPACT_KIND_COMPONENT_JOIN,
+                        detail=(
+                            "joins two weakly connected components "
+                            "(reduces WCC count by 1)"
+                        ),
+                    ))
+
+                # Fragile strengthening: same WCC, no direct edge exists.
+                # Adding a direct edge strengthens the indirect connection.
+                elif tgt_title not in out_endpoints[src_title]:
+                    score += LINK_IMPACT_WEIGHT_FRAGILE_STRENGTHENING
+                    signals.append(LinkImpactSignal(
+                        kind=LINK_IMPACT_KIND_FRAGILE_STRENGTHENING,
+                        detail=(
+                            "strengthens an indirect connection: source and "
+                            "target share a weakly connected component but no "
+                            "direct edge currently exists"
+                        ),
+                    ))
+
+            ranked.append(RankedLinkCandidate(
+                candidate=cand,
+                scope=scope,
+                impact_score=score,
+                signals=tuple(signals),
+            ))
+
+        # Deterministic ordering: highest impact first, then stable lexical
+        # tie-break on the candidate's identity fields.
+        ranked.sort(
+            key=lambda r: (
+                -r.impact_score,
+                r.candidate.source_path,
+                r.candidate.line,
+                r.candidate.column,
+                r.candidate.target_title,
+                r.candidate.term,
+            )
+        )
+        return ranked
 
     def build_index(
         self,
