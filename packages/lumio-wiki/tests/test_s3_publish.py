@@ -154,14 +154,24 @@ def test_publish_writes_the_graph_artifact_under_the_derived_area():
     assert f"kb/v1/{DERIVED_DIR}/{GRAPH_ARTIFACT_FILENAME}" in objects
 
 
-def test_the_graph_artifact_is_never_listed_in_the_canonical_manifest():
+def test_the_graph_artifact_is_in_derived_files_not_canonical_files():
     store = _store()
     manifest = publish_s3_version(store, "kb", source_root=VALID, version="v1")
     graph_key = f"{DERIVED_DIR}/{GRAPH_ARTIFACT_FILENAME}"
-    paths = {f.path for f in manifest.files}
-    assert graph_key not in paths
+    canonical_paths = {f.path for f in manifest.files}
+    assert graph_key not in canonical_paths
     # And no derived path of any kind leaks into canonical manifest files.
     assert not any(f.path.startswith(f"{DERIVED_DIR}/") for f in manifest.files)
+    # The graph IS recorded in derived_files with a digest + size.
+    derived_paths = {f.path for f in manifest.derived_files}
+    assert graph_key in derived_paths
+    graph_entry = next(f for f in manifest.derived_files if f.path == graph_key)
+    raw = obstore.get(store, f"kb/v1/{graph_key}")
+    import hashlib
+    raw_bytes = bytes(raw.bytes())
+
+    assert graph_entry.size == len(raw_bytes)
+    assert graph_entry.digest == hashlib.sha256(raw_bytes).hexdigest()
 
 
 def test_the_published_graph_artifact_is_fresh_and_loadable():
@@ -175,6 +185,18 @@ def test_the_published_graph_artifact_is_fresh_and_loadable():
     # Sanity: the published graph carries real discovery edges.
     assert state.edge_count >= 0
 
+
+# ---------------------------------------------------------------------------
+# 2b. A reused version label is rejected (immutable prefix, create-only).
+# ---------------------------------------------------------------------------
+
+
+def test_reusing_a_version_label_fails_immutably():
+    """The same version prefix cannot be published twice — immutable."""
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    with pytest.raises(KnowledgeBaseError, match="already exists"):
+        publish_s3_version(store, "kb", source_root=VALID, version="v1")
 
 # ---------------------------------------------------------------------------
 # 3. A published version resolves to a byte-for-byte-equivalent Snapshot.
@@ -258,28 +280,32 @@ def test_consecutive_publications_advance_the_pointer_in_order():
 
 
 def test_a_reader_bound_to_the_old_snapshot_is_unaffected_by_activation():
-    """A reader that resolved v1 keeps reading v1's content even after the
-    pointer advances to v2 — it uses only its already-resolved immutable prefix."""
+    """A reader that resolved the old version keeps reading its distinct content
+    even after a new version with different content activates. The old Snapshot
+    is immutable in memory, and a pinned reader still resolves the old prefix."""
     store = _store()
-    publish_s3_version(store, "kb", source_root=VALID, version="v1")
-    # Reader resolves (and pins) v1.
+    # Publish distinct content: categorized KB as v1, valid KB as v2.
+    publish_s3_version(store, "kb", source_root=CATEGORIZED, version="v1")
+    # Reader resolves (and pins) v1 — distinct from what v2 will contain.
     reader = S3Location(store, "kb")
     before = reader.resolve()
     before_titles = {p.title for p in before.pages}
     before_fp = before.fingerprint
-    # A new version activates.
+    # v2 has different content.
     publish_s3_version(
         store, "kb", source_root=VALID, version="v2", expected_pointer_version="v1"
     )
     # The already-resolved Snapshot is unchanged (immutable in memory).
     assert {p.title for p in before.pages} == before_titles
     assert before.fingerprint == before_fp
-    # A fresh resolve sees the new active version.
+    # A fresh resolve sees the new active version with different content.
     after = S3Location(store, "kb").resolve()
-    assert after.fingerprint == before_fp  # same content -> same fingerprint
-    # A pinned-to-v1 reader is still isolated regardless of the pointer.
+    assert after.fingerprint != before_fp
+    assert {p.title for p in after.pages} != before_titles
+    # A pinned-to-v1 reader still resolves the old version's distinct content.
     pinned = S3Location(store, "kb", version="v1").resolve()
     assert {p.title for p in pinned.pages} == before_titles
+    assert pinned.fingerprint == before_fp
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +380,34 @@ def test_fresh_graph_artifact_is_loaded_from_the_published_version():
     assert state.fingerprint_digest == fingerprint_sources(VALID).digest
 
 
+def test_coherently_altered_graph_falls_back_via_manifest_digest_check():
+    """A graph artifact with valid MessagePack, correct fingerprint/extractor
+    fields, but different edges is caught by the manifest digest check and falls
+    back to in-memory derivation."""
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    raw = obstore.get(store, f"kb/v1/{DERIVED_DIR}/{GRAPH_ARTIFACT_FILENAME}")
+    payload = msgpack.unpackb(bytes(raw.bytes()), raw=False, strict_map_key=False)
+    # Add a fabricated edge that preserves structural consistency (edge_count
+    # matches outgoing, incoming is reverse of outgoing) but changes the
+    # adjacency — so it decodes and passes fingerprint/extractor checks, but
+    # fails the manifest digest check.
+    payload["outgoing"].setdefault("__fabricated__", [["__target__", "rel"]])
+    payload["incoming"].setdefault("__target__", [["__fabricated__", "rel"]])
+    payload["edge_count"] = sum(len(v) for v in payload["outgoing"].values())
+    obstore.put(
+        store,
+        f"kb/v1/{DERIVED_DIR}/{GRAPH_ARTIFACT_FILENAME}",
+        msgpack.packb(payload, use_bin_type=True),
+        mode="overwrite",
+    )
+    location = S3Location(store, "kb")
+    state = location.load_or_derive_graph()
+    # Fell back: the derived graph does not contain the fabricated edge.
+    assert "__fabricated__" not in state.outgoing
+    assert state.edge_count == _discovery_edge_count(VALID)
+
+
 # ---------------------------------------------------------------------------
 # 7. The [s3] extra guard.
 # ---------------------------------------------------------------------------
@@ -374,3 +428,28 @@ def test_publish_requires_the_s3_extra(monkeypatch):
     with pytest.raises(KnowledgeBaseError) as exc_info:
         publish_s3_version(_store(), "kb", source_root=VALID, version="v1")
     assert "pip install" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# 8. Pointer compare-and-swap fails closed when no ETag is available.
+# ---------------------------------------------------------------------------
+def test_pointer_advance_fails_closed_when_no_etag(monkeypatch):
+    """A store that cannot supply an ETag refuses the second publication.
+
+    Monkeypatches the publisher's pointer reader to return an existing pointer
+    with no ETag, simulating a backend that lacks compare-and-swap support."""
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    import lumio_wiki.s3_publish as pub
+
+    real_reader = pub._read_current_pointer
+
+    def _no_etag_reader(obstore_mod, s, key):
+        version, _etag = real_reader(obstore_mod, s, key)
+        return version, None
+
+    monkeypatch.setattr(pub, "_read_current_pointer", _no_etag_reader)
+    with pytest.raises(KnowledgeBaseError, match="ETag"):
+        publish_s3_version(
+            store, "kb", source_root=VALID, version="v2", expected_pointer_version="v1"
+        )

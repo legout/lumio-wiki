@@ -10,16 +10,19 @@ version.
 Publication protocol (ADR-0013):
 
 1. **Validate** — load and validate canonical Knowledge Base content from a
-   filesystem source through the shared Core SDK seam, and materialize + validate
+   filesystem source through the shared Core SDK seam, and serialize + validate
    the derived Discovery Graph state (fingerprint and extractor version match).
 2. **Write** — materialize every canonical file, the derived graph artifact, and a
-   content-digest manifest under a new immutable version prefix
-   (``{prefix}/{version}/...``). The graph lives in the version's ``derived/``
-   area and is **never** part of the manifest's canonical file list.
+   content-digest manifest under a new **immutable** version prefix
+   (``{prefix}/{version}/...``) using create-only puts (a reused version label
+   fails). The graph lives in the version's ``derived/`` area and is recorded in
+   the manifest's ``derived_files`` (with its digest/size) but is **never** part
+   of the canonical file list or the fingerprint.
 3. **Activate** — conditionally advance ``current.json`` to the new version using
    an expected-version conditional put (compare-and-swap on the pointer's ETag).
    The pointer advances **only after** the version is fully written and
-   validated.
+   validated. A backend that cannot supply an ETag for compare-and-swap fails
+   closed — publication is refused rather than falling back to last-write-wins.
 
 Concurrent publication is detected by the compare-and-swap: if another publisher
 already advanced the pointer, :class:`S3PublicationConflict` is raised and the
@@ -32,7 +35,6 @@ client config — never here and never in ``lumio.yaml``.
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -41,6 +43,7 @@ import msgspec
 from lumio_wiki.graph_state import (
     GRAPH_ARTIFACT_FILENAME,
     deserialize_graph,
+    serialize_graph,
 )
 from lumio_wiki.knowledge_base import (
     KnowledgeBaseError,
@@ -65,6 +68,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
     from obstore.store import ObjectStore
 
 __all__ = ["S3PublicationConflict", "publish_s3_version"]
+
+# The relative path of the Discovery Graph artifact under a version prefix.
+_GRAPH_REL = f"{DERIVED_DIR}/{GRAPH_ARTIFACT_FILENAME}"
 
 
 class S3PublicationConflict(KnowledgeBaseError):
@@ -126,8 +132,8 @@ def publish_s3_version(
     Raises
     ------
     KnowledgeBaseError
-        If canonical content fails validation or the derived graph state is
-        invalid.
+        If canonical content fails validation, the derived graph state is
+        invalid, or the store cannot support conditional pointer writes.
     S3PublicationConflict
         If a concurrent publication already advanced the active pointer.
     """
@@ -146,43 +152,52 @@ def publish_s3_version(
     fingerprint = fingerprint_sources(root)
     content = canonical_content(_FilesystemKbSource(root.resolve()))
 
-    # 2. Materialize and validate the derived Discovery Graph state.
-    graph_bytes = _materialize_graph_bytes(kb)
+    # 2. Serialize and validate the derived Discovery Graph state (in memory,
+    #    no managed local bytes — ADR-0013).
+    graph_bytes = _serialize_graph_bytes(kb, fingerprint)
     _validate_graph_state(graph_bytes, fingerprint, version)
 
-    # 3. Write the immutable version prefix (content, derived graph, manifest).
-    manifest = build_published_manifest(version, fingerprint.digest, content)
+    # 3. Build the manifest (canonical files + derived graph digest metadata),
+    #    then write the immutable version prefix using create-only puts.
+    manifest = build_published_manifest(
+        version,
+        fingerprint.digest,
+        content,
+        derived_content={_GRAPH_REL: graph_bytes},
+    )
     _write_version_prefix(
         obstore, store, clean_prefix, version, content, manifest, graph_bytes
     )
 
-    # 4. Conditionally advance the active pointer.
+    # 4. Conditionally advance the active pointer (fail-closed CAS).
     _advance_pointer(obstore, store, clean_prefix, version, expected_pointer_version)
     return manifest
 
 
 # ---------------------------------------------------------------------------
-# Graph materialization + validation.
+# Graph serialization + validation (pure in-memory, no disk I/O).
 # ---------------------------------------------------------------------------
 
 
-def _materialize_graph_bytes(kb: Any) -> bytes:
+def _serialize_graph_bytes(kb: Any, fingerprint: SourceFingerprint) -> bytes:
     """Serialize the Knowledge Base's Discovery Graph to MessagePack bytes.
 
-    Reuses the public ``KnowledgeBase.materialize_graph`` serialization path
-    (the exact one the filesystem index uses) so the published artifact is
-    byte-identical to a locally materialized one. The temp directory is cleaned
-    up after reading the bytes.
+    Uses the public ``serialize_graph`` function (the same deterministic
+    serialization ``KnowledgeBase.materialize_graph`` writes to disk), so the
+    published artifact is byte-identical to a locally materialized one — but
+    without writing any derived bytes to local disk (ADR-0013).
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        artifact = kb.materialize_graph(tmp)
-        return Path(artifact).read_bytes()
+    return serialize_graph(
+        kb._knowledge_index(),
+        fingerprint,
+        EXTRACTOR_VERSION,
+    )
 
 
 def _validate_graph_state(
     graph_bytes: bytes, fingerprint: SourceFingerprint, version: str
 ) -> None:
-    """Validate the materialized Discovery Graph state before publishing it.
+    """Validate the serialized Discovery Graph state before publishing it.
 
     The graph is derived state; it must decode, match the Knowledge Base
     fingerprint, and target the current extractor version. A failure here is a
@@ -225,25 +240,49 @@ def _write_version_prefix(
 ) -> None:
     """Write every canonical file, the derived graph, and the manifest.
 
-    The manifest is written **last**, after all its referenced content, so an
-    interrupted publication can never produce a valid manifest whose content is
-    absent. A reader that finds the pointer pointing here before activation never
-    observes a partial version: activation is gated by the conditional pointer
-    advance, which runs after this returns.
+    All writes use ``mode="create"``: a reused version label (or a collision
+    with a concurrent publisher) raises ``AlreadyExistsError`` so an immutable
+    Published Version can never be silently mutated. The manifest is written
+    **last**, after all its referenced content, so an interrupted publication
+    can never produce a valid manifest whose content is absent. A reader that
+    finds the pointer pointing here before activation never observes a partial
+    version: activation is gated by the conditional pointer advance, which runs
+    after this returns.
     """
+    from obstore.exceptions import AlreadyExistsError
+
     # Canonical files at their relative paths under the version prefix.
     for rel, raw in content.items():
-        obstore.put(store, _join(prefix, version, rel), raw)
+        key = _join(prefix, version, rel)
+        try:
+            obstore.put(store, key, raw, mode="create")
+        except AlreadyExistsError as exc:
+            raise KnowledgeBaseError(
+                f"cannot publish {version!r}: version prefix already exists at "
+                f"{key!r} — immutable versions cannot be overwritten"
+            ) from exc
     # Derived Discovery Graph artifact: rebuildable state, never canonical.
-    graph_key = _join(prefix, version, DERIVED_DIR, GRAPH_ARTIFACT_FILENAME)
-    obstore.put(store, graph_key, graph_bytes)
+    graph_key = _join(prefix, version, _GRAPH_REL)
+    try:
+        obstore.put(store, graph_key, graph_bytes, mode="create")
+    except AlreadyExistsError as exc:
+        raise KnowledgeBaseError(
+            f"cannot publish {version!r}: version prefix already exists at "
+            f"{graph_key!r} — immutable versions cannot be overwritten"
+        ) from exc
     # The manifest (last).
     manifest_key = _join(prefix, version, MANIFEST_OBJECT)
-    obstore.put(store, manifest_key, msgspec.json.encode(manifest))
+    try:
+        obstore.put(store, manifest_key, msgspec.json.encode(manifest), mode="create")
+    except AlreadyExistsError as exc:
+        raise KnowledgeBaseError(
+            f"cannot publish {version!r}: version prefix already exists at "
+            f"{manifest_key!r} — immutable versions cannot be overwritten"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
-# Conditional pointer advance (compare-and-swap).
+# Conditional pointer advance (compare-and-swap, fail-closed).
 # ---------------------------------------------------------------------------
 
 
@@ -299,6 +338,10 @@ def _advance_pointer(
     already touched the pointer is detected and raises
     :class:`S3PublicationConflict`, leaving the previously active Published
     Version intact.
+
+    A store that cannot supply an ETag for the existing pointer fails closed:
+    publication is refused rather than silently falling back to
+    last-write-wins (ADR-0013 explicitly scopes out multi-writer LWW publishing).
     """
     key = _join(prefix, CURRENT_POINTER_OBJECT)
     pointer_bytes = msgspec.json.encode(S3Pointer(version=version))
@@ -323,6 +366,15 @@ def _advance_pointer(
         raise S3PublicationConflict(
             f"cannot publish {version!r}: expected the active pointer to be "
             f"{expected_pointer_version!r} but it is {existing_version!r}"
+        )
+
+    # Fail closed when the store cannot supply an ETag for compare-and-swap.
+    # ADR-0013 scopes out multi-writer last-write-wins publishing.
+    if existing_etag is None:
+        raise KnowledgeBaseError(
+            f"cannot publish {version!r}: the object store does not provide an "
+            f"ETag for the activation pointer, so a safe conditional write is "
+            f"impossible"
         )
 
     _conditional_update(
@@ -354,25 +406,15 @@ def _conditional_update(
     store: ObjectStore,
     key: str,
     pointer_bytes: bytes,
-    etag: str | None,
+    etag: str,
     version: str,
     existing_version: str,
 ) -> None:
     """Advance the pointer only if its ETag still matches the one we observed."""
     from obstore.exceptions import PreconditionError
 
-    if etag is None:
-        # No ETag available: the store cannot support a safe compare-and-swap.
-        # Fall back to an unconditional overwrite. The expected-version check
-        # above still guards against an explicit mismatch; the ETag-less path is
-        # only reached by stores that never return ETags (not the obstore
-        # backends this capability targets).
-        obstore.put(store, key, pointer_bytes, mode="overwrite")
-        return
     try:
-        obstore.put(
-            store, key, pointer_bytes, mode={"mode": "update", "e_tag": etag}
-        )
+        obstore.put(store, key, pointer_bytes, mode={"mode": "update", "e_tag": etag})
     except PreconditionError as exc:
         raise S3PublicationConflict(
             f"cannot publish {version!r}: a concurrent publication already "
