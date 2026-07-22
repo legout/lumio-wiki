@@ -41,6 +41,12 @@ from typing import TYPE_CHECKING, Any
 
 import msgspec
 
+from lumio_wiki.graph_state import (
+    GRAPH_ARTIFACT_FILENAME,
+    GraphState,
+    build_graph_state,
+    deserialize_graph,
+)
 from lumio_wiki.knowledge_base import (
     KnowledgeBaseError,
     _fingerprint_sources,
@@ -48,6 +54,7 @@ from lumio_wiki.knowledge_base import (
     _load_and_validate,
 )
 from lumio_wiki.location import KnowledgeBaseSnapshot
+from lumio_wiki.records import EXTRACTOR_VERSION
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
     from obstore.store import ObjectStore
@@ -62,6 +69,12 @@ S3_LOCATION_KIND = "s3"
 CURRENT_POINTER_OBJECT = "current.json"
 MANIFEST_OBJECT = "manifest.json"
 
+# The derived-artifact subdirectory under an immutable version prefix
+# (``{prefix}/{version}/derived/...``). Holds rebuildable, non-canonical state
+# such as the Discovery Graph MessagePack artifact and (later) remote LanceDB
+# tables. Never part of the manifest's canonical file list (ADR-0013).
+DERIVED_DIR = "derived"
+
 # Bounded in-memory cache defaults (the no-managed-disk-cache policy, ADR-0013).
 # A single resolved version is cached by default; the cap keeps the resident
 # byte footprint bounded. The cache is process-local and never touches disk.
@@ -72,6 +85,7 @@ __all__ = [
     "CURRENT_POINTER_OBJECT",
     "DEFAULT_MAX_CACHE_BYTES",
     "DEFAULT_MAX_CACHED_VERSIONS",
+    "DERIVED_DIR",
     "MANIFEST_OBJECT",
     "S3_LOCATION_KIND",
     "S3Location",
@@ -465,6 +479,45 @@ class S3Location:
             validation_report=report,
             fingerprint=actual_fp,
             location=self,
+        )
+
+    # -- derived graph -----------------------------------------------------
+
+    def load_or_derive_graph(self) -> GraphState:
+        """Return the Discovery Graph state for the resolved version.
+
+        Loads the published MessagePack artifact when it is present and fresh
+        (its fingerprint and extractor version match the Knowledge Base);
+        otherwise derives the same adjacency deterministically in memory from
+        the loaded Knowledge Base. Never raises on a missing, stale, or corrupt
+        artifact — the Discovery Graph is derived state, never canonical content
+        (ADR-0011, ADR-0013).
+
+        The version is resolved once and the snapshot's Published Version
+        fingerprint validates the artifact: an artifact from a different
+        version is stale and falls back to in-memory derivation, so a reader
+        can never observe a graph that disagrees with its resolved Snapshot.
+        """
+        snapshot = self.resolve()
+        version = self._resolve_version()
+        fingerprint = snapshot.fingerprint
+        key = _join(self._prefix, version, DERIVED_DIR, GRAPH_ARTIFACT_FILENAME)
+        try:
+            data = _get_bytes(self._store, key)
+        except KnowledgeBaseError:
+            data = None
+        if data is not None:
+            state = deserialize_graph(data)
+            if (
+                state is not None
+                and state.fingerprint_digest == fingerprint.digest
+                and state.extractor_version == EXTRACTOR_VERSION
+            ):
+                return state
+        return build_graph_state(
+            snapshot.knowledge_base._knowledge_index(),
+            fingerprint,
+            EXTRACTOR_VERSION,
         )
 
 

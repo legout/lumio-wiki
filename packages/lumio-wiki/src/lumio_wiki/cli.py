@@ -23,6 +23,7 @@ Command                                           Public function
 ``proposal inspect <path> <id>``                  :meth:`ProposalPipeline.review`
 ``proposal validate <path> <id>``                 proposal validation report
 ``publish <path> <id>``                           :meth:`ProposalPipeline.publish`
+``publish-s3 <path> <dest> --version <v>``        :func:`lumio_wiki.publish_s3_version`
 ``discard <path> <id>``                           :meth:`ProposalPipeline.discard`
 ``health <path>``                                 :meth:`KnowledgeBase.graph_health` + validation
 ``doctor``                                        install diagnostics (optionals, skill path)
@@ -166,6 +167,33 @@ def _resolve_object_store_location(uri: str) -> object:
 
     config, client_options = _s3_config_from_env()
     return S3Location.from_url(uri, config=config or None, client_options=client_options or None)
+
+def _build_publish_store(uri: str) -> tuple[object, str]:
+    """Build an ``(obstore ObjectStore, prefix)`` from a destination URI + env.
+
+    Mirrors :meth:`S3Location.from_url` store construction but returns the raw
+    store and prefix so the publisher can write under the version prefix.
+    """
+    from urllib.parse import urlparse
+
+    from lumio_wiki.s3_location import _require_obstore
+
+    obstore = _require_obstore()
+    parsed = urlparse(uri)
+    if not parsed.scheme:
+        raise CliError(f"not an object-store destination URI: {uri!r}")
+    config, client_options = _s3_config_from_env()
+    authority_url = f"{parsed.scheme}://{parsed.netloc}"
+    try:
+        store = obstore.store.from_url(
+            authority_url,
+            config=config or None,
+            client_options=client_options or None,
+        )
+    except Exception as exc:
+        raise CliError(f"could not build object store from {uri!r}: {exc}") from exc
+    prefix = parsed.path.lstrip("/")
+    return store, prefix
 
 
 def _open_read_kb(path: object) -> KnowledgeBase:
@@ -579,6 +607,42 @@ def _cmd_publish(args: argparse.Namespace) -> int:
     print(f"Published proposal {published.id}")
     print(f"  status:         {published.status}")
     print(f"  affected_pages: {', '.join(published.affected_pages) or '(none)'}")
+    return 0
+
+def _cmd_publish_s3(args: argparse.Namespace) -> int:
+    """Publish a local Knowledge Base as an immutable S3 Published Version.
+
+    Thin, model-free orchestration: validate + write canonical content and the
+    derived Discovery Graph under an immutable version prefix, then
+    conditionally advance the active pointer. Credentials/region/endpoint come
+    from the standard LUMIO_S3_* / AWS_* environment variables.
+    """
+    from lumio_wiki.s3_location import _require_obstore
+    from lumio_wiki.s3_publish import S3PublicationConflict, publish_s3_version
+
+    root = Path(args.path)
+    if not root.is_dir():
+        raise CliError(f"Knowledge Base source is not a directory: {root}")
+    try:
+        _require_obstore()
+    except KnowledgeBaseError as exc:
+        raise CliError(str(exc)) from exc
+    store, prefix = _build_publish_store(args.destination)
+    try:
+        manifest = publish_s3_version(
+            store,
+            prefix,
+            source_root=root,
+            version=args.version,
+            expected_pointer_version=args.expected_pointer_version,
+        )
+    except S3PublicationConflict as exc:
+        raise CliError(f"publication conflict (pointer not advanced): {exc}") from exc
+    except KnowledgeBaseError as exc:
+        raise CliError(f"publication failed: {exc}") from exc
+    print(f"Published {manifest.version}: {len(manifest.files)} canonical file(s)")
+    print(f"  fingerprint: {manifest.fingerprint}")
+    print(f"  location:    {args.destination}@{manifest.version}")
     return 0
 
 
@@ -1079,6 +1143,40 @@ def build_parser() -> argparse.ArgumentParser:
     publish_parser.add_argument("proposal_id", type=str, help="Proposal id to publish.")
     _add_ingest_dir_argument(publish_parser)
     publish_parser.set_defaults(func=_cmd_publish)
+
+    # publish-s3 (issue #121, ADR-0013)
+    publish_s3_parser = subparsers.add_parser(
+        "publish-s3",
+        help="Publish a local Knowledge Base as an immutable S3 Published Version.",
+        description=(
+            "Validate and publish a local Knowledge Base as an immutable S3 "
+            "Published Version (canonical content + Discovery Graph), then "
+            "conditionally advance the active pointer. Requires lumio-wiki[s3]. "
+            "Credentials/region/endpoint come from LUMIO_S3_* / AWS_* env vars."
+        ),
+    )
+    _add_kb_argument(publish_s3_parser)
+    publish_s3_parser.add_argument(
+        "destination",
+        type=str,
+        help="Object-store destination URI (e.g. s3://bucket/kb).",
+    )
+    publish_s3_parser.add_argument(
+        "--version",
+        required=True,
+        type=str,
+        help="Immutable version label for the new Published Version.",
+    )
+    publish_s3_parser.add_argument(
+        "--expected-pointer-version",
+        default=None,
+        type=str,
+        help=(
+            "Active version expected before advancing (compare-and-swap guard). "
+            "Omit for the first publication."
+        ),
+    )
+    publish_s3_parser.set_defaults(func=_cmd_publish_s3)
 
     # discard
     discard_parser = subparsers.add_parser(

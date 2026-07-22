@@ -155,6 +155,7 @@ from lumio_wiki.location import (
 )
 from lumio_wiki.s3_location import (
     CURRENT_POINTER_OBJECT,
+    DERIVED_DIR,
     MANIFEST_OBJECT,
     S3_LOCATION_KIND,
     S3Location,
@@ -163,6 +164,10 @@ from lumio_wiki.s3_location import (
     S3Pointer,
     build_published_manifest,
     open_s3_knowledge_base,
+)
+from lumio_wiki.s3_publish import (
+    S3PublicationConflict,
+    publish_s3_version,
 )
 from lumio_wiki.retrieval import (
     RetrievalAdapter,
@@ -206,6 +211,7 @@ __all__ = [
     "DEFAULT_GRAPH_ORPHAN_SAMPLE",
     "DEFAULT_GRAPH_UNRESOLVED_SAMPLE",
     "DEFAULT_SEMANTIC_THRESHOLD",
+    "DERIVED_DIR",
     "Distiller",
     "DOCUMENTS_EXTRA_HINT",
     "DocumentSourceProcessor",
@@ -281,6 +287,7 @@ __all__ = [
     "S3ManifestFile",
     "S3Pointer",
     "SEED_CATEGORY_CATALOG",
+    "S3PublicationConflict",
     "Source",
     "SourceFingerprint",
     "StructuralGraphReport",
@@ -324,6 +331,7 @@ __all__ = [
     "publish_hot_index",
     "publish_navigation_indexes",
     "publish_reserved_artifacts",
+    "publish_s3_version",
     "propose_external_import",
     "regenerate_hot_index",
     "regenerate_navigation_indexes",
