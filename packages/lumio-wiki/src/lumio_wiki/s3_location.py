@@ -42,15 +42,10 @@ from typing import TYPE_CHECKING, Any
 import msgspec
 
 from lumio_wiki.knowledge_base import (
-    KnowledgeBase,
     KnowledgeBaseError,
-    ValidationReport,
-    _cross_page_issues,
     _fingerprint_sources,
     _InMemoryKbSource,
-    _KnowledgeIndex,
-    _load_and_validate_control_file,
-    _load_pages_and_validate,
+    _load_and_validate,
 )
 from lumio_wiki.location import KnowledgeBaseSnapshot
 
@@ -192,6 +187,30 @@ def _join(prefix: str, *parts: str) -> str:
     """Join object-key parts with ``/``, collapsing empties (no leading slash)."""
     segments = [seg for seg in (prefix, *parts) if seg]
     return "/".join(segments)
+
+
+def _require_confined_relative_path(path: str, version: str) -> None:
+    """Reject a manifest path that could escape the immutable version prefix.
+
+    ADR-0013 requires manifest paths to be relative and the reader to use only
+    the resolved version prefix. Absolute paths, backslashes, drive letters,
+    and any ``..`` segment would let a corrupt or hostile manifest read outside
+    the prefix or mix versions, so they are rejected as corruption.
+    """
+    if not path or path.startswith(("/", "\\")):
+        raise KnowledgeBaseError(
+            f"S3 manifest path {path!r} for {version!r} is not a relative path"
+        )
+    if "\\" in path:
+        raise KnowledgeBaseError(
+            f"S3 manifest path {path!r} for {version!r} must use POSIX '/' separators"
+        )
+    parts = path.split("/")
+    if any(part == ".." for part in parts):
+        raise KnowledgeBaseError(
+            f"S3 manifest path {path!r} for {version!r} escapes the version prefix "
+            f"via a '..' segment"
+        )
 
 
 def _get_bytes(store: Any, key: str) -> bytes:
@@ -377,6 +396,11 @@ class S3Location:
                 raise KnowledgeBaseError(
                     f"S3 manifest for {version!r} has a duplicate or empty path"
                 )
+            # ADR-0013: manifest paths are relative and confined to the
+            # immutable version prefix. Reject anything that could escape it
+            # (absolute, backslash, or a ``..`` segment) so a corrupt or
+            # hostile manifest cannot mix versions or read outside the prefix.
+            _require_confined_relative_path(entry.path, version)
             seen.add(entry.path)
             key = _join(self._prefix, version, entry.path)
             raw = _get_bytes(self._store, key)
@@ -400,12 +424,17 @@ class S3Location:
         """Store a materialized version in the bounded in-memory cache."""
         if self._max_cached_versions == 0:
             return
-        # Evict oldest entries (insertion-ordered dict) until within bounds.
+        # Evict oldest entries (insertion-ordered dict) until within bounds:
+        # first by cached-version count, then by resident bytes.
         self._cache[version] = content
         while len(self._cache) > self._max_cached_versions:
             self._cache.pop(next(iter(self._cache)))
-        while self._cache and sum(len(v) for v in self._cache.values()) > self._max_cache_bytes:
+        while self._cache and self._cached_bytes() > self._max_cache_bytes:
             self._cache.pop(next(iter(self._cache)))
+
+    def _cached_bytes(self) -> int:
+        """Total resident bytes across all cached versions."""
+        return sum(len(raw) for files in self._cache.values() for raw in files.values())
 
     def _load_snapshot(
         self,
@@ -417,10 +446,10 @@ class S3Location:
         root = Path(f"s3:{self._prefix}/{version}")
         source = _InMemoryKbSource(content, root=root)
 
-        pages, issues = _load_pages_and_validate(source)
-        issues.extend(_cross_page_issues(pages, _KnowledgeIndex(pages)))
-        control, control_issues = _load_and_validate_control_file(source, pages)
-        issues.extend(control_issues)
+        # Load + validate through the shared Core SDK seam so the S3 Snapshot
+        # is byte-for-byte identical to the filesystem Location (no duplicated
+        # loading/validation logic, no coupling to private loader internals).
+        kb, report = _load_and_validate(source)
 
         # Validate the Published Version fingerprint recorded in the manifest
         # against the content we just materialized: a mismatch is corruption.
@@ -431,10 +460,9 @@ class S3Location:
                 f"!= manifest fingerprint {manifest.fingerprint!r} for {version!r}"
             )
 
-        kb = KnowledgeBase(root=root, pages=pages, control=control)
         return KnowledgeBaseSnapshot(
             knowledge_base=kb,
-            validation_report=ValidationReport(issues=issues),
+            validation_report=report,
             fingerprint=actual_fp,
             location=self,
         )

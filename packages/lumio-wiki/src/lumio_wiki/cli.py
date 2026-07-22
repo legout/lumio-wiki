@@ -119,9 +119,17 @@ def _load_kb(path: str | Path) -> tuple[KnowledgeBase, object]:
 # ---------------------------------------------------------------------------
 
 
+# The object-store URI schemes obstore supports as S3-compatible backends.
+# Restricting to these prevents misrouting ``https://`` or ``file://`` paths.
+_OBJECT_STORE_SCHEMES = frozenset({"s3", "s3a", "gs", "gcs", "az", "abfs"})
+
+
 def _is_object_store_uri(value: object) -> bool:
-    """Return whether ``value`` is an object-store URI (``scheme://...``)."""
-    return isinstance(value, str) and "://" in value
+    """Return whether ``value`` is a recognized object-store URI."""
+    if not isinstance(value, str) or "://" not in value:
+        return False
+    scheme = value.split("://", 1)[0].lower()
+    return scheme in _OBJECT_STORE_SCHEMES
 
 
 def _s3_config_from_env() -> tuple[dict[str, str], dict[str, object]]:

@@ -74,6 +74,11 @@ def test_s3_config_from_env_reads_lumio_and_aws_vars(monkeypatch):
     assert client_options == {"allow_http": True}
 
 
+def test_is_object_store_uri_rejects_non_store_schemes():
+    assert not cli._is_object_store_uri("https://example.com/path")
+    assert not cli._is_object_store_uri("file:///local/path")
+
+
 def test_s3_config_from_env_falls_back_to_aws_vars(monkeypatch):
     for var in list(os.environ):
         if var.startswith(("LUMIO_S3_", "AWS_")):

@@ -359,6 +359,24 @@ def test_resolve_rejects_a_size_mismatch():
         S3Location(store, "kb").resolve()
 
 
+def test_resolve_rejects_a_manifest_path_that_escapes_the_version_prefix():
+    """A ``..`` segment, absolute path, or backslash cannot escape the prefix."""
+    store = _store()
+    manifest = _publish_version(store, "kb", "v1", FIXTURES / "valid")
+    first = manifest.files[0]
+    for bad_path in ("../escape.md", "/abs.md", "sub\\dir.md"):
+        escaping = S3Manifest(
+            version=manifest.version,
+            fingerprint=manifest.fingerprint,
+            files=[
+                S3ManifestFile(path=bad_path, size=first.size, digest=first.digest)
+            ],
+        )
+        obstore.put(store, "kb/v1/manifest.json", msgspec.json.encode(escaping))
+        with pytest.raises(KnowledgeBaseError, match="relative|prefix|separator"):
+            S3Location(store, "kb").resolve()
+
+
 def test_resolve_rejects_a_malformed_pointer():
     store = _store()
     obstore.put(store, "kb/current.json", b"not json at all")
