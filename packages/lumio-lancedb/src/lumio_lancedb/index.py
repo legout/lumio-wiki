@@ -674,43 +674,42 @@ class LanceDBRetrievalAdapter:
             # distinct from a missing/unhealthy index and returns no results.
             return []
         index = as_location(index_dir)
-        if not index.has_index():
-            # A missing index (local or remote) selects truthful zero-index
-            # retrieval over the same snapshot rather than returning nothing.
-            return _zero_index_fallback(
-                pages, query, limit, eligible_pages, index, missing=True
-            )
-        if mode == "lexical":
-            try:
-                return search_lexical_index(
-                    index, query, limit, eligible_paths=eligible_paths
-                )
-            except Exception as exc:
-                # An unhealthy index (connect/storage failure) degrades to
-                # zero-index retrieval rather than crashing retrieval.
-                return _zero_index_fallback(
-                    pages, query, limit, eligible_pages, index, exc=exc
-                )
-        if mode not in ("semantic", "hybrid"):
+        # Validate logic up front so configuration/programming errors raise
+        # clearly instead of being masked by the availability fallback below.
+        if mode not in ("lexical", "semantic", "hybrid"):
             raise EmbeddingError(
                 f"unknown retrieval mode {mode!r}; use 'lexical', 'semantic', or 'hybrid'"
             )
-        if embedder is None:
+        if mode != "lexical" and embedder is None:
             raise EmbeddingError(
                 f"{mode} retrieval requires an embedder; pass embedder= to retrieve()"
             )
-        stored_model = _load_model(index)
-        if stored_model is None:
-            raise EmbeddingNotBuiltError(
-                "no semantic index built; call build_index(..., embedder=...) first"
-            )
-        if stored_model != embedder.model_info:
-            raise EmbeddingError(
-                "semantic index was built with a different embedding model; "
-                "rebuild the index with build_index(..., embedder=...)"
-            )
-        query_vector = embedder.embed([query])[0]
+        # A missing index selects truthful zero-index retrieval over the same
+        # snapshot rather than returning nothing; an unhealthy index (connect /
+        # storage failure during the search) degrades the same way and records
+        # the underlying error in the trace. Logic errors (model mismatch, a
+        # semantic index that was never built) are re-raised so a misconfigured
+        # or stale-with-a-different-model index is never silently served.
         try:
+            if not index.has_index():
+                return _zero_index_fallback(
+                    pages, query, limit, eligible_pages, index, missing=True
+                )
+            if mode == "lexical":
+                return search_lexical_index(
+                    index, query, limit, eligible_paths=eligible_paths
+                )
+            stored_model = _load_model(index)
+            if stored_model is None:
+                raise EmbeddingNotBuiltError(
+                    "no semantic index built; call build_index(..., embedder=...) first"
+                )
+            if stored_model != embedder.model_info:
+                raise EmbeddingError(
+                    "semantic index was built with a different embedding model; "
+                    "rebuild the index with build_index(..., embedder=...)"
+                )
+            query_vector = embedder.embed([query])[0]
             if mode == "semantic":
                 return search_semantic_index(
                     index,
@@ -727,6 +726,9 @@ class LanceDBRetrievalAdapter:
                 score_threshold,
                 eligible_paths=eligible_paths,
             )
+        except EmbeddingError:
+            # Configuration/identity errors propagate — never masked by fallback.
+            raise
         except Exception as exc:
             return _zero_index_fallback(
                 pages, query, limit, eligible_pages, index, exc=exc

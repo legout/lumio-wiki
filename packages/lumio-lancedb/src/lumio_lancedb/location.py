@@ -182,9 +182,11 @@ class RemoteIndexLocation:
         try:
             result = obstore.get(store, self._sidecar_key(name))
             return bytes(result.bytes())
-        except Exception:
-            # A missing or unreachable sidecar means "not published here"; the
-            # caller treats None as absence and selects zero-index fallback.
+        except FileNotFoundError:
+            # Object-store "not found" means the sidecar was never published
+            # here; the caller treats None as absence. Availability errors
+            # (auth, network, outage) propagate so the adapter can classify
+            # them as "unavailable" rather than silently "missing" (ADR-0013).
             return None
 
     def write_sidecar(self, name: str, data: bytes) -> None:

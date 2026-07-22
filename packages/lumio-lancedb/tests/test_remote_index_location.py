@@ -38,7 +38,14 @@ from lumio_wiki.records import (
     SourceFingerprint,
 )
 
-obstore = pytest.importorskip("obstore", reason="obstore required for remote sidecar tests")
+
+def _obstore():
+    """Return obstore, skipping just this test when the ``[s3]`` extra is absent.
+
+    Local-only tests below never call this, so they run on the base wheel
+    without obstore (ADR-0010).
+    """
+    return pytest.importorskip("obstore", reason="obstore required for remote sidecar tests")
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +105,7 @@ def test_as_location_normalizes_path_str_and_passthrough():
     assert isinstance(loc, LocalIndexLocation)
     assert isinstance(as_location(Path("/tmp/x")), LocalIndexLocation)
     assert as_location(None) is None
-    remote = RemoteIndexLocation("s3://b/p", store=obstore.store.MemoryStore())
+    remote = RemoteIndexLocation("s3://b/p")
     assert as_location(remote) is remote
 
 
@@ -148,7 +155,8 @@ def test_local_semantic_and_hybrid_through_location(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _remote(store, prefix="kb/v1/derived/lance"):
+def _remote(store=None, prefix="kb/v1/derived/lance"):
+    store = store if store is not None else _obstore().store.MemoryStore()
     return RemoteIndexLocation(
         f"s3://bucket/{prefix}",
         storage_options={"region": "us-east-1"},
@@ -158,7 +166,8 @@ def _remote(store, prefix="kb/v1/derived/lance"):
 
 
 def test_remote_sidecar_round_trip_via_memory_store():
-    store = obstore.store.MemoryStore()
+    ob = _obstore()
+    store = ob.store.MemoryStore()
     loc = _remote(store)
     assert loc.is_remote is True
     assert loc.has_index() is False  # nothing published yet
@@ -169,13 +178,12 @@ def test_remote_sidecar_round_trip_via_memory_store():
     assert _load_fingerprint(loc) == fp
 
     # The sidecar landed at the documented object key beside the tables.
-    result = obstore.get(store, "kb/v1/derived/lance/fingerprint.json")
+    result = ob.get(store, "kb/v1/derived/lance/fingerprint.json")
     assert msgspec.json.decode(bytes(result.bytes()), type=SourceFingerprint) == fp
 
 
 def test_remote_embedding_model_identity_round_trip():
-    store = obstore.store.MemoryStore()
-    loc = _remote(store)
+    loc = _remote()
     from lumio_lancedb.index import _load_model, _save_model
 
     info = EmbeddingModelInfo(name="remote-model", dimension=16)
@@ -188,7 +196,6 @@ def test_remote_describe_is_secret_free():
     loc = RemoteIndexLocation(
         "s3://bucket/kb/v1/derived/lance",
         storage_options={"aws_access_key_id": "SECRET"},
-        store=obstore.store.MemoryStore(),
     )
     assert "SECRET" not in loc.describe
     assert loc.describe == "s3://bucket/kb/v1/derived/lance"
@@ -216,15 +223,14 @@ def test_local_semantic_model_mismatch_is_rejected(tmp_path):
         )
 
 
-def test_remote_fingerprint_sidecar_rejects_mismatch():
+def test_remote_fingerprint_sidecar_round_trips_canonical_value():
     """A remote sidecar carrying a different fingerprint is read verbatim.
 
     The publisher writes the canonical fingerprint; a reader compares it against
     the current source and rejects a mismatch. Here we prove the sidecar records
     the canonical fingerprint exactly so that comparison is trustworthy.
     """
-    store = obstore.store.MemoryStore()
-    loc = _remote(store)
+    loc = _remote()
     canonical = SourceFingerprint(digest="a" * 64)
     _save_fingerprint(loc, canonical)
     loaded = _load_fingerprint(loc)
@@ -238,8 +244,7 @@ def test_remote_fingerprint_sidecar_rejects_mismatch():
 
 
 def test_missing_remote_index_falls_back_to_zero_index():
-    store = obstore.store.MemoryStore()
-    loc = _remote(store)  # no sidecars -> has_index() is False
+    loc = _remote()  # no sidecars -> has_index() is False
     adapter = LanceDBRetrievalAdapter()
 
     results = adapter.retrieve(_pages(), "LanceDB", limit=5, index_dir=loc)
@@ -271,8 +276,7 @@ def test_none_index_returns_empty_not_fallback():
 
 
 def test_remote_fallback_respects_eligible_pages():
-    store = obstore.store.MemoryStore()
-    loc = _remote(store)
+    loc = _remote()
     adapter = LanceDBRetrievalAdapter()
 
     pages = _pages()
@@ -288,15 +292,27 @@ def test_remote_fallback_respects_eligible_pages():
     assert all(r.evidence.page_path == pages[0].path for r in results)
 
 
-def test_remote_unhealthy_index_records_error_in_trace(tmp_path):
+def test_remote_unhealthy_index_records_error_in_trace():
     """A remote index whose sidecars exist but LanceDB connect fails degrades.
 
-    We force an unhealthy path: a sidecar is present (so has_index() is True)
-    but the LanceDB URI is unreachable, so the search raises and the adapter
-    records the error and falls back to zero-index.
+    We force an unhealthy path: a fingerprint sidecar is present (so
+    has_index() is True) but the LanceDB URI points at a guaranteed-refused
+    endpoint, so the search raises and the adapter records the error and falls
+    back to zero-index. A refused TCP port fails fast regardless of AWS creds,
+    so this is deterministic in any environment.
     """
-    store = obstore.store.MemoryStore()
-    loc = _remote(store)
+    ob = _obstore()
+    store = ob.store.MemoryStore()
+    loc = RemoteIndexLocation(
+        "s3://lumio-unreachable-test/p/derived/lance",
+        storage_options={
+            "region": "us-east-1",
+            "endpoint": "http://127.0.0.1:1",  # refused -> fast, deterministic
+            "allow_http": "true",
+        },
+        store=store,
+        sidecar_prefix="p/derived/lance",
+    )
     _save_fingerprint(loc, _fingerprint())  # sidecar present -> has_index True
     adapter = LanceDBRetrievalAdapter()
 
