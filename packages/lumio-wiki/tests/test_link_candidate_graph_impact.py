@@ -247,7 +247,7 @@ def test_fragile_strengthening_signal():
 
 
 def test_fragile_strengthening_does_not_fire_when_direct_edge_exists():
-    """When a direct canonical edge source->target exists, no fragile signal."""
+    """When a direct Relationship source->target exists, no fragile signal."""
     # Alpha -> Beta (canonical Relationship). Alpha also mentions Beta in body.
     alpha = _page(
         "Alpha",

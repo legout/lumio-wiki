@@ -164,11 +164,9 @@ class _GraphTopology(NamedTuple):
     truth. Self-loops carry no structural connectivity and are excluded.
     """
 
-    nodes: frozenset[str]
     in_degree: dict[str, int]
     out_degree: dict[str, int]
     out_endpoints: dict[str, set[str]]
-    undirected: dict[str, set[str]]
     edge_count: int
     wcc_id: dict[str, int]
     wcc_count: int
@@ -222,11 +220,9 @@ def _compute_graph_topology(
             largest = size
 
     return _GraphTopology(
-        nodes=nodes,
         in_degree=in_degree,
         out_degree=out_degree,
         out_endpoints=out_endpoints,
-        undirected=undirected,
         edge_count=edge_count,
         wcc_id=wcc_id,
         wcc_count=wcc_count,
