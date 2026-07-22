@@ -108,6 +108,86 @@ def _load_kb(path: str | Path) -> tuple[KnowledgeBase, object]:
         raise CliError(f"could not load Knowledge Base at {path}: {exc}") from exc
 
 
+# ---------------------------------------------------------------------------
+# Object-store (S3) Knowledge Base Locations (issue #120, ADR-0013).
+#
+# A read command accepts either a local directory or an object-store URI
+# (``s3://bucket/path``). S3 reads resolve one immutable Published Version
+# through the Location seam and operate on it with zero-index retrieval — no
+# LanceDB, no managed local copy. Credentials/region/endpoint come from the
+# standard LUMIO_S3_* / AWS_* environment variables, never from lumio.yaml.
+# ---------------------------------------------------------------------------
+
+
+def _is_object_store_uri(value: object) -> bool:
+    """Return whether ``value`` is an object-store URI (``scheme://...``)."""
+    return isinstance(value, str) and "://" in value
+
+
+def _s3_config_from_env() -> tuple[dict[str, str], dict[str, object]]:
+    """Build obstore ``config``/``client_options`` from environment variables."""
+    config: dict[str, str] = {}
+    client_options: dict[str, object] = {}
+    region = (
+        os.environ.get("LUMIO_S3_REGION")
+        or os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION")
+    )
+    if region:
+        config["aws_region"] = region
+    endpoint = os.environ.get("LUMIO_S3_ENDPOINT") or os.environ.get("AWS_ENDPOINT_URL_S3")
+    if endpoint:
+        config["aws_endpoint"] = endpoint
+        if endpoint.startswith("http://"):
+            client_options["allow_http"] = True
+    key = os.environ.get("LUMIO_S3_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID")
+    secret = (
+        os.environ.get("LUMIO_S3_SECRET_ACCESS_KEY")
+        or os.environ.get("AWS_SECRET_ACCESS_KEY")
+    )
+    if key:
+        config["aws_access_key_id"] = key
+    if secret:
+        config["aws_secret_access_key"] = secret
+    return config, client_options
+
+
+def _resolve_object_store_location(uri: str) -> object:
+    """Construct an S3 Knowledge Base Location from a URI + environment config."""
+    from lumio_wiki.s3_location import S3Location
+
+    config, client_options = _s3_config_from_env()
+    return S3Location.from_url(uri, config=config or None, client_options=client_options or None)
+
+
+def _open_read_kb(path: object) -> KnowledgeBase:
+    """Open a Knowledge Base for read commands from a local path or S3 URI."""
+    value = str(path)
+    if _is_object_store_uri(value):
+        try:
+            return _resolve_object_store_location(value).resolve().knowledge_base
+        except KnowledgeBaseError as exc:
+            raise CliError(
+                f"could not resolve S3 Knowledge Base at {value}: {exc}"
+            ) from exc
+    kb, _report = _load_kb(path)
+    return kb
+
+
+def _validate_location(path: object):
+    """Validate a local path or resolve+validate an S3 URI into a report."""
+    value = str(path)
+    if _is_object_store_uri(value):
+        try:
+            snapshot = _resolve_object_store_location(value).resolve()
+        except KnowledgeBaseError as exc:
+            raise CliError(
+                f"could not resolve S3 Knowledge Base at {value}: {exc}"
+            ) from exc
+        return snapshot.validation_report
+    return validate(path)
+
+
 def _format_graph_trace(
     *, scope: str, direction: str, outcome_fields: list[str]
 ) -> str:
@@ -148,13 +228,13 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
-    report = validate(args.path)
+    report = _validate_location(args.path)
     print(report)
     return 0 if report.is_valid else 1
 
 
 def _cmd_search(args: argparse.Namespace) -> int:
-    kb, _report = _load_kb(args.path)
+    kb = _open_read_kb(args.path)
     results = kb.search_pages(args.query, limit=args.limit)
     if not results:
         print("No pages matched the query.")
@@ -175,7 +255,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
 
 
 def _cmd_page(args: argparse.Namespace) -> int:
-    kb, _report = _load_kb(args.path)
+    kb = _open_read_kb(args.path)
     pages = kb.lookup_by_title(args.title)
     if not pages:
         # Fall back to alias resolution so the command reads naturally.
@@ -212,7 +292,7 @@ def _cmd_page(args: argparse.Namespace) -> int:
 
 
 def _cmd_related(args: argparse.Namespace) -> int:
-    kb, _report = _load_kb(args.path)
+    kb = _open_read_kb(args.path)
     titles = kb.related_pages(
         args.title,
         direction=args.direction,
@@ -244,7 +324,7 @@ def _cmd_related(args: argparse.Namespace) -> int:
 
 
 def _cmd_paths(args: argparse.Namespace) -> int:
-    kb, _report = _load_kb(args.path)
+    kb = _open_read_kb(args.path)
     path = kb.shortest_path(
         args.source,
         args.target,
@@ -608,11 +688,13 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     optionals = {
         "documents": _detect_module("liteparse") and _detect_module("markitdown"),
         "llm": _detect_module("openai"),
+        "s3": _detect_module("obstore"),
         "lancedb": _detect_module("lancedb"),
     }
     extra_hint = {
         "documents": "pip install 'lumio-wiki[documents]'",
         "llm": "pip install 'lumio-wiki[llm]'",
+        "s3": "pip install 'lumio-wiki[s3]'",
         "lancedb": "pip install lumio-lancedb",
     }
     for name, present in optionals.items():
@@ -672,7 +754,15 @@ def _cmd_skill_install(args: argparse.Namespace) -> int:
 
 
 def _add_kb_argument(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("path", type=Path, help="Knowledge Base root directory.")
+    parser.add_argument(
+        "path",
+        type=str,
+        help=(
+            "Knowledge Base root directory, or an S3 object-store URI "
+            "(s3://bucket/path) resolved as an immutable Published Version "
+            "(issue #120; requires lumio-wiki[s3])."
+        ),
+    )
 
 
 def _add_ingest_dir_argument(parser: argparse.ArgumentParser) -> None:

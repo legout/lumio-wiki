@@ -1,0 +1,453 @@
+"""S3-native Knowledge Base Location — read immutable S3 Snapshots directly.
+
+Issue #120, ADR-0013. This is the opt-in ``lumio-wiki[s3]`` capability: a local
+coding agent resolves one immutable S3 **Published Version** and validates,
+searches, reads, and traverses it with zero-index retrieval — with **no managed
+local Markdown or derived-index copy**.
+
+The capability is a new :class:`lumio_wiki.location.KnowledgeBaseLocation`
+implementation built on **`obstore`** (object-level operations: head, list, and
+byte/range reads). ``obstore`` is an *optional* dependency declared behind the
+``[s3]`` extra; it is imported lazily, only inside this module, so the base
+``lumio-wiki`` wheel stays lightweight with zero cloud dependency. When ``[s3]``
+is absent, every public entrypoint raises an actionable error naming the exact
+install command.
+
+Publication protocol (ADR-0013):
+
+* Each publication writes canonical Markdown, the Control File, and derived
+  artifacts under a new immutable version prefix, alongside a **manifest**
+  listing every file's relative path, size, and sha-256 digest plus the
+  Knowledge Base fingerprint.
+* The publisher conditionally updates a small ``current.json`` pointer to the
+  new version.
+* A **reader** resolves ``current.json`` once, reads the manifest, validates
+  every content digest, and uses **only that immutable version prefix** — it can
+  never observe a partial publication.
+
+The default S3 cache policy writes **no** managed Knowledge Base or
+derived-index bytes to local disk. Content is materialized into a bounded
+in-memory cache; there is no implicit on-disk cache. ``lumio.yaml`` never
+carries S3 credentials — credentials, region, and endpoint belong to app/CLI
+configuration (environment variables / the obstore client config).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import msgspec
+
+from lumio_wiki.knowledge_base import (
+    KnowledgeBase,
+    KnowledgeBaseError,
+    ValidationReport,
+    _cross_page_issues,
+    _fingerprint_sources,
+    _InMemoryKbSource,
+    _KnowledgeIndex,
+    _load_and_validate_control_file,
+    _load_pages_and_validate,
+)
+from lumio_wiki.location import KnowledgeBaseSnapshot
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
+    from obstore.store import ObjectStore
+
+# Stable identifier for the S3 Location implementation (mirrors
+# ``FILESYSTEM_LOCATION_KIND`` so traces/diagnostics name the resolved source
+# without coupling to a class name).
+S3_LOCATION_KIND = "s3"
+
+# Object keys (relative to the Location prefix) for the version pointer and the
+# per-version manifest. These are the publication protocol's fixed names.
+CURRENT_POINTER_OBJECT = "current.json"
+MANIFEST_OBJECT = "manifest.json"
+
+# Bounded in-memory cache defaults (the no-managed-disk-cache policy, ADR-0013).
+# A single resolved version is cached by default; the cap keeps the resident
+# byte footprint bounded. The cache is process-local and never touches disk.
+DEFAULT_MAX_CACHED_VERSIONS = 1
+DEFAULT_MAX_CACHE_BYTES = 256 * 1024 * 1024  # 256 MiB
+
+__all__ = [
+    "CURRENT_POINTER_OBJECT",
+    "DEFAULT_MAX_CACHE_BYTES",
+    "DEFAULT_MAX_CACHED_VERSIONS",
+    "MANIFEST_OBJECT",
+    "S3_LOCATION_KIND",
+    "S3Location",
+    "S3Manifest",
+    "S3ManifestFile",
+    "S3Pointer",
+    "build_published_manifest",
+    "open_s3_knowledge_base",
+]
+
+
+# ---------------------------------------------------------------------------
+# Optional-dependency guard.
+# ---------------------------------------------------------------------------
+
+
+def _require_obstore() -> Any:
+    """Import and return the ``obstore`` package, or raise an actionable error.
+
+    ``obstore`` lives behind the ``[s3]`` extra. This guard keeps the base wheel
+    free of any cloud dependency and gives the caller the exact install command
+    instead of a bare ``ModuleNotFoundError``.
+    """
+    try:
+        import obstore  # type: ignore[import-not-found]
+    except ImportError as exc:  # pragma: no cover - exercised by the missing-extra suite
+        raise KnowledgeBaseError(
+            "the S3 Knowledge Base capability requires the optional '[s3]' extra; "
+            "install it with:\n  pip install 'lumio-wiki[s3]'"
+        ) from exc
+    return obstore
+
+
+# ---------------------------------------------------------------------------
+# Publication-protocol records (manifest + pointer).
+#
+# These frozen records ARE the wire contract between a publisher (issue #121)
+# and a reader (this module). They are intentionally plain JSON-serializable so
+# a publisher written in any language can produce a manifest this reader accepts.
+# ---------------------------------------------------------------------------
+
+
+class S3ManifestFile(msgspec.Struct, frozen=True):
+    """One canonical file in a Published Version manifest."""
+
+    path: str
+    """Relative POSIX path of the file under the immutable version prefix."""
+
+    size: int
+    """Byte length of the file (validated on read)."""
+
+    digest: str
+    """sha-256 hex digest of the file content (validated on read)."""
+
+
+class S3Manifest(msgspec.Struct, frozen=True):
+    """The manifest of an immutable S3 Published Version.
+
+    Lists every canonical file with its content digest and carries the Knowledge
+    Base fingerprint computed at publish time. A reader recomputes the fingerprint
+    over the materialized content and rejects a mismatch as corruption.
+    """
+
+    version: str
+    """The immutable version prefix this manifest describes."""
+
+    fingerprint: str
+    """sha-256 hex digest of the canonical Knowledge Base content (Published Version identity)."""
+
+    files: list[S3ManifestFile]
+    """Every canonical file: Control File plus all Markdown (including reserved artifacts)."""
+
+
+class S3Pointer(msgspec.Struct, frozen=True):
+    """The ``current.json`` pointer to the active immutable Published Version."""
+
+    version: str
+
+
+def build_published_manifest(
+    version: str, fingerprint_digest: str, content: dict[str, bytes]
+) -> S3Manifest:
+    """Build a manifest for an immutable version from canonical content.
+
+    Pure helper shared by the publisher (issue #121) and tests. ``content`` is the
+    canonical Knowledge Base file tree (``{relative_path: bytes}`` — typically
+    :func:`lumio_wiki.knowledge_base.canonical_content`). The fingerprint digest
+    is the Published Version identity computed at publish time
+    (:func:`lumio_wiki.fingerprint_sources`); it is recorded verbatim so a reader
+    can validate it without trusting the publisher.
+    """
+    files = [
+        S3ManifestFile(
+            path=path,
+            size=len(raw),
+            digest=hashlib.sha256(raw).hexdigest(),
+        )
+        for path, raw in sorted(content.items())
+    ]
+    return S3Manifest(version=version, fingerprint=fingerprint_digest, files=files)
+
+
+# ---------------------------------------------------------------------------
+# Object-store read helpers.
+#
+# A thin layer over obstore's object-level API. Kept synchronous and small so
+# the read path is straightforward to reason about; obstore also offers async
+# variants, but the Core SDK's read surface is synchronous.
+# ---------------------------------------------------------------------------
+
+
+def _join(prefix: str, *parts: str) -> str:
+    """Join object-key parts with ``/``, collapsing empties (no leading slash)."""
+    segments = [seg for seg in (prefix, *parts) if seg]
+    return "/".join(segments)
+
+
+def _get_bytes(store: Any, key: str) -> bytes:
+    """Read an object's full bytes via obstore, raising on a missing key."""
+    obstore = _require_obstore()
+    try:
+        result = obstore.get(store, key)
+    except Exception as exc:  # obstore raises its own NotFound/Error types.
+        raise KnowledgeBaseError(f"could not read S3 object {key!r}: {exc}") from exc
+    return bytes(result.bytes())
+
+
+def _get_json(store: Any, key: str) -> Any:
+    """Read and JSON-decode an object, raising on malformed JSON."""
+    raw = _get_bytes(store, key)
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise KnowledgeBaseError(f"S3 object {key!r} is not valid JSON: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# The S3 Knowledge Base Location.
+# ---------------------------------------------------------------------------
+
+
+class S3Location:
+    """A Knowledge Base Location that resolves an immutable S3 Published Version.
+
+    Implements the :class:`lumio_wiki.location.KnowledgeBaseLocation` protocol
+    behind the opt-in ``[s3]`` capability. ``resolve()`` reads ``current.json``
+    once, validates the manifest and every content digest, then loads only that
+    immutable version into an in-memory Snapshot. The default policy writes no
+    managed bytes to local disk.
+
+    The ``store`` is an obstore ``ObjectStore`` (``S3Store``, ``MemoryStore``,
+    ...). ``prefix`` is the object-key prefix the Knowledge Base root lives under
+    (relative to the store's own root). Credentials, region, and endpoint live on
+    the store / client config — never on this Location and never in
+    ``lumio.yaml``.
+    """
+
+    kind = S3_LOCATION_KIND
+
+    def __init__(
+        self,
+        store: ObjectStore,
+        prefix: str,
+        *,
+        version: str | None = None,
+        max_cached_versions: int = DEFAULT_MAX_CACHED_VERSIONS,
+        max_cache_bytes: int = DEFAULT_MAX_CACHE_BYTES,
+    ) -> None:
+        self._store = store
+        self._prefix = prefix.strip("/")
+        # When ``version`` is set the Location is pinned and never reads the
+        # pointer; otherwise ``resolve()`` resolves ``current.json`` each time.
+        self._pinned_version = version
+        self._max_cached_versions = max(0, max_cached_versions)
+        self._max_cache_bytes = max(0, max_cache_bytes)
+        # Bounded in-memory cache of materialized versions: {version: {rel: bytes}}.
+        self._cache: dict[str, dict[str, bytes]] = {}
+
+    # -- Location protocol --------------------------------------------------
+
+    @property
+    def prefix(self) -> str:
+        """The object-key prefix the Knowledge Base root lives under."""
+        return self._prefix
+
+    def describe(self) -> str:
+        """Return a human-readable, secret-free description for diagnostics.
+
+        Never includes credentials. When pinned to a version the version is
+        named; otherwise the pointer is resolved on demand.
+        """
+        where = f"s3:{self._prefix or '/'}"
+        if self._pinned_version is not None:
+            return f"{where}@{self._pinned_version}"
+        return where
+
+    def resolve(self) -> KnowledgeBaseSnapshot:
+        """Resolve the active Published Version into an immutable Snapshot.
+
+        Resolves ``current.json`` once (unless a version is pinned), reads and
+        validates the manifest, materializes every canonical file while checking
+        its size and sha-256 digest, then loads only that immutable version with
+        the Core SDK loader and validates the Published Version fingerprint. No
+        managed bytes are written to local disk.
+        """
+        _require_obstore()
+        version = self._resolve_version()
+        manifest = self._read_manifest(version)
+        content = self._materialize(version, manifest)
+        return self._load_snapshot(version, manifest, content)
+
+    # -- construction helpers ----------------------------------------------
+
+    @classmethod
+    def from_url(
+        cls,
+        url: str,
+        *,
+        config: dict[str, str] | None = None,
+        client_options: dict[str, Any] | None = None,
+        prefix: str | None = None,
+        version: str | None = None,
+        **kwargs: Any,
+    ) -> S3Location:
+        """Build an :class:`S3Location` from an ``s3://`` (or compatible) URL.
+
+        The store is built from the URL's scheme + authority (the bucket), and
+        the URL path becomes the Knowledge Base root prefix. Credentials,
+        region, and endpoint are supplied via ``config`` (``aws_*`` keys such as
+        ``aws_region``, ``aws_endpoint``, ``aws_access_key_id``) and
+        ``client_options`` (e.g. ``{"allow_http": True}`` for a MinIO HTTP
+        endpoint). Pass ``prefix`` to override the URL-derived Knowledge Base
+        root when it lives elsewhere under the bucket.
+        """
+        from urllib.parse import urlparse
+
+        obstore = _require_obstore()
+        parsed = urlparse(url)
+        if not parsed.scheme:
+            raise KnowledgeBaseError(f"not an object-store URL: {url!r}")
+        # Build the store rooted at the container (scheme://authority) so the
+        # URL path is the Knowledge Base root, not baked into the store prefix.
+        authority_url = f"{parsed.scheme}://{parsed.netloc}"
+        store = obstore.store.from_url(
+            authority_url, config=config, client_options=client_options, **kwargs
+        )
+        url_path = parsed.path.lstrip("/")
+        chosen_prefix = prefix if prefix is not None else url_path
+        return cls(store, chosen_prefix, version=version)
+
+    # -- read internals -----------------------------------------------------
+
+    def _resolve_version(self) -> str:
+        """Return the pinned version, or read ``current.json`` once."""
+        if self._pinned_version is not None:
+            return self._pinned_version
+        key = _join(self._prefix, CURRENT_POINTER_OBJECT)
+        data = _get_json(self._store, key)
+        if not isinstance(data, dict) or not isinstance(data.get("version"), str):
+            raise KnowledgeBaseError(
+                f"S3 pointer {key!r} is malformed: expected a JSON object with a "
+                f"'version' string"
+            )
+        return data["version"]
+
+    def _read_manifest(self, version: str) -> S3Manifest:
+        key = _join(self._prefix, version, MANIFEST_OBJECT)
+        data = _get_json(self._store, key)
+        try:
+            manifest = msgspec.json.decode(msgspec.json.encode(data), type=S3Manifest)
+        except msgspec.DecodeError as exc:
+            raise KnowledgeBaseError(
+                f"S3 manifest {key!r} is malformed: {exc}"
+            ) from exc
+        return manifest
+
+
+    def _materialize(self, version: str, manifest: S3Manifest) -> dict[str, bytes]:
+        """Read and digest-validate every canonical file of ``version``.
+
+        Returns the full canonical tree ``{relative_path: bytes}`` for the
+        immutable version, rejecting any size or digest mismatch as corruption.
+        Cached in memory when within the configured bounds; never written to disk.
+        """
+        if version in self._cache:
+            return self._cache[version]
+
+        if manifest.version != version:
+            raise KnowledgeBaseError(
+                f"S3 manifest version {manifest.version!r} does not match its "
+                f"prefix {version!r}"
+            )
+
+        content: dict[str, bytes] = {}
+        seen: set[str] = set()
+        for entry in manifest.files:
+            if not entry.path or entry.path in seen:
+                raise KnowledgeBaseError(
+                    f"S3 manifest for {version!r} has a duplicate or empty path"
+                )
+            seen.add(entry.path)
+            key = _join(self._prefix, version, entry.path)
+            raw = _get_bytes(self._store, key)
+            if len(raw) != entry.size:
+                raise KnowledgeBaseError(
+                    f"S3 corruption: {key!r} size {len(raw)} != manifest size "
+                    f"{entry.size}"
+                )
+            actual = hashlib.sha256(raw).hexdigest()
+            if actual != entry.digest:
+                raise KnowledgeBaseError(
+                    f"S3 corruption: {key!r} digest {actual} != manifest digest "
+                    f"{entry.digest}"
+                )
+            content[entry.path] = raw
+
+        self._cache_version(version, content)
+        return content
+
+    def _cache_version(self, version: str, content: dict[str, bytes]) -> None:
+        """Store a materialized version in the bounded in-memory cache."""
+        if self._max_cached_versions == 0:
+            return
+        # Evict oldest entries (insertion-ordered dict) until within bounds.
+        self._cache[version] = content
+        while len(self._cache) > self._max_cached_versions:
+            self._cache.pop(next(iter(self._cache)))
+        while self._cache and sum(len(v) for v in self._cache.values()) > self._max_cache_bytes:
+            self._cache.pop(next(iter(self._cache)))
+
+    def _load_snapshot(
+        self,
+        version: str,
+        manifest: S3Manifest,
+        content: dict[str, bytes],
+    ) -> KnowledgeBaseSnapshot:
+        """Load validated content into an immutable Snapshot (no disk bytes)."""
+        root = Path(f"s3:{self._prefix}/{version}")
+        source = _InMemoryKbSource(content, root=root)
+
+        pages, issues = _load_pages_and_validate(source)
+        issues.extend(_cross_page_issues(pages, _KnowledgeIndex(pages)))
+        control, control_issues = _load_and_validate_control_file(source, pages)
+        issues.extend(control_issues)
+
+        # Validate the Published Version fingerprint recorded in the manifest
+        # against the content we just materialized: a mismatch is corruption.
+        actual_fp = _fingerprint_sources(source)
+        if actual_fp.digest != manifest.fingerprint:
+            raise KnowledgeBaseError(
+                f"S3 corruption: Published Version fingerprint {actual_fp.digest!r} "
+                f"!= manifest fingerprint {manifest.fingerprint!r} for {version!r}"
+            )
+
+        kb = KnowledgeBase(root=root, pages=pages, control=control)
+        return KnowledgeBaseSnapshot(
+            knowledge_base=kb,
+            validation_report=ValidationReport(issues=issues),
+            fingerprint=actual_fp,
+            location=self,
+        )
+
+
+def open_s3_knowledge_base(
+    store: ObjectStore,
+    prefix: str,
+    *,
+    version: str | None = None,
+) -> KnowledgeBaseSnapshot:
+    """Open an immutable S3 Knowledge Base Snapshot through the Location seam.
+
+    Convenience shorthand for ``S3Location(store, prefix, version=version).resolve()``.
+    """
+    return S3Location(store, prefix, version=version).resolve()
