@@ -41,6 +41,7 @@ For the *why* and the vision, read the domain docs — this README documents
 - [Packaging, ownership, and migration](#packaging-ownership-and-migration)
 - [What works today](#what-works-today)
 - [Roadmap](#roadmap)
+- [Usage guide](docs/usage.md)
 - [Troubleshooting](#troubleshooting)
 
 ## Quick start
