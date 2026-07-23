@@ -40,12 +40,45 @@ lumio-wiki doctor            # version, detected extras, packaged skill path
 Lumio ships two CLIs. `lumio-wiki` is the portable, model-free Knowledge Base
 toolkit. `lumio` adds cited answers, storage sync, and the web server.
 
+### One-command project setup
+
+`lumio-wiki setup` wires a project directory so your agent harness knows where
+the wiki lives and how to use it. It creates the Knowledge Base (or adopts an
+existing one), writes `.env` with `LUMIO_KB_PATH`, writes/updates `AGENTS.md`
+with the retrieval-ladder protocol, and optionally installs the packaged Agent
+Skill.
+
+```bash
+cd my-project
+
+# Existing wiki? Adopt it.
+lumio-wiki setup ./wiki
+
+# Brand-new project? Create a wiki and wire it up.
+lumio-wiki setup ./wiki --agent claude-code --overwrite
+
+# Skip the AGENTS.md section if you want to write it yourself.
+lumio-wiki setup ./wiki --no-agents-md
+```
+
+After setup, `lumio-wiki` commands can omit the `<kb>` path because the CLI
+reads `LUMIO_KB_PATH` from your environment or `.env`:
+
+```bash
+export LUMIO_KB_PATH=./wiki
+# or source .env
+lumio-wiki search "technology stack"
+lumio-wiki page "Technology Stack"
+```
+
 ### lumio-wiki — portable Knowledge Base CLI
 
 Works from any environment with no model provider and no LanceDB. `<kb>` is
 the Knowledge Base root directory (or an `s3://` URI with `[s3]` installed).
+If omitted, the CLI falls back to the `LUMIO_KB_PATH` environment variable.
 
 ```bash
+lumio-wiki setup <kb-path> [--agent <name>] [--no-agents-md]  # one-command project setup
 lumio-wiki init <path>                       # scaffold a categorized Knowledge Base
 lumio-wiki validate <kb>                     # exit 0 if valid, 1 otherwise
 lumio-wiki search <kb> "<query>" [--limit N] # lexical search over titles, aliases, tags, summaries, bodies
@@ -341,59 +374,86 @@ directory. Pass `--dest <dir>` to override the destination.
 ### opencode (or any agent that runs shell commands)
 
 opencode doesn't have a native "skill" concept, so you configure it via
-**custom instructions** (the project `AGENTS.md` or `.opencode` config). Add a
-block that tells the agent how to use `lumio-wiki`:
+**custom instructions** (the project `AGENTS.md` or `.opencode` config). The
+fastest path is `lumio-wiki setup`, which writes both `.env` and `AGENTS.md`
+for you:
 
-**Option A — `AGENTS.md` (project-level, version-controlled):**
+```bash
+cd my-project
+lumio-wiki setup ./wiki
+# or, to also install the skill for a native-skill agent:
+# lumio-wiki setup ./wiki --agent claude-code
+```
+
+This writes `LUMIO_KB_PATH=./wiki` to `.env` and a `## Lumio Knowledge Base`
+section to `AGENTS.md`. In opencode, point the agent at that file (or paste
+the relevant section into `.opencode` settings):
+
+**Option A — `AGENTS.md` (project-level, version-controlled, auto-generated):**
 
 ```markdown
-## Knowledge Base
+## Lumio Knowledge Base
 
-This project ships a Lumio Knowledge Base. When the user asks about domain
-concepts, architecture, or design decisions, use the `lumio-wiki` CLI to find
-and read Compiled Pages — never fabricate knowledge.
+This project uses a Lumio Knowledge Base for domain knowledge. The host coding
+agent IS the default Distiller (no model provider needed for base ingestion).
 
-The retrieval ladder (cheapest-first, stop when you have Evidence):
+**KB path:** `./wiki` (also in `.env` as `LUMIO_KB_PATH`; the CLI reads it
+automatically when no `\u003ckb\u003e` argument is given).
 
-0. `lumio-wiki hot ./kb` — Maintainer-pinned entry pages. Read first.
-1. `lumio-wiki index ./kb [dir]` — generated Navigation Index.
-2. `lumio-wiki search ./kb "<query>"` — zero-index lexical search.
-3. `lumio-wiki page ./kb "<title>"` — read a page to confirm and cite.
-4. `lumio-wiki related ./kb "<title>" --scope discovery` — related pages.
-5. `lumio-wiki paths ./kb "<src>" "<dst>"` — shortest path.
+### Retrieval ladder (cheapest-first, stop when you have Evidence)
 
-Rules:
-- Every domain claim must cite the Canonical Page Title + relative path +
-  supporting passage from the page body.
-- If the KB does not support a claim, say "not covered by this knowledge base."
-- Graph connectivity is not Evidence. An Extracted Reference selects pages to
-  inspect; it never supports a claim.
-- Use `lumio-wiki validate ./kb` before every publish and after every sync.
+0. `lumio-wiki hot` — Maintainer-pinned entry pages. Read first.
+1. `lumio-wiki index [dir]` — generated Navigation Index (all pages by directory).
+2. `lumio-wiki search "\u003cquery\u003e"` — zero-index lexical search (no external index).
+3. `lumio-wiki page "\u003ctitle\u003e"` — read a page to confirm and cite the exact passage.
+4. `lumio-wiki related "\u003ctitle\u003e" --scope discovery` — related pages (canonical + extracted).
+5. `lumio-wiki paths "\u003csrc\u003e" "\u003cdst\u003e"` — shortest directed path between two titles.
+
+### Ingest (you are the Distiller)
+
+1. Author a Compiled Page (YAML frontmatter + Markdown body) in a temp file.
+2. `lumio-wiki ingest \u003cfile\u003e` — stages a reviewable Ingest Proposal.
+3. `lumio-wiki proposal list` → `proposal inspect \u003cid\u003e` → `proposal validate \u003cid\u003e`.
+4. `lumio-wiki publish \u003cid\u003e` (or `lumio-wiki discard \u003cid\u003e`).
+
+### Guardrails
+
+- **Cite or refuse.** Every domain claim cites a Compiled Page (title + path +
+  passage). Unsupported claims return "not covered by this knowledge base."
+- **Connectivity is not support.** Graph reachability selects pages to inspect;
+  it never manufactures Evidence.
+- **Proposal-first.** Validation always runs before publish. Never write `.md`
+  files directly to the KB root.
+
+### Diagnostics
+
+- `lumio-wiki doctor` — version, detected extras, skill location.
+- `lumio-wiki health` — page counts, validation, Discovery Graph health.
+- `lumio-wiki validate` — exit 0 if valid, 1 otherwise.
 ```
 
-**Option B — `opencode.json` custom command:**
+**Option B — `.opencode` custom instructions:**
 
-```json
-{
-  "mcpServers": {},
-  "instructions": "Use lumio-wiki CLI for all Knowledge Base queries. See AGENTS.md for the retrieval ladder protocol."
-}
-```
+In your opencode project settings, paste the same block (or reference the
+project `AGENTS.md`). The key is telling the agent that `LUMIO_KB_PATH` is set,
+so it can run `lumio-wiki search "authentication"` without hardcoding the
+path every time.
 
 **Option C — direct shell calls (no config needed):**
 
 opencode can run shell commands. If `lumio-wiki` is installed (`pip install
-lumio-wiki`), the agent simply calls it:
+lumio-wiki`), the agent simply calls it. With `LUMIO_KB_PATH` exported in
+the shell or `.env`, the path is implicit:
 
 ```bash
 # Find pages about a topic
-lumio-wiki search ./kb "authentication"
+lumio-wiki search "authentication"
 
 # Read the relevant page
-lumio-wiki page ./kb "Authentication Architecture"
+lumio-wiki page "Authentication Architecture"
 
 # Check related pages for broader context
-lumio-wiki related ./kb "Authentication Architecture" --scope discovery --trace
+lumio-wiki related "Authentication Architecture" --scope discovery --trace
 ```
 
 ### Claude Code / Codex / Pi / Hermes
@@ -409,6 +469,21 @@ lumio-wiki skill install --agent hermes        # installs to ~/.hermes/skills/
 
 After install, the agent automatically knows the retrieval ladder, ingest
 workflow, and guardrails from `SKILL.md`.
+
+### FAQ: how does the agent harness know where the wiki is?
+
+**If the wiki already exists:** run `lumio-wiki setup ./wiki`. This writes
+`.env` with `LUMIO_KB_PATH=./wiki` and `AGENTS.md` with the retrieval ladder.
+The agent reads the path from `.env` (or you paste it into `.opencode`
+settings), and the `lumio-wiki` CLI resolves it automatically when no
+`\u003ckb\u003e` argument is given.
+
+**If the wiki doesn't exist yet:** run `lumio-wiki setup ./wiki`. It creates
+an empty categorized Knowledge Base (`lumio.yaml` + `.lumio/ingest` + `.lumio/index`)
+writes `.env` and `AGENTS.md`, and optionally installs the skill for a native-skill
+agent (`--agent claude-code`). Add your first `.md` Compiled Pages under `./wiki`,
+then `lumio-wiki validate`. The setup is idempotent: re-running it on an
+existing KB only updates `.env`, `AGENTS.md`, and the optional skill install.
 
 ### Ingest from a coding agent
 

@@ -245,6 +245,162 @@ def _format_graph_trace(
 # ---------------------------------------------------------------------------
 
 
+def _cmd_setup(args: argparse.Namespace) -> int:
+    """One-command project setup: KB + .env + AGENTS.md + optional skill install.
+
+    Creates the Knowledge Base if it does not exist, writes a ``.env`` file
+    recording the absolute KB path as ``LUMIO_KB_PATH``, writes/appends an
+    AGENTS.md section with the retrieval ladder, and optionally installs the
+    Agent Skill for a coding agent. After setup, the agent harness can run
+    ``lumio-wiki search "query"`` with no path argument.
+    """
+    kb_path = Path(args.kb_path).resolve()
+    project_dir = Path.cwd()
+    created = False
+
+    # 1. Create the KB if it does not exist.
+    if (kb_path / "lumio.yaml").exists() or any(kb_path.glob("*.md")):
+        print(f"Knowledge Base already exists at {kb_path}")
+    else:
+        kb_path.mkdir(parents=True, exist_ok=True)
+        write_control_file(kb_path, seeded_control_file())
+        default_ingest_dir(kb_path).mkdir(parents=True, exist_ok=True)
+        default_index_dir(kb_path).mkdir(parents=True, exist_ok=True)
+        print(f"Created Knowledge Base at {kb_path}")
+        created = True
+
+    # 2. Write .env (create or update the LUMIO_KB_PATH line).
+    env_path = project_dir / ".env"
+    _upsert_env_var(env_path, "LUMIO_KB_PATH", str(kb_path))
+    print(f"  .env:           {env_path} (LUMIO_KB_PATH={kb_path})")
+
+    # 3. Write/append AGENTS.md unless --no-agents-md.
+    if not getattr(args, "no_agents_md", False):
+        agents_md = project_dir / "AGENTS.md"
+        _write_agents_md_section(agents_md, kb_path)
+        print(f"  AGENTS.md:      {agents_md}")
+
+    # 4. Optional skill install.
+    if getattr(args, "agent", None):
+        from lumio_wiki.skill import SkillError, install_skill
+
+        try:
+            target = install_skill(
+                agent=args.agent,
+                dest=None,
+                overwrite=getattr(args, "overwrite", False),
+            )
+        except SkillError as exc:
+            print(f"  skill install:  SKIPPED ({exc})", file=sys.stderr)
+        else:
+            print(f"  skill install:  {target}")
+
+    print()
+    print("Setup complete. Next steps:")
+    if created:
+        print(f"  1. Add Compiled Pages (.md) under {kb_path}")
+        print("  2. Run: lumio-wiki validate")
+    else:
+        print("  1. Run: lumio-wiki validate")
+    print("  2. Start your agent harness in this directory.")
+    print("     It will read LUMIO_KB_PATH from .env and the protocol from AGENTS.md.")
+    return 0
+
+
+_AGENTS_MD_SECTION = """\
+## Lumio Knowledge Base
+
+This project uses a Lumio Knowledge Base for domain knowledge. The host coding
+agent IS the default Distiller (no model provider needed for base ingestion).
+
+**KB path:** `{kb_path}` (also in `.env` as `LUMIO_KB_PATH`; the CLI reads it
+automatically when no `<kb>` argument is given).
+
+### Retrieval ladder (cheapest-first, stop when you have Evidence)
+
+0. `lumio-wiki hot` — Maintainer-pinned entry pages. Read first.
+1. `lumio-wiki index [dir]` — generated Navigation Index (all pages by directory).
+2. `lumio-wiki search "<query>"` — zero-index lexical search (no external index).
+3. `lumio-wiki page "<title>"` — read a page to confirm and cite the exact passage.
+4. `lumio-wiki related "<title>" --scope discovery` — related pages (canonical + extracted).
+5. `lumio-wiki paths "<src>" "<dst>"` — shortest directed path between two titles.
+
+### Ingest (you are the Distiller)
+
+1. Author a Compiled Page (YAML frontmatter + Markdown body) in a temp file.
+2. `lumio-wiki ingest <file>` — stages a reviewable Ingest Proposal.
+3. `lumio-wiki proposal list` → `proposal inspect <id>` → `proposal validate <id>`.
+4. `lumio-wiki publish <id>` (or `lumio-wiki discard <id>`).
+
+### Guardrails
+
+- **Cite or refuse.** Every domain claim cites a Compiled Page (title + path +
+  passage). Unsupported claims return "not covered by this knowledge base."
+- **Connectivity is not support.** Graph reachability selects pages to inspect;
+  it never manufactures Evidence.
+- **Proposal-first.** Validation always runs before publish. Never write `.md`
+  files directly to the KB root.
+
+### Diagnostics
+
+- `lumio-wiki doctor` — version, detected extras, skill location.
+- `lumio-wiki health` — page counts, validation, Discovery Graph health.
+- `lumio-wiki validate` — exit 0 if valid, 1 otherwise.
+"""
+
+_AGENTS_MD_MARKER = "<!-- lumio-wiki-kb -->"
+
+
+def _write_agents_md_section(agents_md: Path, kb_path: Path) -> None:
+    """Write or update the Lumio KB section in an AGENTS.md file.
+
+    If the file already contains the marker comment, the existing section is
+    replaced in place. Otherwise the section is appended.
+    """
+    section = _AGENTS_MD_MARKER + "\n" + _AGENTS_MD_SECTION.format(kb_path=kb_path)
+
+    if agents_md.exists():
+        content = agents_md.read_text(encoding="utf-8")
+        if _AGENTS_MD_MARKER in content:
+            # Replace the existing section (marker through the next blank-line gap
+            # before another `##` heading at the start of a line).
+            lines = content.split("\n")
+            start = None
+            end = len(lines)
+            for i, line in enumerate(lines):
+                if _AGENTS_MD_MARKER in line:
+                    start = i
+                elif start is not None and line.startswith("## ") and i > start:
+                    end = i
+                    break
+            if start is not None:
+                lines = lines[:start] + section.split("\n") + lines[end:]
+                agents_md.write_text("\n".join(lines), encoding="utf-8")
+                return
+        # Append
+        agents_md.write_text(
+            content.rstrip() + "\n\n" + section + "\n", encoding="utf-8"
+        )
+    else:
+        agents_md.write_text(section + "\n", encoding="utf-8")
+
+
+def _upsert_env_var(env_path: Path, key: str, value: str) -> None:
+    """Write or update a ``KEY=value`` line in a .env file."""
+    lines: list[str] = []
+    found = False
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith(f"{key}="):
+                lines.append(f"{key}={value}")
+                found = True
+            else:
+                lines.append(line)
+    if not found:
+        lines.append(f"{key}={value}")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
     target = Path(args.path)
     target.mkdir(parents=True, exist_ok=True)
@@ -844,14 +1000,22 @@ def _cmd_skill_install(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_default_kb_path() -> str | None:
+    """Return the ``LUMIO_KB_PATH`` env var, or ``None`` if unset."""
+    return os.environ.get("LUMIO_KB_PATH")
+
+
 def _add_kb_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "path",
+        nargs="?",
+        default=_resolve_default_kb_path(),
         type=str,
         help=(
             "Knowledge Base root directory, or an S3 object-store URI "
             "(s3://bucket/path) resolved as an immutable Published Version "
-            "(issue #120; requires lumio-wiki[s3])."
+            "(issue #120; requires lumio-wiki[s3]). Falls back to "
+            "LUMIO_KB_PATH if omitted."
         ),
     )
 
@@ -913,6 +1077,40 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"%(prog)s {lumio_wiki.__version__}",
     )
     subparsers = parser.add_subparsers(dest="command", required=False, metavar="<command>")
+
+    # setup
+    setup_parser = subparsers.add_parser(
+        "setup",
+        help="One-command project setup: KB + .env + AGENTS.md + optional skill.",
+        description=(
+            "Create a Knowledge Base (or use an existing one), write .env with "
+            "LUMIO_KB_PATH, write/update AGENTS.md with the retrieval-ladder "
+            "protocol, and optionally install the Agent Skill. After setup, the "
+            "lumio-wiki CLI resolves the KB path from LUMIO_KB_PATH automatically."
+        ),
+    )
+    setup_parser.add_argument(
+        "kb_path",
+        type=Path,
+        help="Knowledge Base root directory (created if it does not exist).",
+    )
+    setup_parser.add_argument(
+        "--agent",
+        choices=["pi", "hermes", "codex", "claude-code"],
+        default=None,
+        help="Install the Agent Skill for this coding agent after setup.",
+    )
+    setup_parser.add_argument(
+        "--no-agents-md",
+        action="store_true",
+        help="Skip writing/updating the AGENTS.md section.",
+    )
+    setup_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite an existing skill when --agent is given.",
+    )
+    setup_parser.set_defaults(func=_cmd_setup)
 
     # init
     init_parser = subparsers.add_parser(
@@ -1273,6 +1471,15 @@ def main(argv: list[str] | None = None) -> int:
     if not hasattr(args, "func"):
         parser.print_help()
         return 1
+    # Commands using _add_kb_argument can omit <kb> when LUMIO_KB_PATH is
+    # set. If neither was provided, fail with actionable guidance.
+    if hasattr(args, "path") and args.path is None:
+        print(
+            "error: no Knowledge Base path provided. Pass <kb-path> as a "
+            "positional argument or set LUMIO_KB_PATH.",
+            file=sys.stderr,
+        )
+        return 2
     try:
         return args.func(args)
     except CliError as exc:

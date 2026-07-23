@@ -702,3 +702,145 @@ def test_health_rebuild_overwrites_corrupt_artifact(
     out2 = capsys.readouterr().out
     assert "graph_fresh:" in out2 and "True" in out2
     assert "graph_recovery:" not in out2
+
+
+# ---------------------------------------------------------------------------
+# LUMIO_KB_PATH default (issue #125 follow-up)
+# ---------------------------------------------------------------------------
+
+
+def test_kb_path_defaults_to_env_var(monkeypatch, capsys):
+    """LUMIO_KB_PATH is used when no positional <kb> is given."""
+    monkeypatch.setenv("LUMIO_KB_PATH", str(FIXTURES / "valid"))
+    rc = main(["search", "stack"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Technology Stack" in out
+
+
+def test_kb_path_missing_gives_actionable_error(monkeypatch, capsys):
+    """Neither positional nor env var → actionable error, exit 2."""
+    monkeypatch.delenv("LUMIO_KB_PATH", raising=False)
+    rc = main(["search", "query"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "LUMIO_KB_PATH" in err
+
+
+def test_explicit_path_overrides_env_var(monkeypatch, capsys):
+    """Positional <kb> takes precedence over LUMIO_KB_PATH."""
+    monkeypatch.setenv("LUMIO_KB_PATH", "/nonexistent/path")
+    rc = main(["search", str(FIXTURES / "valid"), "stack"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Technology Stack" in out
+
+
+# ---------------------------------------------------------------------------
+# setup command
+# ---------------------------------------------------------------------------
+
+
+def test_setup_creates_new_kb_and_config(tmp_path, monkeypatch, capsys):
+    """setup creates KB, .env, and AGENTS.md from scratch."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LUMIO_KB_PATH", raising=False)
+    kb_path = tmp_path / "my-wiki"
+
+    rc = main(["setup", str(kb_path)])
+    assert rc == 0
+
+    # KB created
+    assert (kb_path / "lumio.yaml").exists()
+    assert (kb_path / ".lumio" / "ingest").is_dir()
+
+    # .env written with absolute path
+    env = (tmp_path / ".env").read_text()
+    assert "LUMIO_KB_PATH=" in env
+    assert str(kb_path.resolve()) in env
+
+    # AGENTS.md written with the retrieval ladder
+    agents_md = (tmp_path / "AGENTS.md").read_text()
+    assert "## Lumio Knowledge Base" in agents_md
+    assert "lumio-wiki search" in agents_md
+    assert "retrieval ladder" in agents_md.lower()
+
+
+def test_setup_uses_existing_kb(tmp_path, monkeypatch, capsys):
+    """setup does not overwrite an existing KB."""
+    monkeypatch.chdir(tmp_path)
+    kb_path = tmp_path / "existing"
+    shutil.copytree(FIXTURES / "valid", kb_path)
+    original_content = (kb_path / "technology.md").read_text()
+
+    rc = main(["setup", str(kb_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "already exists" in out
+
+    # Content unchanged
+    assert (kb_path / "technology.md").read_text() == original_content
+
+
+def test_setup_no_agents_md_flag(tmp_path, monkeypatch):
+    """--no-agents-md skips AGENTS.md writing."""
+    monkeypatch.chdir(tmp_path)
+    rc = main(["setup", str(tmp_path / "kb"), "--no-agents-md"])
+    assert rc == 0
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
+def test_setup_updates_existing_agents_md(tmp_path, monkeypatch):
+    """setup replaces its section when AGENTS.md already has one."""
+    monkeypatch.chdir(tmp_path)
+    existing = "# My Project\n\nSome content.\n"
+    (tmp_path / "AGENTS.md").write_text(existing)
+
+    rc = main(["setup", str(tmp_path / "kb")])
+    assert rc == 0
+
+    content = (tmp_path / "AGENTS.md").read_text()
+    assert "# My Project" in content  # original preserved
+    assert "## Lumio Knowledge Base" in content  # section added
+
+
+def test_setup_with_skill_install(tmp_path, monkeypatch, capsys):
+    """setup --agent installs the skill into the agent's directory."""
+    monkeypatch.chdir(tmp_path)
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    rc = main(["setup", str(tmp_path / "kb"), "--agent", "codex", "--overwrite"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "skill install:" in out
+
+    skill_dir = fake_home / ".codex" / "skills" / "lumio-wiki"
+    assert (skill_dir / "SKILL.md").exists()
+    assert (skill_dir / "PROTOCOL.md").exists()
+
+
+def test_setup_env_var_enables_implicit_path(tmp_path, monkeypatch, capsys):
+    """After setup, LUMIO_KB_PATH from .env enables commands with no path arg."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LUMIO_KB_PATH", raising=False)
+    kb_path = tmp_path / "wiki"
+    shutil.copytree(FIXTURES / "valid", kb_path)
+
+    # Setup writes .env with LUMIO_KB_PATH
+    rc = main(["setup", str(kb_path)])
+    assert rc == 0
+
+    # Manually load .env (simulating what a shell/agent harness does)
+    env_content = (tmp_path / ".env").read_text()
+    for line in env_content.splitlines():
+        if line.startswith("LUMIO_KB_PATH="):
+            monkeypatch.setenv("LUMIO_KB_PATH", line.split("=", 1)[1])
+            break
+
+    # Now search with no path → uses LUMIO_KB_PATH
+    rc = main(["search", "stack"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Technology Stack" in out
