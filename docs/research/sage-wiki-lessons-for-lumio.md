@@ -346,7 +346,9 @@ The research produced seven candidate lessons. The grill selected
 **claim-level source invalidation and retraction** as the first focused slice and
 deferred the other six. The resolved architecture is recorded in:
 
-- `docs/adr/0014-private-claim-lineage-and-safe-invalidation.md`; and
+- `docs/adr/0014-source-versions-and-page-level-invalidation.md` (accepted
+  first in its claim-level form, later descoped to page-level invalidation
+  with the claim-level design deferred to a backlog issue); and
 - [GitHub issue #129](https://github.com/legout/lumio/issues/129), the
   claim-lineage PRD.
 

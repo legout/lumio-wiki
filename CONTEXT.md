@@ -116,23 +116,11 @@ Version ineligible to support future published knowledge. A missing or
 unavailable source is only a retirement candidate.
 _Avoid_: source deletion, missing file.
 
-**Claim**:
-A material, independently supportable proposition in a proposed Compiled Page.
-It is private ingest metadata, not a Compiled Page, Evidence item, Citation, or
-Relationship.
-_Avoid_: sentence, chunk, assertion record.
-
-**Claim Lineage**:
-Private, versioned ingest state mapping a Claim to its independent supporting
-Source Versions and source locations. It is not portable Knowledge Base content
-and never becomes Reader Evidence.
-_Avoid_: provenance graph, claim database, citation.
-
-**Lineage Precision**:
-The disclosed granularity at which an Ingest Proposal can evaluate lost
-support: `claim` or `page`. It describes maintenance precision, not answer
-confidence.
-_Avoid_: confidence, provenance level.
+**Knowledge Source Registry**:
+Private ingest state giving each Knowledge Source a stable identity, its
+immutable content-hashed Source Versions, and retirement status. Excluded from
+Compiled Pages, exports, Reader retrieval, and canonical fingerprints.
+_Avoid_: lineage database, source index, manifest.
 
 **Ingest Proposal**:
 A staged set of proposed Markdown changes or explicit Page Removals with
