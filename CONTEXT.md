@@ -104,9 +104,47 @@ _Avoid_: cache validity, sync state.
 
 ### Ingest and publish
 
+**Source Version**:
+An immutable, content-hashed version of a privately identified Knowledge
+Source. A new Source Version extends the same source lineage; it is not
+automatically a different Knowledge Source.
+_Avoid_: source revision, file version, upload.
+
+**Source Retirement**:
+An explicit Maintainer action that makes a Knowledge Source's current Source
+Version ineligible to support future published knowledge. A missing or
+unavailable source is only a retirement candidate.
+_Avoid_: source deletion, missing file.
+
+**Claim**:
+A material, independently supportable proposition in a proposed Compiled Page.
+It is private ingest metadata, not a Compiled Page, Evidence item, Citation, or
+Relationship.
+_Avoid_: sentence, chunk, assertion record.
+
+**Claim Lineage**:
+Private, versioned ingest state mapping a Claim to its independent supporting
+Source Versions and source locations. It is not portable Knowledge Base content
+and never becomes Reader Evidence.
+_Avoid_: provenance graph, claim database, citation.
+
+**Lineage Precision**:
+The disclosed granularity at which an Ingest Proposal can evaluate lost
+support: `claim` or `page`. It describes maintenance precision, not answer
+confidence.
+_Avoid_: confidence, provenance level.
+
 **Ingest Proposal**:
-A staged set of proposed Markdown changes with provenance, affected pages, and a validation report. Reviewed and approved before publish.
+A staged set of proposed Markdown changes or explicit Page Removals with
+provenance, affected pages, and a validation report. Reviewed and approved
+before publish.
 _Avoid_: change set, edit batch.
+
+**Page Removal**:
+An explicit, reviewed Ingest Proposal mutation that excludes a Compiled Page
+from the next Published Version and repairs invalid canonical Relationships in
+the same proposal. It is never inferred from an omitted page.
+_Avoid_: missing page, automatic deletion.
 
 **Published Version**:
 An immutable snapshot of the Knowledge Base produced by a publish action. Identifies a state readers and local agents can sync to.
