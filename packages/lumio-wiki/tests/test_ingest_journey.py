@@ -39,6 +39,28 @@ synthetic: false
 Body authored by the host agent.
 """
 
+RELATED_PAGE = """---
+title: "Journey Related Page"
+aliases: []
+tags:
+  - "journey"
+summary: "A new page with a typed Relationship to an existing canonical title."
+lifecycle: "draft"
+visibility: "internal"
+sources:
+  - id: "jrn-related"
+    title: "Journey related source"
+relationships:
+  - target: "Lumio Overview"
+    type: "relates-to"
+synthetic: false
+---
+
+# Journey Related Page
+
+Body authored by the host agent, linking to [[Lumio Overview]].
+"""
+
 
 def _kb(tmp_path: Path):
     root = tmp_path / "kb"
@@ -64,6 +86,26 @@ def test_public_surface_exposes_the_journey_interfaces():
         "is_reviewable_proposal",
     ):
         assert hasattr(lw, name), f"lumio_wiki must export {name}"
+
+
+def test_plain_proposal_resolves_relationships_against_existing_pages(tmp_path: Path):
+    # Regression: a NEW page with a typed Relationship to an EXISTING page was
+    # falsely blocked as "unresolved relationship target" because plain
+    # proposals validated proposed pages in isolation (no KB overlay, no
+    # Control File). Staging must use the same candidate gate as publish.
+    kb = _kb(tmp_path)
+    store = lw.IngestStore(tmp_path / "ingest")
+    proposal = lw.create_proposal_without_provider(
+        RELATED_PAGE.encode("utf-8"), "text/markdown", "related.md", kb, store=store
+    )
+    errors = [
+        issue.message
+        for issue in proposal.validation_report.issues
+        if issue.severity == "error"
+    ]
+    assert not any("unresolved relationship target" in m for m in errors), errors
+    assert proposal.validation_report.is_valid
+    assert not proposal.blocked
 
 
 def test_full_journey_runs_end_to_end_through_lumio_wiki(tmp_path: Path):

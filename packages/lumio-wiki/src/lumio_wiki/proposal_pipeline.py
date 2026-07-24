@@ -27,7 +27,6 @@ from lumio_wiki.ingest import (
     _existing_page_markdown,
     _extract_page_records,
     _validate_page_routing,
-    _validate_proposed_pages,
     compute_blast_radius,
     is_reviewable_proposal,
 )
@@ -72,15 +71,16 @@ class ProposalPipeline:
         proposed_pages = _extract_page_records(distilled_markdown, filename, self._kb)
         existing_pages = _existing_page_markdown(self._kb)
         diff = _compute_diff(proposed_pages, existing_pages)
-        # Compound revisions integrate with EXISTING Compiled Pages, so they are
-        # validated as a full candidate (existing pages with proposed pages
-        # overlaid). Plain proposals keep the lighter isolated validation.
-        if any(page.compound_revision for page in proposed_pages):
-            page_validation = validate_candidate_knowledge_base(
-                proposed_pages, self._kb.root
-            )
-        else:
-            page_validation = _validate_proposed_pages(proposed_pages)
+        # All proposals are validated as a full candidate (existing pages and
+        # Control File with proposed pages overlaid) — the same authoritative
+        # gate publication uses. Isolated proposed-page validation cannot see
+        # cross-Knowledge-Base invariants and falsely blocked NEW pages whose
+        # typed Relationships targeted EXISTING canonical titles (and emitted
+        # a spurious Legacy Flat Mode warning for categorized Knowledge
+        # Bases, since the isolated temp tree carries no Control File).
+        page_validation = validate_candidate_knowledge_base(
+            proposed_pages, self._kb.root
+        )
         routing_issues = _validate_page_routing(proposed_pages, self._kb)
         validation_report = ValidationReport(
             issues=list(page_validation.issues) + routing_issues
