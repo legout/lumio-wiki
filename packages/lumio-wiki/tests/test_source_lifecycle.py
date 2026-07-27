@@ -805,3 +805,44 @@ def test_retirement_candidate_rejects_trigger_outside_controlled_vocabulary(tmp_
     assert store.source_registry.list_candidates() == []
     # The source is unaffected.
     assert store.source_registry.get("policy").status == "active"
+
+
+# --- Task 4 final fix: safe display of legacy persisted candidate triggers (#133) ---
+
+# A Retirement Candidate persisted *before* trigger validation may carry a
+# secret-bearing ``trigger`` value (the registry now rejects such input at the
+# boundary, but cannot rewrite history). Rendering must never echo an
+# unrecognized persisted trigger: recognized values render verbatim, every
+# other persisted value renders one fixed, content-free generic label.
+
+
+def test_public_surface_exposes_safe_candidate_trigger_display() -> None:
+    # The pipeline exposes ONE shared, public safe-display function plus the
+    # fixed generic label, so every rendering surface (Workshop, future CLI)
+    # masks unrecognized persisted triggers identically instead of each
+    # inventing its own fallback.
+    assert callable(lw.safe_candidate_trigger_display)
+    assert isinstance(lw.RETIREMENT_CANDIDATE_TRIGGER_UNRECOGNIZED, str)
+    assert lw.RETIREMENT_CANDIDATE_TRIGGER_UNRECOGNIZED  # non-empty
+
+
+@pytest.mark.parametrize("trigger", _EXPECTED_RETIREMENT_TRIGGERS)
+def test_safe_candidate_trigger_display_returns_recognized_verbatim(trigger) -> None:
+    # A trigger that is in the controlled vocabulary renders exactly as stored.
+    assert lw.safe_candidate_trigger_display(trigger) == trigger
+
+
+def test_safe_candidate_trigger_display_masks_unrecognized_secret() -> None:
+    # A legacy candidate persisted with a secret-bearing trigger must never have
+    # the stored value reflected into the UI. The function returns the fixed
+    # generic label and NEVER the stored value.
+    secret = "password=hunter2;token=abc123"
+    rendered = lw.safe_candidate_trigger_display(secret)
+    assert rendered == lw.RETIREMENT_CANDIDATE_TRIGGER_UNRECOGNIZED
+    assert secret not in rendered
+    # The fallback is the same fixed label regardless of the unrecognized value.
+    assert lw.safe_candidate_trigger_display("") == lw.RETIREMENT_CANDIDATE_TRIGGER_UNRECOGNIZED
+    assert (
+        lw.safe_candidate_trigger_display("upstream repo archived")
+        == lw.RETIREMENT_CANDIDATE_TRIGGER_UNRECOGNIZED
+    )

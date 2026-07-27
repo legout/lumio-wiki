@@ -46,6 +46,33 @@ def _validate_retirement_trigger(trigger: str) -> str:
     return trigger
 
 
+#: Fixed, content-free label rendered for a persisted Retirement Candidate
+#: trigger that is NOT in :data:`RETIREMENT_CANDIDATE_TRIGGERS` (#133).
+#:
+#: A candidate persisted *before* trigger validation may carry a secret-bearing
+#: ``trigger`` value (the registry now rejects such input at the boundary, but
+#: it cannot rewrite history). Rendering must never echo an unrecognized
+#: persisted value: recognized triggers render verbatim and every other stored
+#: value renders this single generic label. This is display-only; it never
+#: rejects or destroys the legacy registry state.
+RETIREMENT_CANDIDATE_TRIGGER_UNRECOGNIZED = "source unavailable"
+
+
+def safe_candidate_trigger_display(trigger: str) -> str:
+    """Return a display-safe label for a persisted Retirement Candidate trigger.
+
+    Recognized values from :data:`RETIREMENT_CANDIDATE_TRIGGERS` render
+    verbatim. Any unrecognized persisted value — including a secret-bearing
+    trigger from a legacy candidate recorded before validation — renders the
+    fixed :data:`RETIREMENT_CANDIDATE_TRIGGER_UNRECOGNIZED` label and NEVER the
+    stored value. This guard is display-only: it neither rejects nor destroys
+    the legacy registry, so a legacy candidate stays confirmable/dismissible.
+    """
+    if trigger in RETIREMENT_CANDIDATE_TRIGGERS:
+        return trigger
+    return RETIREMENT_CANDIDATE_TRIGGER_UNRECOGNIZED
+
+
 class SourceVersion(msgspec.Struct, frozen=True):
     """An immutable content-hashed version recorded under one source identity."""
 

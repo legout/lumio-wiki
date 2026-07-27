@@ -185,11 +185,13 @@ from lumio_wiki.retrieval import (
     default_retrieval_adapter,
 )
 from lumio_wiki.source_registry import (
+    RETIREMENT_CANDIDATE_TRIGGER_UNRECOGNIZED,
     RETIREMENT_CANDIDATE_TRIGGERS,
     KnowledgeSource,
     RetirementCandidate,
     SourceRegistryError,
     SourceVersion,
+    safe_candidate_trigger_display,
 )
 from lumio_wiki.source_processor import (
     DOCUMENTS_EXTRA_HINT,
@@ -272,6 +274,7 @@ __all__ = [
     "KnowledgeSource",
     "LinkCandidate",
     "LinkImpactSignal",
+    "RETIREMENT_CANDIDATE_TRIGGER_UNRECOGNIZED",
     "RETIREMENT_CANDIDATE_TRIGGERS",
     "RankedLinkCandidate",
     "MarkItDownSourceProcessor",
@@ -371,6 +374,7 @@ __all__ = [
     "seeded_control_file",
     "select_export_pages",
     "select_document_processor",
+    "safe_candidate_trigger_display",
     "select_source_processor",
     "validate",
     "validate_candidate_knowledge_base",
