@@ -253,6 +253,16 @@ class SourceRegistry:
                 return candidate
         raise SourceRegistryError(f"unknown retirement candidate {candidate_id!r}")
 
+    def list_candidates(self) -> list[RetirementCandidate]:
+        """Return all recorded retirement candidates (read query).
+
+        Mirrors :meth:`list`: presentation (which candidates to render) is the
+        caller's concern; this returns every recorded candidate so the
+        reviewing caller can filter pending vs. decided without reaching past
+        the registry's public seam.
+        """
+        return list(self._state.candidates)
+
     def _decide_candidate(self, candidate_id: str, status: str) -> RetirementCandidate:
         candidates = list(self._state.candidates)
         for index, candidate in enumerate(candidates):

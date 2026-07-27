@@ -682,3 +682,70 @@ def test_list_sources_without_store_returns_empty(tmp_path) -> None:
     kb = _knowledge_base(tmp_path, ["policy"])
     pipeline = ProposalPipeline(kb)
     assert pipeline.list_sources() == []
+
+
+# --- Task 4 fix: candidate review journey and ownership-safe confirmation ---
+
+
+def test_list_retirement_candidates_exposes_recorded_candidates_through_pipeline(
+    tmp_path,
+) -> None:
+    # A narrow read query so the Workshop can render pending candidates for
+    # review. Mirrors list_sources: returns recorded candidates in registry
+    # order, empty before any are recorded.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    assert pipeline.list_retirement_candidates() == []
+    pipeline.register_source("policy", b"policy-v1")
+    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+
+    listed = pipeline.list_retirement_candidates()
+
+    assert [item.id for item in listed] == [candidate.id]
+    assert listed[0].source_id == "policy"
+    assert listed[0].trigger == "watcher missing"
+    assert listed[0].status == "pending"
+
+
+def test_list_retirement_candidates_without_store_returns_empty(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    pipeline = ProposalPipeline(kb)
+    assert pipeline.list_retirement_candidates() == []
+
+
+def test_confirm_candidate_validates_expected_source_id_before_mutating(tmp_path) -> None:
+    # Issue #133: confirming is mutating (it stages a retirement proposal), so
+    # the caller must name the source the candidate belongs to. A mismatch is
+    # refused and leaves the candidate pending and the source active, with no
+    # proposal staged (mirroring dismiss_retirement_candidate).
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+
+    with pytest.raises(SourceRegistryError, match="does not belong"):
+        pipeline.confirm_retirement_candidate(candidate.id, expected_source_id="other")
+
+    assert store.source_registry.get_candidate(candidate.id).status == "pending"
+    assert store.source_registry.get("policy").status == "active"
+    assert pipeline.list() == []
+
+
+def test_confirm_candidate_accepts_matching_expected_source_id(tmp_path) -> None:
+    # The optional expected source id must match exactly; a matching id
+    # confirms the candidate (backward-compatible validation path).
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+
+    proposal = pipeline.confirm_retirement_candidate(
+        candidate.id, expected_source_id="policy"
+    )
+
+    assert proposal.source_change.action == "retire"
+    assert store.source_registry.get_candidate(candidate.id).status == "confirmed"
+    assert store.source_registry.get("policy").status == "active"

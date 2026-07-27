@@ -181,10 +181,25 @@ class ProposalPipeline:
                 )
         return registry.dismiss_retirement_candidate(candidate_id)
 
-    def confirm_retirement_candidate(self, candidate_id: str) -> IngestProposal:
-        """Confirm a candidate by staging an ordinary retirement proposal."""
+    def confirm_retirement_candidate(
+        self, candidate_id: str, expected_source_id: str | None = None
+    ) -> IngestProposal:
+        """Confirm a candidate by staging an ordinary retirement proposal.
+
+        When ``expected_source_id`` is given, the candidate must belong to that
+        Knowledge Source or the confirmation is refused WITHOUT staging a
+        proposal or mutating the candidate/source — mirroring
+        :meth:`dismiss_retirement_candidate`. The web confirm route uses this to
+        require explicit source identity from its route parameter so a mismatch
+        can never stage a retirement for (or audit) the wrong source.
+        """
         registry = self._require_store().source_registry
         candidate = registry.get_candidate(candidate_id)
+        if expected_source_id is not None and candidate.source_id != expected_source_id:
+            raise SourceRegistryError(
+                f"retirement candidate {candidate_id!r} does not belong to "
+                f"Knowledge Source {expected_source_id!r}"
+            )
         if candidate.status != "pending":
             raise SourceRegistryError(f"retirement candidate {candidate_id!r} is not pending")
         proposal = self.retire_source(candidate.source_id)
@@ -276,6 +291,19 @@ class ProposalPipeline:
         if self._store is None:
             return []
         return self._store.source_registry.list()
+
+    def list_retirement_candidates(self) -> list[RetirementCandidate]:
+        """List recorded retirement candidates for review (read query).
+
+        Mirrors :meth:`list_sources`: returns an empty list when the pipeline
+        has no store, so the Workshop reads candidates through the public
+        pipeline seam. Returns every recorded candidate; the reviewing caller
+        filters pending vs. decided (the Workshop renders pending candidates
+        with confirm/dismiss actions).
+        """
+        if self._store is None:
+            return []
+        return self._store.source_registry.list_candidates()
 
     def discard(self, proposal_id: str) -> IngestProposal | None:
         """Mark a reviewable proposal as discarded."""
