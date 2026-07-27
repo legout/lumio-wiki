@@ -168,6 +168,18 @@ _Avoid_: old mode, unmanaged mode.
 A marked, reserved derived Markdown file the Core SDK recognizes by basename and `lumio` marker (Navigation Index `index.md`, Hot Index `hot.md`, Activity Log `log.md`). Valid marked artifacts are excluded from Compiled Page loading, retrieval, and fingerprinting; an unmarked or malformed collision is a blocking error.
 _Avoid_: generated file, cache file.
 
+**Lint**:
+The read-only cross-page QA report over a Knowledge Base: authoritative validation, Discovery Graph health, and structural diagnostics for BOTH graph scopes (canonical and discovery) with explicit scope disclosure. Model-free; exits non-zero when the Knowledge Base is invalid. Never stages or writes.
+_Avoid_: check (too generic), semantic review.
+
+**Link Candidate**:
+A deterministic, non-canonical proposal for a MISSING authored Markdown link, emitted when a known Canonical Page Title or Alias appears as an unlinked body mention. Ranked by Discovery Graph impact (orphan repair, component join, fragile-connection strengthening); never enters the graph until a Maintainer publishes the repair proposal.
+_Avoid_: inferred link, auto-link.
+
+**Dream Cycle**:
+The periodic Maintainer maintenance pass over a living Knowledge Base: read-only reflection (validation, health, structural diagnostics for both scopes, ranked Link Candidates) followed by an explicit opt-in staging of the top repairs as ordinary reviewable Ingest Proposals. Deterministic and model-free; semantic maintenance (contradictions, staleness) is out of scope.
+_Avoid_: reflection loop, auto-fix, consolidation.
+
 ### Platform roles and guardrails
 
 **Reader / Maintainer / Owner**:

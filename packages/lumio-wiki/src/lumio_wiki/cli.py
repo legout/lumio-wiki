@@ -34,6 +34,7 @@ Command                                           Public function
 The base Distiller is the host coding agent (``PassthroughMarkdownDistiller``):
 no OpenAI client is required for text and Markdown ingestion.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -150,10 +151,7 @@ def _s3_config_from_env() -> tuple[dict[str, str], dict[str, object]]:
         if endpoint.startswith("http://"):
             client_options["allow_http"] = True
     key = os.environ.get("LUMIO_S3_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID")
-    secret = (
-        os.environ.get("LUMIO_S3_SECRET_ACCESS_KEY")
-        or os.environ.get("AWS_SECRET_ACCESS_KEY")
-    )
+    secret = os.environ.get("LUMIO_S3_SECRET_ACCESS_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY")
     if key:
         config["aws_access_key_id"] = key
     if secret:
@@ -167,6 +165,7 @@ def _resolve_object_store_location(uri: str) -> object:
 
     config, client_options = _s3_config_from_env()
     return S3Location.from_url(uri, config=config or None, client_options=client_options or None)
+
 
 def _build_publish_store(uri: str) -> tuple[object, str]:
     """Build an ``(obstore ObjectStore, prefix)`` from a destination URI + env.
@@ -203,9 +202,7 @@ def _open_read_kb(path: object) -> KnowledgeBase:
         try:
             return _resolve_object_store_location(value).resolve().knowledge_base
         except KnowledgeBaseError as exc:
-            raise CliError(
-                f"could not resolve S3 Knowledge Base at {value}: {exc}"
-            ) from exc
+            raise CliError(f"could not resolve S3 Knowledge Base at {value}: {exc}") from exc
     kb, _report = _load_kb(path)
     return kb
 
@@ -217,16 +214,12 @@ def _validate_location(path: object):
         try:
             snapshot = _resolve_object_store_location(value).resolve()
         except KnowledgeBaseError as exc:
-            raise CliError(
-                f"could not resolve S3 Knowledge Base at {value}: {exc}"
-            ) from exc
+            raise CliError(f"could not resolve S3 Knowledge Base at {value}: {exc}") from exc
         return snapshot.validation_report
     return validate(path)
 
 
-def _format_graph_trace(
-    *, scope: str, direction: str, outcome_fields: list[str]
-) -> str:
+def _format_graph_trace(*, scope: str, direction: str, outcome_fields: list[str]) -> str:
     """Format the one-line ``# trace:`` diagnostic shared by related/paths.
 
     Reports ONLY what the traversal actually used: the graph scope, the edge
@@ -332,6 +325,16 @@ automatically when no `<kb>` argument is given).
 3. `lumio-wiki proposal list` → `proposal inspect <id>` → `proposal validate <id>`.
 4. `lumio-wiki publish <id>` (or `lumio-wiki discard <id>`).
 
+### Maintenance (you are the Maintainer)
+
+- `lumio-wiki lint` — read-only cross-page QA: validation, graph health, and
+  canonical/discovery structural diagnostics with scope disclosure. Exit 1 if invalid.
+- `lumio-wiki cross-link` — missing-link candidates ranked by Discovery Graph
+  impact. Add `--stage` to stage reviewable repair proposals (never direct-writes).
+- `lumio-wiki dream` — the Dream Cycle: read-only reflection (validation +
+  health + structure + ranked candidates). Add `--stage [--limit N]` to stage
+  the top repairs as ordinary Ingest Proposals for review.
+
 ### Guardrails
 
 - **Cite or refuse.** Every domain claim cites a Compiled Page (title + path +
@@ -346,6 +349,7 @@ automatically when no `<kb>` argument is given).
 - `lumio-wiki doctor` — version, detected extras, skill location.
 - `lumio-wiki health` — page counts, validation, Discovery Graph health.
 - `lumio-wiki validate` — exit 0 if valid, 1 otherwise.
+- `lumio-wiki lint` — full QA report (superset of validate + structural diagnostics).
 """
 
 _AGENTS_MD_MARKER = "<!-- lumio-wiki-kb -->"
@@ -378,9 +382,7 @@ def _write_agents_md_section(agents_md: Path, kb_path: Path) -> None:
                 agents_md.write_text("\n".join(lines), encoding="utf-8")
                 return
         # Append
-        agents_md.write_text(
-            content.rstrip() + "\n\n" + section + "\n", encoding="utf-8"
-        )
+        agents_md.write_text(content.rstrip() + "\n\n" + section + "\n", encoding="utf-8")
     else:
         agents_md.write_text(section + "\n", encoding="utf-8")
 
@@ -709,6 +711,8 @@ def _encode_proposal(proposal) -> str:
     import msgspec
 
     return msgspec.json.format(msgspec.json.encode(proposal), indent=2).decode("utf-8")
+
+
 def _cmd_proposal_inspect(args: argparse.Namespace) -> int:
     _kb, pipeline = _proposal_pipeline(args)
     proposal = pipeline.review(args.proposal_id)
@@ -764,6 +768,7 @@ def _cmd_publish(args: argparse.Namespace) -> int:
     print(f"  status:         {published.status}")
     print(f"  affected_pages: {', '.join(published.affected_pages) or '(none)'}")
     return 0
+
 
 def _cmd_publish_s3(args: argparse.Namespace) -> int:
     """Publish a local Knowledge Base as an immutable S3 Published Version.
@@ -865,9 +870,7 @@ def _cmd_health(args: argparse.Namespace) -> int:
         print(f"structure_components: {structural.weakly_connected_component_count}")
         print(f"structure_coverage:  {structural.largest_component_coverage:.4f}")
         if structural.unresolved_references:
-            unresolved_total = sum(
-                g.count for g in structural.unresolved_references
-            )
+            unresolved_total = sum(g.count for g in structural.unresolved_references)
             print(f"structure_unresolved: {unresolved_total}")
     print(f"fingerprint:         {graph_health.fingerprint_digest}")
     for issue in issues:
@@ -877,12 +880,173 @@ def _cmd_health(args: argparse.Namespace) -> int:
     return 0 if report.is_valid else 1
 
 
+# ---------------------------------------------------------------------------
+# Maintainer workflows (ADR-0015): lint, cross-link, dream.
+# ---------------------------------------------------------------------------
+
+
+def _print_structure_summary(structural) -> None:
+    """Print the structural-topology lines shared by lint and dream (#126)."""
+    print(f"structure_scope:     {structural.scope}")
+    print(f"structure_pages:     {structural.page_count}")
+    print(f"structure_edges:     {structural.edge_count}")
+    print(f"structure_in_orphans:  {structural.inbound_orphan_count}")
+    print(f"structure_out_orphans: {structural.outbound_orphan_count}")
+    print(f"structure_components: {structural.weakly_connected_component_count}")
+    print(f"structure_coverage:  {structural.largest_component_coverage:.4f}")
+
+
+def _print_validation_issues(report) -> None:
+    for issue in report.issues:
+        marker = "ERROR" if issue.severity == "error" else "WARN "
+        print(f"  {marker}: {issue.file}: {issue.field}: {issue.message}")
+
+
+def _cmd_lint(args: argparse.Namespace) -> int:
+    """Read-only cross-page QA report with both graph scopes disclosed (ADR-0015).
+
+    Composes the authoritative validation report, the Discovery Graph health,
+    and the canonical/discovery structural diagnostics. Never writes; exits 1
+    when the Knowledge Base is invalid.
+    """
+    kb, _load_report = _load_kb(args.path)
+    index_dir = _resolve_index_dir(args, kb.root)
+    report = lumio_wiki.run_lint(args.path, index_dir=index_dir)
+    errors = [i for i in report.validation_report.issues if i.severity == "error"]
+    warnings = [i for i in report.validation_report.issues if i.severity == "warning"]
+    print(f"path:                {report.kb_path}")
+    print(f"pages:               {report.page_count}")
+    print(f"valid:               {report.is_valid}")
+    print(f"validation_errors:   {len(errors)}")
+    print(f"validation_warnings: {len(warnings)}")
+    print(f"canonical_relationships: {len(report.canonical_relationships)}")
+    print(f"extracted_references:  {len(report.extracted_references)}")
+    print(f"graph_fresh:         {report.graph_health.graph_fresh}")
+    print(f"graph_edges:         {report.graph_health.edge_count}")
+    _print_structure_summary(report.canonical_structure)
+    _print_structure_summary(report.discovery_structure)
+    print(f"scope_disclosure:    {report.scope_disclosure}")
+    _print_validation_issues(report.validation_report)
+    return 0 if report.is_valid else 1
+
+
+def _print_ranked_candidates(ranked, limit: int) -> None:
+    for position, entry in enumerate(ranked[:limit], start=1):
+        candidate = entry.candidate
+        signals = ", ".join(signal.kind for signal in entry.signals) or "none"
+        print(
+            f"  {position}. [impact={entry.impact_score}, signals={signals}] "
+            f"{candidate.source_title} -> {candidate.target_title}"
+        )
+        print(
+            f"     {candidate.source_path}:{candidate.line}:{candidate.column} "
+            f"term={candidate.term!r}"
+        )
+        if candidate.snippet:
+            print(f"     snippet: {candidate.snippet}")
+
+
+def _stage_candidates(args: argparse.Namespace, kb, ranked, limit: int):
+    """Stage one reviewable repair proposal per candidate, bounded by limit."""
+    ingest_dir = _resolve_ingest_dir(args, kb.root)
+    ingest_dir.mkdir(parents=True, exist_ok=True)
+    store = IngestStore(ingest_dir)
+    staged = []
+    skipped = []
+    for entry in ranked[:limit]:
+        candidate = entry.candidate
+        try:
+            proposal = lumio_wiki.stage_cross_link_proposal(args.path, candidate, store=store)
+            staged.append(proposal)
+        except (lumio_wiki.MaintenanceError, OSError) as exc:
+            skipped.append((candidate, str(exc)))
+    return staged, skipped
+
+
+def _print_staging_outcome(args, staged, skipped) -> None:
+    print(f"staged_proposals:    {len(staged)}")
+    for proposal in staged:
+        print(f"  staged: {proposal.id} pages={', '.join(proposal.affected_pages)}")
+    for candidate, reason in skipped:
+        print(f"  skipped: {candidate.source_path}:{candidate.line} ({reason})")
+    if staged:
+        print()
+        print("Review with:")
+        print(f"  lumio-wiki proposal list {args.path}")
+        for proposal in staged:
+            if is_reviewable_proposal(proposal) and not proposal.blocked:
+                print(f"  lumio-wiki publish {args.path} {proposal.id}")
+
+
+def _cmd_cross_link(args: argparse.Namespace) -> int:
+    """List deterministic missing-link candidates, ranked by graph impact.
+
+    Read-only by default. With ``--stage``, stages one reviewable Ingest
+    Proposal per top-ranked candidate (bounded by ``--limit``); nothing is
+    published without an explicit Maintainer publish (ADR-0015).
+    """
+    kb, _report = _load_kb(args.path)
+    candidates = lumio_wiki.find_link_candidates(kb.pages)
+    ranked = kb.rank_link_candidates_by_graph_impact(candidates)
+    if not ranked:
+        print("No missing-link candidates.")
+        return 0
+    print(f"link_candidates:     {len(ranked)}")
+    _print_ranked_candidates(ranked, args.limit)
+    if len(ranked) > args.limit:
+        print(f"  ... {len(ranked) - args.limit} more (raise --limit to show)")
+    if args.stage:
+        print()
+        staged, skipped = _stage_candidates(args, kb, ranked, args.limit)
+        _print_staging_outcome(args, staged, skipped)
+    else:
+        print()
+        print("Stage repairs with:")
+        print(f"  lumio-wiki cross-link {args.path} --stage")
+    return 0
+
+
+def _cmd_dream(args: argparse.Namespace) -> int:
+    """Run the Dream Cycle: reflect on KB health, then optionally stage repairs.
+
+    The reflection is read-only and model-free (ADR-0015): validation status,
+    Discovery Graph health, structural diagnostics for both scopes, and the
+    missing-link candidates ranked by Discovery Graph impact. With
+    ``--stage``, the top ``--limit`` repairs are staged as ordinary
+    reviewable Ingest Proposals. Exits 1 when the Knowledge Base is invalid.
+    """
+    kb, _load_report = _load_kb(args.path)
+    index_dir = _resolve_index_dir(args, kb.root)
+    report = lumio_wiki.run_dream_cycle(args.path, index_dir=index_dir)
+    lint = report.lint
+    print("# Dream Cycle")
+    print(f"path:                {lint.kb_path}")
+    print(f"pages:               {lint.page_count}")
+    print(f"valid:               {lint.is_valid}")
+    print(f"canonical_relationships: {len(lint.canonical_relationships)}")
+    print(f"extracted_references:  {len(lint.extracted_references)}")
+    print(f"graph_fresh:         {lint.graph_health.graph_fresh}")
+    _print_structure_summary(lint.canonical_structure)
+    _print_structure_summary(lint.discovery_structure)
+    print(f"link_candidates:     {report.candidate_count}")
+    if report.ranked_candidates:
+        print("top candidates (by Discovery Graph impact):")
+        _print_ranked_candidates(report.ranked_candidates, args.limit)
+    _print_validation_issues(lint.validation_report)
+    if args.stage and report.ranked_candidates:
+        print()
+        staged, skipped = _stage_candidates(args, kb, report.ranked_candidates, args.limit)
+        _print_staging_outcome(args, staged, skipped)
+    return 0 if report.is_valid else 1
+
+
 def _detect_module(name: str) -> bool:
     try:
         __import__(name)
         return True
     except ImportError:
         return False
+
 
 def _build_distiller(args: argparse.Namespace):
     """Construct the Distiller selected by ``--distiller`` (issue #101).
@@ -1026,8 +1190,7 @@ def _add_ingest_dir_argument(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=None,
         help=(
-            f"Ingest store directory (default: <kb>/{DERIVED_DIR_NAME}/"
-            f"{DEFAULT_INGEST_SUBDIR})."
+            f"Ingest store directory (default: <kb>/{DERIVED_DIR_NAME}/{DEFAULT_INGEST_SUBDIR})."
         ),
     )
 
@@ -1038,8 +1201,7 @@ def _add_index_dir_argument(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=None,
         help=(
-            f"Derived index directory (default: <kb>/{DERIVED_DIR_NAME}/"
-            f"{DEFAULT_INDEX_SUBDIR})."
+            f"Derived index directory (default: <kb>/{DERIVED_DIR_NAME}/{DEFAULT_INDEX_SUBDIR})."
         ),
     )
 
@@ -1401,6 +1563,65 @@ def build_parser() -> argparse.ArgumentParser:
         help="Materialize the Discovery Graph artifact (actionable recovery), then report.",
     )
     health_parser.set_defaults(func=_cmd_health)
+
+    # lint
+    lint_parser = subparsers.add_parser(
+        "lint",
+        help="Read-only cross-page QA report with graph scope disclosed.",
+        description="Report validation, Discovery Graph health, and canonical/discovery "
+        "structural diagnostics. Read-only; exits 1 when the Knowledge Base is invalid "
+        "(ADR-0015).",
+    )
+    _add_kb_argument(lint_parser)
+    _add_index_dir_argument(lint_parser)
+    lint_parser.set_defaults(func=_cmd_lint)
+
+    # cross-link
+    cross_link_parser = subparsers.add_parser(
+        "cross-link",
+        help="List missing-link candidates, ranked by Discovery Graph impact.",
+        description="Surface deterministic missing-link candidates (issue #90), ranked by "
+        "Discovery Graph impact (issue #127). Read-only unless --stage is given; staging "
+        "produces reviewable Ingest Proposals, never direct writes (ADR-0015).",
+    )
+    _add_kb_argument(cross_link_parser)
+    cross_link_parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Max candidates listed (and staged, with --stage). Default: 20.",
+    )
+    cross_link_parser.add_argument(
+        "--stage",
+        action="store_true",
+        help="Stage one reviewable repair proposal per top-ranked candidate.",
+    )
+    _add_ingest_dir_argument(cross_link_parser)
+    cross_link_parser.set_defaults(func=_cmd_cross_link)
+
+    # dream
+    dream_parser = subparsers.add_parser(
+        "dream",
+        help="Run the Dream Cycle: reflect on KB health, optionally stage repairs.",
+        description="Read-only reflection (validation, health, structural diagnostics for "
+        "both scopes, ranked link candidates); with --stage, the top --limit repairs are "
+        "staged as reviewable Ingest Proposals (ADR-0015).",
+    )
+    _add_kb_argument(dream_parser)
+    _add_index_dir_argument(dream_parser)
+    dream_parser.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help="Max candidates shown (and staged, with --stage). Default: 5.",
+    )
+    dream_parser.add_argument(
+        "--stage",
+        action="store_true",
+        help="Stage reviewable repair proposals for the top-ranked candidates.",
+    )
+    _add_ingest_dir_argument(dream_parser)
+    dream_parser.set_defaults(func=_cmd_dream)
 
     # doctor
     doctor_parser = subparsers.add_parser(
