@@ -846,3 +846,59 @@ def test_safe_candidate_trigger_display_masks_unrecognized_secret() -> None:
         lw.safe_candidate_trigger_display("upstream repo archived")
         == lw.RETIREMENT_CANDIDATE_TRIGGER_UNRECOGNIZED
     )
+
+
+# --- Task 4 final Terra fix: safe display of proposal lifecycle triggers (#133) ---
+
+
+def test_public_surface_exposes_safe_lifecycle_trigger_display() -> None:
+    # The pipeline exposes ONE shared, public safe-display function for proposal
+    # lifecycle triggers plus the fixed generic fallback label, so every
+    # rendering surface (Workshop, future CLI) derives the same fixed text from
+    # the controlled action and never echoes a persisted trigger string.
+    assert callable(lw.safe_lifecycle_trigger_display)
+    assert isinstance(lw.SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED, str)
+    assert lw.SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED  # non-empty
+
+
+def test_safe_lifecycle_trigger_display_maps_retire_action() -> None:
+    # A retirement proposal renders the fixed retirement label derived ONLY
+    # from the controlled action, never from the persisted trigger string.
+    assert lw.safe_lifecycle_trigger_display("retire") == "explicit source retirement"
+
+
+def test_safe_lifecycle_trigger_display_maps_reactivate_action() -> None:
+    # A reactivation proposal renders the fixed reactivation label derived ONLY
+    # from the controlled action, never from the persisted trigger string.
+    assert lw.safe_lifecycle_trigger_display("reactivate") == "explicit source reactivation"
+
+
+def test_safe_lifecycle_trigger_display_masks_unknown_action() -> None:
+    # Any action outside the controlled retire/reactivate vocabulary renders the
+    # single fixed generic label — including a legacy/future action string that
+    # itself carries secret-bearing material. The stored value is never echoed.
+    secret_action = "password=hunter2;token=abc123"
+    rendered = lw.safe_lifecycle_trigger_display(secret_action)
+    assert rendered == lw.SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED
+    assert secret_action not in rendered
+    # Empty / unrecognized values share the same fixed generic fallback.
+    assert lw.safe_lifecycle_trigger_display("") == lw.SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED
+    assert (
+        lw.safe_lifecycle_trigger_display("purge")
+        == lw.SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED
+    )
+
+
+def test_safe_lifecycle_trigger_display_never_echoes_trigger_material() -> None:
+    # The display label is derived from the ACTION only. A legacy/future
+    # proposal whose persisted TRIGGER carries a content hash or a secret must
+    # never leak it through the label: the function takes the action, so the
+    # hash/secret-bearing trigger can never reach the rendered string at all.
+    hash_trigger = "retired sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    secret_trigger = "retired password=hunter2;token=abc123"
+    for action in ("retire", "reactivate"):
+        rendered = lw.safe_lifecycle_trigger_display(action)
+        assert hash_trigger not in rendered
+        assert secret_trigger not in rendered
+        assert "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" not in rendered
+        assert "password=hunter2" not in rendered

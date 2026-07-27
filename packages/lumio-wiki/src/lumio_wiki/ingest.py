@@ -141,6 +141,45 @@ class SourceLifecycleChange(msgspec.Struct, frozen=True):
     impacts: list[SourceChangeImpact] = msgspec.field(default_factory=list)
 
 
+#: Fixed, content-free label rendered for a source lifecycle trigger whose
+#: action is NOT one of the controlled ``retire`` / ``reactivate`` values (#133).
+#:
+#: A proposal persisted *before* action-controlled triggers — or a future
+#: proposal type — may carry a ``trigger`` string containing a content hash or
+#: secret-bearing detail. Rendering must NEVER echo the persisted trigger:
+#: the label is derived ONLY from the controlled ``action`` field. Any action
+#: outside the known vocabulary renders this single generic label. This guard
+#: is display-only: it neither rejects nor destroys the persisted proposal
+#: trigger, which stays available for operational semantics.
+SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED = "source lifecycle change"
+
+
+def safe_lifecycle_trigger_display(action: str) -> str:
+    """Return a display-safe, content-free label for a source lifecycle trigger.
+
+    The label is derived ONLY from the controlled ``action`` field of a
+    :class:`SourceLifecycleChange` — never from its persisted ``trigger``
+    string, which may carry a content hash or secret-bearing detail on a legacy
+    or future proposal. ``retire`` and ``reactivate`` map to two fixed
+    descriptive labels; every other value (including a future action that
+    itself carries secret material) maps to the single fixed
+    :data:`SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED` label.
+
+    This is the lumio-wiki boundary guard every Workshop rendering surface must
+    use for proposal lifecycle triggers; it mirrors
+    :func:`safe_candidate_trigger_display` (which masks legacy *candidate*
+    triggers) but derives its output from the action rather than the stored
+    trigger, because the proposal trigger is private operational state that is
+    never rendered. The guard is display-only: it never raises, never mutates,
+    and never destroys the persisted proposal trigger.
+    """
+    if action == "retire":
+        return "explicit source retirement"
+    if action == "reactivate":
+        return "explicit source reactivation"
+    return SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED
+
+
 class IngestProposal(msgspec.Struct, frozen=True):
     """A staged set of proposed Markdown changes with validation gate.
 
@@ -1139,6 +1178,7 @@ __all__ = [
     "IngestProposal",
     "IngestStore",
     "ProposedPage",
+    "SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED",
     "SourceChangeImpact",
     "SourceLifecycleChange",
     "SourceProvenance",
@@ -1149,4 +1189,5 @@ __all__ = [
     "is_reviewable_proposal",
     "map_external_import_categories",
     "propose_external_import",
+    "safe_lifecycle_trigger_display",
 ]
