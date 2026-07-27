@@ -1135,6 +1135,26 @@ def _cmd_source_dismiss_candidate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_source_confirm_candidate(args: argparse.Namespace) -> int:
+    """Confirm a Retirement Candidate by staging an ordinary retirement proposal.
+
+    Delegates to :meth:`ProposalPipeline.confirm_retirement_candidate`, which
+    validates that the candidate belongs to the named Knowledge Source before
+    any staging/mutation. Output is the safe staged-proposal report (proposal
+    id, source id, controlled trigger, and ``status: page title`` impacts) —
+    never raw source bytes, local paths, registry internals, or credentials.
+    """
+    _kb, pipeline = _source_pipeline(args)
+    try:
+        proposal = pipeline.confirm_retirement_candidate(
+            args.candidate_id, expected_source_id=args.source_id
+        )
+    except (SourceRegistryError, ProposalPipelineError) as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    _report_source_lifecycle_proposal(proposal)
+    return 0
+
+
 def _cmd_source_reactivate(args: argparse.Namespace) -> int:
     _kb, pipeline = _source_pipeline(args)
     raw_bytes = _read_source_file(args)
@@ -1719,6 +1739,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Knowledge Source the candidate must belong to.",
     )
     source_dismiss.set_defaults(func=_cmd_source_dismiss_candidate)
+
+    source_confirm = source_sub.add_parser(
+        "confirm-candidate",
+        help="Confirm a Retirement Candidate by staging a retirement proposal.",
+        description=(
+            "Confirm a pending Retirement Candidate by staging an ordinary "
+            "Source Retirement proposal through review. Both the candidate id "
+            "(reported by `source candidate`) and the Knowledge Source it must "
+            "belong to are required; the source stays active until the staged "
+            "proposal publishes."
+        ),
+    )
+    _add_kb_argument(source_confirm)
+    _add_ingest_dir_argument(source_confirm)
+    source_confirm.add_argument(
+        "--candidate-id",
+        required=True,
+        help="Candidate id reported by `source candidate`.",
+    )
+    source_confirm.add_argument(
+        "--source-id",
+        required=True,
+        help="Knowledge Source the candidate must belong to.",
+    )
+    source_confirm.set_defaults(func=_cmd_source_confirm_candidate)
 
     source_reactivate = source_sub.add_parser(
         "reactivate",

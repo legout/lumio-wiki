@@ -60,21 +60,76 @@ def test_public_surface_exposes_serializable_source_lifecycle_records():
     assert lw.SourceLifecycleChange is SourceLifecycleChange
 
 
-def test_explicit_source_registration_persists_immutable_versions(tmp_path):
+def test_register_creates_a_single_version_active_identity(tmp_path):
     registry = SourceRegistry(tmp_path / "ingest")
 
-    first = registry.register_source("handbook", b"v1")
-    second = registry.register_source("handbook", b"v2")
+    version = registry.register_source("handbook", b"v1")
 
     reloaded = SourceRegistry(tmp_path / "ingest")
     source = reloaded.get("handbook")
-
-    assert [version.content_hash for version in source.versions] == [
-        first.content_hash,
-        second.content_hash,
-    ]
     assert source.status == "active"
-    assert source.versions[0].content_hash != source.versions[1].content_hash
+    assert [v.content_hash for v in source.versions] == [version.content_hash]
+
+
+def test_second_register_of_active_source_is_refused_without_appending(tmp_path):
+    # #133 final review: register establishes a NEW identity only. A second
+    # registration of an already-known active id must NOT append a version —
+    # unreviewed replacement cannot bypass review. Reactivation is the only
+    # reviewed path that appends a new Source Version.
+    registry = SourceRegistry(tmp_path / "ingest")
+    first = registry.register_source("handbook", b"v1")
+    prior = _state_snapshot(registry)
+
+    with pytest.raises(SourceRegistryError, match="replacement is not available"):
+        registry.register_source("handbook", b"v2")
+
+    source = registry.get("handbook")
+    assert [v.content_hash for v in source.versions] == [first.content_hash]
+    # No mutation at all: the live and reloaded registry are byte-identical.
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+
+
+def test_second_register_error_does_not_echo_the_source_id(tmp_path):
+    # The id may carry secret-bearing material; the generic error must never
+    # echo it (mirrors the trigger-validation boundary contract).
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("handbook", b"v1")
+    secret_id = "sk-leaked-api-key"
+
+    with pytest.raises(SourceRegistryError) as exc:
+        registry.register_source(secret_id, b"v2")
+
+    assert secret_id not in str(exc.value)
+    assert "handbook" not in str(exc.value)
+
+
+def test_reactivation_is_the_only_path_that_appends_a_reviewed_new_version(
+    tmp_path,
+) -> None:
+    # register → retire publish → reactivation publish preserves the first
+    # immutable version and appends the second; register cannot append it.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    first = pipeline.register_source("policy", b"policy-v1")
+
+    # Registering again is refused even before retirement: the only way to add
+    # a version is the reviewed retire→reactivate path.
+    with pytest.raises(SourceRegistryError, match="replacement is not available"):
+        pipeline.register_source("policy", b"policy-v2")
+
+    retirement = pipeline.retire_source("policy")
+    pipeline.publish(retirement.id)
+    reactivation = pipeline.reactivate_source("policy", b"policy-v2")
+    pipeline.publish(reactivation.id)
+
+    active = store.source_registry.get("policy")
+    assert active.status == "active"
+    assert len(active.versions) == 2
+    assert active.versions[0].content_hash == first.content_hash
+    assert active.versions[1].content_hash != first.content_hash
+    assert active.versions[0].source_id == active.versions[1].source_id == "policy"
 
 
 def test_ingest_store_keeps_private_registry_outside_raw_and_proposal_trees(tmp_path):
@@ -473,8 +528,11 @@ def test_register_source_write_failure_restores_live_and_reloaded_state(
     prior = _state_snapshot(registry)
     monkeypatch.setattr(registry, "_write", _raise_registry_write)
 
+    # Register a NEW identity so the write path is reached (a second register
+    # of an existing id is refused before persistence — see
+    # test_second_register_of_active_source_is_refused_without_appending).
     with pytest.raises(OSError, match="registry persistence failed"):
-        registry.register_source("handbook", b"v2")
+        registry.register_source("manual", b"v1")
 
     assert _state_snapshot(registry) == prior
     assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
@@ -805,6 +863,81 @@ def test_retirement_candidate_rejects_trigger_outside_controlled_vocabulary(tmp_
     assert store.source_registry.list_candidates() == []
     # The source is unaffected.
     assert store.source_registry.get("policy").status == "active"
+
+
+# --- Final fix: safe source-id label contract at the registry boundary (#133) ---
+
+# A Knowledge Source id is a stable, Maintainer-authored lowercase ASCII label.
+# It must never carry a path, URL, content hash, whitespace/control character,
+# or an obvious credential prefix: a pasted credential (sk-..., token=...,
+# api-key...) must be rejected at the boundary without being echoed or
+# persisted. Defense in depth: the registry boundary check backs up the CLI and
+# Workshop so a crafted request can never bypass it.
+_INVALID_SOURCE_IDS = (
+    "",  # empty
+    "   ",  # whitespace only
+    "Policy",  # uppercase rejected (lowercase ASCII label only)
+    "pol icy",  # internal whitespace
+    "pol/icy",  # path separator
+    "pol\\icy",  # path separator (backslash)
+    "http://example.com/policy",  # URL
+    "s3://bucket/policy",  # object-store URI
+    "policy:v2",  # colon (scheme/credential separator)
+    "a" * 49,  # exceeds the 48-char maximum
+    "9policy",  # must start with a letter
+    "_policy",  # must start with a letter
+    "-policy",  # must start with a letter
+    "1" * 64,  # 64-char hash rejected (length + not a letter-led label)
+    "sk-abc123secret",  # credential prefix
+    "token-policy",  # credential prefix
+    "password-vault",  # credential prefix
+    "secret-handbook",  # credential prefix
+    "api-key-policy",  # credential prefix
+)
+
+
+@pytest.mark.parametrize("source_id", _INVALID_SOURCE_IDS)
+def test_register_rejects_invalid_source_id_without_persisting_or_echoing(
+    source_id, tmp_path
+) -> None:
+    registry = SourceRegistry(tmp_path / "ingest")
+    prior = _state_snapshot(registry)
+
+    with pytest.raises(SourceRegistryError) as exc:
+        registry.register_source(source_id, b"bytes")
+
+    # The rejected value is never echoed into the generic error. (The empty /
+    # whitespace cases are skipped: the empty string is trivially a substring
+    # of every message, so the echo check is only meaningful for real input.)
+    if source_id.strip():
+        assert source_id not in str(exc.value)
+    # Nothing was persisted and the live/reloaded registry is byte-identical.
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+
+
+def test_register_accepts_the_safe_label_contract(tmp_path) -> None:
+    # A Maintainer-authored lowercase ASCII label — letters, digits, dot,
+    # underscore, hyphen, letter-led, at most 48 chars — is accepted.
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("handbook", b"v1")
+    registry.register_source("policy.v2", b"v1")
+    registry.register_source("team_handbook", b"v1")
+    registry.register_source("release-notes", b"v1")
+    registry.register_source("a" * 48, b"v1")  # exactly the maximum length
+
+    ids = {source.source_id for source in registry.list()}
+    assert ids == {"handbook", "policy.v2", "team_handbook", "release-notes", "a" * 48}
+
+
+def test_pipeline_register_rejects_invalid_source_id(tmp_path) -> None:
+    # The ProposalPipeline delegates to the registry boundary check.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    with pytest.raises(SourceRegistryError):
+        pipeline.register_source("sk-leaked-key", b"bytes")
+    assert pipeline.list_sources() == []
 
 
 # --- Task 4 final fix: safe display of legacy persisted candidate triggers (#133) ---

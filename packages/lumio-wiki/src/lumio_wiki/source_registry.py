@@ -4,11 +4,26 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 import msgspec
+
+#: Controlled action vocabulary for a staged Source lifecycle transition (#133).
+#: Names the primitive strings used by ``PendingSourceTransition.action`` and
+#: :func:`safe_lifecycle_trigger_display` so the switch sites share one typed
+#: reference instead of repeating bare literals. Kept off the msgspec struct
+#: fields (which stay ``str``) so legacy/future persisted values still decode.
+SourceLifecycleAction = Literal["retire", "reactivate"]
+
+#: Controlled status vocabulary for a private Knowledge Source identity.
+SourceStatus = Literal["active", "retired"]
+
+#: Controlled status vocabulary for a Retirement Candidate review decision.
+RetirementCandidateStatus = Literal["pending", "confirmed", "dismissed"]
 
 
 class SourceRegistryError(ValueError):
@@ -71,6 +86,50 @@ def safe_candidate_trigger_display(trigger: str) -> str:
     if trigger in RETIREMENT_CANDIDATE_TRIGGERS:
         return trigger
     return RETIREMENT_CANDIDATE_TRIGGER_UNRECOGNIZED
+
+
+#: Maximum length of a Knowledge Source id label (#133).
+SOURCE_ID_MAX_LENGTH = 48
+
+#: Obvious credential prefixes a leaked secret is likely to start with. A
+#: pasted credential (``sk-...``, ``token=...``, ``password=...``) must be
+#: rejected at the boundary rather than persisted as a stable identity. The
+#: check is case-insensitive on the already-lowercased label.
+SOURCE_ID_CREDENTIAL_PREFIXES = (
+    "sk-",
+    "token",
+    "password",
+    "secret",
+    "api-key",
+)
+
+_SOURCE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9._-]*$")
+
+
+def _validate_source_id(source_id: str) -> str:
+    """Return ``source_id`` if it is a safe, stable Knowledge Source label.
+
+    A Knowledge Source id is a Maintainer-authored lowercase ASCII label that
+    starts with a letter, contains only letters/digits/``.``/``_``/``-``, and is
+    at most :data:`SOURCE_ID_MAX_LENGTH` characters. This rejects paths
+    (``/``), URLs and schemes (``://``/``:``), content hashes (length and a
+    non-letter lead), whitespace/control characters, uppercase, and obvious
+    credential prefixes (:data:`SOURCE_ID_CREDENTIAL_PREFIXES`). The value may
+    carry secret-bearing material, so the raised error is generic and NEVER
+    echoes the rejected value. This is the registry/pipeline boundary check;
+    the CLI and Workshop rely on it (defense in depth) so a crafted request
+    can never bypass it — mirroring :func:`_validate_retirement_trigger`.
+    """
+    if (
+        not isinstance(source_id, str)
+        or not (1 <= len(source_id) <= SOURCE_ID_MAX_LENGTH)
+        or not _SOURCE_ID_PATTERN.match(source_id)
+    ):
+        raise SourceRegistryError("source_id must be a lowercase ASCII label")
+    lowered = source_id.lower()
+    if any(lowered.startswith(prefix) for prefix in SOURCE_ID_CREDENTIAL_PREFIXES):
+        raise SourceRegistryError("source_id must be a lowercase ASCII label")
+    return source_id
 
 
 class SourceVersion(msgspec.Struct, frozen=True):
@@ -172,24 +231,25 @@ class SourceRegistry:
         return list(self._state.sources)
 
     def register_source(self, source_id: str, raw_bytes: bytes) -> SourceVersion:
-        """Append a version to an explicitly chosen active source identity."""
-        if not source_id.strip():
-            raise SourceRegistryError("source_id is required")
+        """Create a NEW Knowledge Source identity under an explicit stable id.
+
+        Register establishes a new identity only: it NEVER appends a version to
+        an already-known identity (active or retired). A second registration is
+        refused so unreviewed replacement cannot bypass review — reactivation is
+        the only reviewed path that appends a new Source Version (#133). The id
+        is validated at the boundary (:func:`_validate_source_id`) so a pasted
+        path, URL, content hash, or credential is never persisted, and the
+        refusal error never echoes the (possibly secret-bearing) id.
+        """
+        _validate_source_id(source_id)
+        if any(source.source_id == source_id for source in self._state.sources):
+            raise SourceRegistryError(
+                "Knowledge Source already registered; replacement is not "
+                "available through register — retire and reactivate to add a "
+                "reviewed new version"
+            )
         version = _source_version(source_id, raw_bytes)
         sources = list(self._state.sources)
-        for index, source in enumerate(sources):
-            if source.source_id != source_id:
-                continue
-            if source.status != "active":
-                raise SourceRegistryError(
-                    f"retired Knowledge Source {source_id!r} must be reactivated explicitly"
-                )
-            sources[index] = msgspec.structs.replace(
-                source,
-                versions=[*source.versions, version],
-            )
-            self._commit(msgspec.structs.replace(self._state, sources=sources))
-            return version
         sources.append(KnowledgeSource(source_id=source_id, status="active", versions=[version]))
         self._commit(msgspec.structs.replace(self._state, sources=sources))
         return version
@@ -320,7 +380,9 @@ class SourceRegistry:
         """
         return list(self._state.candidates)
 
-    def _decide_candidate(self, candidate_id: str, status: str) -> RetirementCandidate:
+    def _decide_candidate(
+        self, candidate_id: str, status: RetirementCandidateStatus
+    ) -> RetirementCandidate:
         candidates = list(self._state.candidates)
         for index, candidate in enumerate(candidates):
             if candidate.id != candidate_id:

@@ -74,6 +74,13 @@ class ProposalPipeline:
         return self._require_store().source_registry.register_source(source_id, raw_bytes)
 
     def _source_impacts(self, source_id: str) -> list[SourceChangeImpact]:
+        # Page-impact lookup matches the EXPLICIT registry ``source_id`` against
+        # the ALREADY-PUBLIC ``CompiledPage.sources[].id`` declared on each page
+        # (ADR-0014, decision A). The provenance id is part of portable public
+        # content; only the registry records/status/version history/candidates
+        # are private. No private source-to-page mapping is maintained: a
+        # registry id produces an impact only for a page that publicly declares
+        # it, so renaming a registered file can never create or retract support.
         registry = self._require_store().source_registry
         impacts: list[SourceChangeImpact] = []
         for page in self._kb.pages:

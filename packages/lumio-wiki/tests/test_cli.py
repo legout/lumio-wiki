@@ -1302,3 +1302,181 @@ def test_source_candidate_help_lists_controlled_trigger_choices(
     flat = re.sub(r"\s+", " ", out)
     for trigger in lw.RETIREMENT_CANDIDATE_TRIGGERS:
         assert trigger in flat
+
+
+# ---------------------------------------------------------------------------
+# source confirm-candidate: staged retirement through review (#133 final fix)
+# ---------------------------------------------------------------------------
+
+
+def _record_candidate(kb: Path, trigger: str = "watched file missing") -> str:
+    """Record a retirement candidate for ``policy`` and return its id."""
+    main(
+        [
+            "source",
+            "candidate",
+            str(kb),
+            "--source-id",
+            "policy",
+            "--trigger",
+            trigger,
+        ]
+    )
+    out = _capture_candidate_output(kb)
+    return out.split("candidate_id:")[1].split()[0]
+
+
+def _capture_candidate_output(kb: Path) -> str:
+    """Read the pending candidate id from the private registry (test only)."""
+    import json
+
+    registry = kb / ".lumio" / "ingest" / "source-registry" / "sources.json"
+    state = json.loads(registry.read_text())
+    for candidate in state.get("candidates", []):
+        if candidate["source_id"] == "policy":
+            return f"candidate_id: {candidate['id']}"
+    raise AssertionError("no candidate recorded for policy")
+
+
+def test_source_confirm_candidate_stages_retirement_proposal(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()  # drain register output
+    candidate_id = _record_candidate(source_kb)
+    capsys.readouterr()  # drain candidate output
+
+    rc = main(
+        [
+            "source",
+            "confirm-candidate",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--candidate-id",
+            candidate_id,
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Staged proposal" in out
+    assert "source_id:      policy" in out
+    # The candidate is marked confirmed and the source stays active until publish.
+    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    assert store.source_registry.get_candidate(candidate_id).status == "confirmed"
+    assert store.source_registry.get("policy").status == "active"
+
+
+def test_source_confirm_candidate_requires_explicit_ids(source_kb: Path) -> None:
+    # Both --source-id and --candidate-id are required by the parser.
+    with pytest.raises(SystemExit):
+        main(["source", "confirm-candidate", str(source_kb), "--source-id", "policy"])
+    with pytest.raises(SystemExit):
+        main(["source", "confirm-candidate", str(source_kb), "--candidate-id", "deadbeef"])
+
+
+def test_source_confirm_candidate_refuses_mismatched_source_id(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()  # drain register output
+    candidate_id = _record_candidate(source_kb)
+    capsys.readouterr()  # drain candidate output
+
+    rc = main(
+        [
+            "source",
+            "confirm-candidate",
+            str(source_kb),
+            "--source-id",
+            "wrong",
+            "--candidate-id",
+            candidate_id,
+        ]
+    )
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "does not belong" in err
+    # A mismatch is safe: the candidate stays pending and no proposal stages.
+    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    assert store.source_registry.get_candidate(candidate_id).status == "pending"
+    assert store.source_registry.get("policy").status == "active"
+    assert store.list() == []
+
+
+def test_source_confirm_candidate_leaves_source_active_until_publish(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()  # drain register output
+    candidate_id = _record_candidate(source_kb)
+    capsys.readouterr()  # drain candidate output
+    assert (
+        main(
+            [
+                "source",
+                "confirm-candidate",
+                str(source_kb),
+                "--source-id",
+                "policy",
+                "--candidate-id",
+                candidate_id,
+            ]
+        )
+        == 0
+    )
+    confirm_out = capsys.readouterr().out
+    proposal_id = _extract_proposal_id(confirm_out)
+
+    # The source is still active before the staged proposal publishes.
+    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    assert store.source_registry.get("policy").status == "active"
+    assert main(["publish", str(source_kb), proposal_id]) == 0
+    # Re-read from disk (each CLI command builds its own store instance, so the
+    # in-memory state above is stale after the publish wrote the file).
+    published_store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    assert published_store.source_registry.get("policy").status == "retired"
+
+
+# ---------------------------------------------------------------------------
+# register boundary: no duplicate creation, safe label contract (#133 final fix)
+# ---------------------------------------------------------------------------
+
+
+def test_source_duplicate_register_is_refused_without_mutation(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A second registration of an existing active id is refused generically and
+    # never appends a version (#133 final review).
+    assert _register_policy(source_kb, source_file) == 0
+    capsys.readouterr()  # drain first register
+    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    versions_before = len(store.source_registry.get("policy").versions)
+
+    rc = main(
+        ["source", "register", str(source_kb), "--source-id", "policy", "--file", str(source_file)]
+    )
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "replacement is not available" in err
+    # No mutation: the version count is unchanged and no second version appears.
+    source = store.source_registry.get("policy")
+    assert len(source.versions) == versions_before
+    assert source.status == "active"
+
+
+def test_source_register_rejects_invalid_source_id_safely(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A credential-shaped source id is rejected at the boundary; the rejected
+    # value is never echoed into the CLI output and nothing is persisted.
+    secret_id = "sk-leaked-api-key-1234567890"
+    rc = main(
+        ["source", "register", str(source_kb), "--source-id", secret_id, "--file", str(source_file)]
+    )
+    assert rc != 0
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert secret_id not in combined
+    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    assert all(s.source_id != secret_id for s in store.source_registry.list())
