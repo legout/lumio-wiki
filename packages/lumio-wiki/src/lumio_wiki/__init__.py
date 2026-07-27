@@ -112,6 +112,14 @@ from lumio_wiki.maintenance import (
     stage_dream_repairs,
     stage_relationship_proposal,
 )
+from lumio_wiki.semantic_maintenance import (
+    MissingSemanticExtraError,
+    SemanticDreamReviewer,
+    SemanticFinding,
+    SemanticMaintenanceError,
+    SemanticReviewReport,
+    SemanticStagingResult,
+)
 from lumio_wiki.okf import (
     OKF_PROFILE1_QUERY,
     OKF_PROFILE_NAME,
@@ -327,6 +335,12 @@ __all__ = [
     "S3Pointer",
     "SEED_CATEGORY_CATALOG",
     "S3PublicationConflict",
+    "SemanticDreamReviewer",
+    "SemanticFinding",
+    "SemanticMaintenanceError",
+    "SemanticReviewReport",
+    "SemanticStagingResult",
+    "MissingSemanticExtraError",
     "Source",
     "SourceFingerprint",
     "StructuralGraphReport",

@@ -1006,15 +1006,25 @@ def _cmd_cross_link(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_dream(args: argparse.Namespace) -> int:
-    """Run the Dream Cycle: reflect on KB health, then optionally stage repairs.
+def _print_semantic_findings(findings) -> None:
+    """Print semantic findings in stable kind groups for Maintainer review."""
+    grouped = {kind: [] for kind in ("contradiction", "stale", "summary")}
+    for finding in findings:
+        grouped.setdefault(finding.kind, []).append(finding)
+    for kind in ("contradiction", "stale", "summary"):
+        entries = grouped[kind]
+        print(f"semantic_{kind}: {len(entries)}")
+        for finding in entries:
+            print(f"  - pages: {', '.join(finding.pages)}")
+            print(f"    reason: {finding.reason}")
+            if finding.lifecycle:
+                print(f"    lifecycle: {finding.lifecycle}")
+            if finding.summary:
+                print(f"    summary: {finding.summary}")
 
-    The reflection is read-only and model-free (ADR-0015): validation status,
-    Discovery Graph health, structural diagnostics for both scopes, and the
-    missing-link candidates ranked by Discovery Graph impact. With
-    ``--stage``, the top ``--limit`` repairs are staged as ordinary
-    reviewable Ingest Proposals. Exits 1 when the Knowledge Base is invalid.
-    """
+
+def _cmd_dream(args: argparse.Namespace) -> int:
+    """Run deterministic reflection, then optional semantic review and staging."""
     kb, _load_report = _load_kb(args.path)
     index_dir = _resolve_index_dir(args, kb.root)
     report = lumio_wiki.run_dream_cycle(args.path, index_dir=index_dir)
@@ -1033,11 +1043,44 @@ def _cmd_dream(args: argparse.Namespace) -> int:
         print("top candidates (by Discovery Graph impact):")
         _print_ranked_candidates(report.ranked_candidates, args.limit)
     _print_validation_issues(lint.validation_report)
+
+    if args.semantic:
+        from lumio_wiki.semantic_maintenance import (
+            MissingSemanticExtraError,
+            SemanticDreamReviewer,
+            SemanticMaintenanceError,
+        )
+
+        try:
+            if args.semantic_limit < 1:
+                raise CliError("--semantic-limit must be >= 1")
+            reviewer = SemanticDreamReviewer(
+                kb, model=os.environ.get("LUMIO_PROVIDER_MODEL"), max_pages=args.semantic_limit
+            )
+            semantic_report = reviewer.review()
+        except (MissingSemanticExtraError, SemanticMaintenanceError) as exc:
+            raise CliError(str(exc)) from exc
+        print()
+        print("# Semantic Dream Review")
+        print(f"semantic_pages:       {len(semantic_report.pages)}")
+        _print_semantic_findings(semantic_report.findings)
+        if args.stage and semantic_report.findings:
+            ingest_dir = _resolve_ingest_dir(args, kb.root)
+            ingest_dir.mkdir(parents=True, exist_ok=True)
+            result = reviewer.stage_findings(
+                store=IngestStore(ingest_dir), report=semantic_report
+            )
+            print(f"semantic_staged_proposals: {len(result.staged)}")
+            for proposal in result.staged:
+                print(f"  staged: {proposal.id} pages={', '.join(proposal.affected_pages)}")
+            for finding, reason in result.skipped:
+                print(f"  skipped: {finding.kind} ({reason})")
+
     if args.stage and report.ranked_candidates:
         print()
         staged, skipped = _stage_candidates(args, kb, report.ranked_candidates, args.limit)
         _print_staging_outcome(args, staged, skipped)
-    return 0 if report.is_valid else 1
+    return 0 if lint.is_valid else 1
 
 
 def _detect_module(name: str) -> bool:
@@ -1618,7 +1661,18 @@ def build_parser() -> argparse.ArgumentParser:
     dream_parser.add_argument(
         "--stage",
         action="store_true",
-        help="Stage reviewable repair proposals for the top-ranked candidates.",
+        help="Stage deterministic repairs, and semantic findings when --semantic is set.",
+    )
+    dream_parser.add_argument(
+        "--semantic",
+        action="store_true",
+        help="Run the opt-in LLM-assisted contradiction, stale, and summary review.",
+    )
+    dream_parser.add_argument(
+        "--semantic-limit",
+        type=int,
+        default=25,
+        help="Max pages sent to one semantic review batch (default: 25).",
     )
     _add_ingest_dir_argument(dream_parser)
     dream_parser.set_defaults(func=_cmd_dream)
