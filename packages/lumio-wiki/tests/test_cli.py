@@ -1063,6 +1063,170 @@ def test_source_dismiss_candidate_refuses_mismatched_source_id(
     assert store.list() == []
 
 
+# --- #133 final review: secret-bearing invalid source/candidate ids at the CLI ---
+#
+# A crafted CLI request with a secret-bearing source/candidate id must fail
+# with a GENERIC error: the secret, path, and hash never reach stdout/stderr,
+# and no state mutates (no proposal staged, candidate/source unchanged).
+
+_SECRET_SOURCE_ID = "sk-leaked-api-key;token=abc123"
+_SECRET_CANDIDATE_ID = "/var/lib/lumio/secret.key"
+
+
+def test_source_retire_rejects_secret_bearing_source_id(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()  # drain register output
+    rc = main(["source", "retire", str(source_kb), "--source-id", _SECRET_SOURCE_ID])
+    assert rc == 1
+    combined = capsys.readouterr()
+    assert _SECRET_SOURCE_ID not in (combined.out + combined.err)
+    assert "secret.key" not in combined.err
+    # No mutation: no proposal staged.
+    assert lw.IngestStore(source_kb / ".lumio" / "ingest").list() == []
+
+
+def test_source_reactivate_rejects_secret_bearing_source_id(
+    source_kb: Path, source_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()  # drain register output
+    replacement = tmp_path / "replacement.md"
+    replacement.write_text("# replacement\n", encoding="utf-8")
+    rc = main(
+        [
+            "source",
+            "reactivate",
+            str(source_kb),
+            "--source-id",
+            _SECRET_SOURCE_ID,
+            "--file",
+            str(replacement),
+        ]
+    )
+    assert rc == 1
+    combined = capsys.readouterr()
+    assert _SECRET_SOURCE_ID not in (combined.out + combined.err)
+    assert lw.IngestStore(source_kb / ".lumio" / "ingest").list() == []
+
+
+def test_source_dismiss_rejects_secret_bearing_candidate_id(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()
+    candidate_id = _record_candidate_cli(source_kb, capsys)
+    rc = main(
+        [
+            "source",
+            "dismiss-candidate",
+            str(source_kb),
+            "--candidate-id",
+            _SECRET_CANDIDATE_ID,
+            "--source-id",
+            "policy",
+        ]
+    )
+    assert rc == 1
+    combined = capsys.readouterr()
+    assert _SECRET_CANDIDATE_ID not in (combined.out + combined.err)
+    # No mutation: the real candidate stays pending.
+    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    assert store.source_registry.get_candidate(candidate_id).status == "pending"
+
+
+def test_source_confirm_rejects_secret_bearing_candidate_id(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()
+    candidate_id = _record_candidate_cli(source_kb, capsys)
+    rc = main(
+        [
+            "source",
+            "confirm-candidate",
+            str(source_kb),
+            "--candidate-id",
+            _SECRET_CANDIDATE_ID,
+            "--source-id",
+            "policy",
+        ]
+    )
+    assert rc == 1
+    combined = capsys.readouterr()
+    assert _SECRET_CANDIDATE_ID not in (combined.out + combined.err)
+    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    assert store.source_registry.get_candidate(candidate_id).status == "pending"
+    assert store.list() == []
+
+
+def test_source_dismiss_rejects_secret_bearing_source_id(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()
+    candidate_id = _record_candidate_cli(source_kb, capsys)
+    rc = main(
+        [
+            "source",
+            "dismiss-candidate",
+            str(source_kb),
+            "--candidate-id",
+            candidate_id,
+            "--source-id",
+            _SECRET_SOURCE_ID,
+        ]
+    )
+    assert rc == 1
+    combined = capsys.readouterr()
+    assert _SECRET_SOURCE_ID not in (combined.out + combined.err)
+    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    assert store.source_registry.get_candidate(candidate_id).status == "pending"
+
+
+def test_source_confirm_rejects_secret_bearing_source_id(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()
+    candidate_id = _record_candidate_cli(source_kb, capsys)
+    rc = main(
+        [
+            "source",
+            "confirm-candidate",
+            str(source_kb),
+            "--candidate-id",
+            candidate_id,
+            "--source-id",
+            _SECRET_SOURCE_ID,
+        ]
+    )
+    assert rc == 1
+    combined = capsys.readouterr()
+    assert _SECRET_SOURCE_ID not in (combined.out + combined.err)
+    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    assert store.source_registry.get_candidate(candidate_id).status == "pending"
+    assert store.list() == []
+
+
+def _record_candidate_cli(source_kb: Path, capsys: pytest.CaptureFixture[str]) -> str:
+    """Record a ``policy`` retirement candidate via the CLI; return its id."""
+    main(
+        [
+            "source",
+            "candidate",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--trigger",
+            "object store unavailable",
+        ]
+    )
+    candidate_out = capsys.readouterr().out
+    return candidate_out.split("candidate_id:")[1].split()[0]
+
+
 def test_source_retire_impacts_only_pages_declaring_the_source_id(
     source_kb: Path, source_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1148,6 +1312,40 @@ def test_source_reactivate_stages_new_version_under_existing_id(
     assert len(active.versions) == 2
     assert active.versions[0].source_id == active.versions[1].source_id == "policy"
     assert active.versions[0].content_hash != active.versions[1].content_hash
+
+
+def test_source_reactivation_impact_counts_reactivated_source_as_support(
+    source_kb: Path, source_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #133 final review: reactivation evaluates support AFTER including the
+    # reactivated source, so the sole-source ``CLI Page`` is still-supported
+    # (not sole-source-lost, which is the retirement outcome for the same page).
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()  # drain register output
+    assert main(["source", "retire", str(source_kb), "--source-id", "policy"]) == 0
+    retire_id = _extract_proposal_id(capsys.readouterr().out)
+    assert main(["publish", str(source_kb), retire_id]) == 0
+    capsys.readouterr()  # drain publish output
+
+    replacement = tmp_path / "replacement.md"
+    replacement.write_text("# replacement policy bytes\n", encoding="utf-8")
+    rc = main(
+        [
+            "source",
+            "reactivate",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--file",
+            str(replacement),
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Action-aware: the reactivated source itself restores support, so the
+    # sole-source CLI Page renders still-supported.
+    assert "still-supported: CLI Page" in out
+    assert "sole-source-lost" not in out
 
 
 # ---------------------------------------------------------------------------

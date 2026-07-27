@@ -40,6 +40,7 @@ from lumio_wiki.source_registry import (
     RetirementCandidate,
     SourceRegistryError,
     SourceVersion,
+    _validate_source_id,
 )
 
 
@@ -70,10 +71,19 @@ class ProposalPipeline:
         return self._store
 
     def register_source(self, source_id: str, raw_bytes: bytes) -> SourceVersion:
-        """Register bytes under an explicit, stable Knowledge Source identity."""
+        """Register bytes under an explicit, stable Knowledge Source identity.
+
+        #133 final review: explicit ``source register`` is the managed-lifecycle
+        boundary for this iteration — the reviewed path that establishes a
+        private Source identity (and the only ordinary-ingest path that records
+        a ``source.register`` audit event). Ordinary file ingest (the legacy
+        ``ingest`` CLI / Workshop upload / protocol) is intentionally OUTSIDE
+        #133 and is left unchanged: it never establishes or mutates a private
+        Source identity.
+        """
         return self._require_store().source_registry.register_source(source_id, raw_bytes)
 
-    def _source_impacts(self, source_id: str) -> list[SourceChangeImpact]:
+    def _source_impacts(self, source_id: str, action: str) -> list[SourceChangeImpact]:
         # Page-impact lookup matches the EXPLICIT registry ``source_id`` against
         # the ALREADY-PUBLIC ``CompiledPage.sources[].id`` declared on each page
         # (ADR-0014, decision A). The provenance id is part of portable public
@@ -81,11 +91,25 @@ class ProposalPipeline:
         # are private. No private source-to-page mapping is maintained: a
         # registry id produces an impact only for a page that publicly declares
         # it, so renaming a registered file can never create or retract support.
+        #
+        # The computation is ACTION-AWARE (#133 final review). Retirement
+        # evaluates support AFTER excluding the retiring source: a page whose
+        # only active support is that source is sole-source-lost. Reactivation
+        # evaluates support AFTER including the reactivated source — it will be
+        # active once the proposal publishes — so EVERY affected page sourced by
+        # that id is still-supported (the reactivated source itself restores
+        # support). The allowed vocabulary stays exactly still-supported /
+        # sole-source-lost.
         registry = self._require_store().source_registry
         impacts: list[SourceChangeImpact] = []
         for page in self._kb.pages:
             page_source_ids = [source.id for source in page.sources]
             if source_id not in page_source_ids:
+                continue
+            if action == "reactivate":
+                # The reactivated source itself provides support after
+                # publication, so the page is always still-supported.
+                impacts.append(SourceChangeImpact(page.title, "still-supported"))
                 continue
             has_other_active_support = False
             for other_id in page_source_ids:
@@ -144,7 +168,7 @@ class ProposalPipeline:
             action="retire",
             source_id=source_id,
             trigger=f"source {source_id} retired",
-            impacts=self._source_impacts(source_id),
+            impacts=self._source_impacts(source_id, "retire"),
         )
         proposal = self._source_change_proposal(change)
         self._bind_and_persist(transition, proposal)
@@ -158,7 +182,7 @@ class ProposalPipeline:
             action="reactivate",
             source_id=source_id,
             trigger=f"source {source_id} reactivated",
-            impacts=self._source_impacts(source_id),
+            impacts=self._source_impacts(source_id, "reactivate"),
         )
         proposal = self._source_change_proposal(change)
         self._bind_and_persist(transition, proposal)
@@ -177,9 +201,14 @@ class ProposalPipeline:
         Knowledge Source or the dismissal is refused without mutating state.
         Mutating callers (the CLI) use this to require explicit source identity;
         programmatic callers that omit it keep the original behavior.
+
+        #133 final review: ``expected_source_id`` is validated at the boundary
+        BEFORE the mismatch check so a secret-bearing value is rejected
+        generically and never interpolated into the mismatch error.
         """
         registry = self._require_store().source_registry
         if expected_source_id is not None:
+            _validate_source_id(expected_source_id)
             candidate = registry.get_candidate(candidate_id)
             if candidate.source_id != expected_source_id:
                 raise SourceRegistryError(
@@ -201,6 +230,8 @@ class ProposalPipeline:
         can never stage a retirement for (or audit) the wrong source.
         """
         registry = self._require_store().source_registry
+        if expected_source_id is not None:
+            _validate_source_id(expected_source_id)
         candidate = registry.get_candidate(candidate_id)
         if expected_source_id is not None and candidate.source_id != expected_source_id:
             raise SourceRegistryError(

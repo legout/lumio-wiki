@@ -346,29 +346,63 @@ def test_reactivation_appends_new_version_and_activates_only_after_publish(tmp_p
     assert active.versions[0].content_hash != active.versions[1].content_hash
 
 
-@pytest.mark.parametrize(
-    ("source_ids", "expected_status"),
-    [
-        (["policy"], "sole-source-lost"),
-        (["policy", "independent"], "still-supported"),
-    ],
-)
-def test_public_reactivation_impact_uses_only_allowed_current_support_vocabulary(
-    tmp_path, source_ids, expected_status
-) -> None:
-    kb = _knowledge_base(tmp_path, source_ids)
+# --- #133 final review: action-aware lifecycle impact computation ---
+#
+# Retirement evaluates support AFTER excluding the retiring source (a sole
+# source is sole-source-lost). Reactivation evaluates support AFTER including
+# the reactivated source — it will be active once the proposal publishes — so
+# EVERY affected page sourced by that id is still-supported, even a page that
+# would be sole-source-lost under retirement. The allowed vocabulary stays
+# exactly still-supported / sole-source-lost.
+
+
+def test_reactivation_impact_counts_the_reactivated_source_as_support(tmp_path) -> None:
+    # Sole-source reactivation: the "Policy" page is sourced ONLY by "policy".
+    # Under retirement this would be sole-source-lost; under reactivation the
+    # reactivated source itself restores support, so the page is still-supported.
+    kb = _knowledge_base(tmp_path, ["policy"])
     store = lw.IngestStore(tmp_path / "ingest")
     pipeline = lw.ProposalPipeline(kb, store)
-    for source_id in source_ids:
-        pipeline.register_source(source_id, source_id.encode())
-    retirement = pipeline.retire_source("policy")
-    pipeline.publish(retirement.id)
+    pipeline.register_source("policy", b"policy-v1")
+    pipeline.publish(pipeline.retire_source("policy").id)
 
     reactivation = pipeline.reactivate_source("policy", b"policy-v2")
 
     statuses = {impact.status for impact in reactivation.source_change.impacts}
-    assert statuses == {expected_status}
+    assert statuses == {"still-supported"}
     assert statuses <= {"still-supported", "sole-source-lost"}
+
+
+def test_reactivation_impact_with_independent_support_is_still_supported(tmp_path) -> None:
+    # With an independent active support, reactivation is still-supported and
+    # the vocabulary never leaves the allowed set.
+    kb = _knowledge_base(tmp_path, ["policy", "independent"])
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    for source_id in ("policy", "independent"):
+        pipeline.register_source(source_id, source_id.encode())
+    pipeline.publish(pipeline.retire_source("policy").id)
+
+    reactivation = pipeline.reactivate_source("policy", b"policy-v2")
+
+    statuses = {impact.status for impact in reactivation.source_change.impacts}
+    assert statuses == {"still-supported"}
+    assert statuses <= {"still-supported", "sole-source-lost"}
+
+
+def test_retirement_impact_remains_action_aware_for_a_sole_source(tmp_path) -> None:
+    # Contrast: retirement of the SAME sole source is sole-source-lost. The
+    # computation is action-aware — retirement excludes the retiring source,
+    # reactivation includes it — so the two actions diverge on a sole source.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+
+    retirement = pipeline.retire_source("policy")
+
+    statuses = {impact.status for impact in retirement.source_change.impacts}
+    assert statuses == {"sole-source-lost"}
 
 
 def test_terminal_proposal_persistence_failure_keeps_reactivation_state_unchanged(
@@ -938,6 +972,211 @@ def test_pipeline_register_rejects_invalid_source_id(tmp_path) -> None:
     with pytest.raises(SourceRegistryError):
         pipeline.register_source("sk-leaked-key", b"bytes")
     assert pipeline.list_sources() == []
+
+
+# --- #133 final review: safe lifecycle identifiers at EVERY boundary ---
+#
+# _validate_source_id runs in get, retire/reactivate, candidate record, and the
+# expected-source checks; candidate ids must be UUID-hex-shaped. A
+# secret-bearing invalid source/candidate id is rejected at the boundary with a
+# GENERIC error that never echoes the value, and never mutates state. Defense
+# in depth: the registry boundary backs up the CLI and Workshop.
+
+# Secret-bearing / structural-invalid identifiers a crafted request might use to
+# probe the registry lookup or interpolate into an error message.
+_SECRET_SOURCE_IDS = (
+    "sk-leaked-api-key",
+    "token=abc123",
+    "/secret/credentials.key",
+    "s3://bucket/leaked",
+)
+_SECRET_CANDIDATE_IDS = (
+    "sk-leaked-api-key",
+    "token=abc123;password=hunter2",
+    "/var/lib/lumio/secret.key",
+    "not-a-uuid-hex",
+    "deadbeef",  # too short to be a 32-char uuid hex
+)
+
+
+@pytest.mark.parametrize("source_id", _SECRET_SOURCE_IDS)
+def test_registry_get_rejects_secret_bearing_source_id_without_echoing(
+    source_id, tmp_path
+) -> None:
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("policy", b"v1")
+
+    with pytest.raises(SourceRegistryError) as exc:
+        registry.get(source_id)
+
+    assert source_id not in str(exc.value)
+
+
+@pytest.mark.parametrize("source_id", _SECRET_SOURCE_IDS)
+def test_registry_stage_retirement_rejects_secret_bearing_source_id(
+    source_id, tmp_path
+) -> None:
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("policy", b"v1")
+    prior = _state_snapshot(registry)
+
+    with pytest.raises(SourceRegistryError) as exc:
+        registry.stage_retirement(source_id)
+
+    assert source_id not in str(exc.value)
+    # No mutation: no pending transition was bound.
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+
+
+@pytest.mark.parametrize("source_id", _SECRET_SOURCE_IDS)
+def test_registry_stage_reactivation_rejects_secret_bearing_source_id(
+    source_id, tmp_path
+) -> None:
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("policy", b"v1")
+    prior = _state_snapshot(registry)
+
+    with pytest.raises(SourceRegistryError) as exc:
+        registry.stage_reactivation(source_id, b"bytes")
+
+    assert source_id not in str(exc.value)
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+
+
+@pytest.mark.parametrize("source_id", _SECRET_SOURCE_IDS)
+def test_registry_record_candidate_rejects_secret_bearing_source_id(
+    source_id, tmp_path
+) -> None:
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("policy", b"v1")
+    prior = _state_snapshot(registry)
+
+    with pytest.raises(SourceRegistryError) as exc:
+        registry.record_retirement_candidate(source_id, "watched file missing")
+
+    assert source_id not in str(exc.value)
+    # No candidate recorded.
+    assert registry.list_candidates() == []
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+
+
+@pytest.mark.parametrize("candidate_id", _SECRET_CANDIDATE_IDS)
+def test_registry_get_candidate_rejects_secret_bearing_candidate_id(
+    candidate_id, tmp_path
+) -> None:
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("policy", b"v1")
+    real = registry.record_retirement_candidate("policy", "watched file missing")
+
+    with pytest.raises(SourceRegistryError) as exc:
+        registry.get_candidate(candidate_id)
+
+    assert candidate_id not in str(exc.value)
+    # The real candidate is untouched.
+    assert registry.get_candidate(real.id).id == real.id
+
+
+@pytest.mark.parametrize("candidate_id", _SECRET_CANDIDATE_IDS)
+def test_registry_decide_candidate_rejects_secret_bearing_candidate_id(
+    candidate_id, tmp_path
+) -> None:
+    # The registry-level confirm/dismiss must validate the candidate id before
+    # lookup or interpolation, so a secret-bearing id is rejected generically
+    # and the real candidate is left pending.
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("policy", b"v1")
+    real = registry.record_retirement_candidate("policy", "watched file missing")
+    prior = _state_snapshot(registry)
+
+    with pytest.raises(SourceRegistryError) as exc:
+        registry.confirm_retirement_candidate(candidate_id)
+    assert candidate_id not in str(exc.value)
+
+    with pytest.raises(SourceRegistryError) as exc:
+        registry.dismiss_retirement_candidate(candidate_id)
+    assert candidate_id not in str(exc.value)
+
+    assert _state_snapshot(registry) == prior
+    assert registry.get_candidate(real.id).status == "pending"
+
+
+@pytest.mark.parametrize("source_id", _SECRET_SOURCE_IDS)
+def test_pipeline_dismiss_validates_expected_source_id_before_mutating(
+    source_id, tmp_path
+) -> None:
+    # A secret-bearing expected source id must be rejected before the mismatch
+    # check can interpolate it, leaving the candidate pending (no mutation).
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
+
+    with pytest.raises(SourceRegistryError) as exc:
+        pipeline.dismiss_retirement_candidate(candidate.id, expected_source_id=source_id)
+
+    assert source_id not in str(exc.value)
+    assert store.source_registry.get_candidate(candidate.id).status == "pending"
+    assert store.source_registry.get("policy").status == "active"
+
+
+@pytest.mark.parametrize("source_id", _SECRET_SOURCE_IDS)
+def test_pipeline_confirm_validates_expected_source_id_before_staging(
+    source_id, tmp_path
+) -> None:
+    # A secret-bearing expected source id must be rejected before staging a
+    # retirement proposal or mutating the candidate.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
+
+    with pytest.raises(SourceRegistryError) as exc:
+        pipeline.confirm_retirement_candidate(candidate.id, expected_source_id=source_id)
+
+    assert source_id not in str(exc.value)
+    assert store.source_registry.get_candidate(candidate.id).status == "pending"
+    assert store.source_registry.get("policy").status == "active"
+    assert pipeline.list() == []
+
+
+@pytest.mark.parametrize("candidate_id", _SECRET_CANDIDATE_IDS)
+def test_pipeline_dismiss_rejects_secret_bearing_candidate_id(
+    candidate_id, tmp_path
+) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
+
+    with pytest.raises(SourceRegistryError) as exc:
+        pipeline.dismiss_retirement_candidate(candidate_id, expected_source_id="policy")
+
+    assert candidate_id not in str(exc.value)
+    assert store.source_registry.get_candidate(candidate.id).status == "pending"
+
+
+@pytest.mark.parametrize("candidate_id", _SECRET_CANDIDATE_IDS)
+def test_pipeline_confirm_rejects_secret_bearing_candidate_id(
+    candidate_id, tmp_path
+) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
+
+    with pytest.raises(SourceRegistryError) as exc:
+        pipeline.confirm_retirement_candidate(candidate_id, expected_source_id="policy")
+
+    assert candidate_id not in str(exc.value)
+    assert store.source_registry.get_candidate(candidate.id).status == "pending"
+    assert pipeline.list() == []
 
 
 # --- Task 4 final fix: safe display of legacy persisted candidate triggers (#133) ---
