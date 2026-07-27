@@ -167,6 +167,41 @@ def test_dismissing_candidate_records_decision_without_staging_proposal(tmp_path
     assert pipeline.list() == []
 
 
+def test_dismiss_candidate_validates_expected_source_id_before_mutating(tmp_path) -> None:
+    # Issue #133: dismissing is mutating, so the caller must name the source
+    # the candidate belongs to. A mismatch is refused and leaves the candidate
+    # pending (no mutation, no proposal staged).
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+
+    with pytest.raises(SourceRegistryError, match="does not belong"):
+        pipeline.dismiss_retirement_candidate(candidate.id, expected_source_id="other")
+
+    assert store.source_registry.get_candidate(candidate.id).status == "pending"
+    assert store.source_registry.get("policy").status == "active"
+    assert pipeline.list() == []
+
+
+def test_dismiss_candidate_accepts_matching_expected_source_id(tmp_path) -> None:
+    # The optional expected source id must match exactly; a matching id
+    # dismisses the candidate (backward-compatible validation path).
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+
+    dismissed = pipeline.dismiss_retirement_candidate(candidate.id, expected_source_id="policy")
+
+    assert dismissed.status == "dismissed"
+    assert store.source_registry.get_candidate(candidate.id).status == "dismissed"
+    assert store.source_registry.get("policy").status == "active"
+    assert pipeline.list() == []
+
+
 def test_confirming_candidate_stages_retirement_and_records_decision(tmp_path) -> None:
     kb = _knowledge_base(tmp_path, ["policy"])
     store = IngestStore(tmp_path / "ingest")

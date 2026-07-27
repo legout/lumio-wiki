@@ -987,13 +987,79 @@ def test_source_dismiss_candidate_records_decision_without_staging(
     )
     candidate_out = capsys.readouterr().out
     candidate_id = candidate_out.split("candidate_id:")[1].split()[0]
-    rc = main(["source", "dismiss-candidate", str(source_kb), "--candidate-id", candidate_id])
+    rc = main(
+        [
+            "source",
+            "dismiss-candidate",
+            str(source_kb),
+            "--candidate-id",
+            candidate_id,
+            "--source-id",
+            "policy",
+        ]
+    )
     assert rc == 0
     dismiss_out = capsys.readouterr().out
     assert "dismissed" in dismiss_out
     # Dismiss records a decision without staging any proposal.
     store = lw.IngestStore(source_kb / ".lumio" / "ingest")
     assert store.source_registry.get_candidate(candidate_id).status == "dismissed"
+    assert store.list() == []
+
+
+def test_source_dismiss_candidate_requires_explicit_source_id(
+    source_kb: Path, source_file: Path
+) -> None:
+    # ``--source-id`` is required by the parser because dismissal mutates state.
+    _register_policy(source_kb, source_file)
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "source",
+                "dismiss-candidate",
+                str(source_kb),
+                "--candidate-id",
+                "deadbeef",
+            ]
+        )
+
+
+def test_source_dismiss_candidate_refuses_mismatched_source_id(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()  # drain register output
+    main(
+        [
+            "source",
+            "candidate",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--trigger",
+            "object store unavailable",
+        ]
+    )
+    candidate_out = capsys.readouterr().out
+    candidate_id = candidate_out.split("candidate_id:")[1].split()[0]
+
+    rc = main(
+        [
+            "source",
+            "dismiss-candidate",
+            str(source_kb),
+            "--candidate-id",
+            candidate_id,
+            "--source-id",
+            "wrong",
+        ]
+    )
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "does not belong" in err
+    # A mismatch must be safe: the candidate stays pending and nothing stages.
+    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    assert store.source_registry.get_candidate(candidate_id).status == "pending"
     assert store.list() == []
 
 

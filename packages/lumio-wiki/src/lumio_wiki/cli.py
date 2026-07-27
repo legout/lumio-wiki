@@ -1118,7 +1118,9 @@ def _cmd_source_candidate(args: argparse.Namespace) -> int:
 def _cmd_source_dismiss_candidate(args: argparse.Namespace) -> int:
     _kb, pipeline = _source_pipeline(args)
     try:
-        candidate = pipeline.dismiss_retirement_candidate(args.candidate_id)
+        candidate = pipeline.dismiss_retirement_candidate(
+            args.candidate_id, expected_source_id=args.source_id
+        )
     except (SourceRegistryError, ProposalPipelineError) as exc:
         raise CliError(str(exc), exit_code=1) from exc
     print(f"candidate_id:   {candidate.id}")
@@ -1689,10 +1691,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     source_dismiss = source_sub.add_parser(
         "dismiss-candidate",
-        help="Dismiss a Retirement Candidate without staging a proposal.",
+        help="Dismiss a Retirement Candidate for an explicit source.",
         description=(
-            "Dismiss a pending Retirement Candidate. Targets the candidate by "
-            "the id reported by `source candidate`; no proposal is staged."
+            "Dismiss a pending Retirement Candidate. Dismissal mutates state, "
+            "so both the candidate id (reported by `source candidate`) and the "
+            "Knowledge Source it must belong to are required; no proposal is "
+            "staged."
         ),
     )
     _add_kb_argument(source_dismiss)
@@ -1701,6 +1705,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--candidate-id",
         required=True,
         help="Candidate id reported by `source candidate`.",
+    )
+    source_dismiss.add_argument(
+        "--source-id",
+        required=True,
+        help="Knowledge Source the candidate must belong to.",
     )
     source_dismiss.set_defaults(func=_cmd_source_dismiss_candidate)
 

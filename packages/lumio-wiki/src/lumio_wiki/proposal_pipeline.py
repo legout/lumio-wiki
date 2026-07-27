@@ -161,9 +161,25 @@ class ProposalPipeline:
         """Record a retirement signal without staging or changing support."""
         return self._require_store().source_registry.record_retirement_candidate(source_id, trigger)
 
-    def dismiss_retirement_candidate(self, candidate_id: str) -> RetirementCandidate:
-        """Dismiss a candidate without staging a proposal."""
-        return self._require_store().source_registry.dismiss_retirement_candidate(candidate_id)
+    def dismiss_retirement_candidate(
+        self, candidate_id: str, expected_source_id: str | None = None
+    ) -> RetirementCandidate:
+        """Dismiss a candidate without staging a proposal.
+
+        When ``expected_source_id`` is given, the candidate must belong to that
+        Knowledge Source or the dismissal is refused without mutating state.
+        Mutating callers (the CLI) use this to require explicit source identity;
+        programmatic callers that omit it keep the original behavior.
+        """
+        registry = self._require_store().source_registry
+        if expected_source_id is not None:
+            candidate = registry.get_candidate(candidate_id)
+            if candidate.source_id != expected_source_id:
+                raise SourceRegistryError(
+                    f"retirement candidate {candidate_id!r} does not belong to "
+                    f"Knowledge Source {expected_source_id!r}"
+                )
+        return registry.dismiss_retirement_candidate(candidate_id)
 
     def confirm_retirement_candidate(self, candidate_id: str) -> IngestProposal:
         """Confirm a candidate by staging an ordinary retirement proposal."""
