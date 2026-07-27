@@ -185,6 +185,7 @@ from lumio_wiki.retrieval import (
     default_retrieval_adapter,
 )
 from lumio_wiki.source_registry import (
+    RETIREMENT_CANDIDATE_TRIGGERS,
     KnowledgeSource,
     RetirementCandidate,
     SourceRegistryError,
@@ -271,6 +272,7 @@ __all__ = [
     "KnowledgeSource",
     "LinkCandidate",
     "LinkImpactSignal",
+    "RETIREMENT_CANDIDATE_TRIGGERS",
     "RankedLinkCandidate",
     "MarkItDownSourceProcessor",
     "MANIFEST_OBJECT",

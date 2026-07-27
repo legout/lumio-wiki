@@ -15,6 +15,37 @@ class SourceRegistryError(ValueError):
     """A requested private Knowledge Source state transition is invalid."""
 
 
+#: Controlled vocabulary for Retirement Candidate triggers (#133).
+#:
+#: A Retirement Candidate must disclose *why* the signal was recorded using one
+#: of these Maintainer-chosen, pipeline-safe phrases. Free text is rejected at
+#: the registry/pipeline boundary so secret-bearing or arbitrary input can never
+#: be persisted or rendered. Every surface (CLI, Workshop) reads this single
+#: shared constant rather than inventing its own vocabulary.
+RETIREMENT_CANDIDATE_TRIGGERS = (
+    "watched file missing",
+    "failed read",
+    "object store unavailable",
+    "incomplete upload",
+)
+
+
+def _validate_retirement_trigger(trigger: str) -> str:
+    """Return ``trigger`` if it is in the controlled vocabulary.
+
+    Raises a :class:`SourceRegistryError` with a generic, input-free message
+    otherwise: a candidate trigger may carry secret-bearing material, so the
+    invalid value is never echoed into an exception or persisted. This is the
+    registry/pipeline boundary check; the CLI and Workshop rely on it (defense
+    in depth) so a crafted request can never bypass it.
+    """
+    if trigger not in RETIREMENT_CANDIDATE_TRIGGERS:
+        raise SourceRegistryError(
+            "retirement candidate trigger must be one of the supported signals"
+        )
+    return trigger
+
+
 class SourceVersion(msgspec.Struct, frozen=True):
     """An immutable content-hashed version recorded under one source identity."""
 
@@ -233,8 +264,7 @@ class SourceRegistry:
             raise SourceRegistryError(
                 f"Knowledge Source {source_id!r} must be active for retirement review"
             )
-        if not trigger.strip():
-            raise SourceRegistryError("retirement candidate trigger is required")
+        _validate_retirement_trigger(trigger)
         candidate = RetirementCandidate(
             id=uuid.uuid4().hex,
             source_id=source_id,

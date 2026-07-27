@@ -158,7 +158,7 @@ def test_dismissing_candidate_records_decision_without_staging_proposal(tmp_path
     store = IngestStore(tmp_path / "ingest")
     pipeline = ProposalPipeline(kb, store)
     pipeline.register_source("policy", b"policy-v1")
-    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
 
     dismissed = pipeline.dismiss_retirement_candidate(candidate.id)
 
@@ -175,7 +175,7 @@ def test_dismiss_candidate_validates_expected_source_id_before_mutating(tmp_path
     store = IngestStore(tmp_path / "ingest")
     pipeline = ProposalPipeline(kb, store)
     pipeline.register_source("policy", b"policy-v1")
-    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
 
     with pytest.raises(SourceRegistryError, match="does not belong"):
         pipeline.dismiss_retirement_candidate(candidate.id, expected_source_id="other")
@@ -192,7 +192,7 @@ def test_dismiss_candidate_accepts_matching_expected_source_id(tmp_path) -> None
     store = IngestStore(tmp_path / "ingest")
     pipeline = ProposalPipeline(kb, store)
     pipeline.register_source("policy", b"policy-v1")
-    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
 
     dismissed = pipeline.dismiss_retirement_candidate(candidate.id, expected_source_id="policy")
 
@@ -207,7 +207,7 @@ def test_confirming_candidate_stages_retirement_and_records_decision(tmp_path) -
     store = IngestStore(tmp_path / "ingest")
     pipeline = ProposalPipeline(kb, store)
     pipeline.register_source("policy", b"policy-v1")
-    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
 
     proposal = pipeline.confirm_retirement_candidate(candidate.id)
 
@@ -411,7 +411,7 @@ def test_private_registry_activity_does_not_change_kb_or_export_bytes(tmp_path) 
     )
 
     pipeline.register_source("policy", b"policy-v1")
-    pipeline.record_retirement_candidate("policy", "watcher missing")
+    pipeline.record_retirement_candidate("policy", "watched file missing")
     retirement = pipeline.retire_source("policy")
     pipeline.publish(retirement.id)
 
@@ -443,7 +443,7 @@ def test_confirming_a_dismissed_candidate_does_not_stage_retirement(tmp_path) ->
     store = IngestStore(tmp_path / "ingest")
     pipeline = ProposalPipeline(kb, store)
     pipeline.register_source("policy", b"policy-v1")
-    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
     pipeline.dismiss_retirement_candidate(candidate.id)
 
     with pytest.raises(SourceRegistryError, match="is not pending"):
@@ -521,7 +521,7 @@ def test_record_retirement_candidate_write_failure_restores_live_and_reloaded_st
     monkeypatch.setattr(registry, "_write", _raise_registry_write)
 
     with pytest.raises(OSError, match="registry persistence failed"):
-        registry.record_retirement_candidate("handbook", "watcher missing")
+        registry.record_retirement_candidate("handbook", "watched file missing")
 
     assert _state_snapshot(registry) == prior
     assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
@@ -532,7 +532,7 @@ def test_decide_candidate_write_failure_restores_live_and_reloaded_state(
 ) -> None:
     registry = SourceRegistry(tmp_path / "ingest")
     registry.register_source("handbook", b"v1")
-    candidate = registry.record_retirement_candidate("handbook", "watcher missing")
+    candidate = registry.record_retirement_candidate("handbook", "watched file missing")
     prior = _state_snapshot(registry)
     monkeypatch.setattr(registry, "_write", _raise_registry_write)
 
@@ -626,7 +626,7 @@ def test_confirm_candidate_decision_failure_leaves_no_staged_transition(
     store = IngestStore(tmp_path / "ingest")
     pipeline = ProposalPipeline(kb, store)
     pipeline.register_source("policy", b"policy-v1")
-    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
 
     def fail_decision(candidate_id):
         raise OSError("candidate decision failed")
@@ -698,13 +698,13 @@ def test_list_retirement_candidates_exposes_recorded_candidates_through_pipeline
     pipeline = ProposalPipeline(kb, store)
     assert pipeline.list_retirement_candidates() == []
     pipeline.register_source("policy", b"policy-v1")
-    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
 
     listed = pipeline.list_retirement_candidates()
 
     assert [item.id for item in listed] == [candidate.id]
     assert listed[0].source_id == "policy"
-    assert listed[0].trigger == "watcher missing"
+    assert listed[0].trigger == "watched file missing"
     assert listed[0].status == "pending"
 
 
@@ -723,7 +723,7 @@ def test_confirm_candidate_validates_expected_source_id_before_mutating(tmp_path
     store = IngestStore(tmp_path / "ingest")
     pipeline = ProposalPipeline(kb, store)
     pipeline.register_source("policy", b"policy-v1")
-    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
 
     with pytest.raises(SourceRegistryError, match="does not belong"):
         pipeline.confirm_retirement_candidate(candidate.id, expected_source_id="other")
@@ -740,7 +740,7 @@ def test_confirm_candidate_accepts_matching_expected_source_id(tmp_path) -> None
     store = IngestStore(tmp_path / "ingest")
     pipeline = ProposalPipeline(kb, store)
     pipeline.register_source("policy", b"policy-v1")
-    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
 
     proposal = pipeline.confirm_retirement_candidate(
         candidate.id, expected_source_id="policy"
@@ -748,4 +748,60 @@ def test_confirm_candidate_accepts_matching_expected_source_id(tmp_path) -> None
 
     assert proposal.source_change.action == "retire"
     assert store.source_registry.get_candidate(candidate.id).status == "confirmed"
+    assert store.source_registry.get("policy").status == "active"
+
+
+# --- Task 4 Terra fix: controlled retirement candidate trigger vocabulary (#133) ---
+
+# The exact controlled vocabulary a Retirement Candidate must disclose. Free
+# text is rejected so secret-bearing or arbitrary input can never be persisted
+# or rendered.
+_EXPECTED_RETIREMENT_TRIGGERS = (
+    "watched file missing",
+    "failed read",
+    "object store unavailable",
+    "incomplete upload",
+)
+
+
+def test_retirement_candidate_trigger_vocabulary_is_the_controlled_set() -> None:
+    # #133: the pipeline exposes ONE shared, public constant naming the only
+    # accepted candidate triggers, so every surface (CLI, Workshop) shares the
+    # exact safe vocabulary instead of each inventing its own.
+    assert tuple(lw.RETIREMENT_CANDIDATE_TRIGGERS) == _EXPECTED_RETIREMENT_TRIGGERS
+
+
+@pytest.mark.parametrize("trigger", _EXPECTED_RETIREMENT_TRIGGERS)
+def test_retirement_candidate_accepts_each_controlled_trigger(trigger, tmp_path) -> None:
+    # Each Maintainer-chosen signal is recorded verbatim and round-trips through
+    # the private registry (the disclosed trigger stays safe and escaped).
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+
+    candidate = pipeline.record_retirement_candidate("policy", trigger)
+
+    assert candidate.trigger == trigger
+    assert candidate.status == "pending"
+    assert store.source_registry.get_candidate(candidate.id).trigger == trigger
+
+
+def test_retirement_candidate_rejects_trigger_outside_controlled_vocabulary(tmp_path) -> None:
+    # A secret-bearing or arbitrary trigger is rejected at the registry boundary
+    # WITHOUT being persisted and WITHOUT being echoed into the error message.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+
+    secret = "password=hunter2;token=abc123"
+    with pytest.raises(SourceRegistryError) as exc:
+        pipeline.record_retirement_candidate("policy", secret)
+
+    # The error is generic and never echoes the secret-bearing trigger.
+    assert secret not in str(exc.value)
+    # No candidate was persisted.
+    assert store.source_registry.list_candidates() == []
+    # The source is unaffected.
     assert store.source_registry.get("policy").status == "active"

@@ -1232,3 +1232,49 @@ def test_source_reactivate_missing_file_reports_generic_error_without_path(
     assert str(missing) not in combined
     assert "absent-replacement.md" not in combined
     assert "Traceback" not in combined
+
+
+def test_source_candidate_rejects_trigger_outside_vocabulary_safely(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #133: a secret-bearing or arbitrary --trigger is rejected safely. The CLI
+    # never echoes the value into its output and never persists a candidate.
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()  # drain register output
+    secret = "password=hunter2;token=abc123"
+    rc = main(
+        [
+            "source",
+            "candidate",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--trigger",
+            secret,
+        ]
+    )
+    assert rc != 0
+    captured = capsys.readouterr()
+    # The secret-bearing trigger is never echoed into stdout or stderr.
+    assert secret not in captured.out
+    assert secret not in captured.err
+    # No candidate was persisted.
+    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    assert store.source_registry.list_candidates() == []
+
+
+def test_source_candidate_help_lists_controlled_trigger_choices(
+    source_kb: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The --trigger help documents the exact controlled vocabulary so a
+    # Maintainer knows the accepted signals without trial and error.
+    with pytest.raises(SystemExit):
+        main(["source", "candidate", str(source_kb), "--help"])
+    out = capsys.readouterr().out
+    # argparse wraps long help across lines; normalize whitespace (a display
+    # detail) before asserting each controlled signal is documented.
+    import re
+
+    flat = re.sub(r"\s+", " ", out)
+    for trigger in lw.RETIREMENT_CANDIDATE_TRIGGERS:
+        assert trigger in flat

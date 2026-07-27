@@ -43,6 +43,7 @@ from pathlib import Path
 
 import lumio_wiki
 from lumio_wiki import (
+    RETIREMENT_CANDIDATE_TRIGGERS,
     ControlFileError,
     IngestStore,
     KnowledgeBase,
@@ -1684,9 +1685,10 @@ def build_parser() -> argparse.ArgumentParser:
     source_candidate.add_argument(
         "--source-id", required=True, help="Active source identity."
     )
-    source_candidate.add_argument(
-        "--trigger", required=True, help="Signal that prompted the review."
+    _candidate_trigger_help = "Signal that prompted the review. One of: " + ", ".join(
+        repr(trigger) for trigger in RETIREMENT_CANDIDATE_TRIGGERS
     )
+    source_candidate.add_argument("--trigger", required=True, help=_candidate_trigger_help)
     source_candidate.set_defaults(func=_cmd_source_candidate)
 
     source_dismiss = source_sub.add_parser(
