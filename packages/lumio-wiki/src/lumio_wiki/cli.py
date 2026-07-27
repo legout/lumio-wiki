@@ -367,15 +367,26 @@ def _write_agents_md_section(agents_md: Path, kb_path: Path) -> None:
     if agents_md.exists():
         content = agents_md.read_text(encoding="utf-8")
         if _AGENTS_MD_MARKER in content:
-            # Replace the existing section (marker through the next blank-line gap
-            # before another `##` heading at the start of a line).
+            # Replace the existing section: the marker through the next `##`
+            # heading AFTER the section's own heading. The section the writer
+            # emits starts with its own `## Lumio Knowledge Base` heading, so
+            # the first `##` line after the marker belongs to the section
+            # itself and must not terminate the replaced span (otherwise each
+            # update prepends a fresh copy and duplicates the section).
             lines = content.split("\n")
             start = None
             end = len(lines)
+            own_heading_seen = False
             for i, line in enumerate(lines):
                 if _AGENTS_MD_MARKER in line:
                     start = i
-                elif start is not None and line.startswith("## ") and i > start:
+                    continue
+                if start is None:
+                    continue
+                if line.startswith("## "):
+                    if not own_heading_seen:
+                        own_heading_seen = True
+                        continue
                     end = i
                     break
             if start is not None:

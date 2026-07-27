@@ -799,6 +799,22 @@ def test_setup_updates_existing_agents_md(tmp_path, monkeypatch):
     assert "## Lumio Knowledge Base" in content  # section added
 
 
+def test_setup_repeated_run_never_duplicates_the_section(tmp_path, monkeypatch):
+    """Regression: repeated setup refreshes must not duplicate the KB section.
+
+    The writer's replace span runs from the marker to the next `##` heading
+    AFTER the section's own `## Lumio Knowledge Base` heading; terminating at
+    the section's own heading prepended a fresh copy on every refresh.
+    """
+    monkeypatch.chdir(tmp_path)
+    kb = tmp_path / "kb"
+    for _ in range(3):
+        assert main(["setup", str(kb)]) == 0
+    content = (tmp_path / "AGENTS.md").read_text()
+    assert content.count("## Lumio Knowledge Base") == 1
+    assert content.count("<!-- lumio-wiki-kb -->") == 1
+
+
 def test_setup_with_skill_install(tmp_path, monkeypatch, capsys):
     """setup --agent installs the skill into the agent's directory."""
     monkeypatch.chdir(tmp_path)
