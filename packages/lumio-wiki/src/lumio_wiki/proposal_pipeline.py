@@ -35,6 +35,7 @@ from lumio_wiki.ingest import (
 from lumio_wiki.publish import apply_proposed_pages, validate_candidate_knowledge_base
 from lumio_wiki.records import ValidationReport
 from lumio_wiki.source_registry import (
+    KnowledgeSource,
     PendingSourceTransition,
     RetirementCandidate,
     SourceRegistryError,
@@ -248,6 +249,17 @@ class ProposalPipeline:
         if self._store is None:
             return []
         return self._store.list()
+
+    def list_sources(self) -> list[KnowledgeSource]:
+        """List registered private Knowledge Source identities (read query).
+
+        Mirrors :meth:`list`: returns an empty list when the pipeline has no
+        store, so the CLI reads source identities through the public pipeline
+        seam instead of reaching into the ingest store's private registry.
+        """
+        if self._store is None:
+            return []
+        return self._store.source_registry.list()
 
     def discard(self, proposal_id: str) -> IngestProposal | None:
         """Mark a reviewable proposal as discarded."""

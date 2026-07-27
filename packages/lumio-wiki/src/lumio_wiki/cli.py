@@ -79,7 +79,16 @@ DEFAULT_INDEX_SUBDIR = "index"
 
 
 class CliError(Exception):
-    """A CLI command failed with a user-facing message and exit code."""
+    """A CLI command failed with a user-facing message and exit code.
+
+    ``exit_code`` defaults to ``2`` (the existing CLI convention for
+    user-facing errors). Source-lifecycle handlers override it to ``1`` to
+    preserve the verbatim not-found contract (issue #133).
+    """
+
+    def __init__(self, message: str, exit_code: int = 2) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
 
 
 def default_ingest_dir(kb_root: str | Path) -> Path:
@@ -1010,20 +1019,33 @@ def _cmd_skill_install(args: argparse.Namespace) -> int:
 
 
 def _source_pipeline(args: argparse.Namespace):
-    """Load the KB and construct a ProposalPipeline over the resolved ingest store."""
+    """Load the KB and construct a ProposalPipeline over the resolved ingest store.
+
+    Returns ``(kb, pipeline)``: the CLI speaks only to the public
+    :class:`ProposalPipeline` seam (including source reads via
+    :meth:`ProposalPipeline.list_sources`) and never reaches into the ingest
+    store's private registry directly.
+    """
     kb, _report = _load_kb(args.path)
     ingest_dir = _resolve_ingest_dir(args, kb.root)
     store = IngestStore(ingest_dir)
-    return kb, ProposalPipeline(kb, store=store), store
+    return kb, ProposalPipeline(kb, store=store)
 
 
-def _read_source_file(args: argparse.Namespace) -> bytes | None:
-    """Return the raw bytes of ``--file`` or print a safe error and return ``None``."""
+def _read_source_file(args: argparse.Namespace) -> bytes:
+    """Return the raw bytes of ``--file`` or raise a path-free :class:`CliError`.
+
+    The supplied path is never disclosed and existence/read races are caught:
+    a missing file or an :class:`OSError` during read becomes a single generic
+    user-facing error (exit code 1) with no traceback and no local path.
+    """
     source_path = Path(args.file)
-    if not source_path.is_file():
-        print(f"error: source file not found: {source_path}", file=sys.stderr)
-        return None
-    return source_path.read_bytes()
+    try:
+        if not source_path.is_file():
+            raise CliError("source file could not be read", exit_code=1)
+        return source_path.read_bytes()
+    except OSError:
+        raise CliError("source file could not be read", exit_code=1) from None
 
 
 def _report_source_lifecycle_proposal(proposal) -> None:
@@ -1041,16 +1063,16 @@ def _report_source_lifecycle_proposal(proposal) -> None:
 
 
 def _cmd_source_register(args: argparse.Namespace) -> int:
-    _kb, pipeline, store = _source_pipeline(args)
+    _kb, pipeline = _source_pipeline(args)
     raw_bytes = _read_source_file(args)
-    if raw_bytes is None:
-        return 1
     try:
         pipeline.register_source(args.source_id, raw_bytes)
     except (SourceRegistryError, ProposalPipelineError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    source = store.source_registry.get(args.source_id)
+        raise CliError(str(exc), exit_code=1) from exc
+    source = next(
+        (item for item in pipeline.list_sources() if item.source_id == args.source_id),
+        None,
+    )
     print(f"Registered Knowledge Source {args.source_id!r}")
     print(f"  source_id:      {source.source_id}")
     print(f"  status:         {source.status}")
@@ -1059,8 +1081,8 @@ def _cmd_source_register(args: argparse.Namespace) -> int:
 
 
 def _cmd_source_list(args: argparse.Namespace) -> int:
-    _kb, _pipeline, store = _source_pipeline(args)
-    sources = store.source_registry.list()
+    _kb, pipeline = _source_pipeline(args)
+    sources = pipeline.list_sources()
     if not sources:
         print("No registered Knowledge Sources.")
         return 0
@@ -1071,23 +1093,21 @@ def _cmd_source_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_source_retire(args: argparse.Namespace) -> int:
-    _kb, pipeline, _store = _source_pipeline(args)
+    _kb, pipeline = _source_pipeline(args)
     try:
         proposal = pipeline.retire_source(args.source_id)
     except (SourceRegistryError, ProposalPipelineError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        raise CliError(str(exc), exit_code=1) from exc
     _report_source_lifecycle_proposal(proposal)
     return 0
 
 
 def _cmd_source_candidate(args: argparse.Namespace) -> int:
-    _kb, pipeline, _store = _source_pipeline(args)
+    _kb, pipeline = _source_pipeline(args)
     try:
         candidate = pipeline.record_retirement_candidate(args.source_id, args.trigger)
     except (SourceRegistryError, ProposalPipelineError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        raise CliError(str(exc), exit_code=1) from exc
     print(f"candidate_id:   {candidate.id}")
     print(f"source_id:      {candidate.source_id}")
     print(f"trigger:        {candidate.trigger}")
@@ -1096,12 +1116,11 @@ def _cmd_source_candidate(args: argparse.Namespace) -> int:
 
 
 def _cmd_source_dismiss_candidate(args: argparse.Namespace) -> int:
-    _kb, pipeline, _store = _source_pipeline(args)
+    _kb, pipeline = _source_pipeline(args)
     try:
         candidate = pipeline.dismiss_retirement_candidate(args.candidate_id)
     except (SourceRegistryError, ProposalPipelineError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        raise CliError(str(exc), exit_code=1) from exc
     print(f"candidate_id:   {candidate.id}")
     print(f"source_id:      {candidate.source_id}")
     print(f"status:         {candidate.status}")
@@ -1109,15 +1128,12 @@ def _cmd_source_dismiss_candidate(args: argparse.Namespace) -> int:
 
 
 def _cmd_source_reactivate(args: argparse.Namespace) -> int:
-    _kb, pipeline, _store = _source_pipeline(args)
+    _kb, pipeline = _source_pipeline(args)
     raw_bytes = _read_source_file(args)
-    if raw_bytes is None:
-        return 1
     try:
         proposal = pipeline.reactivate_source(args.source_id, raw_bytes)
     except (SourceRegistryError, ProposalPipelineError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        raise CliError(str(exc), exit_code=1) from exc
     _report_source_lifecycle_proposal(proposal)
     return 0
 
@@ -1730,7 +1746,7 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except CliError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return 2
+        return exc.exit_code
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -626,3 +626,24 @@ def test_discard_cancel_failure_restores_reviewable_proposal(tmp_path, monkeypat
     assert lw.is_reviewable_proposal(restored)
     with pytest.raises(SourceRegistryError, match="already has a pending transition"):
         pipeline.retire_source("policy")
+
+
+# --- Task 3: ProposalPipeline as the CLI read seam for source listing ---
+
+
+def test_list_sources_exposes_registered_identities_through_the_pipeline(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    assert pipeline.list_sources() == []
+    pipeline.register_source("policy", b"policy-v1")
+    sources = pipeline.list_sources()
+    assert [source.source_id for source in sources] == ["policy"]
+    assert sources[0].status == "active"
+    assert len(sources[0].versions) == 1
+
+
+def test_list_sources_without_store_returns_empty(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    pipeline = ProposalPipeline(kb)
+    assert pipeline.list_sources() == []

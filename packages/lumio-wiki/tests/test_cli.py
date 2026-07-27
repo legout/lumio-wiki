@@ -998,11 +998,28 @@ def test_source_dismiss_candidate_records_decision_without_staging(
 
 
 def test_source_retire_impacts_only_pages_declaring_the_source_id(
-    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+    source_kb: Path, source_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # A renamed file registered under ``policy`` cannot create support: only a
-    # Compiled Page whose ``sources[].id: policy`` produces its impact.
-    _register_policy(source_kb, source_file)
+    # A renamed copy of the fixture source, registered under ``policy``, cannot
+    # create support: only a Compiled Page whose ``sources[].id: policy`` is
+    # impacted. The renamed filename and its bytes (which declare a different
+    # source id) never influence page-level support.
+    renamed = tmp_path / "renamed-policy-source.md"
+    shutil.copyfile(source_file, renamed)
+    assert (
+        main(
+            [
+                "source",
+                "register",
+                str(source_kb),
+                "--source-id",
+                "policy",
+                "--file",
+                str(renamed),
+            ]
+        )
+        == 0
+    )
     capsys.readouterr()  # drain register output
     assert main(["source", "retire", str(source_kb), "--source-id", "policy"]) == 0
     out = capsys.readouterr().out
@@ -1011,6 +1028,8 @@ def test_source_retire_impacts_only_pages_declaring_the_source_id(
     assert "Lumio Overview" not in out
     assert "Architecture" not in out
     assert "Technology Stack" not in out
+    # The renamed file path never leaks into the output.
+    assert str(renamed) not in out
 
 
 def test_source_reactivate_stages_new_version_under_existing_id(
@@ -1063,3 +1082,87 @@ def test_source_reactivate_stages_new_version_under_existing_id(
     assert len(active.versions) == 2
     assert active.versions[0].source_id == active.versions[1].source_id == "policy"
     assert active.versions[0].content_hash != active.versions[1].content_hash
+
+
+# ---------------------------------------------------------------------------
+# source file reads: safe errors with no path or traceback leakage
+# ---------------------------------------------------------------------------
+
+
+def test_source_register_missing_file_reports_generic_error_without_path(
+    source_kb: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A missing source file must produce a generic, path-free user-facing error.
+    missing = tmp_path / "does-not-exist.md"
+    rc = main(
+        ["source", "register", str(source_kb), "--source-id", "policy", "--file", str(missing)]
+    )
+    assert rc == 1
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    # The supplied path (and its filename) never reaches the user, and no
+    # traceback is leaked.
+    assert str(missing) not in combined
+    assert "does-not-exist.md" not in combined
+    assert "Traceback" not in combined
+
+
+def test_source_register_unreadable_file_reports_generic_error_without_path(
+    source_kb: Path,
+    source_file: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Existence/read race: the file exists but reading it raises OSError. The
+    # raw OSError text (which may carry a path or credentials) must never reach
+    # the user, and no traceback may leak.
+    real_read_bytes = Path.read_bytes
+
+    def raising_read_bytes(self: Path) -> bytes:
+        if self == source_file:
+            raise OSError("disk read failure at /secret/credentials.key")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", raising_read_bytes)
+
+    rc = _register_policy(source_kb, source_file)
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert str(source_file) not in combined
+    assert "/secret/credentials.key" not in combined
+    assert "disk read failure" not in combined
+    assert "Traceback" not in combined
+
+
+def test_source_reactivate_missing_file_reports_generic_error_without_path(
+    source_kb: Path, source_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # ``--file`` is read through the same safe helper for reactivate.
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()  # drain register output
+    retire_rc = main(["source", "retire", str(source_kb), "--source-id", "policy"])
+    retire_id = _extract_proposal_id(capsys.readouterr().out)
+    assert retire_rc == 0
+    assert main(["publish", str(source_kb), retire_id]) == 0
+    capsys.readouterr()  # drain publish output
+
+    missing = tmp_path / "absent-replacement.md"
+    rc = main(
+        [
+            "source",
+            "reactivate",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--file",
+            str(missing),
+        ]
+    )
+    assert rc == 1
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert str(missing) not in combined
+    assert "absent-replacement.md" not in combined
+    assert "Traceback" not in combined
