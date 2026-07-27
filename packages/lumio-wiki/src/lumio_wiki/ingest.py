@@ -1139,6 +1139,8 @@ __all__ = [
     "IngestProposal",
     "IngestStore",
     "ProposedPage",
+    "SourceChangeImpact",
+    "SourceLifecycleChange",
     "SourceProvenance",
     "TERMINAL_PROPOSAL_STATUSES",
     "compute_blast_radius",

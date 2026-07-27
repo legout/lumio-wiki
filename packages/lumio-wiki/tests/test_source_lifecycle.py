@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import msgspec
-import lumio_wiki as lw
+from pathlib import Path
 
+import lumio_wiki as lw
+import msgspec
+import pytest
 from lumio_wiki.ingest import (
     IngestProposal,
     IngestStore,
@@ -10,8 +12,47 @@ from lumio_wiki.ingest import (
     SourceLifecycleChange,
     SourceProvenance,
 )
+from lumio_wiki.proposal_pipeline import ProposalPipeline
 from lumio_wiki.records import ValidationReport
-from lumio_wiki.source_registry import SourceRegistry
+from lumio_wiki.source_registry import (
+    KnowledgeSource,
+    RetirementCandidate,
+    SourceRegistry,
+    SourceRegistryError,
+    SourceVersion,
+)
+
+
+def _knowledge_base(tmp_path: Path, source_ids: list[str]):
+    root = tmp_path / "kb"
+    root.mkdir()
+    source_lines = "\n".join(
+        f'  - id: "{source_id}"\n    title: "{source_id} source"' for source_id in source_ids
+    )
+    (root / "policy.md").write_text(
+        f"""---
+title: "Policy"
+aliases: []
+tags:
+  - "policy"
+summary: "The policy."
+lifecycle: "approved"
+visibility: "public"
+sources:
+{source_lines}
+relationships: []
+synthetic: false
+---
+
+# Policy
+
+Policy text.
+""",
+        encoding="utf-8",
+    )
+    kb, report = lw.load_knowledge_base(root)
+    assert report.is_valid, report
+    return kb
 
 
 def test_public_surface_exposes_serializable_source_lifecycle_records():
@@ -71,3 +112,234 @@ def test_proposal_source_lifecycle_metadata_round_trips_without_page_changes():
 
     assert decoded.proposed_pages == []
     assert decoded.source_change == change
+
+
+def test_retiring_final_support_stages_without_changing_active_source(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+
+    proposal = pipeline.retire_source("policy")
+
+    assert proposal.status == "staged"
+    assert proposal.source_change.action == "retire"
+    assert proposal.source_change.impacts == [SourceChangeImpact("Policy", "sole-source-lost")]
+    assert store.source_registry.get("policy").status == "active"
+
+
+def test_retiring_one_of_two_supports_is_informational(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["primary", "independent"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("primary", b"p")
+    pipeline.register_source("independent", b"i")
+
+    proposal = pipeline.retire_source("primary")
+
+    assert proposal.source_change.impacts == [SourceChangeImpact("Policy", "still-supported")]
+
+
+def test_missing_signal_creates_candidate_without_changing_support(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+
+    candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
+
+    assert candidate.status == "pending"
+    assert store.source_registry.get("policy").status == "active"
+    assert pipeline.list() == []
+
+
+def test_dismissing_candidate_records_decision_without_staging_proposal(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+
+    dismissed = pipeline.dismiss_retirement_candidate(candidate.id)
+
+    assert dismissed.status == "dismissed"
+    assert store.source_registry.get("policy").status == "active"
+    assert pipeline.list() == []
+
+
+def test_confirming_candidate_stages_retirement_and_records_decision(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+
+    proposal = pipeline.confirm_retirement_candidate(candidate.id)
+
+    assert proposal.source_change.action == "retire"
+    assert store.source_registry.get_candidate(candidate.id).status == "confirmed"
+    assert store.source_registry.get("policy").status == "active"
+
+
+def test_publishing_retirement_flips_state_without_removing_pages(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    proposal = pipeline.retire_source("policy")
+
+    published = pipeline.publish(proposal.id)
+
+    assert published.status == "published"
+    assert published.proposed_pages == []
+    assert store.source_registry.get("policy").status == "retired"
+    assert (kb.root / "policy.md").is_file()
+
+
+def test_blocked_retirement_keeps_source_active(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    proposal = pipeline.retire_source("policy")
+    store.save_proposal(msgspec.structs.replace(proposal, blocked=True))
+
+    with pytest.raises(lw.ProposalBlockedError):
+        pipeline.publish(proposal.id)
+
+    assert store.source_registry.get("policy").status == "active"
+
+
+def test_failed_retirement_publication_keeps_source_active(tmp_path, monkeypatch) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    proposal = pipeline.retire_source("policy")
+
+    def fail_artifact_publication(_root):
+        raise RuntimeError("artifact publication failed")
+
+    monkeypatch.setattr(
+        "lumio_wiki.proposal_pipeline.publish_reserved_artifacts",
+        fail_artifact_publication,
+    )
+
+    with pytest.raises(RuntimeError, match="artifact publication failed"):
+        pipeline.publish(proposal.id)
+
+    assert store.source_registry.get("policy").status == "active"
+
+
+def test_reactivation_appends_new_version_and_activates_only_after_publish(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    first = pipeline.register_source("policy", b"policy-v1")
+    retirement = pipeline.retire_source("policy")
+    pipeline.publish(retirement.id)
+
+    reactivation = pipeline.reactivate_source("policy", b"policy-v2")
+
+    retired = store.source_registry.get("policy")
+    assert reactivation.source_change.action == "reactivate"
+    assert reactivation.proposed_pages == []
+    assert retired.status == "retired"
+    assert [version.content_hash for version in retired.versions] == [first.content_hash]
+
+    pipeline.publish(reactivation.id)
+
+    active = store.source_registry.get("policy")
+    assert active.status == "active"
+    assert len(active.versions) == 2
+    assert active.versions[0].source_id == active.versions[1].source_id == "policy"
+    assert active.versions[0].content_hash != active.versions[1].content_hash
+
+
+def test_reactivation_requires_a_retired_source(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+
+    with pytest.raises(SourceRegistryError, match="must be retired"):
+        pipeline.reactivate_source("policy", b"policy-v2")
+
+
+def test_blocked_reactivation_keeps_source_retired(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    retirement = pipeline.retire_source("policy")
+    pipeline.publish(retirement.id)
+    reactivation = pipeline.reactivate_source("policy", b"policy-v2")
+    store.save_proposal(msgspec.structs.replace(reactivation, blocked=True))
+
+    with pytest.raises(lw.ProposalBlockedError):
+        pipeline.publish(reactivation.id)
+
+    source = store.source_registry.get("policy")
+    assert source.status == "retired"
+    assert len(source.versions) == 1
+
+
+def test_pipeline_facing_lifecycle_contracts_are_public_but_registry_is_private():
+    assert lw.SourceRegistryError is SourceRegistryError
+    assert lw.SourceVersion is SourceVersion
+    assert lw.KnowledgeSource is KnowledgeSource
+    assert lw.RetirementCandidate is RetirementCandidate
+    assert not hasattr(lw, "SourceRegistry")
+
+
+def test_private_registry_activity_does_not_change_kb_or_export_bytes(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    before = (
+        lw.fingerprint_sources(kb.root),
+        lw.export_bundle(kb),
+        msgspec.json.encode(lw.export_okf_profile1(kb.public_pages())),
+    )
+
+    pipeline.register_source("policy", b"policy-v1")
+    pipeline.record_retirement_candidate("policy", "watcher missing")
+    retirement = pipeline.retire_source("policy")
+    pipeline.publish(retirement.id)
+
+    after = (
+        lw.fingerprint_sources(kb.root),
+        lw.export_bundle(kb),
+        msgspec.json.encode(lw.export_okf_profile1(kb.public_pages())),
+    )
+    assert after == before
+
+
+def test_discarding_retirement_releases_pending_transition(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    first = pipeline.retire_source("policy")
+
+    discarded = pipeline.discard(first.id)
+    replacement = pipeline.retire_source("policy")
+
+    assert discarded.status == "discarded"
+    assert replacement.status == "staged"
+    assert store.source_registry.get("policy").status == "active"
+
+
+def test_confirming_a_dismissed_candidate_does_not_stage_retirement(tmp_path) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+    pipeline.dismiss_retirement_candidate(candidate.id)
+
+    with pytest.raises(SourceRegistryError, match="is not pending"):
+        pipeline.confirm_retirement_candidate(candidate.id)
+
+    assert pipeline.list() == []
+    assert store.source_registry.get("policy").status == "active"

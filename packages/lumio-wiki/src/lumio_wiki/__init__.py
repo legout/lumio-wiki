@@ -184,6 +184,12 @@ from lumio_wiki.retrieval import (
     ZeroIndexRetrieval,
     default_retrieval_adapter,
 )
+from lumio_wiki.source_registry import (
+    KnowledgeSource,
+    RetirementCandidate,
+    SourceRegistryError,
+    SourceVersion,
+)
 from lumio_wiki.source_processor import (
     DOCUMENTS_EXTRA_HINT,
     DocumentSourceProcessor,
@@ -262,6 +268,7 @@ __all__ = [
     "KnowledgeBaseError",
     "KnowledgeBaseLocation",
     "KnowledgeBaseSnapshot",
+    "KnowledgeSource",
     "LinkCandidate",
     "LinkImpactSignal",
     "RankedLinkCandidate",
@@ -299,6 +306,7 @@ __all__ = [
     "RetrievalMode",
     "RetrievalResult",
     "RetrievalTrace",
+    "RetirementCandidate",
     "S3_LOCATION_KIND",
     "S3Location",
     "S3Manifest",
@@ -312,6 +320,8 @@ __all__ = [
     "SourceLifecycleChange",
     "StructuralGraphReport",
     "SourceProvenance",
+    "SourceRegistryError",
+    "SourceVersion",
     "SourceProcessor",
     "SourceProcessorError",
     "TextMarkdownSourceProcessor",

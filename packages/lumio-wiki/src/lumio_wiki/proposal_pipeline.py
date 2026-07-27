@@ -22,6 +22,8 @@ from lumio_wiki import publish_reserved_artifacts
 from lumio_wiki.ingest import (
     IngestProposal,
     IngestStore,
+    SourceChangeImpact,
+    SourceLifecycleChange,
     SourceProvenance,
     _compute_diff,
     _existing_page_markdown,
@@ -32,6 +34,11 @@ from lumio_wiki.ingest import (
 )
 from lumio_wiki.publish import apply_proposed_pages, validate_candidate_knowledge_base
 from lumio_wiki.records import ValidationReport
+from lumio_wiki.source_registry import (
+    RetirementCandidate,
+    SourceRegistryError,
+    SourceVersion,
+)
 
 
 class ProposalPipelineError(Exception):
@@ -54,6 +61,103 @@ class ProposalPipeline:
     def __init__(self, kb, store: IngestStore | None = None) -> None:
         self._kb = kb
         self._store = store
+
+    def _require_store(self) -> IngestStore:
+        if self._store is None:
+            raise RuntimeError("source lifecycle operations require an IngestStore")
+        return self._store
+
+    def register_source(self, source_id: str, raw_bytes: bytes) -> SourceVersion:
+        """Register bytes under an explicit, stable Knowledge Source identity."""
+        return self._require_store().source_registry.register_source(source_id, raw_bytes)
+
+    def _source_impacts(self, source_id: str, action: str) -> list[SourceChangeImpact]:
+        registry = self._require_store().source_registry
+        impacts: list[SourceChangeImpact] = []
+        for page in self._kb.pages:
+            page_source_ids = [source.id for source in page.sources]
+            if source_id not in page_source_ids:
+                continue
+            has_other_active_support = False
+            for other_id in page_source_ids:
+                if other_id == source_id:
+                    continue
+                try:
+                    other = registry.get(other_id)
+                except SourceRegistryError:
+                    continue
+                if other.status == "active":
+                    has_other_active_support = True
+                    break
+            if action == "retire":
+                status = "still-supported" if has_other_active_support else "sole-source-lost"
+            else:
+                status = "still-supported" if has_other_active_support else "support-restored"
+            impacts.append(SourceChangeImpact(page.title, status))
+        return impacts
+
+    def _source_change_proposal(self, change: SourceLifecycleChange) -> IngestProposal:
+        report = validate_candidate_knowledge_base([], self._kb.root)
+        return IngestProposal(
+            id=uuid.uuid4().hex,
+            status="staged",
+            created_at=datetime.now(UTC).isoformat(),
+            provenance=SourceProvenance(None, None, "source-lifecycle"),
+            proposed_pages=[],
+            affected_pages=[impact.page_title for impact in change.impacts],
+            diff="",
+            validation_report=report,
+            blocked=not report.is_valid,
+            source_change=change,
+        )
+
+    def retire_source(self, source_id: str) -> IngestProposal:
+        """Stage retirement while leaving the source active until publication."""
+        store = self._require_store()
+        transition = store.source_registry.stage_retirement(source_id)
+        change = SourceLifecycleChange(
+            action="retire",
+            source_id=source_id,
+            trigger=f"source {source_id} retired",
+            impacts=self._source_impacts(source_id, "retire"),
+        )
+        proposal = self._source_change_proposal(change)
+        store.save_proposal(proposal)
+        store.source_registry.bind_pending(transition, proposal.id)
+        return proposal
+
+    def reactivate_source(self, source_id: str, raw_bytes: bytes) -> IngestProposal:
+        """Stage a fresh version while leaving a retired source inactive."""
+        store = self._require_store()
+        transition = store.source_registry.stage_reactivation(source_id, raw_bytes)
+        change = SourceLifecycleChange(
+            action="reactivate",
+            source_id=source_id,
+            trigger=f"source {source_id} reactivated",
+            impacts=self._source_impacts(source_id, "reactivate"),
+        )
+        proposal = self._source_change_proposal(change)
+        store.save_proposal(proposal)
+        store.source_registry.bind_pending(transition, proposal.id)
+        return proposal
+
+    def record_retirement_candidate(self, source_id: str, trigger: str) -> RetirementCandidate:
+        """Record a retirement signal without staging or changing support."""
+        return self._require_store().source_registry.record_retirement_candidate(source_id, trigger)
+
+    def dismiss_retirement_candidate(self, candidate_id: str) -> RetirementCandidate:
+        """Dismiss a candidate without staging a proposal."""
+        return self._require_store().source_registry.dismiss_retirement_candidate(candidate_id)
+
+    def confirm_retirement_candidate(self, candidate_id: str) -> IngestProposal:
+        """Confirm a candidate by staging an ordinary retirement proposal."""
+        registry = self._require_store().source_registry
+        candidate = registry.get_candidate(candidate_id)
+        if candidate.status != "pending":
+            raise SourceRegistryError(f"retirement candidate {candidate_id!r} is not pending")
+        proposal = self.retire_source(candidate.source_id)
+        registry.confirm_retirement_candidate(candidate_id)
+        return proposal
 
     def assemble(
         self,
@@ -78,13 +182,9 @@ class ProposalPipeline:
         # typed Relationships targeted EXISTING canonical titles (and emitted
         # a spurious Legacy Flat Mode warning for categorized Knowledge
         # Bases, since the isolated temp tree carries no Control File).
-        page_validation = validate_candidate_knowledge_base(
-            proposed_pages, self._kb.root
-        )
+        page_validation = validate_candidate_knowledge_base(proposed_pages, self._kb.root)
         routing_issues = _validate_page_routing(proposed_pages, self._kb)
-        validation_report = ValidationReport(
-            issues=list(page_validation.issues) + routing_issues
-        )
+        validation_report = ValidationReport(issues=list(page_validation.issues) + routing_issues)
         blast_radius = compute_blast_radius(proposed_pages, self._kb)
         return IngestProposal(
             id=uuid.uuid4().hex,
@@ -134,7 +234,10 @@ class ProposalPipeline:
         proposal = self._store.get(proposal_id)
         if proposal is None or not is_reviewable_proposal(proposal):
             return None
-        return self._store.discard(proposal_id)
+        discarded = self._store.discard(proposal_id)
+        if discarded is not None and discarded.source_change is not None:
+            self._store.source_registry.cancel_transition(proposal_id)
+        return discarded
 
     def publish(self, proposal_id: str) -> IngestProposal:
         """Publish a reviewable proposal to the local Knowledge Base root (AC3).
@@ -157,27 +260,21 @@ class ProposalPipeline:
             raise RuntimeError("ProposalPipeline.publish requires an IngestStore")
         proposal = self._store.get(proposal_id)
         if proposal is None or not is_reviewable_proposal(proposal):
-            raise ProposalPipelineError(
-                f"proposal {proposal_id!r} is not reviewable"
-            )
+            raise ProposalPipelineError(f"proposal {proposal_id!r} is not reviewable")
         if proposal.blocked:
-            raise ProposalBlockedError(
-                f"proposal {proposal_id!r} is blocked by validation"
-            )
-        candidate_report = validate_candidate_knowledge_base(
-            proposal.proposed_pages, self._kb.root
-        )
+            raise ProposalBlockedError(f"proposal {proposal_id!r} is blocked by validation")
+        candidate_report = validate_candidate_knowledge_base(proposal.proposed_pages, self._kb.root)
         if not candidate_report.is_valid:
             raise ProposalBlockedError(
                 f"proposal {proposal_id!r} candidate failed validation: {candidate_report}"
             )
         apply_proposed_pages(proposal.proposed_pages, self._kb.root)
         publish_reserved_artifacts(self._kb.root)
+        if proposal.source_change is not None:
+            self._store.source_registry.apply_transition(proposal.id)
         published = self._store.publish(proposal_id)
         if published is None:
-            raise ProposalPipelineError(
-                f"proposal {proposal_id!r} was not publishable"
-            )
+            raise ProposalPipelineError(f"proposal {proposal_id!r} was not publishable")
         return published
 
 
