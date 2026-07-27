@@ -87,6 +87,23 @@ class SourceRegistry:
         temporary.write_bytes(msgspec.json.encode(self._state))
         os.replace(temporary, self._path)
 
+    def _commit(self, state: _RegistryState) -> None:
+        """Swap in-memory state and persist; restore the prior state on failure.
+
+        Every mutating method builds the prospective ``_RegistryState`` first and
+        routes it through here so a persistence failure can never leave the live
+        instance diverged from the durable file: the atomic ``os.replace`` in
+        :meth:`_write` keeps the on-disk file at the prior state, and this helper
+        restores the in-memory state to match.
+        """
+        previous = self._state
+        self._state = state
+        try:
+            self._write()
+        except Exception:
+            self._state = previous
+            raise
+
     def get(self, source_id: str) -> KnowledgeSource:
         for source in self._state.sources:
             if source.source_id == source_id:
@@ -113,12 +130,10 @@ class SourceRegistry:
                 source,
                 versions=[*source.versions, version],
             )
-            self._state = msgspec.structs.replace(self._state, sources=sources)
-            self._write()
+            self._commit(msgspec.structs.replace(self._state, sources=sources))
             return version
         sources.append(KnowledgeSource(source_id=source_id, status="active", versions=[version]))
-        self._state = msgspec.structs.replace(self._state, sources=sources)
-        self._write()
+        self._commit(msgspec.structs.replace(self._state, sources=sources))
         return version
 
     def stage_retirement(self, source_id: str) -> PendingSourceTransition:
@@ -150,11 +165,11 @@ class SourceRegistry:
     def bind_pending(self, transition: PendingSourceTransition, proposal_id: str) -> None:
         """Persist a prepared transition under its staged proposal identity."""
         bound = msgspec.structs.replace(transition, proposal_id=proposal_id)
-        self._state = msgspec.structs.replace(
-            self._state,
-            pending_transitions=[*self._state.pending_transitions, bound],
+        self._commit(
+            msgspec.structs.replace(
+                self._state, pending_transitions=[*self._state.pending_transitions, bound]
+            )
         )
-        self._write()
 
     def cancel_transition(self, proposal_id: str) -> None:
         """Remove a pending transition when its proposal is discarded."""
@@ -165,8 +180,7 @@ class SourceRegistry:
         ]
         if len(pending) == len(self._state.pending_transitions):
             raise SourceRegistryError(f"proposal {proposal_id!r} has no pending source transition")
-        self._state = msgspec.structs.replace(self._state, pending_transitions=pending)
-        self._write()
+        self._commit(msgspec.structs.replace(self._state, pending_transitions=pending))
 
     def apply_transition(self, proposal_id: str) -> None:
         """Apply and remove the source transition bound to a published proposal."""
@@ -208,15 +222,9 @@ class SourceRegistry:
         pending = [
             item for item in self._state.pending_transitions if item.proposal_id != proposal_id
         ]
-        previous_state = self._state
-        self._state = msgspec.structs.replace(
-            self._state, sources=sources, pending_transitions=pending
+        self._commit(
+            msgspec.structs.replace(self._state, sources=sources, pending_transitions=pending)
         )
-        try:
-            self._write()
-        except Exception:
-            self._state = previous_state
-            raise
 
     def record_retirement_candidate(self, source_id: str, trigger: str) -> RetirementCandidate:
         """Record a missing-source signal without changing source support."""
@@ -234,10 +242,9 @@ class SourceRegistry:
             status="pending",
             created_at=_now(),
         )
-        self._state = msgspec.structs.replace(
-            self._state, candidates=[*self._state.candidates, candidate]
+        self._commit(
+            msgspec.structs.replace(self._state, candidates=[*self._state.candidates, candidate])
         )
-        self._write()
         return candidate
 
     def get_candidate(self, candidate_id: str) -> RetirementCandidate:
@@ -255,8 +262,7 @@ class SourceRegistry:
                 raise SourceRegistryError(f"retirement candidate {candidate_id!r} is not pending")
             decided = msgspec.structs.replace(candidate, status=status)
             candidates[index] = decided
-            self._state = msgspec.structs.replace(self._state, candidates=candidates)
-            self._write()
+            self._commit(msgspec.structs.replace(self._state, candidates=candidates))
             return decided
         raise SourceRegistryError(f"unknown retirement candidate {candidate_id!r}")
 

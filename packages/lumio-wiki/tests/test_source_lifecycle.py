@@ -416,3 +416,213 @@ def test_confirming_a_dismissed_candidate_does_not_stage_retirement(tmp_path) ->
 
     assert pipeline.list() == []
     assert store.source_registry.get("policy").status == "active"
+
+
+# --- Task 2 durability: failure-atomic registry mutations (ADR-0014) ---
+
+
+def _raise_registry_write() -> None:
+    raise OSError("registry persistence failed")
+
+
+def _state_snapshot(registry: SourceRegistry) -> bytes:
+    """Encode the full private registry state for byte-exact comparison."""
+    return msgspec.json.encode(registry._state)
+
+
+def test_register_source_write_failure_restores_live_and_reloaded_state(
+    tmp_path, monkeypatch
+) -> None:
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("handbook", b"v1")
+    prior = _state_snapshot(registry)
+    monkeypatch.setattr(registry, "_write", _raise_registry_write)
+
+    with pytest.raises(OSError, match="registry persistence failed"):
+        registry.register_source("handbook", b"v2")
+
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+
+
+def test_bind_pending_write_failure_restores_live_and_reloaded_state(
+    tmp_path, monkeypatch
+) -> None:
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("handbook", b"v1")
+    transition = registry.stage_retirement("handbook")
+    prior = _state_snapshot(registry)
+    monkeypatch.setattr(registry, "_write", _raise_registry_write)
+
+    with pytest.raises(OSError, match="registry persistence failed"):
+        registry.bind_pending(transition, "proposal-1")
+
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+
+
+def test_cancel_transition_write_failure_restores_live_and_reloaded_state(
+    tmp_path, monkeypatch
+) -> None:
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("handbook", b"v1")
+    registry.bind_pending(registry.stage_retirement("handbook"), "proposal-1")
+    prior = _state_snapshot(registry)
+    monkeypatch.setattr(registry, "_write", _raise_registry_write)
+
+    with pytest.raises(OSError, match="registry persistence failed"):
+        registry.cancel_transition("proposal-1")
+
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+
+
+def test_record_retirement_candidate_write_failure_restores_live_and_reloaded_state(
+    tmp_path, monkeypatch
+) -> None:
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("handbook", b"v1")
+    prior = _state_snapshot(registry)
+    monkeypatch.setattr(registry, "_write", _raise_registry_write)
+
+    with pytest.raises(OSError, match="registry persistence failed"):
+        registry.record_retirement_candidate("handbook", "watcher missing")
+
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+
+
+def test_decide_candidate_write_failure_restores_live_and_reloaded_state(
+    tmp_path, monkeypatch
+) -> None:
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("handbook", b"v1")
+    candidate = registry.record_retirement_candidate("handbook", "watcher missing")
+    prior = _state_snapshot(registry)
+    monkeypatch.setattr(registry, "_write", _raise_registry_write)
+
+    with pytest.raises(OSError, match="registry persistence failed"):
+        registry.confirm_retirement_candidate(candidate.id)
+
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+
+
+def test_apply_transition_write_failure_restores_live_and_reloaded_state(
+    tmp_path, monkeypatch
+) -> None:
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("handbook", b"v1")
+    registry.bind_pending(registry.stage_retirement("handbook"), "proposal-1")
+    prior = _state_snapshot(registry)
+    monkeypatch.setattr(registry, "_write", _raise_registry_write)
+
+    with pytest.raises(OSError, match="registry persistence failed"):
+        registry.apply_transition("proposal-1")
+
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+
+
+# --- Task 2 durability: paired Pipeline write compensation (ADR-0014) ---
+
+
+def test_retire_source_transition_bind_failure_leaves_no_reviewable_proposal(
+    tmp_path, monkeypatch
+) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    monkeypatch.setattr(store.source_registry, "_write", _raise_registry_write)
+
+    with pytest.raises(OSError, match="registry persistence failed"):
+        pipeline.retire_source("policy")
+
+    assert pipeline.list() == []
+    assert store.source_registry.get("policy").status == "active"
+    monkeypatch.undo()
+    assert pipeline.retire_source("policy").status == "staged"
+
+
+def test_retire_source_proposal_save_failure_cancels_bound_transition(
+    tmp_path, monkeypatch
+) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+
+    def fail_save_proposal(proposal, raw_path=None):
+        raise OSError("proposal persistence failed")
+
+    monkeypatch.setattr(store, "save_proposal", fail_save_proposal)
+
+    with pytest.raises(OSError, match="proposal persistence failed"):
+        pipeline.retire_source("policy")
+
+    assert pipeline.list() == []
+    monkeypatch.undo()
+    assert pipeline.retire_source("policy").status == "staged"
+
+
+def test_reactivate_source_transition_bind_failure_leaves_no_orphan_transition(
+    tmp_path, monkeypatch
+) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    pipeline.publish(pipeline.retire_source("policy").id)
+    monkeypatch.setattr(store.source_registry, "_write", _raise_registry_write)
+
+    with pytest.raises(OSError, match="registry persistence failed"):
+        pipeline.reactivate_source("policy", b"policy-v2")
+
+    assert [p for p in pipeline.list() if lw.is_reviewable_proposal(p)] == []
+    monkeypatch.undo()
+    assert pipeline.reactivate_source("policy", b"policy-v2").status == "staged"
+
+
+def test_confirm_candidate_decision_failure_leaves_no_staged_transition(
+    tmp_path, monkeypatch
+) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    candidate = pipeline.record_retirement_candidate("policy", "watcher missing")
+
+    def fail_decision(candidate_id):
+        raise OSError("candidate decision failed")
+
+    monkeypatch.setattr(
+        store.source_registry, "confirm_retirement_candidate", fail_decision
+    )
+
+    with pytest.raises(OSError, match="candidate decision failed"):
+        pipeline.confirm_retirement_candidate(candidate.id)
+
+    assert store.source_registry.get_candidate(candidate.id).status == "pending"
+    assert store.source_registry.get("policy").status == "active"
+    assert [p for p in pipeline.list() if lw.is_reviewable_proposal(p)] == []
+    monkeypatch.undo()
+    assert pipeline.confirm_retirement_candidate(candidate.id).source_change.action == "retire"
+
+
+def test_discard_cancel_failure_restores_reviewable_proposal(tmp_path, monkeypatch) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    proposal = pipeline.retire_source("policy")
+    monkeypatch.setattr(store.source_registry, "_write", _raise_registry_write)
+
+    with pytest.raises(OSError, match="registry persistence failed"):
+        pipeline.discard(proposal.id)
+
+    restored = pipeline.review(proposal.id)
+    assert restored.status == "staged"
+    assert lw.is_reviewable_proposal(restored)
+    with pytest.raises(SourceRegistryError, match="already has a pending transition"):
+        pipeline.retire_source("policy")

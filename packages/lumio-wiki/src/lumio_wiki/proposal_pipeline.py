@@ -35,6 +35,7 @@ from lumio_wiki.ingest import (
 from lumio_wiki.publish import apply_proposed_pages, validate_candidate_knowledge_base
 from lumio_wiki.records import ValidationReport
 from lumio_wiki.source_registry import (
+    PendingSourceTransition,
     RetirementCandidate,
     SourceRegistryError,
     SourceVersion,
@@ -108,6 +109,25 @@ class ProposalPipeline:
             source_change=change,
         )
 
+    def _bind_and_persist(
+        self, transition: PendingSourceTransition, proposal: IngestProposal
+    ) -> None:
+        """Bind a source transition then persist its reviewable proposal.
+
+        The registry transition is bound first, so a reviewable proposal is never
+        left without one. If proposal persistence then raises, the bound
+        transition is cancelled so the source can be re-staged (no orphan
+        transition). Both writes are single-file atomic; this is exception
+        compensation, not a transaction journal (ADR-0014).
+        """
+        store = self._require_store()
+        store.source_registry.bind_pending(transition, proposal.id)
+        try:
+            store.save_proposal(proposal)
+        except Exception:
+            store.source_registry.cancel_transition(proposal.id)
+            raise
+
     def retire_source(self, source_id: str) -> IngestProposal:
         """Stage retirement while leaving the source active until publication."""
         store = self._require_store()
@@ -119,8 +139,7 @@ class ProposalPipeline:
             impacts=self._source_impacts(source_id),
         )
         proposal = self._source_change_proposal(change)
-        store.save_proposal(proposal)
-        store.source_registry.bind_pending(transition, proposal.id)
+        self._bind_and_persist(transition, proposal)
         return proposal
 
     def reactivate_source(self, source_id: str, raw_bytes: bytes) -> IngestProposal:
@@ -134,8 +153,7 @@ class ProposalPipeline:
             impacts=self._source_impacts(source_id),
         )
         proposal = self._source_change_proposal(change)
-        store.save_proposal(proposal)
-        store.source_registry.bind_pending(transition, proposal.id)
+        self._bind_and_persist(transition, proposal)
         return proposal
 
     def record_retirement_candidate(self, source_id: str, trigger: str) -> RetirementCandidate:
@@ -153,7 +171,14 @@ class ProposalPipeline:
         if candidate.status != "pending":
             raise SourceRegistryError(f"retirement candidate {candidate_id!r} is not pending")
         proposal = self.retire_source(candidate.source_id)
-        registry.confirm_retirement_candidate(candidate_id)
+        try:
+            registry.confirm_retirement_candidate(candidate_id)
+        except Exception:
+            # The retirement was staged but the candidate decision did not
+            # persist: undo the staging so no reviewable proposal or bound
+            # transition is left behind. The candidate stays pending (retryable).
+            self.discard(proposal.id)
+            raise
         return proposal
 
     def assemble(
@@ -233,7 +258,13 @@ class ProposalPipeline:
             return None
         discarded = self._store.discard(proposal_id)
         if discarded is not None and discarded.source_change is not None:
-            self._store.source_registry.cancel_transition(proposal_id)
+            try:
+                self._store.source_registry.cancel_transition(proposal_id)
+            except Exception:
+                # Cancellation failed: restore the original reviewable proposal
+                # so the discard can be retried with its transition still bound.
+                self._store.save_proposal(proposal)
+                raise
         return discarded
 
     def publish(self, proposal_id: str) -> IngestProposal:
