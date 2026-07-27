@@ -31,10 +31,12 @@ from lumio_wiki.ingest import (
     create_proposal_without_provider,
     import_page_category,
     SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED,
+    SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED,
     is_reviewable_proposal,
     map_external_import_categories,
     propose_external_import,
     safe_lifecycle_trigger_display,
+    safe_lifecycle_impact_status_display,
     select_source_processor,
 )
 from lumio_wiki.knowledge_base import (
@@ -322,6 +324,7 @@ __all__ = [
     "SEED_CATEGORY_CATALOG",
     "S3PublicationConflict",
     "SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED",
+    "SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED",
     "Source",
     "SourceChangeImpact",
     "SourceFingerprint",
@@ -379,6 +382,7 @@ __all__ = [
     "select_document_processor",
     "safe_candidate_trigger_display",
     "safe_lifecycle_trigger_display",
+    "safe_lifecycle_impact_status_display",
     "select_source_processor",
     "validate",
     "validate_candidate_knowledge_base",

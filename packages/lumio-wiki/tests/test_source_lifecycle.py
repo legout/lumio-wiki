@@ -902,3 +902,63 @@ def test_safe_lifecycle_trigger_display_never_echoes_trigger_material() -> None:
         assert secret_trigger not in rendered
         assert "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" not in rendered
         assert "password=hunter2" not in rendered
+
+
+# --- Task 4 Terra fix: controlled impact-status vocabulary in the Workshop ---
+
+
+def test_public_surface_exposes_safe_lifecycle_impact_status_display() -> None:
+    # The pipeline exposes ONE shared, public safe-display function for proposal
+    # lifecycle impact statuses plus the fixed generic fallback label, so every
+    # rendering surface (Workshop, future CLI) derives the same allowlisted
+    # text from the persisted impact status and never echoes an arbitrary
+    # legacy/future status string that may carry secret-bearing material.
+    assert callable(lw.safe_lifecycle_impact_status_display)
+    assert isinstance(lw.SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED, str)
+    assert lw.SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED  # non-empty
+
+
+def test_safe_lifecycle_impact_status_display_passes_still_supported() -> None:
+    # A page still supported after the action renders the exact fixed label.
+    assert lw.safe_lifecycle_impact_status_display("still-supported") == "still-supported"
+
+
+def test_safe_lifecycle_impact_status_display_passes_sole_source_lost() -> None:
+    # A page that lost its sole source renders the exact fixed label.
+    assert lw.safe_lifecycle_impact_status_display("sole-source-lost") == "sole-source-lost"
+
+
+def test_safe_lifecycle_impact_status_display_masks_unknown_status() -> None:
+    # Any status outside the controlled vocabulary renders the single fixed
+    # generic label — including a legacy/future status string that itself
+    # carries secret-bearing material. The stored value is never echoed.
+    secret_status = "purged?token=abc123&password=hunter2"
+    rendered = lw.safe_lifecycle_impact_status_display(secret_status)
+    assert rendered == lw.SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED
+    assert secret_status not in rendered
+    assert "token=abc123" not in rendered
+    assert "password=hunter2" not in rendered
+    # Empty / unrecognized values share the same fixed generic fallback.
+    assert (
+        lw.safe_lifecycle_impact_status_display("")
+        == lw.SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED
+    )
+    assert (
+        lw.safe_lifecycle_impact_status_display("orphaned")
+        == lw.SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED
+    )
+
+
+def test_safe_lifecycle_impact_status_display_never_echoes_status_material() -> None:
+    # The display label is derived ONLY from the allowlisted status. A
+    # legacy/future proposal whose persisted impact status carries a content
+    # hash or a secret must never leak it through the rendered label.
+    hash_status = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    secret_status = "password=hunter2;token=abc123"
+    for status in (hash_status, secret_status):
+        rendered = lw.safe_lifecycle_impact_status_display(status)
+        assert rendered == lw.SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED
+        assert status not in rendered
+        assert "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" not in rendered
+        assert "password=hunter2" not in rendered
+        assert "token=abc123" not in rendered
