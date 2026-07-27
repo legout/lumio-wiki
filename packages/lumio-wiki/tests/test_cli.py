@@ -844,3 +844,222 @@ def test_setup_env_var_enables_implicit_path(tmp_path, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "Technology Stack" in out
+
+
+# ---------------------------------------------------------------------------
+# source subcommands: private Knowledge Source lifecycle (issue #133)
+# ---------------------------------------------------------------------------
+
+# A Compiled Page backed by the explicit ``policy`` Knowledge Source identity.
+# The private Source Registry holds the identity; this page's ``sources[].id``
+# is the ONLY thing that produces a retirement impact for ``policy`` — a
+# renamed file registered under ``policy`` cannot create support for any page
+# that does not declare it.
+SOURCE_POLICY_PAGE_MD = textwrap.dedent(
+    """\
+    ---
+    title: "CLI Page"
+    aliases: []
+    tags:
+      - "cli"
+    summary: "A Compiled Page backed by the policy Knowledge Source."
+    lifecycle: "approved"
+    visibility: "internal"
+    sources:
+      - id: "policy"
+        title: "Policy Knowledge Source"
+    relationships: []
+    synthetic: false
+    ---
+
+    # CLI Page
+
+    Backed by the policy Knowledge Source for lifecycle tests.
+    """
+)
+
+
+@pytest.fixture
+def source_kb(tmp_path: Path) -> Path:
+    """A Knowledge Base whose ``CLI Page`` declares the ``policy`` source id."""
+    root = tmp_path / "kb"
+    shutil.copytree(FIXTURES / "valid", root)
+    (root / "cli_page.md").write_text(SOURCE_POLICY_PAGE_MD, encoding="utf-8")
+    return root
+
+
+def _extract_proposal_id(output: str) -> str:
+    """Pull the staged proposal id from a ``Staged proposal <id>`` line."""
+    return output.split("Staged proposal")[1].split()[0]
+
+
+def _register_policy(kb: Path, source_file: Path) -> int:
+    """Register the ``policy`` Knowledge Source and return the CLI exit code."""
+    return main(
+        ["source", "register", str(kb), "--source-id", "policy", "--file", str(source_file)]
+    )
+
+
+def test_source_retire_requires_explicit_registered_source_id(
+    kb_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = main(["source", "retire", str(kb_root), "--source-id", "unknown"])
+    assert rc == 1
+    assert "unknown Knowledge Source" in capsys.readouterr().err
+
+
+def test_source_retire_stages_safe_page_impact_output(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # ``source_kb`` contains ``sources: [{id: policy, ...}]`` for CLI Page.
+    assert _register_policy(source_kb, source_file) == 0
+    assert main(["source", "retire", str(source_kb), "--source-id", "policy"]) == 0
+    output = capsys.readouterr().out
+    assert "Staged proposal" in output
+    assert "source_id:      policy" in output
+    assert "sole-source-lost: CLI Page" in output
+    assert str(source_file) not in output
+
+
+def test_source_register_requires_explicit_source_id_and_file(source_kb: Path) -> None:
+    # ``--source-id`` and ``--file`` are both required by the parser.
+    with pytest.raises(SystemExit):
+        main(["source", "register", str(source_kb), "--source-id", "policy"])
+    with pytest.raises(SystemExit):
+        main(["source", "register", str(source_kb), "--file", "/tmp/unused.md"])
+
+
+def test_source_register_then_list_shows_active_identity(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _register_policy(source_kb, source_file) == 0
+    capsys.readouterr()  # drain register output
+    assert main(["source", "list", str(source_kb)]) == 0
+    out = capsys.readouterr().out
+    assert "policy" in out
+    assert "active" in out
+    # The listing never discloses raw bytes or the local source path.
+    assert str(source_file) not in out
+
+
+def test_source_candidate_leaves_source_active_without_staging(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()  # drain register output
+    rc = main(
+        [
+            "source",
+            "candidate",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--trigger",
+            "object store unavailable",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "policy" in out
+    assert "object store unavailable" in out
+    assert "pending" in out
+    # Candidate-only behavior: the source stays active and no proposal stages.
+    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    assert store.source_registry.get("policy").status == "active"
+    assert store.list() == []
+
+
+def test_source_dismiss_candidate_records_decision_without_staging(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()  # drain register output
+    main(
+        [
+            "source",
+            "candidate",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--trigger",
+            "object store unavailable",
+        ]
+    )
+    candidate_out = capsys.readouterr().out
+    candidate_id = candidate_out.split("candidate_id:")[1].split()[0]
+    rc = main(["source", "dismiss-candidate", str(source_kb), "--candidate-id", candidate_id])
+    assert rc == 0
+    dismiss_out = capsys.readouterr().out
+    assert "dismissed" in dismiss_out
+    # Dismiss records a decision without staging any proposal.
+    store = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    assert store.source_registry.get_candidate(candidate_id).status == "dismissed"
+    assert store.list() == []
+
+
+def test_source_retire_impacts_only_pages_declaring_the_source_id(
+    source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A renamed file registered under ``policy`` cannot create support: only a
+    # Compiled Page whose ``sources[].id: policy`` produces its impact.
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()  # drain register output
+    assert main(["source", "retire", str(source_kb), "--source-id", "policy"]) == 0
+    out = capsys.readouterr().out
+    assert "sole-source-lost: CLI Page" in out
+    # The other fixture pages declare different source ids — never impacted.
+    assert "Lumio Overview" not in out
+    assert "Architecture" not in out
+    assert "Technology Stack" not in out
+
+
+def test_source_reactivate_stages_new_version_under_existing_id(
+    source_kb: Path, source_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_policy(source_kb, source_file)
+    capsys.readouterr()  # drain register output
+    assert main(["source", "retire", str(source_kb), "--source-id", "policy"]) == 0
+    retire_id = _extract_proposal_id(capsys.readouterr().out)
+    assert main(["publish", str(source_kb), retire_id]) == 0
+    capsys.readouterr()  # drain publish output
+    assert (
+        lw.IngestStore(source_kb / ".lumio" / "ingest")
+        .source_registry.get("policy")
+        .status
+        == "retired"
+    )
+
+    replacement = tmp_path / "replacement.md"
+    replacement.write_text("# replacement policy bytes\n", encoding="utf-8")
+    rc = main(
+        [
+            "source",
+            "reactivate",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--file",
+            str(replacement),
+        ]
+    )
+    assert rc == 0
+    reactivate_out = capsys.readouterr().out
+    assert "Staged proposal" in reactivate_out
+    assert "source_id:      policy" in reactivate_out
+    # Safe output: the replacement path and bytes never appear.
+    assert str(replacement) not in reactivate_out
+    reactivate_id = _extract_proposal_id(reactivate_out)
+
+    # The source stays retired until the reactivation proposal publishes.
+    assert (
+        lw.IngestStore(source_kb / ".lumio" / "ingest")
+        .source_registry.get("policy")
+        .status
+        == "retired"
+    )
+    assert main(["publish", str(source_kb), reactivate_id]) == 0
+    active = lw.IngestStore(source_kb / ".lumio" / "ingest").source_registry.get("policy")
+    assert active.status == "active"
+    assert len(active.versions) == 2
+    assert active.versions[0].source_id == active.versions[1].source_id == "policy"
+    assert active.versions[0].content_hash != active.versions[1].content_hash

@@ -52,6 +52,7 @@ from lumio_wiki import (
     ProposalPipeline,
     ProposalPipelineError,
     SourceProvenance,
+    SourceRegistryError,
     generate_hot_index,
     generate_navigation_indexes,
     is_reviewable_proposal,
@@ -996,6 +997,132 @@ def _cmd_skill_install(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# source subcommands: private Knowledge Source lifecycle (issue #133)
+#
+# Explicit, stable Knowledge Source identities live in the private Source
+# Registry (outside portable KB content). These handlers delegate every
+# mutation to the ProposalPipeline so retirement/reactivation stage ordinary
+# reviewable proposals (publication flips source state) and candidate signals
+# never mutate support. Output is safe: only proposal id, source id, trigger,
+# and ``status: page title`` impacts are disclosed — never raw source bytes,
+# local file paths, registry internals, or credentials.
+# ---------------------------------------------------------------------------
+
+
+def _source_pipeline(args: argparse.Namespace):
+    """Load the KB and construct a ProposalPipeline over the resolved ingest store."""
+    kb, _report = _load_kb(args.path)
+    ingest_dir = _resolve_ingest_dir(args, kb.root)
+    store = IngestStore(ingest_dir)
+    return kb, ProposalPipeline(kb, store=store), store
+
+
+def _read_source_file(args: argparse.Namespace) -> bytes | None:
+    """Return the raw bytes of ``--file`` or print a safe error and return ``None``."""
+    source_path = Path(args.file)
+    if not source_path.is_file():
+        print(f"error: source file not found: {source_path}", file=sys.stderr)
+        return None
+    return source_path.read_bytes()
+
+
+def _report_source_lifecycle_proposal(proposal) -> None:
+    """Print a source-lifecycle proposal with safe, aligned fields only."""
+    change = proposal.source_change
+    print(f"Staged proposal {proposal.id}")
+    print(f"source_id:      {change.source_id}")
+    print(f"trigger:        {change.trigger}")
+    if change.impacts:
+        print("impacts:")
+        for impact in change.impacts:
+            print(f"  {impact.status}: {impact.page_title}")
+    else:
+        print("impacts:         (none)")
+
+
+def _cmd_source_register(args: argparse.Namespace) -> int:
+    _kb, pipeline, store = _source_pipeline(args)
+    raw_bytes = _read_source_file(args)
+    if raw_bytes is None:
+        return 1
+    try:
+        pipeline.register_source(args.source_id, raw_bytes)
+    except (SourceRegistryError, ProposalPipelineError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    source = store.source_registry.get(args.source_id)
+    print(f"Registered Knowledge Source {args.source_id!r}")
+    print(f"  source_id:      {source.source_id}")
+    print(f"  status:         {source.status}")
+    print(f"  versions:       {len(source.versions)}")
+    return 0
+
+
+def _cmd_source_list(args: argparse.Namespace) -> int:
+    _kb, _pipeline, store = _source_pipeline(args)
+    sources = store.source_registry.list()
+    if not sources:
+        print("No registered Knowledge Sources.")
+        return 0
+    print(f"{'source_id':<16} {'status':<10} {'versions':<8}")
+    for source in sources:
+        print(f"{source.source_id:<16} {source.status:<10} {len(source.versions):<8}")
+    return 0
+
+
+def _cmd_source_retire(args: argparse.Namespace) -> int:
+    _kb, pipeline, _store = _source_pipeline(args)
+    try:
+        proposal = pipeline.retire_source(args.source_id)
+    except (SourceRegistryError, ProposalPipelineError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    _report_source_lifecycle_proposal(proposal)
+    return 0
+
+
+def _cmd_source_candidate(args: argparse.Namespace) -> int:
+    _kb, pipeline, _store = _source_pipeline(args)
+    try:
+        candidate = pipeline.record_retirement_candidate(args.source_id, args.trigger)
+    except (SourceRegistryError, ProposalPipelineError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"candidate_id:   {candidate.id}")
+    print(f"source_id:      {candidate.source_id}")
+    print(f"trigger:        {candidate.trigger}")
+    print(f"status:         {candidate.status}")
+    return 0
+
+
+def _cmd_source_dismiss_candidate(args: argparse.Namespace) -> int:
+    _kb, pipeline, _store = _source_pipeline(args)
+    try:
+        candidate = pipeline.dismiss_retirement_candidate(args.candidate_id)
+    except (SourceRegistryError, ProposalPipelineError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"candidate_id:   {candidate.id}")
+    print(f"source_id:      {candidate.source_id}")
+    print(f"status:         {candidate.status}")
+    return 0
+
+
+def _cmd_source_reactivate(args: argparse.Namespace) -> int:
+    _kb, pipeline, _store = _source_pipeline(args)
+    raw_bytes = _read_source_file(args)
+    if raw_bytes is None:
+        return 1
+    try:
+        proposal = pipeline.reactivate_source(args.source_id, raw_bytes)
+    except (SourceRegistryError, ProposalPipelineError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    _report_source_lifecycle_proposal(proposal)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Argument parser construction
 # ---------------------------------------------------------------------------
 
@@ -1460,6 +1587,125 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overwrite an existing skill at the destination.",
     )
     skill_install.set_defaults(func=_cmd_skill_install)
+
+
+    # source (nested) — private Knowledge Source lifecycle (issue #133)
+    source_parser = subparsers.add_parser(
+        "source",
+        help="Manage private Knowledge Source lifecycle state.",
+        description=(
+            "Manage private Knowledge Source identities: register, list, retire, "
+            "record and dismiss retirement candidates, and reactivate. Every "
+            "mutating command targets an explicit --source-id; explicit "
+            "retirement and reactivation stage ordinary reviewable proposals "
+            "through the Proposal Pipeline. Output is safe: no raw source bytes, "
+            "local file paths, or credentials are disclosed."
+        ),
+    )
+    source_sub = source_parser.add_subparsers(
+        dest="source_command", required=True, metavar="<source-command>"
+    )
+
+    source_register = source_sub.add_parser(
+        "register",
+        help="Register bytes under an explicit, stable Knowledge Source identity.",
+        description=(
+            "Append an immutable Source Version under an explicit --source-id. "
+            "The identity is private to the ingest store; it never appears in "
+            "portable KB content. A retired source must be reactivated explicitly."
+        ),
+    )
+    _add_kb_argument(source_register)
+    _add_ingest_dir_argument(source_register)
+    source_register.add_argument(
+        "--source-id", required=True, help="Explicit stable source identity."
+    )
+    source_register.add_argument(
+        "--file", type=Path, required=True, help="Source bytes to register."
+    )
+    source_register.set_defaults(func=_cmd_source_register)
+
+    source_list = source_sub.add_parser(
+        "list",
+        help="List registered Knowledge Sources and their status.",
+        description=(
+            "List private Knowledge Source identities, statuses, and version "
+            "counts. Source bytes and local paths are never disclosed."
+        ),
+    )
+    _add_kb_argument(source_list)
+    _add_ingest_dir_argument(source_list)
+    source_list.set_defaults(func=_cmd_source_list)
+
+    source_retire = source_sub.add_parser(
+        "retire",
+        help="Stage explicit Source Retirement.",
+        description=(
+            "Stage a Source Retirement proposal. The source stays active until "
+            "the proposal publishes; page-level support loss is reported as "
+            "reviewable impacts (sole-source-lost / still-supported)."
+        ),
+    )
+    _add_kb_argument(source_retire)
+    _add_ingest_dir_argument(source_retire)
+    source_retire.add_argument(
+        "--source-id", required=True, help="Source identity to retire."
+    )
+    source_retire.set_defaults(func=_cmd_source_retire)
+
+    source_candidate = source_sub.add_parser(
+        "candidate",
+        help="Record a non-mutating retirement signal.",
+        description=(
+            "Record a Retirement Candidate (a Maintainer-reviewable signal) "
+            "without staging a proposal or changing source support."
+        ),
+    )
+    _add_kb_argument(source_candidate)
+    _add_ingest_dir_argument(source_candidate)
+    source_candidate.add_argument(
+        "--source-id", required=True, help="Active source identity."
+    )
+    source_candidate.add_argument(
+        "--trigger", required=True, help="Signal that prompted the review."
+    )
+    source_candidate.set_defaults(func=_cmd_source_candidate)
+
+    source_dismiss = source_sub.add_parser(
+        "dismiss-candidate",
+        help="Dismiss a Retirement Candidate without staging a proposal.",
+        description=(
+            "Dismiss a pending Retirement Candidate. Targets the candidate by "
+            "the id reported by `source candidate`; no proposal is staged."
+        ),
+    )
+    _add_kb_argument(source_dismiss)
+    _add_ingest_dir_argument(source_dismiss)
+    source_dismiss.add_argument(
+        "--candidate-id",
+        required=True,
+        help="Candidate id reported by `source candidate`.",
+    )
+    source_dismiss.set_defaults(func=_cmd_source_dismiss_candidate)
+
+    source_reactivate = source_sub.add_parser(
+        "reactivate",
+        help="Stage a new Source Version under a retired identity.",
+        description=(
+            "Stage a reactivation proposal that appends a new Source Version "
+            "under an existing retired --source-id. The source stays retired "
+            "until the proposal publishes."
+        ),
+    )
+    _add_kb_argument(source_reactivate)
+    _add_ingest_dir_argument(source_reactivate)
+    source_reactivate.add_argument(
+        "--source-id", required=True, help="Retired source identity to reactivate."
+    )
+    source_reactivate.add_argument(
+        "--file", type=Path, required=True, help="Replacement source bytes."
+    )
+    source_reactivate.set_defaults(func=_cmd_source_reactivate)
 
     return parser
 
