@@ -81,7 +81,7 @@ Knowledge Base root directory in every command below.
 | `lumio-wiki health <kb> [--rebuild]` | Page counts, validation status, Discovery Graph health + fingerprint. `--rebuild` materializes a fresh graph artifact (actionable recovery); a bad/missing artifact never blocks zero-index operation. |
 | `lumio-wiki lint <kb>` | Read-only cross-page QA report: validation, graph health, canonical/discovery structural diagnostics, scope disclosure. Exit 1 when invalid (ADR-0015). |
 | `lumio-wiki cross-link <kb> [--limit N] [--stage]` | Missing-link candidates ranked by Discovery Graph impact. `--stage` stages one reviewable repair proposal per top candidate; never direct-writes. |
-| `lumio-wiki dream <kb> [--limit N] [--stage]` | The Dream Cycle: read-only reflection (validation + health + structure + ranked candidates); `--stage` stages the top repairs as reviewable Ingest Proposals (ADR-0015). |
+| `lumio-wiki dream <kb> [--limit N] [--stage] [--semantic]` | Deterministic Dream Cycle reflection plus optional semantic review; `--semantic` requires the `[llm]` extra and remains proposal-first. |
 | `lumio-wiki doctor` | Version, detected optional extras, and packaged skill location. |
 | `lumio-wiki skill path` | Absolute path of the packaged `SKILL.md` inside the installed wheel. |
 | `lumio-wiki skill protocol` | Absolute path of the packaged `PROTOCOL.md`. |
@@ -151,6 +151,8 @@ Knowledge Base connected:
 3. `lumio-wiki dream <kb> --stage [--limit N]` — stage the top repairs as
    ordinary reviewable Ingest Proposals. Nothing direct-writes: review with
    `proposal inspect`, then `publish` or `discard` as usual.
+   Add opt-in `--semantic` (requires the `[llm]` extra) to stage semantic
+   findings through the same proposal-first path.
 4. `lumio-wiki cross-link <kb>` is the focused variant when you only want
    the candidate list (or only link repairs, `--stage`).
 

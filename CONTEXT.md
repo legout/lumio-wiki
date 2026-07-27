@@ -177,7 +177,7 @@ A deterministic, non-canonical proposal for a MISSING authored Markdown link, em
 _Avoid_: inferred link, auto-link.
 
 **Dream Cycle**:
-The periodic Maintainer maintenance pass over a living Knowledge Base: read-only reflection (validation, health, structural diagnostics for both scopes, ranked Link Candidates) followed by an explicit opt-in staging of the top repairs as ordinary reviewable Ingest Proposals. Deterministic and model-free; semantic maintenance (contradictions, staleness) is out of scope.
+The periodic Maintainer maintenance pass over a living Knowledge Base: a deterministic, model-free core for read-only reflection (validation, health, structural diagnostics for both scopes, ranked Link Candidates), plus an explicit opt-in semantic layer (`--semantic`, requiring the `[llm]` extra) for findings such as contradictions and staleness. Every repair or semantic finding only stages an ordinary reviewable Ingest Proposal.
 _Avoid_: reflection loop, auto-fix, consolidation.
 
 ### Platform roles and guardrails
