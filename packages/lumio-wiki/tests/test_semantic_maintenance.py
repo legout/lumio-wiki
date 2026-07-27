@@ -91,8 +91,7 @@ def test_page_selection_is_bounded_and_hub_first(kb_root: Path):
     # Add an authored Relationship so the overview is a deterministic hub.
     overview = kb_root / "concepts" / "overview.md"
     overview.write_text(
-        overview.read_text(encoding="utf-8")
-        .replace(
+        overview.read_text(encoding="utf-8").replace(
             'type: "concept"',
             'type: "concept"\nrelationships:\n  - target: "Acme Corp"\n    type: "references"',
         ),
@@ -133,9 +132,11 @@ def test_staging_produces_only_unblocked_reviewable_proposals(kb_root: Path):
     assert len(result.staged) == 2
     assert not result.skipped
     assert all(proposal.status == "staged" and not proposal.blocked for proposal in result.staged)
-    assert not (
-        kb_root / "concepts" / "overview.md"
-    ).read_text(encoding="utf-8").endswith("Lumio is trusted knowledge chat.\n")
+    assert (
+        not (kb_root / "concepts" / "overview.md")
+        .read_text(encoding="utf-8")
+        .endswith("Lumio is trusted knowledge chat.\n")
+    )
 
 
 def test_missing_extra_error_is_actionable(monkeypatch):
@@ -166,9 +167,7 @@ def test_cli_semantic_review_reports_and_stages(monkeypatch, kb_root: Path, caps
     }
     client = _client(payload)
     monkeypatch.setenv("LUMIO_PROVIDER_MODEL", "fake-model")
-    monkeypatch.setattr(
-        SemanticDreamReviewer, "_build_client", staticmethod(lambda: client)
-    )
+    monkeypatch.setattr(SemanticDreamReviewer, "_build_client", staticmethod(lambda: client))
 
     from lumio_wiki.cli import main
 
@@ -182,3 +181,89 @@ def test_cli_semantic_review_reports_and_stages(monkeypatch, kb_root: Path, caps
     assert "Lumio is trusted knowledge chat." not in (
         kb_root / "concepts" / "overview.md"
     ).read_text(encoding="utf-8")
+
+
+def test_contradiction_stages_body_callouts_on_both_pages(kb_root: Path):
+    kb, _ = lw.load_knowledge_base(kb_root)
+    reviewer = SemanticDreamReviewer(
+        kb,
+        client=_client(
+            {
+                "findings": [
+                    {
+                        "kind": "contradiction",
+                        "pages": ["concepts/overview.md", "entities/acme.md"],
+                        "reason": "The two statements disagree.",
+                    }
+                ]
+            }
+        ),
+    )
+    result = reviewer.stage_findings(store=_store(kb_root))
+    assert len(result.staged) == 2
+    for proposal in result.staged:
+        assert "Semantic Dream Cycle contradiction" in proposal.proposed_pages[0].markdown
+
+
+def test_invalid_findings_are_skipped_with_reasons_and_never_staged(kb_root: Path):
+    kb, _ = lw.load_knowledge_base(kb_root)
+    reviewer = SemanticDreamReviewer(
+        kb,
+        client=_client(
+            {
+                "findings": [
+                    {"kind": "mystery", "page": "concepts/overview.md", "reason": "bad kind"},
+                    {
+                        "kind": "summary",
+                        "page": "not-inspected.md",
+                        "reason": "bad page",
+                        "summary": "new",
+                    },
+                    {
+                        "kind": "stale",
+                        "page": "concepts/overview.md",
+                        "reason": "bad lifecycle",
+                        "lifecycle": "approved",
+                    },
+                    {
+                        "kind": "summary",
+                        "page": "concepts/overview.md",
+                        "reason": "extra key",
+                        "summary": "new",
+                        "frontmatter": {"owner": "x"},
+                    },
+                ]
+            }
+        ),
+        max_pages=1,
+    )
+    result = reviewer.stage_findings(store=_store(kb_root))
+    assert not result.staged
+    reasons = " ".join(reason for _, reason in result.skipped)
+    assert "unknown finding kind" in reasons
+    assert "not in the inspected page set" in reasons
+    assert "illegal stale lifecycle" in reasons
+    assert "unsupported finding fields" in reasons
+
+
+def test_blocked_semantic_candidate_is_skipped(kb_root: Path, monkeypatch):
+    kb, _ = lw.load_knowledge_base(kb_root)
+    reviewer = SemanticDreamReviewer(
+        kb,
+        client=_client(
+            {
+                "findings": [
+                    {
+                        "kind": "summary",
+                        "page": "concepts/overview.md",
+                        "reason": "rewrite",
+                        "summary": "A new summary",
+                    }
+                ]
+            }
+        ),
+    )
+    monkeypatch.setattr(reviewer, "_assemble_unblocked", lambda *args: None)
+    result = reviewer.stage_findings(store=_store(kb_root))
+    assert not result.staged
+    assert "blocked" in result.skipped[0][1]

@@ -333,7 +333,8 @@ automatically when no `<kb>` argument is given).
   impact. Add `--stage` to stage reviewable repair proposals (never direct-writes).
 - `lumio-wiki dream` — the Dream Cycle: read-only reflection (validation +
   health + structure + ranked candidates). Add `--stage [--limit N]` to stage
-  the top repairs as ordinary Ingest Proposals for review.
+  the top repairs as ordinary Ingest Proposals for review. Add opt-in `--semantic`
+  with the `[llm]` extra for semantic findings; it remains proposal-first.
 
 ### Guardrails
 
@@ -1011,7 +1012,10 @@ def _print_semantic_findings(findings) -> None:
     grouped = {kind: [] for kind in ("contradiction", "stale", "summary")}
     for finding in findings:
         grouped.setdefault(finding.kind, []).append(finding)
-    for kind in ("contradiction", "stale", "summary"):
+    for kind in (
+        *(("contradiction", "stale", "summary")),
+        *sorted(k for k in grouped if k not in {"contradiction", "stale", "summary"}),
+    ):
         entries = grouped[kind]
         print(f"semantic_{kind}: {len(entries)}")
         for finding in entries:
@@ -1019,6 +1023,8 @@ def _print_semantic_findings(findings) -> None:
             print(f"    reason: {finding.reason}")
             if finding.lifecycle:
                 print(f"    lifecycle: {finding.lifecycle}")
+            for validation_error in finding.validation_errors:
+                print(f"    validation: {validation_error}")
             if finding.summary:
                 print(f"    summary: {finding.summary}")
 
@@ -1067,9 +1073,7 @@ def _cmd_dream(args: argparse.Namespace) -> int:
         if args.stage and semantic_report.findings:
             ingest_dir = _resolve_ingest_dir(args, kb.root)
             ingest_dir.mkdir(parents=True, exist_ok=True)
-            result = reviewer.stage_findings(
-                store=IngestStore(ingest_dir), report=semantic_report
-            )
+            result = reviewer.stage_findings(store=IngestStore(ingest_dir), report=semantic_report)
             print(f"semantic_staged_proposals: {len(result.staged)}")
             for proposal in result.staged:
                 print(f"  staged: {proposal.id} pages={', '.join(proposal.affected_pages)}")
