@@ -45,6 +45,7 @@ from lumio_wiki.records import (
     ValidationIssue,
     ValidationReport,
 )
+from lumio_wiki.source_registry import SourceRegistry
 
 if TYPE_CHECKING:
     from lumio_wiki.source_processor import SourceProcessor
@@ -124,6 +125,22 @@ class BlastRadius(msgspec.Struct, frozen=True):
     category_moves: list[str] = msgspec.field(default_factory=list)
 
 
+class SourceChangeImpact(msgspec.Struct, frozen=True):
+    """A page-level support result for a staged source lifecycle action."""
+
+    page_title: str
+    status: str
+
+
+class SourceLifecycleChange(msgspec.Struct, frozen=True):
+    """Private source action disclosed on an otherwise ordinary proposal."""
+
+    action: str
+    source_id: str
+    trigger: str
+    impacts: list[SourceChangeImpact] = msgspec.field(default_factory=list)
+
+
 class IngestProposal(msgspec.Struct, frozen=True):
     """A staged set of proposed Markdown changes with validation gate.
 
@@ -147,6 +164,7 @@ class IngestProposal(msgspec.Struct, frozen=True):
     blast_radius: BlastRadius | None = None
     control_file: KnowledgeBaseControlFile | None = None
     okf_diagnostics: list[OkfImportDiagnostic] = msgspec.field(default_factory=list)
+    source_change: SourceLifecycleChange | None = None
 
 
 class ExternalImportCategoryMapping(msgspec.Struct, frozen=True):
@@ -1050,6 +1068,7 @@ class IngestStore:
         self.root = Path(root).resolve()
         self.raw_dir = self.root / "raw"
         self.proposals_dir = self.root / "proposals"
+        self.source_registry = SourceRegistry(self.root / "source-registry")
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.proposals_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, IngestProposal] = {}
