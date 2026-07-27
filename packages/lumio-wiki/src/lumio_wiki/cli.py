@@ -953,6 +953,7 @@ def _stage_candidates(args: argparse.Namespace, kb, ranked, limit: int):
     store = IngestStore(ingest_dir)
     staged = []
     skipped = []
+    # Intentional parallel structure with Dream Cycle's bounded stage-with-skip loop.
     for entry in ranked[:limit]:
         candidate = entry.candidate
         try:
