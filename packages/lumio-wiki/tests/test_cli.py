@@ -1202,6 +1202,30 @@ def test_source_register_unreadable_file_reports_generic_error_without_path(
     assert "Traceback" not in combined
 
 
+def test_source_register_missing_registered_source_reports_generic_error(
+    source_kb: Path,
+    source_file: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Impossible-state guard: if the just-registered source is absent from the
+    # public listing (an invariant the static type cannot prove is non-None),
+    # the CLI must fail with a generic, path/secret-free error (rc=1) and never
+    # leak a traceback from an unguarded ``None`` dereference.
+    from lumio_wiki.proposal_pipeline import ProposalPipeline
+
+    monkeypatch.setattr(ProposalPipeline, "list_sources", lambda self: [])
+
+    rc = _register_policy(source_kb, source_file)
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "Traceback" not in combined
+    # The local source path (and any byte content) is never disclosed.
+    assert str(source_file) not in combined
+
+
 def test_source_reactivate_missing_file_reports_generic_error_without_path(
     source_kb: Path, source_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

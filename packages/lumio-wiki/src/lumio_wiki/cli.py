@@ -1074,6 +1074,11 @@ def _cmd_source_register(args: argparse.Namespace) -> int:
         (item for item in pipeline.list_sources() if item.source_id == args.source_id),
         None,
     )
+    if source is None:
+        # Impossible state: ``register_source`` reported success yet the
+        # public listing omits the source. Fail with a generic, path/secret-free
+        # error instead of dereferencing an unprovable ``None``.
+        raise CliError("registered source could not be confirmed", exit_code=1)
     print(f"Registered Knowledge Source {args.source_id!r}")
     print(f"  source_id:      {source.source_id}")
     print(f"  status:         {source.status}")
