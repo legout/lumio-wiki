@@ -18,6 +18,10 @@ OKF `type`, `resource`, conventional body sections, and arbitrary producer exten
 
 Generic imports are permissive and reviewable rather than lossless: unknown metadata is previewed and diagnosed but may be dropped on canonical publication. Generic page proposals default to `draft`, `internal`, non-synthetic content with deterministic provenance pointing to the imported OKF document; absent tags remain a blocking Maintainer decision. Imported `index.md` and `log.md` files are exchange artifacts rather than Compiled Pages. Export operates only over an explicitly authorized page set and regenerates Navigation Indexes from that set so excluded titles and summaries cannot leak.
 
+### Consumer-tolerance boundary (addendum, #139)
+
+At the OKF import boundary, an unknown non-empty `type`, arbitrary producer frontmatter key, or unresolved ordinary Markdown body link is not grounds to reject a foreign bundle. The importer returns a previewable proposal and records a dropped-metadata diagnostic or a broken-link warning; body links remain prose and are never promoted to canonical Relationships. The subsequent canonical Proposal Pipeline remains stricter: unresolved typed Relationships in a recognized `lumio` extension are validation errors. Profile 1 deliberately has no opaque extension sidecar, so unknown producer metadata is lossy after canonical publication; the diagnostic is the required disclosure rather than an implied preservation promise.
+
 The detailed Profile 1 mapping, diagnostics, structural rules, and rejected substitutions are recorded in `docs/research/okf-comparison.md`.
 
 ## Considered Options
