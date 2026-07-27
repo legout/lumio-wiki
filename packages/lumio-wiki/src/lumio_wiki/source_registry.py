@@ -208,10 +208,15 @@ class SourceRegistry:
         pending = [
             item for item in self._state.pending_transitions if item.proposal_id != proposal_id
         ]
+        previous_state = self._state
         self._state = msgspec.structs.replace(
             self._state, sources=sources, pending_transitions=pending
         )
-        self._write()
+        try:
+            self._write()
+        except Exception:
+            self._state = previous_state
+            raise
 
     def record_retirement_candidate(self, source_id: str, trigger: str) -> RetirementCandidate:
         """Record a missing-source signal without changing source support."""

@@ -71,7 +71,7 @@ class ProposalPipeline:
         """Register bytes under an explicit, stable Knowledge Source identity."""
         return self._require_store().source_registry.register_source(source_id, raw_bytes)
 
-    def _source_impacts(self, source_id: str, action: str) -> list[SourceChangeImpact]:
+    def _source_impacts(self, source_id: str) -> list[SourceChangeImpact]:
         registry = self._require_store().source_registry
         impacts: list[SourceChangeImpact] = []
         for page in self._kb.pages:
@@ -89,10 +89,7 @@ class ProposalPipeline:
                 if other.status == "active":
                     has_other_active_support = True
                     break
-            if action == "retire":
-                status = "still-supported" if has_other_active_support else "sole-source-lost"
-            else:
-                status = "still-supported" if has_other_active_support else "support-restored"
+            status = "still-supported" if has_other_active_support else "sole-source-lost"
             impacts.append(SourceChangeImpact(page.title, status))
         return impacts
 
@@ -119,7 +116,7 @@ class ProposalPipeline:
             action="retire",
             source_id=source_id,
             trigger=f"source {source_id} retired",
-            impacts=self._source_impacts(source_id, "retire"),
+            impacts=self._source_impacts(source_id),
         )
         proposal = self._source_change_proposal(change)
         store.save_proposal(proposal)
@@ -134,7 +131,7 @@ class ProposalPipeline:
             action="reactivate",
             source_id=source_id,
             trigger=f"source {source_id} reactivated",
-            impacts=self._source_impacts(source_id, "reactivate"),
+            impacts=self._source_impacts(source_id),
         )
         proposal = self._source_change_proposal(change)
         store.save_proposal(proposal)
@@ -270,11 +267,15 @@ class ProposalPipeline:
             )
         apply_proposed_pages(proposal.proposed_pages, self._kb.root)
         publish_reserved_artifacts(self._kb.root)
-        if proposal.source_change is not None:
-            self._store.source_registry.apply_transition(proposal.id)
         published = self._store.publish(proposal_id)
         if published is None:
             raise ProposalPipelineError(f"proposal {proposal_id!r} was not publishable")
+        if proposal.source_change is not None:
+            try:
+                self._store.source_registry.apply_transition(proposal.id)
+            except Exception:
+                self._store.save_proposal(proposal)
+                raise
         return published
 
 

@@ -256,6 +256,79 @@ def test_reactivation_appends_new_version_and_activates_only_after_publish(tmp_p
     assert active.versions[0].content_hash != active.versions[1].content_hash
 
 
+@pytest.mark.parametrize(
+    ("source_ids", "expected_status"),
+    [
+        (["policy"], "sole-source-lost"),
+        (["policy", "independent"], "still-supported"),
+    ],
+)
+def test_public_reactivation_impact_uses_only_allowed_current_support_vocabulary(
+    tmp_path, source_ids, expected_status
+) -> None:
+    kb = _knowledge_base(tmp_path, source_ids)
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    for source_id in source_ids:
+        pipeline.register_source(source_id, source_id.encode())
+    retirement = pipeline.retire_source("policy")
+    pipeline.publish(retirement.id)
+
+    reactivation = pipeline.reactivate_source("policy", b"policy-v2")
+
+    statuses = {impact.status for impact in reactivation.source_change.impacts}
+    assert statuses == {expected_status}
+    assert statuses <= {"still-supported", "sole-source-lost"}
+
+
+def test_terminal_proposal_persistence_failure_keeps_reactivation_state_unchanged(
+    tmp_path, monkeypatch
+) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    retirement = pipeline.retire_source("policy")
+    pipeline.publish(retirement.id)
+    reactivation = pipeline.reactivate_source("policy", b"policy-v2")
+    before = store.source_registry.get("policy")
+
+    def fail_terminal_persistence(_proposal_id):
+        raise OSError("terminal proposal persistence failed")
+
+    monkeypatch.setattr(store, "publish", fail_terminal_persistence)
+
+    with pytest.raises(OSError, match="terminal proposal persistence failed"):
+        pipeline.publish(reactivation.id)
+
+    assert store.source_registry.get("policy") == before
+    assert pipeline.review(reactivation.id).status == "staged"
+
+
+def test_source_transition_persistence_failure_rolls_back_terminal_proposal(
+    tmp_path, monkeypatch
+) -> None:
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    retirement = pipeline.retire_source("policy")
+    pipeline.publish(retirement.id)
+    reactivation = pipeline.reactivate_source("policy", b"policy-v2")
+    before = store.source_registry.get("policy")
+
+    def fail_registry_persistence():
+        raise OSError("registry persistence failed")
+
+    monkeypatch.setattr(store.source_registry, "_write", fail_registry_persistence)
+
+    with pytest.raises(OSError, match="registry persistence failed"):
+        pipeline.publish(reactivation.id)
+
+    assert store.source_registry.get("policy") == before
+    assert pipeline.review(reactivation.id).status == "staged"
+
+
 def test_reactivation_requires_a_retired_source(tmp_path) -> None:
     kb = _knowledge_base(tmp_path, ["policy"])
     store = IngestStore(tmp_path / "ingest")
