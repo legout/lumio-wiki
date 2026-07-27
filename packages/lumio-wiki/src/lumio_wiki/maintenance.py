@@ -165,11 +165,21 @@ def run_cross_linker(kb_path: str | Path) -> list[LinkCandidate]:
     return find_link_candidates(kb.pages)
 
 
+def find_link_candidates_for_kb(kb: KnowledgeBase) -> list[LinkCandidate]:
+    """Find missing-link candidates for an already-loaded Knowledge Base."""
+    return find_link_candidates(kb.pages)
+
+
+def find_ranked_link_candidates(kb: KnowledgeBase) -> list[RankedLinkCandidate]:
+    """Rank missing-link candidates for an already-loaded Knowledge Base."""
+    candidates = find_link_candidates_for_kb(kb)
+    return kb.rank_link_candidates_by_graph_impact(candidates)
+
+
 def run_cross_linker_ranked(kb_path: str | Path) -> list[RankedLinkCandidate]:
     """Surface missing-link candidates ranked by Discovery Graph impact."""
     kb, _report = load_knowledge_base(kb_path)
-    candidates = find_link_candidates(kb.pages)
-    return kb.rank_link_candidates_by_graph_impact(candidates)
+    return find_ranked_link_candidates(kb)
 
 
 # ---------------------------------------------------------------------------
@@ -245,9 +255,10 @@ def mark_compound_revision(
     """
     if not page_markdown.startswith("---"):
         raise MaintenanceError("page has no YAML frontmatter to edit")
-    _leading, fm_yaml, body = page_markdown.split("---", 2)
-    if body is None:
-        raise MaintenanceError("page frontmatter is malformed")
+    try:
+        _leading, fm_yaml, body = page_markdown.split("---", 2)
+    except ValueError as exc:
+        raise MaintenanceError("page frontmatter is malformed: missing closing fence") from exc
     data = msgspec.yaml.decode(fm_yaml)
     if not isinstance(data, dict):
         raise MaintenanceError("page frontmatter did not decode to a mapping")
@@ -285,9 +296,10 @@ def add_relationship_to_frontmatter(page_markdown: str, target: str, relationshi
     """
     if not page_markdown.startswith("---"):
         raise MaintenanceError("page has no YAML frontmatter to edit")
-    _leading, fm_yaml, body = page_markdown.split("---", 2)
-    if body is None:
-        raise MaintenanceError("page frontmatter is malformed")
+    try:
+        _leading, fm_yaml, body = page_markdown.split("---", 2)
+    except ValueError as exc:
+        raise MaintenanceError("page frontmatter is malformed: missing closing fence") from exc
     data = msgspec.yaml.decode(fm_yaml)
     if not isinstance(data, dict):
         raise MaintenanceError("page frontmatter did not decode to a mapping")
@@ -489,6 +501,7 @@ def stage_dream_repairs(
 
     staged: list[IngestProposal] = []
     skipped: list[tuple[LinkCandidate, str]] = []
+    # Intentional parallel structure with the CLI's bounded stage-with-skip loop.
     for ranked in report.ranked_candidates[:limit]:
         candidate = ranked.candidate
         try:

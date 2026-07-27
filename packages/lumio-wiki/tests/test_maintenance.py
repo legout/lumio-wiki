@@ -101,6 +101,15 @@ def _compiled_page(title: str, *, body: str = "", path: str | None = None):
     )
 
 
+@pytest.mark.parametrize("editor", [lw.mark_compound_revision, lw.add_relationship_to_frontmatter])
+def test_frontmatter_edit_rejects_missing_closing_fence(editor):
+    with pytest.raises(lw.MaintenanceError, match="missing closing fence"):
+        if editor is lw.mark_compound_revision:
+            editor("---\ntitle: P\n", category="concepts")
+        else:
+            editor("---\ntitle: P\n", "Target", "references")
+
+
 def test_mark_compound_revision_restates_routing_fields():
     md = "---\ntitle: P\n---\n\nbody\n"
     marked = lw.mark_compound_revision(md, category="concepts", durability_rationale="kept")
