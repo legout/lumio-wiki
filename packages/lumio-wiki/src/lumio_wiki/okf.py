@@ -1,21 +1,23 @@
-"""OKF Exchange Profile 1: the public Knowledge Base export boundary.
+"""OKF exchange profiles: the public Knowledge Base import/export boundary.
 
 Lumio OKF Exchange Profile 1 maps Lumio's canonical Compiled Page model onto the
 Google Open Knowledge Format (OKF) v0.1 exchange unit, pinned to a single
-upstream commit. It is an optional, best-effort interchange profile: it never
-claims unqualified OKF compliance and never redefines Lumio's canonical domain
-model. The Markdown body is preserved unchanged in the canonical source; export may
-append ordinary links for typed Relationships so OKF-only consumers can see the
-edge. OKF ``resource`` and ``timestamp`` are omitted rather than invented, and
-Lumio-owned semantics travel in a versioned ``lumio`` extension. See ADR-0007 and
-``docs/research/okf-comparison.md``.
+upstream commit. Profile 2 adds a separately pinned OKF v0.2 boundary that
+adopts standard structured Sources and derived status while preserving the same
+canonical trust model. Both are optional, best-effort interchange profiles:
+they never claim unqualified OKF compliance and never redefine Lumio's canonical
+domain model. The Markdown body is preserved unchanged in the canonical source;
+export may append ordinary links for typed Relationships so OKF-only consumers
+can see the edge. OKF ``resource`` and legacy ``timestamp`` are omitted rather
+than invented, and Lumio-owned semantics travel in a versioned ``lumio``
+extension. See ADR-0007, ADR-0015, and ``docs/research/okf-comparison.md``.
 
-Authorization boundary: :func:`export_okf_profile1` is the serializer. It
-receives an **already-authorized** page sequence from the Core SDK authorization
-layer (for the public MVP scope, :meth:`KnowledgeBase.public_pages`) and cannot
-widen it — excluded pages are never supplied to or inspectable by the serializer.
-It is pure (no filesystem I/O) and deterministic: identical authorized pages
-always produce byte-identical output.
+Authorization boundary: the export serializers receive an **already-authorized**
+page sequence from the Core SDK authorization layer (for the public MVP scope,
+:meth:`KnowledgeBase.public_pages`) and cannot widen it — excluded pages are
+never supplied to or inspectable by the serializers. They are pure (no
+filesystem I/O) and deterministic: identical authorized pages always produce
+byte-identical output.
 """
 
 from __future__ import annotations
@@ -64,14 +66,26 @@ OKF_PROFILE_VERSION = 1
 OKF_VERSION = "v0.1"
 OKF_V0_1_PIN = "ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a"
 
+# Profile 2 identification, pinned to OKF v0.2 at upstream commit
+# 3fcbb9f828c2f23d109c855ee403c3a4c81f3a96 (2026-07-24). Profile 2 adopts the
+# standard provenance/status surface while preserving Lumio's canonical trust
+# model and leaving Profile 1 unchanged.
+OKF_PROFILE2_NAME = "Lumio OKF Exchange Profile 2"
+OKF_PROFILE2_VERSION = 2
+OKF_V0_2_VERSION = "v0.2"
+OKF_V0_2_BUNDLE_VERSION = "0.2"
+OKF_V0_2_PIN = "3fcbb9f828c2f23d109c855ee403c3a4c81f3a96"
+
 # Fixed OKF ``type`` values synthesized at the exchange boundary. They describe
 # the exchange document and never expand canonical Compiled Page metadata.
 OKF_TYPE_COMPILED_PAGE = "Lumio Compiled Page"
 OKF_TYPE_NAVIGATION_INDEX = "Lumio Navigation Index"
+OKF_TYPE_ATTESTED_COMPUTATION = "Attested Computation"
 
-# The query value clients use to select Profile 1 on the export endpoint. Any
-# other (or omitted) value preserves the current public Markdown export.
+# The query values clients use to select an OKF profile on the export endpoint.
+# Any other (or omitted) value preserves the current public Markdown export.
 OKF_PROFILE1_QUERY = "okf-1"
+OKF_PROFILE2_QUERY = "okf-2"
 
 
 class OkfExcludedRelationship(msgspec.Struct, frozen=True):
@@ -121,10 +135,13 @@ class OkfProfile1Export(msgspec.Struct, frozen=True):
     okf_pin: str
     files: dict[str, str] = msgspec.field(default_factory=dict)
     public_page_count: int = 0
-    excluded_relationships: list[OkfExcludedRelationship] = msgspec.field(
-        default_factory=list
-    )
+    excluded_relationships: list[OkfExcludedRelationship] = msgspec.field(default_factory=list)
     broken_body_links: list[OkfBrokenBodyLink] = msgspec.field(default_factory=list)
+
+
+# Profile 2 uses the same logical directory-tree transport shape with different
+# profile identification and OKF field mappings.
+OkfProfile2Export = OkfProfile1Export
 
 
 # YAML double-quoted escape sequences for the backslash, quote, and ASCII control
@@ -176,13 +193,20 @@ def _yaml_scalar(value: str) -> str:
     return "".join(out)
 
 
-def _lumio_profile_lines(indent: str) -> list[str]:
-    """Return the versioned Profile 1 identification lines beneath ``lumio:``."""
+def _lumio_profile_lines(
+    indent: str,
+    *,
+    profile: str = OKF_PROFILE_NAME,
+    profile_version: int = OKF_PROFILE_VERSION,
+    okf_version: str = OKF_VERSION,
+    okf_pin: str = OKF_V0_1_PIN,
+) -> list[str]:
+    """Return the versioned profile identification lines beneath ``lumio:``."""
     return [
-        f"{indent}profile: {_yaml_scalar(OKF_PROFILE_NAME)}",
-        f"{indent}profile_version: {OKF_PROFILE_VERSION}",
-        f"{indent}okf_version: {_yaml_scalar(OKF_VERSION)}",
-        f"{indent}okf_pin: {_yaml_scalar(OKF_V0_1_PIN)}",
+        f"{indent}profile: {_yaml_scalar(profile)}",
+        f"{indent}profile_version: {profile_version}",
+        f"{indent}okf_version: {_yaml_scalar(okf_version)}",
+        f"{indent}okf_pin: {_yaml_scalar(okf_pin)}",
     ]
 
 
@@ -284,9 +308,7 @@ def _render_compiled_page(
                 lines.append(f"      url: {_yaml_scalar(source.url)}")
     # Keep only edges whose targets survive in the authorized set; edges to
     # excluded targets are dropped and reported as diagnostics by the caller.
-    included_relationships = [
-        rel for rel in page.relationships if rel.target in authorized_titles
-    ]
+    included_relationships = [rel for rel in page.relationships if rel.target in authorized_titles]
     if included_relationships:
         lines.append("  relationships:")
         for rel in included_relationships:
@@ -303,24 +325,136 @@ def _render_compiled_page(
     return header + body
 
 
-def _okf_nav_frontmatter() -> str:
-    """Return the OKF Profile 1 Navigation Index frontmatter.
+def _okf_status_for_lifecycle(lifecycle: str | None) -> str:
+    """Map Lumio Lifecycle to OKF v0.2 ``status`` at the exchange boundary."""
+    if lifecycle == "approved":
+        return "stable"
+    if lifecycle == "deprecated":
+        return "deprecated"
+    return "draft"
 
-    Carries the OKF ``type`` plus the native ``lumio`` navigation-index marker
-    (so a Lumio-aware loader still recognizes and excludes it) and the Profile 1
-    identification.
+
+def _okf_v2_source_resource(source: Source) -> str:
+    """Return the OKF v0.2 ``resource`` value for a canonical Source.
+
+    A URL travels unchanged. An id-only Source becomes a scope descriptor, which
+    OKF v0.2 explicitly permits for provenance that is not a directly followable
+    artifact.
+    """
+    return source.url or source.id or source.title
+
+
+def _render_compiled_page_profile2(
+    page: CompiledPage,
+    authorized_titles: set[str],
+    authorized_paths: dict[str, str],
+) -> str:
+    """Render one authorized Compiled Page as an OKF Profile 2 document.
+
+    Profile 2 adds standard OKF v0.2 ``sources`` and derived ``status`` while
+    retaining the versioned ``lumio`` extension for exact canonical semantics.
+    """
+    lines: list[str] = ["---"]
+    lines.append(f"type: {_yaml_scalar(OKF_TYPE_COMPILED_PAGE)}")
+    lines.append(f"title: {_yaml_scalar(page.title)}")
+    if page.summary is not None:
+        lines.append(f"description: {_yaml_scalar(page.summary)}")
+    if page.tags:
+        lines.append("tags:")
+        for tag in page.tags:
+            lines.append(f"  - {_yaml_scalar(tag)}")
+    lines.append(f"status: {_yaml_scalar(_okf_status_for_lifecycle(page.lifecycle))}")
+    if page.sources:
+        lines.append("sources:")
+        for source in page.sources:
+            resource = _okf_v2_source_resource(source)
+            if not resource:
+                continue
+            lines.append(f"  - id: {_yaml_scalar(source.id)}")
+            lines.append(f"    title: {_yaml_scalar(source.title)}")
+            lines.append(f"    resource: {_yaml_scalar(resource)}")
+
+    lines.append("lumio:")
+    lines.extend(
+        _lumio_profile_lines(
+            "  ",
+            profile=OKF_PROFILE2_NAME,
+            profile_version=OKF_PROFILE2_VERSION,
+            okf_version=OKF_V0_2_VERSION,
+            okf_pin=OKF_V0_2_PIN,
+        )
+    )
+    if page.aliases:
+        lines.append("  aliases:")
+        for alias in page.aliases:
+            lines.append(f"    - {_yaml_scalar(alias)}")
+    if page.lifecycle:
+        lines.append(f"  lifecycle: {_yaml_scalar(page.lifecycle)}")
+    if page.visibility:
+        lines.append(f"  visibility: {_yaml_scalar(page.visibility)}")
+    lines.append(f"  synthetic: {'true' if page.synthetic else 'false'}")
+    if page.sources:
+        lines.append("  sources:")
+        for source in page.sources:
+            lines.append(f"    - id: {_yaml_scalar(source.id)}")
+            lines.append(f"      title: {_yaml_scalar(source.title)}")
+            if source.url is not None:
+                lines.append(f"      url: {_yaml_scalar(source.url)}")
+    included_relationships = [rel for rel in page.relationships if rel.target in authorized_titles]
+    if included_relationships:
+        lines.append("  relationships:")
+        for rel in included_relationships:
+            lines.append(f"    - target: {_yaml_scalar(rel.target)}")
+            lines.append(f"      type: {_yaml_scalar(rel.type)}")
+    lines.append("---")
+    header = "\n".join(lines)
+    body = _materialize_relationship_body_links(
+        page,
+        [rel for rel in included_relationships if rel.type],
+        authorized_paths,
+    )
+    return header + body
+
+
+def _okf_nav_frontmatter(
+    *,
+    profile_version: int = OKF_PROFILE_VERSION,
+    root: bool = False,
+) -> str:
+    """Return the OKF Navigation Index frontmatter for a profile.
+
+    Profile 2 declares the spec-standard top-level ``okf_version`` only on the
+    bundle-root index. Directory indexes keep the deliberate Lumio marker
+    extension without a second version declaration.
     """
     lines: list[str] = ["---"]
     lines.append(f"type: {_yaml_scalar(OKF_TYPE_NAVIGATION_INDEX)}")
+    if profile_version == OKF_PROFILE2_VERSION and root:
+        lines.append(f"okf_version: {_yaml_scalar(OKF_V0_2_BUNDLE_VERSION)}")
     lines.append("lumio:")
     lines.append(f"  artifact: {_yaml_scalar(NAV_INDEX_ARTIFACT)}")
     lines.append(f"  version: {NAV_INDEX_VERSION}")
-    lines.extend(_lumio_profile_lines("  "))
+    if profile_version == OKF_PROFILE2_VERSION:
+        lines.extend(
+            _lumio_profile_lines(
+                "  ",
+                profile=OKF_PROFILE2_NAME,
+                profile_version=OKF_PROFILE2_VERSION,
+                okf_version=OKF_V0_2_VERSION,
+                okf_pin=OKF_V0_2_PIN,
+            )
+        )
+    else:
+        lines.extend(_lumio_profile_lines("  "))
     lines.append("---")
     return "\n".join(lines)
 
 
-def _render_nav_indexes(pages: list[CompiledPage]) -> dict[str, str]:
+def _render_nav_indexes(
+    pages: list[CompiledPage],
+    *,
+    profile_version: int = OKF_PROFILE_VERSION,
+) -> dict[str, str]:
     """Regenerate every Navigation Index from the authorized page set only.
 
     Reuses the shared index-body renderers so OKF indexes are byte-identical to
@@ -335,7 +469,15 @@ def _render_nav_indexes(pages: list[CompiledPage]) -> dict[str, str]:
             body = _root_index_body(pages_by_dir)
         else:
             body = _dir_index_body(dir_path, pages_by_dir, index_dirs)
-        files[relative] = _okf_nav_frontmatter() + "\n\n" + body + "\n"
+        files[relative] = (
+            _okf_nav_frontmatter(
+                profile_version=profile_version,
+                root=dir_path == "",
+            )
+            + "\n\n"
+            + body
+            + "\n"
+        )
     return files
 
 
@@ -347,9 +489,7 @@ def _render_nav_indexes(pages: list[CompiledPage]) -> dict[str, str]:
 _INLINE_LINK_RE = re.compile(r"(?<!\!)\[([^\]]*)\]\(([^)]*)\)")
 _REFERENCE_LINK_RE = re.compile(r"(?<!\!)\[([^\]]*)\]\[\s*([^\]]*)\s*\]")
 _SHORTCUT_LINK_RE = re.compile(r"(?<!\!)\[([^\]]+)\](?![\(\[])")
-_LINK_DEFINITION_RE = re.compile(
-    r"^ {0,3}\[([^\]]+)\]:\s*(?:<([^>]*)>|(\S+))(?:\s+.*)?$"
-)
+_LINK_DEFINITION_RE = re.compile(r"^ {0,3}\[([^\]]+)\]:\s*(?:<([^>]*)>|(\S+))(?:\s+.*)?$")
 
 
 def _iter_markdown_link_targets(text: str):
@@ -369,9 +509,7 @@ def _iter_markdown_link_targets(text: str):
         match = _LINK_DEFINITION_RE.match(line)
         if match:
             label = match.group(1).strip()
-            destination = (
-                match.group(2) if match.group(2) is not None else (match.group(3) or "")
-            )
+            destination = match.group(2) if match.group(2) is not None else (match.group(3) or "")
             definitions[label] = destination.strip()
         else:
             scan_lines.append(line)
@@ -457,14 +595,13 @@ def _bundle_paths(pages: list[CompiledPage]) -> set[str]:
     page_paths = {page.path for page in pages}
     _, index_dirs = _index_structure(pages)
     index_paths = {
-        (f"{dir_path}/index.md" if dir_path else NAV_INDEX_BASENAME)
-        for dir_path in index_dirs
+        (f"{dir_path}/index.md" if dir_path else NAV_INDEX_BASENAME) for dir_path in index_dirs
     }
     return page_paths | index_paths
 
 
 class ExportVisibilityScope(StrEnum):
-    """The authorized visibility scope for an OKF Profile 1 export (issue #68).
+    """The authorized visibility scope for an OKF profile export (issue #68).
 
     The scope selects exactly which Compiled Page visibility classes the
     serializer receives. It is decided by the Core SDK authorization layer
@@ -496,10 +633,10 @@ def select_export_pages(
 ) -> list[CompiledPage]:
     """Select exactly the Compiled Pages authorized for ``scope`` (issue #68).
 
-    This is the Core SDK authorization selection for OKF Profile 1 export. The
-    serializer (:func:`export_okf_profile1`) receives only this already-
-    authorized set and cannot widen it: excluded pages are never supplied to or
-    inspectable by the serializer, so their titles and summaries cannot leak
+    This is the Core SDK authorization selection for OKF profile export. The
+    serializer receives only this already-authorized set and cannot widen it:
+    excluded pages are never supplied to or inspectable by the serializer, so
+    their titles and summaries cannot leak
     into the exported files, regenerated Navigation Indexes, lumio extension
     data, or generated metadata.
 
@@ -509,22 +646,12 @@ def select_export_pages(
     return [page for page in pages if (page.visibility or "") in allowed]
 
 
-def export_okf_profile1(pages: Sequence[CompiledPage]) -> OkfProfile1Export:
-    """Serialize an already-authorized page set as an OKF Exchange Profile 1 export.
-
-    The caller (Core SDK authorization layer) selects the authorized pages — for
-    the public MVP scope, :meth:`KnowledgeBase.public_pages`. The serializer
-    trusts that set and cannot widen it: it never receives excluded pages, and
-    Navigation Indexes are regenerated only from the supplied set. Typed
-    relationships and body links to targets outside the authorized set are
-    removed/reported. Surviving typed Relationships are materialized as ordinary
-    body links only in the exported document; canonical page bodies are untouched.
-    Raw Knowledge Sources live under
-    the ingest path and are never Compiled Pages, so they are inherently absent.
-
-    Pure and deterministic: identical authorized pages always yield byte-identical
-    output.
-    """
+def _export_okf_profile(
+    pages: Sequence[CompiledPage],
+    *,
+    profile_version: int,
+) -> OkfProfile1Export:
+    """Serialize an already-authorized page set as a pinned OKF profile."""
     authorized = sorted(pages, key=lambda page: page.path)
     authorized_titles = {page.title for page in authorized}
     authorized_paths = {page.title: page.path for page in authorized}
@@ -534,9 +661,12 @@ def export_okf_profile1(pages: Sequence[CompiledPage]) -> OkfProfile1Export:
     excluded_map: dict[tuple[str, str], int] = {}
     broken_map: dict[str, int] = {}
     for page in authorized:
-        files[page.path] = _render_compiled_page(
-            page, authorized_titles, authorized_paths
-        )
+        if profile_version == OKF_PROFILE2_VERSION:
+            files[page.path] = _render_compiled_page_profile2(
+                page, authorized_titles, authorized_paths
+            )
+        else:
+            files[page.path] = _render_compiled_page(page, authorized_titles, authorized_paths)
         for rel in page.relationships:
             # Edges to targets outside the authorized set are removed and
             # reported. Empty targets are malformed rather than scoped-out, so
@@ -558,27 +688,73 @@ def export_okf_profile1(pages: Sequence[CompiledPage]) -> OkfProfile1Export:
                 continue
             broken_map[page.path] = broken_map.get(page.path, 0) + 1
 
-    files.update(_render_nav_indexes(authorized))
+    files.update(_render_nav_indexes(authorized, profile_version=profile_version))
 
     excluded = [
         OkfExcludedRelationship(source_path=src, type=typ, count=count)
         for (src, typ), count in sorted(excluded_map.items())
     ]
     broken = [
-        OkfBrokenBodyLink(source_path=src, count=count)
-        for src, count in sorted(broken_map.items())
+        OkfBrokenBodyLink(source_path=src, count=count) for src, count in sorted(broken_map.items())
     ]
 
+    if profile_version == OKF_PROFILE2_VERSION:
+        metadata = (
+            OKF_PROFILE2_NAME,
+            OKF_PROFILE2_VERSION,
+            OKF_V0_2_VERSION,
+            OKF_V0_2_PIN,
+        )
+    else:
+        metadata = (
+            OKF_PROFILE_NAME,
+            OKF_PROFILE_VERSION,
+            OKF_VERSION,
+            OKF_V0_1_PIN,
+        )
+    profile, version, okf_version, okf_pin = metadata
     return OkfProfile1Export(
-        profile=OKF_PROFILE_NAME,
-        profile_version=OKF_PROFILE_VERSION,
-        okf_version=OKF_VERSION,
-        okf_pin=OKF_V0_1_PIN,
+        profile=profile,
+        profile_version=version,
+        okf_version=okf_version,
+        okf_pin=okf_pin,
         files=dict(sorted(files.items())),
         public_page_count=len(authorized),
         excluded_relationships=excluded,
         broken_body_links=broken,
     )
+
+
+def export_okf_profile1(pages: Sequence[CompiledPage]) -> OkfProfile1Export:
+    """Serialize an already-authorized page set as an OKF Exchange Profile 1 export.
+
+    The caller (Core SDK authorization layer) selects the authorized pages — for
+    the public MVP scope, :meth:`KnowledgeBase.public_pages`. The serializer
+    trusts that set and cannot widen it: it never receives excluded pages, and
+    Navigation Indexes are regenerated only from the supplied set. Typed
+    relationships and body links to targets outside the authorized set are
+    removed/reported. Surviving typed Relationships are materialized as ordinary
+    body links only in the exported document; canonical page bodies are untouched.
+    Raw Knowledge Sources live under
+    the ingest path and are never Compiled Pages, so they are inherently absent.
+
+    Pure and deterministic: identical authorized pages always yield byte-identical
+    output.
+    """
+    return _export_okf_profile(pages, profile_version=OKF_PROFILE_VERSION)
+
+
+def export_okf_profile2(pages: Sequence[CompiledPage]) -> OkfProfile2Export:
+    """Serialize an already-authorized page set as an OKF Exchange Profile 2 export.
+
+    Profile 2 keeps Profile 1's authorization and determinism guarantees while
+    adding OKF v0.2 standard ``sources`` and derived ``status``. Exact Lumio
+    Lifecycle, Visibility, synthetic status, Sources, and typed Relationships
+    still travel in the versioned ``lumio`` extension.
+    """
+    return _export_okf_profile(pages, profile_version=OKF_PROFILE2_VERSION)
+
+
 # ---------------------------------------------------------------------------
 # OKF Exchange Profile 1 import (issue #69): the inverse of the export boundary.
 #
@@ -670,6 +846,11 @@ class OkfProfile1Import(msgspec.Struct, frozen=True):
     skipped_files: list[str] = msgspec.field(default_factory=list)
 
 
+# Profile 2 uses the same proposal/transport shape with different profile
+# metadata and OKF v0.2 field handling.
+OkfProfile2Import = OkfProfile1Import
+
+
 # The generic external Compiled Page frontmatter vocabulary accepted by this
 # import boundary. It is source-shape based: no producer name receives special
 # treatment. ``description`` remains the OKF fallback for ``summary``.
@@ -688,20 +869,41 @@ _EXTERNAL_PAGE_KEYS = {
     "resource",
     "timestamp",
 }
-# The Profile 1 identification block emitted beneath ``lumio:`` by the
-# exporter (:func:`_lumio_profile_lines`). These keys are recognized Profile 1
+# The OKF v0.2 standard frontmatter vocabulary recognized by Profile 2 import.
+# Trust, freshness, credibility, and computation keys are recognized explicitly
+# so diagnostics can distinguish standardized-but-uncanonicalized fields from
+# arbitrary producer extensions.
+_PROFILE2_OKF_KEYS = {
+    "title",
+    "description",
+    "tags",
+    "type",
+    "resource",
+    "timestamp",
+    "sources",
+    "usage_window",
+    "generated",
+    "verified",
+    "status",
+    "stale_after",
+    "runtime",
+    "parameters",
+    "computation",
+    "executor",
+    "attester",
+}
+# The Profile identification block emitted beneath ``lumio:`` by the
+# exporter (:func:`_lumio_profile_lines`). These keys are recognized profile
 # identification — ``_classify_lumio_extension`` reads ``profile_version`` to
 # identify the profile — but they carry no canonical Lumio semantics: they are
 # exchange-boundary and absent from the re-imported canonical page. A Lumio
 # export re-imported through the recognized extension must NOT diagnose its own
 # identification block as unknown producer extensions (issue #71).
-_LUMIO_IDENTIFICATION_KEYS = frozenset(
-    {"profile", "profile_version", "okf_version", "okf_pin"}
-)
-# The semantic keys a recognized Profile 1 ``lumio`` extension may carry that
+_LUMIO_IDENTIFICATION_KEYS = frozenset({"profile", "profile_version", "okf_version", "okf_pin"})
+# The semantic keys a recognized Lumio profile extension may carry that
 # map onto canonical Compiled Page metadata. Any key beyond these and the
 # identification block is an unknown producer extension: previewable, but
-# dropped at canonicalization with a diagnostic stating Profile 1 does not
+# dropped at canonicalization with a diagnostic stating the profile does not
 # promise persistent lossless round-tripping (issue #70).
 _RECOGNIZED_LUMIO_KEYS = {
     "aliases",
@@ -752,9 +954,7 @@ def _scan_okf_bundle(root: Path) -> tuple[list[tuple[str, Path]], list[str]]:
         try:
             resolved.relative_to(root)
         except ValueError as exc:
-            raise OkfImportError(
-                f"bundle path escapes the bundle root: {path}"
-            ) from exc
+            raise OkfImportError(f"bundle path escapes the bundle root: {path}") from exc
         # The relative path reflects the bundle's own directory structure (the
         # entry's own location), not a symlink target — so two distinct entries
         # that alias the same real file keep distinct relative paths and are
@@ -763,8 +963,7 @@ def _scan_okf_bundle(root: Path) -> tuple[list[tuple[str, Path]], list[str]]:
         folded = rel.lower()
         if folded in seen_folded:
             raise OkfImportError(
-                f"duplicate case-insensitive bundle path: {rel} collides "
-                f"with {seen_folded[folded]}"
+                f"duplicate case-insensitive bundle path: {rel} collides with {seen_folded[folded]}"
             )
         real = str(resolved)
         if real in seen_resolved:
@@ -882,12 +1081,11 @@ class _ImportParsingPolicy(StrEnum):
     """Internal policy selecting trusted frontmatter vocabulary during import."""
 
     GENERIC_OKF = "generic-okf"
+    GENERIC_OKF_V2 = "generic-okf-v2"
     EXTERNAL_COMPILED_MARKDOWN = "external-compiled-markdown"
 
 
-def _okf_description(
-    data: dict[str, Any], parsing_policy: _ImportParsingPolicy
-) -> str | None:
+def _okf_description(data: dict[str, Any], parsing_policy: _ImportParsingPolicy) -> str | None:
     """Return a non-empty OKF description or external Compiled Page summary.
 
     Top-level ``summary`` is canonical Compiled Page vocabulary and is accepted
@@ -909,21 +1107,24 @@ def _okf_description(
     return None
 
 
-def _classify_lumio_extension(lumio: Any) -> str:
-    """Classify a ``lumio`` frontmatter block for Profile 1 import (issue #70).
+def _classify_lumio_extension(
+    lumio: Any,
+    *,
+    supported_profile_version: int = OKF_PROFILE_VERSION,
+) -> str:
+    """Classify a ``lumio`` frontmatter block for a supported import profile.
 
     Returns one of:
 
-    * ``"recognized"`` — a dict declaring ``profile_version: 1``. Canonical
-      Profile 1 semantics are applied; unknown keys are dropped with a
-      diagnostic.
+    * ``"recognized"`` — a dict declaring the supported integer
+      ``profile_version``. Canonical profile semantics are applied; unknown keys
+      are dropped with a diagnostic.
     * ``"unsupported-profile"`` — a dict declaring a different integer
       ``profile_version``. Parsed for preview only; explicit supported-profile
       selection or Maintainer approval is required before canonical publication.
     * ``"producer-extension"`` — a non-dict, or a dict without a parseable
       ``profile_version``. Treated as an unknown producer extension and dropped
-      at canonicalization (Profile 1 does not promise persistent lossless
-      round-tripping).
+      at canonicalization.
     * ``"absent"`` — no ``lumio`` block at all (a generic OKF document).
     """
     if lumio is None:
@@ -933,37 +1134,49 @@ def _classify_lumio_extension(lumio: Any) -> str:
     if "profile_version" not in lumio:
         return "producer-extension"
     raw_version = lumio.get("profile_version")
-    # Strict string match: ``int()`` would accept ``true``, ``1.9``, ``"01"`` —
-    # values that are not a Profile 1 declaration and must not enter the
+    # Strict type match: ``int()`` would accept ``true``, ``1.9``, ``"01"`` —
+    # values that are not a supported profile declaration and must not enter the
     # recognized Lumio trust path.
     if not isinstance(raw_version, int) or isinstance(raw_version, bool):
         return "producer-extension"
-    if raw_version == OKF_PROFILE_VERSION:
+    if raw_version == supported_profile_version:
         return "recognized"
     return "unsupported-profile"
 
-def _diagnose_dropped_okf_fields(
-    rel: str, data: dict[str, Any], diagnostics: list[OkfImportDiagnostic]
-) -> None:
-    """Diagnose exchange-only OKF fields dropped at canonicalization (issue #70).
 
-    ``resource`` and ``timestamp`` are always exchange-only. A non-empty
-    ``type`` that is not a fixed Lumio exchange type is an unknown value. Each
-    is reported as a ``dropped`` outcome so a Maintainer sees what was set
-    aside, while the page remains previewable.
+def _diagnose_dropped_okf_fields(
+    rel: str,
+    data: dict[str, Any],
+    diagnostics: list[OkfImportDiagnostic],
+    parsing_policy: _ImportParsingPolicy,
+) -> None:
+    """Diagnose exchange-only OKF fields dropped at canonicalization.
+
+    ``resource`` and legacy ``timestamp`` are always exchange-only. A non-empty
+    ``type`` is never canonical Lumio metadata; Profile 2 recognizes the OKF
+    v0.2 standard Attested Computation value explicitly while still dropping it
+    from canonical metadata.
     """
     okf_type = str(data.get("type") or "").strip()
     if okf_type and okf_type not in (
         OKF_TYPE_COMPILED_PAGE,
         OKF_TYPE_NAVIGATION_INDEX,
     ):
+        is_v2_standard_type = (
+            parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2
+            and okf_type == OKF_TYPE_ATTESTED_COMPUTATION
+        )
         diagnostics.append(
             OkfImportDiagnostic(
                 path=rel,
                 kind="type",
                 severity="dropped",
                 message=(
-                    "OKF 'type' has an unknown non-empty exchange-only value; "
+                    "OKF v0.2 'Attested Computation' is a standard exchange-only "
+                    "type; the document remains previewable but Lumio does not "
+                    "execute or canonicalize its computation contract"
+                    if is_v2_standard_type
+                    else "OKF 'type' has an unknown non-empty exchange-only value; "
                     "dropped at canonicalization while the page remains previewable"
                 ),
             )
@@ -987,8 +1200,10 @@ def _diagnose_dropped_okf_fields(
                 kind="timestamp",
                 severity="dropped",
                 message=(
-                    "OKF 'timestamp' is exchange-only and is dropped at "
-                    "canonicalization"
+                    "legacy OKF v0.1 'timestamp' is exchange-only and is dropped "
+                    "at canonicalization"
+                    if parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2
+                    else "OKF 'timestamp' is exchange-only and is dropped at canonicalization"
                 ),
             )
         )
@@ -1001,11 +1216,12 @@ def _diagnose_dropped_external_fields(
     parsing_policy: _ImportParsingPolicy,
 ) -> None:
     """Disclose frontmatter outside the selected import policy's vocabulary."""
-    accepted_keys = (
-        _EXTERNAL_PAGE_KEYS
-        if parsing_policy is _ImportParsingPolicy.EXTERNAL_COMPILED_MARKDOWN
-        else {"title", "description", "tags", "type", "resource", "timestamp"}
-    )
+    if parsing_policy is _ImportParsingPolicy.EXTERNAL_COMPILED_MARKDOWN:
+        accepted_keys = _EXTERNAL_PAGE_KEYS
+    elif parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2:
+        accepted_keys = _PROFILE2_OKF_KEYS
+    else:
+        accepted_keys = {"title", "description", "tags", "type", "resource", "timestamp"}
     for key in data:
         if key == "lumio" or key in accepted_keys:
             continue
@@ -1017,6 +1233,167 @@ def _diagnose_dropped_external_fields(
                 message=(
                     f"external frontmatter key {key!r} is not recognized; "
                     "dropped at canonicalization while the page remains previewable"
+                ),
+            )
+        )
+
+
+def _as_okf_v2_sources(
+    rel: str,
+    value: Any,
+    diagnostics: list[OkfImportDiagnostic],
+) -> list[Source]:
+    """Map OKF v0.2 standard ``sources`` onto canonical Lumio Sources.
+
+    ``resource`` is required by OKF within each entry and maps to Lumio's
+    optional Source URL/reference slot. Credibility signals are recognized but
+    have no canonical Lumio equivalent yet, so they are disclosed as dropped.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        diagnostics.append(
+            OkfImportDiagnostic(
+                path=rel,
+                kind="sources",
+                severity="warning",
+                message=(
+                    "OKF v0.2 'sources' is not a list; ignored while the page remains previewable"
+                ),
+            )
+        )
+        return []
+
+    sources: list[Source] = []
+    has_credibility_signals = False
+    for item in value:
+        if not isinstance(item, dict):
+            diagnostics.append(
+                OkfImportDiagnostic(
+                    path=rel,
+                    kind="sources",
+                    severity="warning",
+                    message="OKF v0.2 source entry is not a mapping; skipped",
+                )
+            )
+            continue
+        resource = str(item.get("resource") or "").strip()
+        if not resource:
+            diagnostics.append(
+                OkfImportDiagnostic(
+                    path=rel,
+                    kind="sources",
+                    severity="warning",
+                    message=(
+                        "OKF v0.2 source entry has no required 'resource'; mapped without a URL"
+                    ),
+                )
+            )
+        source = Source(
+            id=str(item.get("id") or ""),
+            title=str(item.get("title") or ""),
+            url=resource or None,
+        )
+        if source.id or source.title or source.url:
+            sources.append(source)
+        if any(key in item for key in ("author", "usage_count", "last_modified", "usage_window")):
+            has_credibility_signals = True
+
+    if has_credibility_signals:
+        diagnostics.append(
+            OkfImportDiagnostic(
+                path=rel,
+                kind="sources-credibility",
+                severity="dropped",
+                message=(
+                    "OKF v0.2 source credibility signals are recognized but have "
+                    "no canonical Lumio Source fields; dropped at canonicalization"
+                ),
+            )
+        )
+    return sources
+
+
+def _diagnose_profile2_standard_fields(
+    rel: str,
+    data: dict[str, Any],
+    body: str,
+    diagnostics: list[OkfImportDiagnostic],
+) -> None:
+    """Recognize OKF v0.2 standard fields that remain non-canonical in Lumio."""
+    if data.get("status") is not None:
+        diagnostics.append(
+            OkfImportDiagnostic(
+                path=rel,
+                kind="status",
+                severity="dropped",
+                message=(
+                    "OKF v0.2 'status' is recognized; generic import keeps "
+                    "Lumio's safe draft lifecycle default and never auto-approves"
+                ),
+            )
+        )
+    if data.get("generated") is not None or data.get("verified") is not None:
+        diagnostics.append(
+            OkfImportDiagnostic(
+                path=rel,
+                kind="trust",
+                severity="dropped",
+                message=(
+                    "OKF v0.2 'generated'/'verified' are recognized as trust "
+                    "metadata but are not canonical Lumio approval; dropped at "
+                    "canonicalization"
+                ),
+            )
+        )
+    if data.get("stale_after") is not None:
+        diagnostics.append(
+            OkfImportDiagnostic(
+                path=rel,
+                kind="freshness",
+                severity="dropped",
+                message=(
+                    "OKF v0.2 'stale_after' is recognized as freshness metadata "
+                    "but has no canonical Lumio field; dropped at canonicalization"
+                ),
+            )
+        )
+    if data.get("usage_window") is not None:
+        diagnostics.append(
+            OkfImportDiagnostic(
+                path=rel,
+                kind="sources-credibility",
+                severity="dropped",
+                message=(
+                    "OKF v0.2 'usage_window' is recognized as source credibility "
+                    "metadata but has no canonical Lumio field; dropped at "
+                    "canonicalization"
+                ),
+            )
+        )
+    computation_keys = {"runtime", "parameters", "computation", "executor", "attester"}
+    if any(key in data for key in computation_keys):
+        diagnostics.append(
+            OkfImportDiagnostic(
+                path=rel,
+                kind="computation",
+                severity="dropped",
+                message=(
+                    "OKF v0.2 Attested Computation fields are recognized as "
+                    "exchange-only; Lumio preserves the body and never executes "
+                    "executor or attester resources"
+                ),
+            )
+        )
+    if "\n# Citations" in body or body.startswith("# Citations"):
+        diagnostics.append(
+            OkfImportDiagnostic(
+                path=rel,
+                kind="citations",
+                severity="ignored",
+                message=(
+                    "legacy OKF v0.1 '# Citations' section is preserved as prose "
+                    "and not promoted to canonical Sources"
                 ),
             )
         )
@@ -1096,7 +1473,10 @@ def _reserved_artifact_marker_is_valid(text: str, basename: str) -> bool:
 
 
 def _imported_document_source(
-    rel: str, bundle_identity: str, bundle_origin: str | None
+    rel: str,
+    bundle_identity: str,
+    bundle_origin: str | None,
+    parsing_policy: _ImportParsingPolicy,
 ) -> Source:
     """Build deterministic provenance for one document in an imported tree.
 
@@ -1104,8 +1484,11 @@ def _imported_document_source(
     the URL is the known bundle origin only when supplied. OKF ``resource`` is
     never substituted (the caller drops it before this is called).
     """
+    profile = (
+        "okf-profile2" if parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2 else "okf-profile1"
+    )
     return Source(
-        id=f"okf-profile1:{bundle_identity}:{rel}",
+        id=f"{profile}:{bundle_identity}:{rel}",
         title=rel,
         url=bundle_origin,
     )
@@ -1176,17 +1559,19 @@ def _parse_okf_page(
     """Parse one OKF Markdown document into a proposed Compiled Page (issue #70).
 
     Standard OKF fields map onto canonical Lumio fields. A recognized
-    ``lumio`` Profile 1 extension overrides the safe generic defaults with its
-    aliases, lifecycle, visibility, synthetic status, sources, and
-    relationships; any key it carries beyond the recognized set is dropped with
-    a diagnostic stating Profile 1 does not promise persistent lossless
+    ``lumio`` extension for the selected profile overrides the safe generic
+    defaults with its aliases, lifecycle, visibility, synthetic status, sources,
+    and relationships; any key it carries beyond the recognized set is dropped
+    with a diagnostic stating the profile does not promise persistent lossless
     round-tripping. An unsupported or unidentified profile is parsed for
     preview only and recorded as a blocking outcome. Otherwise the page
     defaults to draft / internal / non-synthetic with deterministic Source
-    provenance. A missing title yields a reviewable candidate from the first
-    level-one heading or the humanized filename stem. Exchange-only OKF
-    ``type``, ``resource``, and ``timestamp`` are dropped, and broken internal
-    body links are reported as warnings that never become typed Relationships.
+    provenance. Profile 2 also maps OKF v0.2 standard ``sources`` onto
+    canonical Sources. A missing title yields a reviewable candidate from the
+    first level-one heading or the humanized filename stem. Exchange-only OKF
+    ``type``, ``resource``, and legacy ``timestamp`` are dropped, and broken
+    internal body links are reported as warnings that never become typed
+    Relationships.
     """
     try:
         data, body, _ = _parse_frontmatter(text, Path(rel))
@@ -1202,8 +1587,26 @@ def _parse_okf_page(
             )
         )
 
-    classification = _classify_lumio_extension(data.get("lumio"))
-    lumio_raw = data.get("lumio") if classification == "recognized" else {}
+    supported_profile_version = (
+        OKF_PROFILE2_VERSION
+        if parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2
+        else OKF_PROFILE_VERSION
+    )
+    profile_name = (
+        OKF_PROFILE2_NAME
+        if parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2
+        else OKF_PROFILE_NAME
+    )
+    classification = _classify_lumio_extension(
+        data.get("lumio"),
+        supported_profile_version=supported_profile_version,
+    )
+    lumio_candidate = data.get("lumio")
+    lumio_raw: dict[str, Any] = (
+        lumio_candidate
+        if classification == "recognized" and isinstance(lumio_candidate, dict)
+        else {}
+    )
 
     # Title: OKF title, else first level-one heading, else humanized filename.
     title = str(data.get("title") or "").strip() or None
@@ -1257,6 +1660,11 @@ def _parse_okf_page(
             )
         )
     tags = _as_string_list(data.get("tags"))
+    okf_v2_sources = (
+        _as_okf_v2_sources(rel, data.get("sources"), diagnostics)
+        if parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2
+        else []
+    )
 
     if classification == "recognized":
         aliases = _as_string_list(lumio_raw.get("aliases"))
@@ -1265,7 +1673,7 @@ def _parse_okf_page(
         synthetic = bool(lumio_raw.get("synthetic"))
         sources = _as_sources(lumio_raw.get("sources"))
         relationships = _as_relationships(lumio_raw.get("relationships"))
-        # The Profile 1 identification block (profile, profile_version,
+        # The profile identification block (profile, profile_version,
         # okf_version, okf_pin) is recognized identification, not an unknown
         # producer extension; only keys beyond the identification block and the
         # recognized semantic keys are diagnosed and dropped (issues #70, #71).
@@ -1279,8 +1687,8 @@ def _parse_okf_page(
                     severity="dropped",
                     message=(
                         f"producer extension key {key!r} is not recognized by "
-                        "Profile 1; dropped at canonicalization. Profile 1 does "
-                        "not promise persistent lossless round-tripping of "
+                        f"{profile_name}; dropped at canonicalization. {profile_name} "
+                        "does not promise persistent lossless round-tripping of "
                         "unknown producer extensions."
                     ),
                 )
@@ -1299,7 +1707,7 @@ def _parse_okf_page(
             lifecycle = "draft"
             visibility = "internal"
             synthetic = False
-            sources = []
+            sources = okf_v2_sources
             relationships = []
         if classification == "unsupported-profile":
             diagnostics.append(
@@ -1322,25 +1730,32 @@ def _parse_okf_page(
                     kind="extension",
                     severity="dropped",
                     message=(
-                        "lumio extension is not a recognized Profile 1 block; "
+                        f"lumio extension is not a recognized {profile_name} block; "
                         "treated as a producer extension and dropped at "
-                        "canonicalization. Profile 1 does not promise persistent "
+                        f"canonicalization. {profile_name} does not promise persistent "
                         "lossless round-tripping of unknown producer extensions."
                     ),
                 )
             )
 
-    imported_source = _imported_document_source(rel, bundle_identity, bundle_origin)
+    imported_source = _imported_document_source(
+        rel,
+        bundle_identity,
+        bundle_origin,
+        parsing_policy,
+    )
     if parsing_policy is _ImportParsingPolicy.EXTERNAL_COMPILED_MARKDOWN:
         if not synthetic:
             sources = [imported_source, *sources]
     elif classification != "recognized":
-        sources = [imported_source]
+        sources = [imported_source, *sources]
 
     # Exchange-only OKF fields and unknown external metadata are disclosed at
     # canonicalization regardless of lumio classification.
-    _diagnose_dropped_okf_fields(rel, data, diagnostics)
+    _diagnose_dropped_okf_fields(rel, data, diagnostics, parsing_policy)
     _diagnose_dropped_external_fields(rel, data, diagnostics, parsing_policy)
+    if parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2:
+        _diagnose_profile2_standard_fields(rel, data, body, diagnostics)
 
     # Broken internal body links are warnings and never Relationships (issue #70).
     _diagnose_broken_body_links(rel, body, bundle_paths, diagnostics)
@@ -1373,9 +1788,9 @@ def _import_markdown_tree(
     bundle_origin: str | None,
     parsing_policy: _ImportParsingPolicy,
 ) -> OkfProfile1Import:
-    """Parse a safe OKF Exchange Profile 1 directory tree into proposed pages.
+    """Parse a safe OKF directory tree into proposed pages.
 
-    The inverse of :func:`export_okf_profile1`. The importer scans the actual
+    The importer scans the actual bundle tree (never trusting an imported
     bundle tree (never trusting an imported ``index.md`` as authoritative
     inventory), classifies each Markdown document by reserved basename, and maps
     the standard OKF fields onto proposed Compiled Pages with safe generic
@@ -1396,9 +1811,7 @@ def _import_markdown_tree(
         raise OkfImportError(f"bundle path is not a directory: {bundle_path}")
 
     markdown_files, skipped = _scan_okf_bundle(root)
-    identity_entries = [
-        (rel, path.read_bytes()) for rel, path in markdown_files
-    ]
+    identity_entries = [(rel, path.read_bytes()) for rel, path in markdown_files]
     bundle_identity = _okf_bundle_identity(identity_entries)
     bundle_paths = {rel for rel, _ in markdown_files}
 
@@ -1410,18 +1823,35 @@ def _import_markdown_tree(
         kind = _classify_okf_doc(rel)
         if kind == "navigation-index":
             nav_count += 1
-            _record_reserved_artifact(rel, path, "index.md", "navigation input",
-                "not proposed as a Compiled Page", diagnostics)
+            _record_reserved_artifact(
+                rel,
+                path,
+                "index.md",
+                "navigation input",
+                "not proposed as a Compiled Page",
+                diagnostics,
+            )
             continue
         if kind == "log":
             log_count += 1
-            _record_reserved_artifact(rel, path, "log.md", "preview-only exchange history",
-                "not a Compiled Page or audit event", diagnostics)
+            _record_reserved_artifact(
+                rel,
+                path,
+                "log.md",
+                "preview-only exchange history",
+                "not a Compiled Page or audit event",
+                diagnostics,
+            )
             continue
         if kind == "hot-index":
-            _record_reserved_artifact(rel, path, "hot.md",
+            _record_reserved_artifact(
+                rel,
+                path,
+                "hot.md",
                 "a reserved Hot Index artifact path",
-                "a conflicting path that is not proposed as a Compiled Page", diagnostics)
+                "a conflicting path that is not proposed as a Compiled Page",
+                diagnostics,
+            )
             continue
 
         text = path.read_text(encoding="utf-8")
@@ -1452,16 +1882,29 @@ def _import_markdown_tree(
             )
         )
 
+    if parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2:
+        profile_metadata = (
+            OKF_PROFILE2_NAME,
+            OKF_PROFILE2_VERSION,
+            OKF_V0_2_VERSION,
+            OKF_V0_2_PIN,
+        )
+    else:
+        profile_metadata = (
+            OKF_PROFILE_NAME,
+            OKF_PROFILE_VERSION,
+            OKF_VERSION,
+            OKF_V0_1_PIN,
+        )
+    profile, profile_version, okf_version, okf_pin = profile_metadata
     return OkfProfile1Import(
-        profile=OKF_PROFILE_NAME,
-        profile_version=OKF_PROFILE_VERSION,
-        okf_version=OKF_VERSION,
-        okf_pin=OKF_V0_1_PIN,
+        profile=profile,
+        profile_version=profile_version,
+        okf_version=okf_version,
+        okf_pin=okf_pin,
         bundle_identity=bundle_identity,
         proposed_pages=sorted(proposed, key=lambda page: page.relative_path),
-        diagnostics=sorted(
-            diagnostics, key=lambda d: (d.path, d.kind, d.severity, d.message)
-        ),
+        diagnostics=sorted(diagnostics, key=lambda d: (d.path, d.kind, d.severity, d.message)),
         navigation_index_count=nav_count,
         log_count=log_count,
         skipped_files=sorted(skipped),
@@ -1477,6 +1920,23 @@ def import_okf_profile1(
         bundle_path,
         bundle_origin,
         _ImportParsingPolicy.GENERIC_OKF,
+    )
+
+
+def import_okf_profile2(
+    bundle_path: str | Path,
+    bundle_origin: str | None = None,
+) -> OkfProfile2Import:
+    """Parse a generic OKF Profile 2 tree with safe canonical defaults.
+
+    OKF v0.2 standard ``sources`` map onto canonical Sources. Trust, freshness,
+    status, credibility, and Attested Computation fields are recognized with
+    explicit diagnostics but never auto-approve a page or execute code.
+    """
+    return _import_markdown_tree(
+        bundle_path,
+        bundle_origin,
+        _ImportParsingPolicy.GENERIC_OKF_V2,
     )
 
 
