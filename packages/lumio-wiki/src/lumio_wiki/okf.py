@@ -4,9 +4,10 @@ Lumio OKF Exchange Profile 1 maps Lumio's canonical Compiled Page model onto the
 Google Open Knowledge Format (OKF) v0.1 exchange unit, pinned to a single
 upstream commit. It is an optional, best-effort interchange profile: it never
 claims unqualified OKF compliance and never redefines Lumio's canonical domain
-model. The Markdown body is preserved unchanged, OKF ``resource`` and
-``timestamp`` are omitted rather than invented, and Lumio-owned semantics travel
-in a versioned ``lumio`` extension. See ADR-0007 and
+model. The Markdown body is preserved unchanged in the canonical source; export may
+append ordinary links for typed Relationships so OKF-only consumers can see the
+edge. OKF ``resource`` and ``timestamp`` are omitted rather than invented, and
+Lumio-owned semantics travel in a versioned ``lumio`` extension. See ADR-0007 and
 ``docs/research/okf-comparison.md``.
 
 Authorization boundary: :func:`export_okf_profile1` is the serializer. It
@@ -20,11 +21,13 @@ always produce byte-identical output.
 from __future__ import annotations
 
 import hashlib
+import posixpath
 import re
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote
 
 import msgspec
 
@@ -42,6 +45,7 @@ from lumio_wiki.knowledge_base import (
     _as_string_list,
     _dir_index_body,
     _index_structure,
+    _markdown_link_destination,
     _page_dir,
     _parse_frontmatter,
     _root_index_body,
@@ -182,17 +186,73 @@ def _lumio_profile_lines(indent: str) -> list[str]:
     ]
 
 
+def _materialize_relationship_body_links(
+    page: CompiledPage,
+    relationships: Sequence[Relationship],
+    authorized_paths: dict[str, str],
+) -> str:
+    """Append missing typed-edge links for the authorized OKF bundle.
+
+    The canonical body is never mutated. A link already resolving to the
+    relationship target's exported path satisfies the compatibility rule,
+    regardless of whether it is written as ``target.md``, ``./target.md``, or
+    an encoded equivalent. Multiple typed edges to the same target need only
+    one ordinary Markdown link because OKF consumers cannot represent the
+    relationship type.
+    """
+    source_dir = _page_dir(page.path)
+    existing_paths = {
+        unquote(resolved)
+        for raw_target in _iter_markdown_link_targets(page.body)
+        if (resolved := _resolve_internal_link(raw_target, source_dir)) is not None
+        and resolved.lower().endswith(".md")
+    }
+
+    missing_targets: list[str] = []
+    seen_targets: set[str] = set()
+    for relationship in relationships:
+        target_path = authorized_paths[relationship.target]
+        if target_path in existing_paths or relationship.target in seen_targets:
+            continue
+        seen_targets.add(relationship.target)
+        missing_targets.append(relationship.target)
+
+    if not missing_targets:
+        return page.body
+
+    materialized_lines: list[str] = []
+    for target in missing_targets:
+        safe_target = target.replace("[", "\\[").replace("]", "\\]")
+        destination = _markdown_link_destination(
+            posixpath.relpath(authorized_paths[target], start=source_dir or ".")
+        )
+        materialized_lines.append(f"See also [{safe_target}]({destination}).")
+    materialized = "\n".join(materialized_lines)
+    if not page.body:
+        prefix = "\n\n"
+    elif page.body.endswith("\n\n"):
+        prefix = page.body
+    elif page.body.endswith("\n"):
+        prefix = page.body + "\n"
+    else:
+        prefix = page.body + "\n\n"
+    return prefix + materialized + "\n"
+
+
 def _render_compiled_page(
     page: CompiledPage,
     authorized_titles: set[str],
+    authorized_paths: dict[str, str],
 ) -> str:
     """Render one authorized Compiled Page as an OKF Profile 1 document.
 
     Standard OKF fields carry ``type``, ``title``, ``description`` (from
     summary), and ``tags``. OKF ``resource`` and ``timestamp`` are omitted. The
-    Markdown body is appended verbatim — no Schema, Examples, Citations, Related,
-    or log sections are synthesized. Typed relationships to targets outside the
-    authorized set are dropped (the caller reports them as diagnostics).
+    Markdown body is preserved unless a surviving typed Relationship lacks a
+    corresponding ordinary Markdown link; in that case export-time materialized
+    link prose is appended for OKF-only consumers. Typed relationships to
+    targets outside the authorized set are dropped (the caller reports them as
+    diagnostics).
     """
     lines: list[str] = ["---"]
     lines.append(f"type: {_yaml_scalar(OKF_TYPE_COMPILED_PAGE)}")
@@ -234,10 +294,13 @@ def _render_compiled_page(
             lines.append(f"      type: {_yaml_scalar(rel.type)}")
     lines.append("---")
     header = "\n".join(lines)
-    # ``page.body`` is the unchanged body (it begins with the newline(s) that
-    # followed the source closing frontmatter delimiter), so appending it
-    # verbatim preserves the Markdown exactly.
-    return header + page.body
+    # Materialization is export-only: the canonical page body remains untouched.
+    body = _materialize_relationship_body_links(
+        page,
+        [rel for rel in included_relationships if rel.type],
+        authorized_paths,
+    )
+    return header + body
 
 
 def _okf_nav_frontmatter() -> str:
@@ -454,7 +517,9 @@ def export_okf_profile1(pages: Sequence[CompiledPage]) -> OkfProfile1Export:
     trusts that set and cannot widen it: it never receives excluded pages, and
     Navigation Indexes are regenerated only from the supplied set. Typed
     relationships and body links to targets outside the authorized set are
-    removed/reported without modifying the body. Raw Knowledge Sources live under
+    removed/reported. Surviving typed Relationships are materialized as ordinary
+    body links only in the exported document; canonical page bodies are untouched.
+    Raw Knowledge Sources live under
     the ingest path and are never Compiled Pages, so they are inherently absent.
 
     Pure and deterministic: identical authorized pages always yield byte-identical
@@ -462,13 +527,16 @@ def export_okf_profile1(pages: Sequence[CompiledPage]) -> OkfProfile1Export:
     """
     authorized = sorted(pages, key=lambda page: page.path)
     authorized_titles = {page.title for page in authorized}
+    authorized_paths = {page.title: page.path for page in authorized}
     known_paths = _bundle_paths(authorized)
 
     files: dict[str, str] = {}
     excluded_map: dict[tuple[str, str], int] = {}
     broken_map: dict[str, int] = {}
     for page in authorized:
-        files[page.path] = _render_compiled_page(page, authorized_titles)
+        files[page.path] = _render_compiled_page(
+            page, authorized_titles, authorized_paths
+        )
         for rel in page.relationships:
             # Edges to targets outside the authorized set are removed and
             # reported. Empty targets are malformed rather than scoped-out, so

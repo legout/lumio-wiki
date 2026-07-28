@@ -62,7 +62,7 @@ Export includes a namespaced `lumio` object with `profile_version: 1` plus alias
 
 ### Decision: treat the Markdown body as prose
 
-Import and export preserve the Markdown body unchanged. Ordinary links remain body links, and conventional `# Schema`, `# Examples`, and `# Citations` sections remain prose. Import does not infer typed relationships or canonical sources from them, and export does not synthesize or append conventional sections. Structured provenance and relationships travel only through the validated `lumio` extension; reviewed semantic extraction from third-party prose is deferred to a separate future conversion workflow.
+Import preserves the Markdown body unchanged. Export preserves it unless a surviving typed Relationship has no corresponding body link, in which case export appends an ordinary `See also` link to the target for OKF-only consumers; canonical pages are never mutated. Conventional `# Schema`, `# Examples`, and `# Citations` sections remain prose. Import does not infer typed relationships or canonical sources from body links, and export does not synthesize conventional sections. Structured provenance and typed relationships travel through the validated `lumio` extension; reviewed semantic extraction from third-party prose is deferred to a separate future conversion workflow.
 
 ### Decision: export only an explicitly authorized visibility scope
 
