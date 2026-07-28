@@ -90,6 +90,15 @@ class ProposedPage(msgspec.Struct, frozen=True):
     Page Title, aliases, Sources, and typed Relationships. A title match alone
     never sets this flag, so a move is always an explicit, reviewable
     operation — never an incidental side effect of a name collision.
+
+    ``rename_from`` (issue #140) signals a reviewed title rename of an
+    EXISTING Compiled Page: the page's Canonical Title changes from
+    ``rename_from`` (the old title) to ``title`` (the new title), and the
+    same atomic proposal repairs every canonical Relationship and every
+    exactly-resolved body link that targeted the old title. The page's path,
+    Sources, aliases, and typed Relationships are preserved; only the identity
+    changes. A title match alone never sets this flag, so a rename is always
+    an explicit, reviewable operation.
     """
 
     relative_path: str
@@ -100,6 +109,7 @@ class ProposedPage(msgspec.Struct, frozen=True):
     durability_rationale: str = ""
     compound_revision: bool = False
     move_from_path: str | None = None
+    rename_from: str | None = None
 
 
 class BlastRadius(msgspec.Struct, frozen=True):
@@ -109,7 +119,8 @@ class BlastRadius(msgspec.Struct, frozen=True):
     source provenance changes, and graph impact against the existing Knowledge
     Base. Duplicate candidates are reported for human review; no automatic
     merging is performed. ``category_moves`` (issue #80) surfaces explicit
-    Content Category / path relocations for review.
+    Content Category / path relocations for review. ``renames`` (issue #140)
+    surfaces explicit title renames for review.
     """
 
     new_titles: list[str] = msgspec.field(default_factory=list)
@@ -122,6 +133,7 @@ class BlastRadius(msgspec.Struct, frozen=True):
     source_changes: list[str] = msgspec.field(default_factory=list)
     affected_backlinks: list[str] = msgspec.field(default_factory=list)
     category_moves: list[str] = msgspec.field(default_factory=list)
+    renames: list[str] = msgspec.field(default_factory=list)
 
 
 class IngestProposal(msgspec.Struct, frozen=True):
@@ -183,6 +195,7 @@ def _provenance_for(normalized, filename, content_type):
         source_hash=normalized.source_hash,
     )
 
+
 def _ensure_page_frontmatter(text: str, filename: str | None) -> str:
     """Wrap extracted document text in minimal page frontmatter.
 
@@ -199,9 +212,7 @@ def _ensure_page_frontmatter(text: str, filename: str | None) -> str:
     return f'---\ntitle: "{title}"\n---\n\n{text}'
 
 
-def select_source_processor(
-    filename: str | None, content_type: str | None
-) -> SourceProcessor:
+def select_source_processor(filename: str | None, content_type: str | None) -> SourceProcessor:
     """Route a Knowledge Source to its Source Processor (issue #100).
 
     Text and Markdown sources use the dependency-free
@@ -575,7 +586,9 @@ def _validate_page_routing(
     for page in proposed_pages:
         # Explicit category/path moves (issue #80) relocate already-valid
         # content, so they are exempt from routing re-validation here.
-        if getattr(page, "move_from_path", None):
+        # Explicit title renames (issue #140) change only the page's identity,
+        # so they are exempt too: the content was already valid.
+        if getattr(page, "move_from_path", None) or getattr(page, "rename_from", None):
             continue
         # Routing rules apply to EVERY page entering a categorized Knowledge
         # Base, including compound revisions and edits of existing pages
@@ -643,9 +656,7 @@ def import_page_category(relative_path: str) -> str | None:
     return parts[0]
 
 
-def _proposed_page_from_import(
-    page: OkfImportPage, *, category: str | None = None
-) -> ProposedPage:
+def _proposed_page_from_import(page: OkfImportPage, *, category: str | None = None) -> ProposedPage:
     """Build a :class:`ProposedPage` from an imported OKF page, setting its category."""
     return ProposedPage(
         relative_path=page.relative_path,
@@ -689,9 +700,7 @@ def map_external_import_categories(
     if control is None:
         # Legacy Flat Mode: no catalog to map against; pass everything
         # through unchanged (category routing is not enforced).
-        proposed_pages = [
-            _proposed_page_from_import(page) for page in parsed.proposed_pages
-        ]
+        proposed_pages = [_proposed_page_from_import(page) for page in parsed.proposed_pages]
         return ExternalImportCategoryMapping(
             proposed_pages=proposed_pages,
             extension_control_file=None,
@@ -709,9 +718,7 @@ def map_external_import_categories(
             continue
         if category in configured:
             # Pass-through: a shared/seeded/declared category lands unchanged.
-            proposed_pages.append(
-                _proposed_page_from_import(page, category=category)
-            )
+            proposed_pages.append(_proposed_page_from_import(page, category=category))
             continue
         # Unmapped external category.
         if category in declined:
@@ -732,9 +739,7 @@ def map_external_import_categories(
         # review. It is neither auto-created nor silently dropped.
         if category not in extension_names:
             extension_names.append(category)
-        proposed_pages.append(
-            _proposed_page_from_import(page, category=category)
-        )
+        proposed_pages.append(_proposed_page_from_import(page, category=category))
         diagnostics.append(
             OkfImportDiagnostic(
                 path=page.relative_path,
@@ -750,9 +755,7 @@ def map_external_import_categories(
 
     extension_control_file: KnowledgeBaseControlFile | None = None
     if extension_names:
-        extension_control_file = extend_control_file_categories(
-            control, extension_names
-        )
+        extension_control_file = extend_control_file_categories(control, extension_names)
     return ExternalImportCategoryMapping(
         proposed_pages=proposed_pages,
         extension_control_file=extension_control_file,
@@ -785,9 +788,7 @@ def propose_external_import(
     ordinary free-form ``type`` and ``durability_rationale`` review gates
     (issue #78) still apply to every categorized page.
     """
-    mapping = map_external_import_categories(
-        parsed, kb, declined_categories=declined_categories
-    )
+    mapping = map_external_import_categories(parsed, kb, declined_categories=declined_categories)
     proposed_pages = mapping.proposed_pages
     existing_pages = _existing_page_markdown(kb)
     diff = _compute_diff(proposed_pages, existing_pages)
@@ -800,9 +801,7 @@ def propose_external_import(
         if mapping.extension_control_file is not None
         else set()
     )
-    routing_issues = _validate_page_routing(
-        proposed_pages, kb, extra_categories=extension_names
-    )
+    routing_issues = _validate_page_routing(proposed_pages, kb, extra_categories=extension_names)
     profile_approved = approve_profile == OKF_PROFILE1_QUERY
     okf_blocking_issues = [
         ValidationIssue(
@@ -812,8 +811,7 @@ def propose_external_import(
             message=diag.message,
         )
         for diag in parsed.diagnostics
-        if diag.severity == "blocking"
-        and not (profile_approved and diag.kind == "profile")
+        if diag.severity == "blocking" and not (profile_approved and diag.kind == "profile")
     ]
     validation_report = ValidationReport(
         issues=list(page_validation.issues) + routing_issues + okf_blocking_issues
@@ -919,6 +917,7 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
     source_changes: list[str] = []
     affected_backlinks: set[str] = set()
     category_moves: list[str] = []
+    renames: list[str] = []
 
     proposed_titles: set[str] = set()
     proposed_aliases: set[str] = set()
@@ -946,12 +945,17 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
         # duplicate-risk signal so a Maintainer notices a clash.
         compound = getattr(page, "compound_revision", False)
         move_from = getattr(page, "move_from_path", None)
+        rename_from = getattr(page, "rename_from", None)
         if move_from:
             # An explicit category/path relocation: visible in review, never a
             # duplicate risk. The path change is the whole point of the move.
             category_moves.append(f"{title}: {move_from} -> {page.relative_path}")
+        if rename_from:
+            # An explicit title rename: visible in review, never a duplicate
+            # risk. The identity change is the whole point of the rename.
+            renames.append(f"{rename_from} -> {title}")
         if title in existing_titles:
-            if not compound and not move_from:
+            if not compound and not move_from and not rename_from:
                 duplicate_title_risks.append(title)
             existing_page = existing_by_title.get(title)
             if existing_page is not None and not move_from:
@@ -1006,6 +1010,10 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
         # Affected backlinks.
         if title in existing_titles:
             affected_backlinks.update(backlinks.get(title, set()))
+        if rename_from:
+            # A rename affects backlinks to the OLD title (rename_from), since
+            # those pages referenced the page under its prior identity.
+            affected_backlinks.update(backlinks.get(rename_from, set()))
 
     return BlastRadius(
         new_titles=new_titles,
@@ -1018,6 +1026,7 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
         source_changes=source_changes,
         affected_backlinks=sorted(affected_backlinks),
         category_moves=category_moves,
+        renames=renames,
     )
 
 
