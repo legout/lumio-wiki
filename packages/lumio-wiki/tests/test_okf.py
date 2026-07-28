@@ -52,6 +52,4 @@ def test_okf_export_and_import_use_only_portable_foundation(tmp_path: Path):
 
 
 def test_legacy_okf_module_aliases_the_new_owner():
-    assert importlib.import_module("lumio.core.okf") is importlib.import_module(
-        "lumio_wiki.okf"
-    )
+    assert importlib.import_module("lumio.core.okf") is importlib.import_module("lumio_wiki.okf")

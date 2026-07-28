@@ -135,9 +135,7 @@ class OkfProfile1Export(msgspec.Struct, frozen=True):
     okf_pin: str
     files: dict[str, str] = msgspec.field(default_factory=dict)
     public_page_count: int = 0
-    excluded_relationships: list[OkfExcludedRelationship] = msgspec.field(
-        default_factory=list
-    )
+    excluded_relationships: list[OkfExcludedRelationship] = msgspec.field(default_factory=list)
     broken_body_links: list[OkfBrokenBodyLink] = msgspec.field(default_factory=list)
 
 
@@ -310,9 +308,7 @@ def _render_compiled_page(
                 lines.append(f"      url: {_yaml_scalar(source.url)}")
     # Keep only edges whose targets survive in the authorized set; edges to
     # excluded targets are dropped and reported as diagnostics by the caller.
-    included_relationships = [
-        rel for rel in page.relationships if rel.target in authorized_titles
-    ]
+    included_relationships = [rel for rel in page.relationships if rel.target in authorized_titles]
     if included_relationships:
         lines.append("  relationships:")
         for rel in included_relationships:
@@ -404,9 +400,7 @@ def _render_compiled_page_profile2(
             lines.append(f"      title: {_yaml_scalar(source.title)}")
             if source.url is not None:
                 lines.append(f"      url: {_yaml_scalar(source.url)}")
-    included_relationships = [
-        rel for rel in page.relationships if rel.target in authorized_titles
-    ]
+    included_relationships = [rel for rel in page.relationships if rel.target in authorized_titles]
     if included_relationships:
         lines.append("  relationships:")
         for rel in included_relationships:
@@ -495,9 +489,7 @@ def _render_nav_indexes(
 _INLINE_LINK_RE = re.compile(r"(?<!\!)\[([^\]]*)\]\(([^)]*)\)")
 _REFERENCE_LINK_RE = re.compile(r"(?<!\!)\[([^\]]*)\]\[\s*([^\]]*)\s*\]")
 _SHORTCUT_LINK_RE = re.compile(r"(?<!\!)\[([^\]]+)\](?![\(\[])")
-_LINK_DEFINITION_RE = re.compile(
-    r"^ {0,3}\[([^\]]+)\]:\s*(?:<([^>]*)>|(\S+))(?:\s+.*)?$"
-)
+_LINK_DEFINITION_RE = re.compile(r"^ {0,3}\[([^\]]+)\]:\s*(?:<([^>]*)>|(\S+))(?:\s+.*)?$")
 
 
 def _iter_markdown_link_targets(text: str):
@@ -517,9 +509,7 @@ def _iter_markdown_link_targets(text: str):
         match = _LINK_DEFINITION_RE.match(line)
         if match:
             label = match.group(1).strip()
-            destination = (
-                match.group(2) if match.group(2) is not None else (match.group(3) or "")
-            )
+            destination = match.group(2) if match.group(2) is not None else (match.group(3) or "")
             definitions[label] = destination.strip()
         else:
             scan_lines.append(line)
@@ -605,8 +595,7 @@ def _bundle_paths(pages: list[CompiledPage]) -> set[str]:
     page_paths = {page.path for page in pages}
     _, index_dirs = _index_structure(pages)
     index_paths = {
-        (f"{dir_path}/index.md" if dir_path else NAV_INDEX_BASENAME)
-        for dir_path in index_dirs
+        (f"{dir_path}/index.md" if dir_path else NAV_INDEX_BASENAME) for dir_path in index_dirs
     }
     return page_paths | index_paths
 
@@ -677,9 +666,7 @@ def _export_okf_profile(
                 page, authorized_titles, authorized_paths
             )
         else:
-            files[page.path] = _render_compiled_page(
-                page, authorized_titles, authorized_paths
-            )
+            files[page.path] = _render_compiled_page(page, authorized_titles, authorized_paths)
         for rel in page.relationships:
             # Edges to targets outside the authorized set are removed and
             # reported. Empty targets are malformed rather than scoped-out, so
@@ -708,8 +695,7 @@ def _export_okf_profile(
         for (src, typ), count in sorted(excluded_map.items())
     ]
     broken = [
-        OkfBrokenBodyLink(source_path=src, count=count)
-        for src, count in sorted(broken_map.items())
+        OkfBrokenBodyLink(source_path=src, count=count) for src, count in sorted(broken_map.items())
     ]
 
     if profile_version == OKF_PROFILE2_VERSION:
@@ -767,6 +753,7 @@ def export_okf_profile2(pages: Sequence[CompiledPage]) -> OkfProfile2Export:
     still travel in the versioned ``lumio`` extension.
     """
     return _export_okf_profile(pages, profile_version=OKF_PROFILE2_VERSION)
+
 
 # ---------------------------------------------------------------------------
 # OKF Exchange Profile 1 import (issue #69): the inverse of the export boundary.
@@ -912,9 +899,7 @@ _PROFILE2_OKF_KEYS = {
 # exchange-boundary and absent from the re-imported canonical page. A Lumio
 # export re-imported through the recognized extension must NOT diagnose its own
 # identification block as unknown producer extensions (issue #71).
-_LUMIO_IDENTIFICATION_KEYS = frozenset(
-    {"profile", "profile_version", "okf_version", "okf_pin"}
-)
+_LUMIO_IDENTIFICATION_KEYS = frozenset({"profile", "profile_version", "okf_version", "okf_pin"})
 # The semantic keys a recognized Lumio profile extension may carry that
 # map onto canonical Compiled Page metadata. Any key beyond these and the
 # identification block is an unknown producer extension: previewable, but
@@ -969,9 +954,7 @@ def _scan_okf_bundle(root: Path) -> tuple[list[tuple[str, Path]], list[str]]:
         try:
             resolved.relative_to(root)
         except ValueError as exc:
-            raise OkfImportError(
-                f"bundle path escapes the bundle root: {path}"
-            ) from exc
+            raise OkfImportError(f"bundle path escapes the bundle root: {path}") from exc
         # The relative path reflects the bundle's own directory structure (the
         # entry's own location), not a symlink target — so two distinct entries
         # that alias the same real file keep distinct relative paths and are
@@ -980,8 +963,7 @@ def _scan_okf_bundle(root: Path) -> tuple[list[tuple[str, Path]], list[str]]:
         folded = rel.lower()
         if folded in seen_folded:
             raise OkfImportError(
-                f"duplicate case-insensitive bundle path: {rel} collides "
-                f"with {seen_folded[folded]}"
+                f"duplicate case-insensitive bundle path: {rel} collides with {seen_folded[folded]}"
             )
         real = str(resolved)
         if real in seen_resolved:
@@ -1103,9 +1085,7 @@ class _ImportParsingPolicy(StrEnum):
     EXTERNAL_COMPILED_MARKDOWN = "external-compiled-markdown"
 
 
-def _okf_description(
-    data: dict[str, Any], parsing_policy: _ImportParsingPolicy
-) -> str | None:
+def _okf_description(data: dict[str, Any], parsing_policy: _ImportParsingPolicy) -> str | None:
     """Return a non-empty OKF description or external Compiled Page summary.
 
     Top-level ``summary`` is canonical Compiled Page vocabulary and is accepted
@@ -1162,6 +1142,7 @@ def _classify_lumio_extension(
     if raw_version == supported_profile_version:
         return "recognized"
     return "unsupported-profile"
+
 
 def _diagnose_dropped_okf_fields(
     rel: str,
@@ -1222,8 +1203,7 @@ def _diagnose_dropped_okf_fields(
                     "legacy OKF v0.1 'timestamp' is exchange-only and is dropped "
                     "at canonicalization"
                     if parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2
-                    else "OKF 'timestamp' is exchange-only and is dropped at "
-                    "canonicalization"
+                    else "OKF 'timestamp' is exchange-only and is dropped at canonicalization"
                 ),
             )
         )
@@ -1278,8 +1258,7 @@ def _as_okf_v2_sources(
                 kind="sources",
                 severity="warning",
                 message=(
-                    "OKF v0.2 'sources' is not a list; ignored while the page "
-                    "remains previewable"
+                    "OKF v0.2 'sources' is not a list; ignored while the page remains previewable"
                 ),
             )
         )
@@ -1306,8 +1285,7 @@ def _as_okf_v2_sources(
                     kind="sources",
                     severity="warning",
                     message=(
-                        "OKF v0.2 source entry has no required 'resource'; "
-                        "mapped without a URL"
+                        "OKF v0.2 source entry has no required 'resource'; mapped without a URL"
                     ),
                 )
             )
@@ -1318,10 +1296,7 @@ def _as_okf_v2_sources(
         )
         if source.id or source.title or source.url:
             sources.append(source)
-        if any(
-            key in item
-            for key in ("author", "usage_count", "last_modified", "usage_window")
-        ):
+        if any(key in item for key in ("author", "usage_count", "last_modified", "usage_window")):
             has_credibility_signals = True
 
     if has_credibility_signals:
@@ -1510,9 +1485,7 @@ def _imported_document_source(
     never substituted (the caller drops it before this is called).
     """
     profile = (
-        "okf-profile2"
-        if parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2
-        else "okf-profile1"
+        "okf-profile2" if parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2 else "okf-profile1"
     )
     return Source(
         id=f"{profile}:{bundle_identity}:{rel}",
@@ -1838,9 +1811,7 @@ def _import_markdown_tree(
         raise OkfImportError(f"bundle path is not a directory: {bundle_path}")
 
     markdown_files, skipped = _scan_okf_bundle(root)
-    identity_entries = [
-        (rel, path.read_bytes()) for rel, path in markdown_files
-    ]
+    identity_entries = [(rel, path.read_bytes()) for rel, path in markdown_files]
     bundle_identity = _okf_bundle_identity(identity_entries)
     bundle_paths = {rel for rel, _ in markdown_files}
 
@@ -1852,18 +1823,35 @@ def _import_markdown_tree(
         kind = _classify_okf_doc(rel)
         if kind == "navigation-index":
             nav_count += 1
-            _record_reserved_artifact(rel, path, "index.md", "navigation input",
-                "not proposed as a Compiled Page", diagnostics)
+            _record_reserved_artifact(
+                rel,
+                path,
+                "index.md",
+                "navigation input",
+                "not proposed as a Compiled Page",
+                diagnostics,
+            )
             continue
         if kind == "log":
             log_count += 1
-            _record_reserved_artifact(rel, path, "log.md", "preview-only exchange history",
-                "not a Compiled Page or audit event", diagnostics)
+            _record_reserved_artifact(
+                rel,
+                path,
+                "log.md",
+                "preview-only exchange history",
+                "not a Compiled Page or audit event",
+                diagnostics,
+            )
             continue
         if kind == "hot-index":
-            _record_reserved_artifact(rel, path, "hot.md",
+            _record_reserved_artifact(
+                rel,
+                path,
+                "hot.md",
                 "a reserved Hot Index artifact path",
-                "a conflicting path that is not proposed as a Compiled Page", diagnostics)
+                "a conflicting path that is not proposed as a Compiled Page",
+                diagnostics,
+            )
             continue
 
         text = path.read_text(encoding="utf-8")
@@ -1916,9 +1904,7 @@ def _import_markdown_tree(
         okf_pin=okf_pin,
         bundle_identity=bundle_identity,
         proposed_pages=sorted(proposed, key=lambda page: page.relative_path),
-        diagnostics=sorted(
-            diagnostics, key=lambda d: (d.path, d.kind, d.severity, d.message)
-        ),
+        diagnostics=sorted(diagnostics, key=lambda d: (d.path, d.kind, d.severity, d.message)),
         navigation_index_count=nav_count,
         log_count=log_count,
         skipped_files=sorted(skipped),
