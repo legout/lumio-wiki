@@ -90,6 +90,15 @@ class ProposedPage(msgspec.Struct, frozen=True):
     Page Title, aliases, Sources, and typed Relationships. A title match alone
     never sets this flag, so a move is always an explicit, reviewable
     operation — never an incidental side effect of a name collision.
+
+    ``rename_from`` (issue #140) signals a reviewed title rename of an
+    EXISTING Compiled Page: the page's Canonical Title changes from
+    ``rename_from`` (the old title) to ``title`` (the new title), and the
+    same atomic proposal repairs every canonical Relationship and every
+    exactly-resolved body link that targeted the old title. The page's path,
+    Sources, aliases, and typed Relationships are preserved; only the identity
+    changes. A title match alone never sets this flag, so a rename is always
+    an explicit, reviewable operation.
     """
 
     relative_path: str
@@ -100,6 +109,7 @@ class ProposedPage(msgspec.Struct, frozen=True):
     durability_rationale: str = ""
     compound_revision: bool = False
     move_from_path: str | None = None
+    rename_from: str | None = None
 
 
 class BlastRadius(msgspec.Struct, frozen=True):
@@ -109,7 +119,8 @@ class BlastRadius(msgspec.Struct, frozen=True):
     source provenance changes, and graph impact against the existing Knowledge
     Base. Duplicate candidates are reported for human review; no automatic
     merging is performed. ``category_moves`` (issue #80) surfaces explicit
-    Content Category / path relocations for review.
+    Content Category / path relocations for review. ``renames`` (issue #140)
+    surfaces explicit title renames for review.
     """
 
     new_titles: list[str] = msgspec.field(default_factory=list)
@@ -122,6 +133,7 @@ class BlastRadius(msgspec.Struct, frozen=True):
     source_changes: list[str] = msgspec.field(default_factory=list)
     affected_backlinks: list[str] = msgspec.field(default_factory=list)
     category_moves: list[str] = msgspec.field(default_factory=list)
+    renames: list[str] = msgspec.field(default_factory=list)
 
 
 class IngestProposal(msgspec.Struct, frozen=True):
@@ -575,7 +587,9 @@ def _validate_page_routing(
     for page in proposed_pages:
         # Explicit category/path moves (issue #80) relocate already-valid
         # content, so they are exempt from routing re-validation here.
-        if getattr(page, "move_from_path", None):
+        # Explicit title renames (issue #140) change only the page's identity,
+        # so they are exempt too: the content was already valid.
+        if getattr(page, "move_from_path", None) or getattr(page, "rename_from", None):
             continue
         # Routing rules apply to EVERY page entering a categorized Knowledge
         # Base, including compound revisions and edits of existing pages
@@ -919,6 +933,7 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
     source_changes: list[str] = []
     affected_backlinks: set[str] = set()
     category_moves: list[str] = []
+    renames: list[str] = []
 
     proposed_titles: set[str] = set()
     proposed_aliases: set[str] = set()
@@ -946,12 +961,17 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
         # duplicate-risk signal so a Maintainer notices a clash.
         compound = getattr(page, "compound_revision", False)
         move_from = getattr(page, "move_from_path", None)
+        rename_from = getattr(page, "rename_from", None)
         if move_from:
             # An explicit category/path relocation: visible in review, never a
             # duplicate risk. The path change is the whole point of the move.
             category_moves.append(f"{title}: {move_from} -> {page.relative_path}")
+        if rename_from:
+            # An explicit title rename: visible in review, never a duplicate
+            # risk. The identity change is the whole point of the rename.
+            renames.append(f"{rename_from} -> {title}")
         if title in existing_titles:
-            if not compound and not move_from:
+            if not compound and not move_from and not rename_from:
                 duplicate_title_risks.append(title)
             existing_page = existing_by_title.get(title)
             if existing_page is not None and not move_from:
@@ -1006,6 +1026,10 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
         # Affected backlinks.
         if title in existing_titles:
             affected_backlinks.update(backlinks.get(title, set()))
+        if rename_from:
+            # A rename affects backlinks to the OLD title (rename_from), since
+            # those pages referenced the page under its prior identity.
+            affected_backlinks.update(backlinks.get(rename_from, set()))
 
     return BlastRadius(
         new_titles=new_titles,
@@ -1018,6 +1042,7 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
         source_changes=source_changes,
         affected_backlinks=sorted(affected_backlinks),
         category_moves=category_moves,
+        renames=renames,
     )
 
 
