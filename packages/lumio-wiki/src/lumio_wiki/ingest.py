@@ -195,6 +195,7 @@ def _provenance_for(normalized, filename, content_type):
         source_hash=normalized.source_hash,
     )
 
+
 def _ensure_page_frontmatter(text: str, filename: str | None) -> str:
     """Wrap extracted document text in minimal page frontmatter.
 
@@ -211,9 +212,7 @@ def _ensure_page_frontmatter(text: str, filename: str | None) -> str:
     return f'---\ntitle: "{title}"\n---\n\n{text}'
 
 
-def select_source_processor(
-    filename: str | None, content_type: str | None
-) -> SourceProcessor:
+def select_source_processor(filename: str | None, content_type: str | None) -> SourceProcessor:
     """Route a Knowledge Source to its Source Processor (issue #100).
 
     Text and Markdown sources use the dependency-free
@@ -657,9 +656,7 @@ def import_page_category(relative_path: str) -> str | None:
     return parts[0]
 
 
-def _proposed_page_from_import(
-    page: OkfImportPage, *, category: str | None = None
-) -> ProposedPage:
+def _proposed_page_from_import(page: OkfImportPage, *, category: str | None = None) -> ProposedPage:
     """Build a :class:`ProposedPage` from an imported OKF page, setting its category."""
     return ProposedPage(
         relative_path=page.relative_path,
@@ -703,9 +700,7 @@ def map_external_import_categories(
     if control is None:
         # Legacy Flat Mode: no catalog to map against; pass everything
         # through unchanged (category routing is not enforced).
-        proposed_pages = [
-            _proposed_page_from_import(page) for page in parsed.proposed_pages
-        ]
+        proposed_pages = [_proposed_page_from_import(page) for page in parsed.proposed_pages]
         return ExternalImportCategoryMapping(
             proposed_pages=proposed_pages,
             extension_control_file=None,
@@ -723,9 +718,7 @@ def map_external_import_categories(
             continue
         if category in configured:
             # Pass-through: a shared/seeded/declared category lands unchanged.
-            proposed_pages.append(
-                _proposed_page_from_import(page, category=category)
-            )
+            proposed_pages.append(_proposed_page_from_import(page, category=category))
             continue
         # Unmapped external category.
         if category in declined:
@@ -746,9 +739,7 @@ def map_external_import_categories(
         # review. It is neither auto-created nor silently dropped.
         if category not in extension_names:
             extension_names.append(category)
-        proposed_pages.append(
-            _proposed_page_from_import(page, category=category)
-        )
+        proposed_pages.append(_proposed_page_from_import(page, category=category))
         diagnostics.append(
             OkfImportDiagnostic(
                 path=page.relative_path,
@@ -764,9 +755,7 @@ def map_external_import_categories(
 
     extension_control_file: KnowledgeBaseControlFile | None = None
     if extension_names:
-        extension_control_file = extend_control_file_categories(
-            control, extension_names
-        )
+        extension_control_file = extend_control_file_categories(control, extension_names)
     return ExternalImportCategoryMapping(
         proposed_pages=proposed_pages,
         extension_control_file=extension_control_file,
@@ -799,9 +788,7 @@ def propose_external_import(
     ordinary free-form ``type`` and ``durability_rationale`` review gates
     (issue #78) still apply to every categorized page.
     """
-    mapping = map_external_import_categories(
-        parsed, kb, declined_categories=declined_categories
-    )
+    mapping = map_external_import_categories(parsed, kb, declined_categories=declined_categories)
     proposed_pages = mapping.proposed_pages
     existing_pages = _existing_page_markdown(kb)
     diff = _compute_diff(proposed_pages, existing_pages)
@@ -814,9 +801,7 @@ def propose_external_import(
         if mapping.extension_control_file is not None
         else set()
     )
-    routing_issues = _validate_page_routing(
-        proposed_pages, kb, extra_categories=extension_names
-    )
+    routing_issues = _validate_page_routing(proposed_pages, kb, extra_categories=extension_names)
     profile_approved = approve_profile == OKF_PROFILE1_QUERY
     okf_blocking_issues = [
         ValidationIssue(
@@ -826,8 +811,7 @@ def propose_external_import(
             message=diag.message,
         )
         for diag in parsed.diagnostics
-        if diag.severity == "blocking"
-        and not (profile_approved and diag.kind == "profile")
+        if diag.severity == "blocking" and not (profile_approved and diag.kind == "profile")
     ]
     validation_report = ValidationReport(
         issues=list(page_validation.issues) + routing_issues + okf_blocking_issues
