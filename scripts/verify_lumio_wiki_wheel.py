@@ -64,13 +64,27 @@ def main() -> int:
     assert _python_roots(wiki_wheel).isdisjoint(_python_roots(app_wheel))
 
     requirements = importlib.metadata.requires("lumio-wiki") or []
-    assert len(requirements) == 1, requirements
-    wiki_requirement = requirements[0].replace(" ", "").lower()
-    assert wiki_requirement.startswith("msgspec[yaml]")
-    assert ">=0.21.1" in wiki_requirement
+    # Core (unconditional) runtime deps only — exclude optional extras gated
+    # by environment markers (the "; extra == ..." entries). lumio-wiki must
+    # stay lightweight and model-free (ADR-0010): pinning the exact core set
+    # guards against an accidental heavy dependency landing in the base wheel.
+    # ``msgpack`` is the Discovery Graph serialization format (#108);
+    # ``msgspec[yaml]`` is the compiled-Markdown struct codec.
+    core_requirements = sorted(
+        requirement.replace(" ", "").lower()
+        for requirement in requirements
+        if ";" not in requirement
+    )
+    assert core_requirements == ["msgpack>=1.0", "msgspec[yaml]>=0.21.1"], core_requirements
 
     app_requirements = [item.replace(" ", "").lower() for item in _wheel_requirements(app_wheel)]
-    app_member = [item for item in app_requirements if item.startswith("lumio-wiki")]
+    # The app's CORE dependency on lumio-wiki; ignore the optional
+    # ``lumio-wiki[s3]`` entry that appears under the app's own ``s3`` extra.
+    app_member = [
+        item
+        for item in app_requirements
+        if item.startswith("lumio-wiki") and ";" not in item
+    ]
     assert len(app_member) == 1, app_requirements
     assert ">=0.1.1" in app_member[0] and "<0.2.0" in app_member[0]
     assert all(importlib.util.find_spec(name) is None for name in FORBIDDEN)
