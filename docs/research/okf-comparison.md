@@ -5,6 +5,7 @@ sources:
   - "https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf"
   - "https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md"
   - "https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/src/reference_agent/bundle/document.py"
+- "https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/3fcbb9f828c2f23d109c855ee403c3a4c81f3a96/okf/SPEC.md"
 ---
 
 # Google Open Knowledge Format (OKF) comparison
@@ -12,6 +13,19 @@ sources:
 ## Scope
 
 Compared Google Cloud's OKF v0.1 draft and reference implementation with Lumio's current compiled-Markdown Knowledge Base model.
+
+## OKF v0.2 update (2026-07-28)
+
+OKF v0.2 keeps the v0.1 bundle structure, reserved `index.md` / `log.md`, required `type`, recommended `title` / `description` / `resource` / `tags`, Markdown-link graph, and permissive consumer rules. It then makes provenance, trust, lifecycle, freshness, and attested computation first-class:
+
+- **Breaking:** `timestamp` is superseded by `generated: { by, at }`; consumers may use it as a legacy fallback.
+- **Breaking:** the conventional body `# Citations` list is superseded by structured frontmatter `sources`; consumers may parse the legacy section for old bundles.
+- **Additive:** `sources[]` with `resource`, optional `id` / `title`, and credibility signals (`author`, `usage_count`, `last_modified`, `usage_window`).
+- **Additive:** `generated`, `verified`, actor conventions, derived trust tiers, `status`, and `stale_after`.
+- **Additive:** the `Attested Computation` concept with `runtime`, `parameters`, `computation`, `executor`, and `attester`.
+- The reference implementation now matches the specification: only `type` is always required. The v0.1 implementation/spec mismatch documented below is resolved upstream.
+
+Lumio's response is **OKF Exchange Profile 2** (ADR-0015), pinned to OKF v0.2 at upstream commit `3fcbb9f828c2f23d109c855ee403c3a4c81f3a96`. Profile 1 remains pinned and unchanged. Profile 2 maps standard `sources` and derived `status`, recognizes trust/freshness/computation fields with explicit diagnostics, and still refuses to treat foreign trust metadata as Lumio Maintainer approval or to execute computation contracts.
 
 ## What OKF contributes
 
@@ -62,7 +76,7 @@ Export includes a namespaced `lumio` object with `profile_version: 1` plus alias
 
 ### Decision: treat the Markdown body as prose
 
-Import and export preserve the Markdown body unchanged. Ordinary links remain body links, and conventional `# Schema`, `# Examples`, and `# Citations` sections remain prose. Import does not infer typed relationships or canonical sources from them, and export does not synthesize or append conventional sections. Structured provenance and relationships travel only through the validated `lumio` extension; reviewed semantic extraction from third-party prose is deferred to a separate future conversion workflow.
+Import preserves the Markdown body unchanged. Export preserves it unless a surviving typed Relationship has no corresponding body link, in which case export appends an ordinary `See also` link to the target for OKF-only consumers; canonical pages are never mutated. Conventional `# Schema`, `# Examples`, and `# Citations` sections remain prose. Import does not infer typed relationships or canonical sources from body links, and export does not synthesize conventional sections. Structured provenance and typed relationships travel through the validated `lumio` extension; reviewed semantic extraction from third-party prose is deferred to a separate future conversion workflow.
 
 ### Decision: export only an explicitly authorized visibility scope
 
@@ -92,3 +106,5 @@ Other Markdown files become page candidates. Broken prose links are warnings, wh
 ## Conclusion
 
 OKF is an optional, best-effort interchange and presentation profile, not Lumio's canonical domain model. Lumio adopts native hybrid Navigation Indexes: one exhaustive Karpathy-style root catalog plus shallow OKF-style directory indexes, materialized in Published Versions but excluded from canonical page semantics and fingerprinting. OKF `type`, `resource`, conventional body sections, and unknown extensions remain exchange-boundary concerns. Profile 1 provides explicit standard-field mappings, a versioned `lumio` extension for Lumio-owned trust semantics, safe generic-import defaults, visibility-filtered export, and transparent diagnostics without promising lossless third-party round trips. Lumio's Compiled Pages, provenance, lifecycle, visibility, typed relationships, and citation model remain canonical.
+
+OKF v0.2 does not change that boundary, but it does make structured provenance and lifecycle standard rather than producer-specific. Lumio therefore supports v0.2 through a separately pinned Profile 2: standard `sources` and derived `status` are adopted at the exchange boundary, while trust events, freshness, source credibility, and Attested Computation remain disclosed exchange metadata unless Lumio independently promotes them into the canonical model.

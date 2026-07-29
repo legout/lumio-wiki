@@ -57,6 +57,17 @@ automatically when no `<kb>` argument is given).
 3. `lumio-wiki proposal list` → `proposal inspect <id>` → `proposal validate <id>`.
 4. `lumio-wiki publish <id>` (or `lumio-wiki discard <id>`).
 
+### Maintenance (you are the Maintainer)
+
+- `lumio-wiki lint` — read-only cross-page QA: validation, graph health, and
+  canonical/discovery structural diagnostics with scope disclosure. Exit 1 if invalid.
+- `lumio-wiki cross-link` — missing-link candidates ranked by Discovery Graph
+  impact. Add `--stage` to stage reviewable repair proposals (never direct-writes).
+- `lumio-wiki dream` — the Dream Cycle: read-only reflection (validation +
+  health + structure + ranked candidates). Add `--stage [--limit N]` to stage
+  the top repairs as ordinary Ingest Proposals for review. Add opt-in `--semantic`
+  with the `[llm]` extra for semantic findings; it remains proposal-first.
+
 ### Guardrails
 
 - **Cite or refuse.** Every domain claim cites a Compiled Page (title + path +
@@ -71,4 +82,4 @@ automatically when no `<kb>` argument is given).
 - `lumio-wiki doctor` — version, detected extras, skill location.
 - `lumio-wiki health` — page counts, validation, Discovery Graph health.
 - `lumio-wiki validate` — exit 0 if valid, 1 otherwise.
-
+- `lumio-wiki lint` — full QA report (superset of validate + structural diagnostics).

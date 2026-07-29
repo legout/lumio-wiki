@@ -31,6 +31,9 @@ from lumio_wiki.graph_state import (
 from lumio_wiki.page_search import search_pages as search_pages_over
 from lumio_wiki.records import (
     EXTRACTOR_VERSION,
+    LINK_IMPACT_KIND_COMPONENT_JOIN,
+    LINK_IMPACT_KIND_FRAGILE_STRENGTHENING,
+    LINK_IMPACT_KIND_ORPHAN_REPAIR,
     ActivityLogEntry,
     CompiledPage,
     ContentCategory,
@@ -41,9 +44,6 @@ from lumio_wiki.records import (
     HealthReport,
     HotIndexPin,
     KnowledgeBaseControlFile,
-    LINK_IMPACT_KIND_COMPONENT_JOIN,
-    LINK_IMPACT_KIND_FRAGILE_STRENGTHENING,
-    LINK_IMPACT_KIND_ORPHAN_REPAIR,
     LinkCandidate,
     LinkImpactSignal,
     PageSearchResult,
@@ -77,6 +77,23 @@ PREFERRED_RELATIONSHIP_TYPES = frozenset(
         "replaces",
     }
 )
+# Preferred Relationship vocabulary and its traversal-facing inverse labels.
+# The inverse labels are deliberately not added to the preferred vocabulary:
+# they describe the incoming view of an authored edge, rather than introducing
+# a second canonical edge vocabulary. Unknown Relationship types retain their
+# existing warning-level, generic-edge behavior.
+PREFERRED_RELATIONSHIP_INVERSES = {
+    "relates-to": "relates-to",
+    "uses": "used-by",
+    "extends": "extended-by",
+    "implements": "implemented-by",
+    "contradicts": "contradicts",
+    "derived-from": "derived",
+    "replaces": "replaced-by",
+}
+# Short public alias for callers that do not need to emphasize that the keys
+# are the preferred vocabulary.
+RELATIONSHIP_INVERSES = PREFERRED_RELATIONSHIP_INVERSES
 
 # ---------------------------------------------------------------------------
 # Public graph traversal seam (issue #106, ADR-0011) and Discovery Graph

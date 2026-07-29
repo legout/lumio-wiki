@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from lumio_wiki.knowledge_base import (
+    PREFERRED_RELATIONSHIP_INVERSES,
     PREFERRED_RELATIONSHIP_TYPES,
     ValidationIssue,
     load_knowledge_base,
@@ -54,6 +55,20 @@ def test_preferred_relationship_types_constant():
             "replaces",
         }
     )
+
+
+
+def test_preferred_relationship_inverses_cover_the_preferred_vocabulary():
+    assert PREFERRED_RELATIONSHIP_INVERSES == {
+        "relates-to": "relates-to",
+        "uses": "used-by",
+        "extends": "extended-by",
+        "implements": "implemented-by",
+        "contradicts": "contradicts",
+        "derived-from": "derived",
+        "replaces": "replaced-by",
+    }
+    assert set(PREFERRED_RELATIONSHIP_INVERSES) == PREFERRED_RELATIONSHIP_TYPES
 
 
 

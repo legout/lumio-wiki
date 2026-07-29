@@ -223,6 +223,7 @@ def test_paths_finds_shortest_path(kb_root: Path, capsys: pytest.CaptureFixture[
     assert "Technology Stack" in out
     assert "->" in out
 
+
 def test_paths_no_path_returns_1(kb_root: Path):
     # A non-existent source title has no outgoing edges, so no path is found.
     rc = main(["paths", str(kb_root), "Nonexistent Source", "Architecture"])
@@ -378,13 +379,13 @@ def test_ingest_distiller_llm_with_fake_provider_stages_proposal(
         'title: "LLM CLI Page"\n'
         "aliases: []\n"
         "tags:\n"
-        "  - \"llm\"\n"
-        "summary: \"Distilled via the llm extra.\"\n"
-        "lifecycle: \"draft\"\n"
-        "visibility: \"internal\"\n"
+        '  - "llm"\n'
+        'summary: "Distilled via the llm extra."\n'
+        'lifecycle: "draft"\n'
+        'visibility: "internal"\n'
         "sources:\n"
-        "  - id: \"llm\"\n"
-        "    title: \"LLM source\"\n"
+        '  - id: "llm"\n'
+        '    title: "LLM source"\n'
         "relationships: []\n"
         "---\n\n# LLM CLI Page\n\nBody.\n"
     )
@@ -401,8 +402,7 @@ def test_ingest_distiller_llm_with_fake_provider_stages_proposal(
     class _StubDistiller(real_openai_distiller):
         def __init__(self, **kwargs):
             filtered = {
-                k: v for k, v in kwargs.items()
-                if k not in {"model", "base_url", "api_key"}
+                k: v for k, v in kwargs.items() if k not in {"model", "base_url", "api_key"}
             }
             super().__init__(model="fake", client=fake_client, **filtered)
 
@@ -554,9 +554,7 @@ def test_paths_max_depth_bounds_traversal(kb_root: Path):
     assert rc_deep == 0
 
 
-def test_paths_trace_reports_found_and_hops(
-    kb_root: Path, capsys: pytest.CaptureFixture[str]
-):
+def test_paths_trace_reports_found_and_hops(kb_root: Path, capsys: pytest.CaptureFixture[str]):
     rc = main(
         [
             "paths",
@@ -600,9 +598,7 @@ def test_paths_trace_reports_not_found(kb_root: Path, capsys: pytest.CaptureFixt
 # --- Hot Index + Navigation Index ladder entry points (AC2) ---
 
 
-def test_hot_prints_pinned_hot_index(
-    categorized_kb: Path, capsys: pytest.CaptureFixture[str]
-):
+def test_hot_prints_pinned_hot_index(categorized_kb: Path, capsys: pytest.CaptureFixture[str]):
     rc = main(["hot", str(categorized_kb)])
     assert rc == 0
     out = capsys.readouterr().out
@@ -619,9 +615,7 @@ def test_hot_reports_when_no_pins(kb_root: Path, capsys: pytest.CaptureFixture[s
     assert "No Hot Index" in out
 
 
-def test_index_prints_root_navigation_index(
-    kb_root: Path, capsys: pytest.CaptureFixture[str]
-):
+def test_index_prints_root_navigation_index(kb_root: Path, capsys: pytest.CaptureFixture[str]):
     rc = main(["index", str(kb_root)])
     assert rc == 0
     out = capsys.readouterr().out
@@ -630,9 +624,7 @@ def test_index_prints_root_navigation_index(
     assert "Technology Stack" in out
 
 
-def test_index_prints_subdirectory_index(
-    categorized_kb: Path, capsys: pytest.CaptureFixture[str]
-):
+def test_index_prints_subdirectory_index(categorized_kb: Path, capsys: pytest.CaptureFixture[str]):
     rc = main(["index", str(categorized_kb), "concepts"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -672,9 +664,7 @@ def test_health_reports_recovery_hint_when_graph_not_fresh(
     assert "--rebuild" in out
 
 
-def test_health_rebuild_materializes_fresh_graph(
-    kb_root: Path, capsys: pytest.CaptureFixture[str]
-):
+def test_health_rebuild_materializes_fresh_graph(kb_root: Path, capsys: pytest.CaptureFixture[str]):
     index_dir = default_index_dir(kb_root)
     assert not (index_dir / GRAPH_ARTIFACT_FILENAME).exists()
     rc = main(["health", str(kb_root), "--rebuild"])
@@ -764,6 +754,11 @@ def test_setup_creates_new_kb_and_config(tmp_path, monkeypatch, capsys):
     assert "## Lumio Knowledge Base" in agents_md
     assert "lumio-wiki search" in agents_md
     assert "retrieval ladder" in agents_md.lower()
+    # ... and the Maintainer workflows (ADR-0015)
+    assert "Maintenance (you are the Maintainer)" in agents_md
+    assert "lumio-wiki lint" in agents_md
+    assert "lumio-wiki cross-link" in agents_md
+    assert "lumio-wiki dream" in agents_md
 
 
 def test_setup_uses_existing_kb(tmp_path, monkeypatch, capsys):
@@ -802,6 +797,22 @@ def test_setup_updates_existing_agents_md(tmp_path, monkeypatch):
     content = (tmp_path / "AGENTS.md").read_text()
     assert "# My Project" in content  # original preserved
     assert "## Lumio Knowledge Base" in content  # section added
+
+
+def test_setup_repeated_run_never_duplicates_the_section(tmp_path, monkeypatch):
+    """Regression: repeated setup refreshes must not duplicate the KB section.
+
+    The writer's replace span runs from the marker to the next `##` heading
+    AFTER the section's own `## Lumio Knowledge Base` heading; terminating at
+    the section's own heading prepended a fresh copy on every refresh.
+    """
+    monkeypatch.chdir(tmp_path)
+    kb = tmp_path / "kb"
+    for _ in range(3):
+        assert main(["setup", str(kb)]) == 0
+    content = (tmp_path / "AGENTS.md").read_text()
+    assert content.count("## Lumio Knowledge Base") == 1
+    assert content.count("<!-- lumio-wiki-kb -->") == 1
 
 
 def test_setup_with_skill_install(tmp_path, monkeypatch, capsys):

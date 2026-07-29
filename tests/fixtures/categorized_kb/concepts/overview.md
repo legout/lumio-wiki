@@ -6,6 +6,7 @@ tags:
 summary: "A high-level introduction to Lumio."
 lifecycle: "approved"
 visibility: "public"
+type: "concept"
 sources:
   - id: "lumio-overview"
     title: "Lumio public landing page"

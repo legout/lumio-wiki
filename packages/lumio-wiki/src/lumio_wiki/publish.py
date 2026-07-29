@@ -129,8 +129,12 @@ def merge_compound_sources(proposed_markdown: str, existing_markdown: str) -> st
     Additive provenance for a compound revision (issue #79): the existing
     Compiled Page's Sources are kept and the proposed page's Sources are
     added, deduplicated by ``id`` (preferring the record that carries a URL
-    when the same id appears in both). The proposed body and all other
-    frontmatter are preserved unchanged — only the ``sources`` list is
+    when the same id appears in both). Sources WITHOUT an ``id`` are valid
+    (the base validator accepts them) and are preserved too: they deduplicate
+    on ``(title, url)`` instead of being silently dropped — dropping them
+    emptied the merged ``sources`` list and falsely blocked compound
+    revisions of pages whose provenance carries no ids. The proposed body and
+    all other frontmatter are preserved unchanged — only the ``sources`` list is
     widened. Existing-page order is retained first so the evidence trail stays
     stable across compounding publishes. Pure data: no file I/O.
     """
@@ -143,31 +147,40 @@ def merge_compound_sources(proposed_markdown: str, existing_markdown: str) -> st
     existing_sources = as_sources(existing_data.get("sources"))
     proposed_sources = as_sources(proposed_data.get("sources"))
 
+    def _dedup_key(source: Source) -> str:
+        # Id-less sources are valid; fall back to their content identity.
+        return source.id or f"title:{source.title}\nurl:{source.url or ''}"
+
     merged: list[Source] = []
     seen: set[str] = set()
     # Existing provenance first, in its recorded order.
     for source in existing_sources:
-        if not source.id or source.id in seen:
+        key = _dedup_key(source)
+        if key in seen:
             continue
-        seen.add(source.id)
+        seen.add(key)
         merged.append(source)
-    # Newly informing Sources added; a proposed record with the same id as an
-    # existing one replaces it only when it is richer (carries a URL the
+    # Newly informing Sources added; a proposed record with the same identity
+    # as an existing one replaces it only when it is richer (carries a URL the
     # existing record lacks), so compounding never drops an existing URL.
     for source in proposed_sources:
-        if not source.id:
-            continue
-        if source.id not in seen:
-            seen.add(source.id)
+        key = _dedup_key(source)
+        if key not in seen:
+            seen.add(key)
             merged.append(source)
         else:
             for i, prior in enumerate(merged):
-                if prior.id == source.id and source.url and not prior.url:
+                if _dedup_key(prior) == key and source.url and not prior.url:
                     merged[i] = source
                     break
 
     proposed_data["sources"] = [
-        {"id": s.id, "title": s.title, **({"url": s.url} if s.url else {})} for s in merged
+        {
+            **({"id": s.id} if s.id else {}),
+            "title": s.title,
+            **({"url": s.url} if s.url else {}),
+        }
+        for s in merged
     ]
     frontmatter = yaml.encode(proposed_data).decode("utf-8").strip()
     return f"---\n{frontmatter}\n---\n{body}"

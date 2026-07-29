@@ -14,7 +14,7 @@ description: >-
   "related pages", "retrieval ladder", and "validate the Knowledge Base".
 version: 0.1.1
 user-invocable: true
-argument-hint: "[init|validate|hot|index|search|page|related|paths|ingest|proposal|publish|discard|health|doctor|skill] [args]"
+argument-hint: "[init|validate|hot|index|search|page|related|paths|ingest|proposal|publish|discard|health|lint|cross-link|dream|doctor|skill] [args]"
 license: Apache 2.0
 ---
 
@@ -79,6 +79,9 @@ Knowledge Base root directory in every command below.
 | `lumio-wiki publish <kb> <id>` | Apply a proposal's pages to the KB root, regenerate reserved artifacts, mark it terminal. |
 | `lumio-wiki discard <kb> <id>` | Mark a reviewable proposal as discarded (terminal). |
 | `lumio-wiki health <kb> [--rebuild]` | Page counts, validation status, Discovery Graph health + fingerprint. `--rebuild` materializes a fresh graph artifact (actionable recovery); a bad/missing artifact never blocks zero-index operation. |
+| `lumio-wiki lint <kb>` | Read-only cross-page QA report: validation, graph health, canonical/discovery structural diagnostics, scope disclosure. Exit 1 when invalid (ADR-0015). |
+| `lumio-wiki cross-link <kb> [--limit N] [--stage]` | Missing-link candidates ranked by Discovery Graph impact. `--stage` stages one reviewable repair proposal per top candidate; never direct-writes. |
+| `lumio-wiki dream <kb> [--limit N] [--stage] [--semantic]` | Deterministic Dream Cycle reflection plus optional semantic review; `--semantic` requires the `[llm]` extra and remains proposal-first. |
 | `lumio-wiki doctor` | Version, detected optional extras, and packaged skill location. |
 | `lumio-wiki skill path` | Absolute path of the packaged `SKILL.md` inside the installed wheel. |
 | `lumio-wiki skill protocol` | Absolute path of the packaged `PROTOCOL.md`. |
@@ -132,6 +135,31 @@ manufacture support (an Extracted Reference is topology, never Evidence).
 5. If valid and the user approves, `lumio-wiki publish <kb> <id>`. If the
    user rejects it, `lumio-wiki discard <kb> <id>`. Proposal-first is the
    default write mode: validation always runs before publish.
+
+## Workflow: maintenance (you are the Maintainer)
+
+Run periodically or after large ingests — the Dream Cycle keeps a living
+Knowledge Base connected:
+
+1. `lumio-wiki lint <kb>` — read-only QA. Check `valid`, validation
+   errors/warnings, and the structural diagnostics for BOTH scopes
+   (canonical = reviewed Relationships; discovery = Relationships plus
+   Extracted References). Exit 1 means fix pages before anything else.
+2. `lumio-wiki dream <kb>` — the reflection report: health, structure, and
+   the missing-link candidates ranked by Discovery Graph impact (orphan
+   repair, component join, fragile-connection strengthening).
+3. `lumio-wiki dream <kb> --stage [--limit N]` — stage the top repairs as
+   ordinary reviewable Ingest Proposals. Nothing direct-writes: review with
+   `proposal inspect`, then `publish` or `discard` as usual.
+   Add opt-in `--semantic` (requires the `[llm]` extra) to stage semantic
+   findings through the same proposal-first path.
+4. `lumio-wiki cross-link <kb>` is the focused variant when you only want
+   the candidate list (or only link repairs, `--stage`).
+
+The same operations exist on the public Python surface
+(`lumio_wiki.run_lint`, `lumio_wiki.run_dream_cycle`,
+`lumio_wiki.stage_dream_repairs`, `lumio_wiki.stage_cross_link_proposal`,
+`lumio_wiki.stage_relationship_proposal`).
 
 ## Optional capabilities
 

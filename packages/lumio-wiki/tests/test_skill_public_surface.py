@@ -33,9 +33,7 @@ def _command_is_registered(cmd: str) -> bool:
     "invalid choice" error. No argparse internals are inspected.
     """
     try:
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
-            io.StringIO()
-        ):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             main([cmd, "--help"])
         return True
     except SystemExit as exc:
@@ -44,8 +42,7 @@ def _command_is_registered(cmd: str) -> bool:
 
 def _skill_and_protocol() -> list[tuple[str, str]]:
     return [
-        (path.name, path.read_text())
-        for path in (resolve_skill_path(), resolve_protocol_path())
+        (path.name, path.read_text()) for path in (resolve_skill_path(), resolve_protocol_path())
     ]
 
 
@@ -61,14 +58,14 @@ def test_skill_never_instructs_private_msgpack_parsing():
             if "msgpack" in line.lower():
                 ll = line.lower()
                 assert any(
-                    word in ll
-                    for word in ("never", "not", "public", "only", "no ", "without")
+                    word in ll for word in ("never", "not", "public", "only", "no ", "without")
                 ), f"{name} mentions MessagePack without a prohibition:\n  {line}"
 
 
 def test_every_cited_command_is_a_registered_public_cli_command():
     """AC3 + AC7: every ``lumio-wiki <cmd>`` cited is a real public command."""
-    pattern = re.compile(r"lumio-wiki (\w+)")
+    # Hyphenated command names (``cross-link``) must match as one token.
+    pattern = re.compile(r"lumio-wiki ([\w-]+)")
     for name, text in _skill_and_protocol():
         cited = set(pattern.findall(text))
         unknown = {cmd for cmd in cited if not _command_is_registered(cmd)}
