@@ -28,7 +28,10 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "packages/lumio-lancedb/tests", "packages/lumio-wiki/tests"]
+# Issue #138: the retrieval gold-set evaluation gate (``eval/``) is part of the
+# default suite so every run is a regression check for retrieval-touching
+# changes. Its LanceDB stages skip gracefully when the adapter is absent.
+testpaths = ["tests", "packages/lumio-lancedb/tests", "packages/lumio-wiki/tests", "eval"]
 markers = [
     "slow: tests that build wheels or create isolated virtual environments",
 ]

@@ -38,6 +38,7 @@ no OpenAI client is required for text and Markdown ingestion.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -901,6 +902,60 @@ def _cmd_health(args: argparse.Namespace) -> int:
     for issue in warnings:
         print(f"  WARN:  {issue.file}: {issue.field}: {issue.message}")
     return 0 if report.is_valid else 1
+
+
+# ---------------------------------------------------------------------------
+# Retrieval evaluation harness (issue #138): recall@k per pipeline stage
+# against a versioned gold set, over the public retrieve seam. Model-free at
+# the base layer; LanceDB stages run when installed.
+# ---------------------------------------------------------------------------
+
+
+def _cmd_eval(args: argparse.Namespace) -> int:
+    from lumio_wiki import retrieval_eval
+
+    kb = _open_read_kb(args.path)
+    gold_path = args.gold_set
+    if gold_path is None:
+        candidate = Path(kb.root) / "gold_set.yaml"
+        if candidate.exists():
+            gold_path = candidate
+        else:
+            raise CliError(
+                "no gold set provided. Pass --gold-set <file> (a YAML query->relevant "
+                "titles set) or place gold_set.yaml beside the Knowledge Base."
+            )
+    gold_set = retrieval_eval.load_gold_set(gold_path)
+
+    ks = tuple(args.k) if args.k else None
+    embedder = None
+    synonyms: dict[str, str] = {}
+    if args.semantic:
+        for pair in args.synonym or []:
+            if "=" not in pair:
+                raise CliError(f"--synonym expects KEY=VALUE, got {pair!r}")
+            key, val = pair.split("=", 1)
+            synonyms[key.strip()] = val.strip()
+        embedder = retrieval_eval.DeterministicHashEmbedder(synonyms=synonyms or None)
+
+    index_dir = Path(args.index_dir) if args.index_dir else None
+    if args.no_lancedb:
+        stages = [retrieval_eval.ZeroIndexLexicalStage(), retrieval_eval.GraphExpansionStage()]
+        report = retrieval_eval.evaluate(kb, gold_set, stages=stages, ks=ks)
+    else:
+        report = retrieval_eval.evaluate(
+            kb, gold_set, ks=ks, lancedb_index_dir=index_dir, embedder=embedder
+        )
+
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=False))
+    else:
+        print(report.to_table())
+        skipped = [s for s in report.stages if not s.available]
+        if skipped:
+            names = ", ".join(s.name for s in skipped)
+            print(f"\nSkipped (unavailable): {names}")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1793,6 +1848,66 @@ def build_parser() -> argparse.ArgumentParser:
         help="Materialize the Discovery Graph artifact (actionable recovery), then report.",
     )
     health_parser.set_defaults(func=_cmd_health)
+
+    # eval — retrieval gold-set evaluation harness (issue #138).
+    eval_parser = subparsers.add_parser(
+        "eval",
+        help="Recall@k evaluation of retrieval stages against a versioned gold set.",
+        description=(
+            "Run a versioned gold set (query -> expected relevant Canonical Page "
+            "Titles) through the public retrieval seam and report recall@k per "
+            "pipeline stage (zero-index lexical, Discovery Graph expansion, and "
+            "LanceDB BM25/semantic/hybrid when installed). Model-free at the base "
+            "layer: no LLM-as-judge, no network. Suitable as a regression gate for "
+            "retrieval-touching changes (issue #138)."
+        ),
+    )
+    _add_kb_argument(eval_parser)
+    eval_parser.add_argument(
+        "--gold-set",
+        type=Path,
+        default=None,
+        help="Gold set YAML (query -> relevant titles). Defaults to <kb>/gold_set.yaml.",
+    )
+    eval_parser.add_argument(
+        "--k",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Recall cutoffs to report (default: 1 3 5).",
+    )
+    eval_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a machine-readable JSON report instead of the recall table.",
+    )
+    eval_parser.add_argument(
+        "--index-dir",
+        type=Path,
+        default=None,
+        help="LanceDB index directory (default: a fresh temporary directory).",
+    )
+    eval_parser.add_argument(
+        "--no-lancedb",
+        action="store_true",
+        help="Skip LanceDB stages even when the adapter is installed.",
+    )
+    eval_parser.add_argument(
+        "--semantic",
+        action="store_true",
+        help=(
+            "Enable LanceDB semantic/hybrid stages using a deterministic, offline "
+            "hash embedder (no provider, no network)."
+        ),
+    )
+    eval_parser.add_argument(
+        "--synonym",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help="Collapse a paraphrase to a shared token for the --semantic embedder.",
+    )
+    eval_parser.set_defaults(func=_cmd_eval)
 
     # lint
     lint_parser = subparsers.add_parser(

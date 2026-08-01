@@ -1,0 +1,352 @@
+version: 1
+name: "lumio-retrieval-fixture-gold-set"
+description: >
+  Gold set for issue #138 retrieval evaluation. Maps natural-language
+  queries to expected relevant Canonical Page Titles over the synthetic
+  fixture KB at eval/fixture_kb. Each graph-dependent query declares the
+  seed titles used for Discovery Graph expansion. Grow it by adding rows.
+ks: [1, 3, 5]
+queries:
+  - query: "ingestion pipeline"
+    relevant:
+      - "Ingestion Pipeline"
+    note: "lexical: single obvious hub term"
+  - query: "ingestion pipeline overview"
+    relevant:
+      - "Ingestion Pipeline"
+    note: "lexical: hub overview"
+  - query: "what is the ingestion pipeline"
+    relevant:
+      - "Ingestion Pipeline"
+    note: "lexical: hub definition"
+  - query: "ingestion pipeline batch"
+    relevant:
+      - "Ingestion Pipeline"
+      - "Batch Loader"
+      - "Stream Connector"
+    seeds:
+      - "Ingestion Pipeline"
+    note: "graph: hub+satellites relevant; decoy outranks satellites without expansion"
+  - query: "ingestion pipeline batch flow"
+    relevant:
+      - "Ingestion Pipeline"
+      - "Batch Loader"
+      - "Stream Connector"
+    seeds:
+      - "Ingestion Pipeline"
+    note: "graph: multi-term; satellites weak, surface via expansion"
+  - query: "how does batch enter the ingestion pipeline"
+    relevant:
+      - "Ingestion Pipeline"
+      - "Batch Loader"
+      - "Stream Connector"
+    seeds:
+      - "Ingestion Pipeline"
+    note: "graph: procedural; satellites reachable via hub seed"
+  - query: "ingestion pipeline boundary batch"
+    relevant:
+      - "Ingestion Pipeline"
+      - "Batch Loader"
+      - "Stream Connector"
+    seeds:
+      - "Ingestion Pipeline"
+    note: "graph: boundary term; satellites weakly match"
+  - query: "batch ingestion ingestion pipeline"
+    relevant:
+      - "Batch Loader"
+      - "Stream Connector"
+      - "Ingestion Pipeline"
+    seeds:
+      - "Ingestion Pipeline"
+    note: "graph: satellite-first phrasing; hub seed expands to satellites"
+  - query: "storage architecture"
+    relevant:
+      - "Storage Architecture"
+    note: "lexical: single obvious hub term"
+  - query: "storage architecture overview"
+    relevant:
+      - "Storage Architecture"
+    note: "lexical: hub overview"
+  - query: "what is the storage architecture"
+    relevant:
+      - "Storage Architecture"
+    note: "lexical: hub definition"
+  - query: "storage architecture tier"
+    relevant:
+      - "Storage Architecture"
+      - "Cold Tier"
+      - "Hot Cache"
+    seeds:
+      - "Storage Architecture"
+    note: "graph: hub+satellites relevant; decoy outranks satellites without expansion"
+  - query: "storage architecture tier flow"
+    relevant:
+      - "Storage Architecture"
+      - "Cold Tier"
+      - "Hot Cache"
+    seeds:
+      - "Storage Architecture"
+    note: "graph: multi-term; satellites weak, surface via expansion"
+  - query: "how does tier enter the storage architecture"
+    relevant:
+      - "Storage Architecture"
+      - "Cold Tier"
+      - "Hot Cache"
+    seeds:
+      - "Storage Architecture"
+    note: "graph: procedural; satellites reachable via hub seed"
+  - query: "storage architecture boundary tier"
+    relevant:
+      - "Storage Architecture"
+      - "Cold Tier"
+      - "Hot Cache"
+    seeds:
+      - "Storage Architecture"
+    note: "graph: boundary term; satellites weakly match"
+  - query: "tier ingestion storage architecture"
+    relevant:
+      - "Cold Tier"
+      - "Hot Cache"
+      - "Storage Architecture"
+    seeds:
+      - "Storage Architecture"
+    note: "graph: satellite-first phrasing; hub seed expands to satellites"
+  - query: "query engine"
+    relevant:
+      - "Query Engine"
+    note: "lexical: single obvious hub term"
+  - query: "query engine overview"
+    relevant:
+      - "Query Engine"
+    note: "lexical: hub overview"
+  - query: "what is the query engine"
+    relevant:
+      - "Query Engine"
+    note: "lexical: hub definition"
+  - query: "query engine frontend"
+    relevant:
+      - "Query Engine"
+      - "SQL Frontend"
+      - "Vector Index"
+    seeds:
+      - "Query Engine"
+    note: "graph: hub+satellites relevant; decoy outranks satellites without expansion"
+  - query: "query engine frontend flow"
+    relevant:
+      - "Query Engine"
+      - "SQL Frontend"
+      - "Vector Index"
+    seeds:
+      - "Query Engine"
+    note: "graph: multi-term; satellites weak, surface via expansion"
+  - query: "how does frontend enter the query engine"
+    relevant:
+      - "Query Engine"
+      - "SQL Frontend"
+      - "Vector Index"
+    seeds:
+      - "Query Engine"
+    note: "graph: procedural; satellites reachable via hub seed"
+  - query: "query engine boundary frontend"
+    relevant:
+      - "Query Engine"
+      - "SQL Frontend"
+      - "Vector Index"
+    seeds:
+      - "Query Engine"
+    note: "graph: boundary term; satellites weakly match"
+  - query: "frontend ingestion query engine"
+    relevant:
+      - "SQL Frontend"
+      - "Vector Index"
+      - "Query Engine"
+    seeds:
+      - "Query Engine"
+    note: "graph: satellite-first phrasing; hub seed expands to satellites"
+  - query: "access control"
+    relevant:
+      - "Access Control"
+    note: "lexical: single obvious hub term"
+  - query: "access control overview"
+    relevant:
+      - "Access Control"
+    note: "lexical: hub overview"
+  - query: "what is the access control"
+    relevant:
+      - "Access Control"
+    note: "lexical: hub definition"
+  - query: "access control role"
+    relevant:
+      - "Access Control"
+      - "Role Model"
+      - "Audit Trail"
+    seeds:
+      - "Access Control"
+    note: "graph: hub+satellites relevant; decoy outranks satellites without expansion"
+  - query: "access control role flow"
+    relevant:
+      - "Access Control"
+      - "Role Model"
+      - "Audit Trail"
+    seeds:
+      - "Access Control"
+    note: "graph: multi-term; satellites weak, surface via expansion"
+  - query: "how does role enter the access control"
+    relevant:
+      - "Access Control"
+      - "Role Model"
+      - "Audit Trail"
+    seeds:
+      - "Access Control"
+    note: "graph: procedural; satellites reachable via hub seed"
+  - query: "access control boundary role"
+    relevant:
+      - "Access Control"
+      - "Role Model"
+      - "Audit Trail"
+    seeds:
+      - "Access Control"
+    note: "graph: boundary term; satellites weakly match"
+  - query: "role ingestion access control"
+    relevant:
+      - "Role Model"
+      - "Audit Trail"
+      - "Access Control"
+    seeds:
+      - "Access Control"
+    note: "graph: satellite-first phrasing; hub seed expands to satellites"
+  - query: "reliability engineering"
+    relevant:
+      - "Reliability Engineering"
+    note: "lexical: single obvious hub term"
+  - query: "reliability engineering overview"
+    relevant:
+      - "Reliability Engineering"
+    note: "lexical: hub overview"
+  - query: "what is the reliability engineering"
+    relevant:
+      - "Reliability Engineering"
+    note: "lexical: hub definition"
+  - query: "reliability engineering failure"
+    relevant:
+      - "Reliability Engineering"
+      - "Failure Domains"
+      - "Recovery Procedures"
+    seeds:
+      - "Reliability Engineering"
+    note: "graph: hub+satellites relevant; decoy outranks satellites without expansion"
+  - query: "reliability engineering failure flow"
+    relevant:
+      - "Reliability Engineering"
+      - "Failure Domains"
+      - "Recovery Procedures"
+    seeds:
+      - "Reliability Engineering"
+    note: "graph: multi-term; satellites weak, surface via expansion"
+  - query: "how does failure enter the reliability engineering"
+    relevant:
+      - "Reliability Engineering"
+      - "Failure Domains"
+      - "Recovery Procedures"
+    seeds:
+      - "Reliability Engineering"
+    note: "graph: procedural; satellites reachable via hub seed"
+  - query: "reliability engineering boundary failure"
+    relevant:
+      - "Reliability Engineering"
+      - "Failure Domains"
+      - "Recovery Procedures"
+    seeds:
+      - "Reliability Engineering"
+    note: "graph: boundary term; satellites weakly match"
+  - query: "failure ingestion reliability engineering"
+    relevant:
+      - "Failure Domains"
+      - "Recovery Procedures"
+      - "Reliability Engineering"
+    seeds:
+      - "Reliability Engineering"
+    note: "graph: satellite-first phrasing; hub seed expands to satellites"
+  - query: "data model"
+    relevant:
+      - "Data Model"
+    note: "lexical: single obvious hub term"
+  - query: "data model overview"
+    relevant:
+      - "Data Model"
+    note: "lexical: hub overview"
+  - query: "what is the data model"
+    relevant:
+      - "Data Model"
+    note: "lexical: hub definition"
+  - query: "data model schema"
+    relevant:
+      - "Data Model"
+      - "Event Schema"
+      - "Entity Schema"
+    seeds:
+      - "Data Model"
+    note: "graph: hub+satellites relevant; decoy outranks satellites without expansion"
+  - query: "data model schema flow"
+    relevant:
+      - "Data Model"
+      - "Event Schema"
+      - "Entity Schema"
+    seeds:
+      - "Data Model"
+    note: "graph: multi-term; satellites weak, surface via expansion"
+  - query: "how does schema enter the data model"
+    relevant:
+      - "Data Model"
+      - "Event Schema"
+      - "Entity Schema"
+    seeds:
+      - "Data Model"
+    note: "graph: procedural; satellites reachable via hub seed"
+  - query: "data model boundary schema"
+    relevant:
+      - "Data Model"
+      - "Event Schema"
+      - "Entity Schema"
+    seeds:
+      - "Data Model"
+    note: "graph: boundary term; satellites weakly match"
+  - query: "schema ingestion data model"
+    relevant:
+      - "Event Schema"
+      - "Entity Schema"
+      - "Data Model"
+    seeds:
+      - "Data Model"
+    note: "graph: satellite-first phrasing; hub seed expands to satellites"
+  - query: "ingest and storage architecture"
+    relevant:
+      - "Ingestion Pipeline"
+      - "Storage Architecture"
+    note: "lexical: two hubs"
+  - query: "query engine and data model"
+    relevant:
+      - "Query Engine"
+      - "Data Model"
+    note: "lexical: two hubs"
+  - query: "access control reliability"
+    relevant:
+      - "Access Control"
+      - "Reliability Engineering"
+    note: "lexical: two hubs"
+  - query: "onboarding pipeline"
+    relevant:
+      - "Ingestion Pipeline"
+      - "Batch Loader"
+      - "Stream Connector"
+    seeds:
+      - "Ingestion Pipeline"
+    note: "semantic probe: 'onboarding' ~ 'ingestion' (synonym)"
+  - query: "authorization model"
+    relevant:
+      - "Access Control"
+      - "Role Model"
+      - "Audit Trail"
+    seeds:
+      - "Access Control"
+    note: "semantic probe: 'authorization' ~ 'access control' (synonym)"
