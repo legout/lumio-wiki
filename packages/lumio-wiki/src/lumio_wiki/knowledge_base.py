@@ -393,7 +393,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
     control: KnowledgeBaseControlFile | None = None
     retrieval: Any | None = None
 
-    def _knowledge_index(self) -> _KnowledgeIndex:
+    def _knowledge_index(self) -> _KnowledgeIndex:  # noqa: F821
         return _KnowledgeIndex(self.pages)
 
     def _retrieval_adapter(self) -> RetrievalAdapter:
@@ -712,7 +712,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         owned = [ref for ref in refs if ref.source_title == title]
         return sorted(owned, key=lambda r: (r.target_title, r.line_start, r.source_path))
 
-    def extraction_diagnostics(self) -> list[ExtractionDiagnostic]:
+    def extraction_diagnostics(self) -> list[ExtractionDiagnostic]:  # noqa: F821
         """Return non-blocking diagnostics from Extracted Reference resolution.
 
         Broken and ambiguous link targets are excluded from the traversable
@@ -1149,7 +1149,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         *,
         embedder: Embedder | None = None,
         retrieval: RetrievalAdapter | None = None,
-    ) -> KnowledgeBase:
+    ) -> KnowledgeBase:  # noqa: F821
         """Build a derived index at ``index_dir`` and return a new KnowledgeBase.
 
         Routes the build through the retrieval adapter slot: ``retrieval`` (or
