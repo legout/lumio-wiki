@@ -23,7 +23,6 @@ from lumio_wiki.knowledge_base import (
     GRAPH_SCOPE_CANONICAL,
     GRAPH_SCOPE_DISCOVERY,
     LINK_IMPACT_WEIGHT_COMPONENT_JOIN,
-    LINK_IMPACT_WEIGHT_FRAGILE_STRENGTHENING,
     LINK_IMPACT_WEIGHT_ORPHAN_REPAIR,
     KnowledgeBase,
 )
@@ -33,12 +32,10 @@ from lumio_wiki.records import (
     LINK_IMPACT_KIND_ORPHAN_REPAIR,
     CompiledPage,
     LinkCandidate,
-    LinkImpactSignal,
     RankedLinkCandidate,
     Relationship,
     Source,
 )
-
 
 # ---------------------------------------------------------------------------
 # Page + Knowledge Base builders.

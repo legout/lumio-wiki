@@ -180,8 +180,8 @@ def test_cli_publish_s3_writes_an_immutable_version_and_advances_the_pointer(
     pointer = msgspec.json.decode(bytes(raw.bytes()), type=S3Pointer)
     assert pointer.version == "v1"
     # The manifest and derived graph exist under the version prefix.
-    from lumio_wiki.s3_location import DERIVED_DIR, MANIFEST_OBJECT
     from lumio_wiki.graph_state import GRAPH_ARTIFACT_FILENAME
+    from lumio_wiki.s3_location import DERIVED_DIR, MANIFEST_OBJECT
 
     assert f"kb/v1/{MANIFEST_OBJECT}" in _list(store, "kb/")
     assert f"kb/v1/{DERIVED_DIR}/{GRAPH_ARTIFACT_FILENAME}" in _list(store, "kb/")
