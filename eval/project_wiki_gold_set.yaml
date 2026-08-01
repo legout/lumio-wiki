@@ -1,0 +1,58 @@
+version: 1
+name: "lumio-project-wiki-gold-set"
+description: >
+  Starter gold set over the Lumio project Knowledge Base
+  (/home/volker/coding/lumio/.wiki). A real-world companion to the deterministic
+  synthetic fixture set (gold_set.yaml): grow it as the project KB grows. These
+  rows were verified to recall their relevant pages on the current pipeline.
+ks: [1, 3, 5]
+queries:
+  - query: "what is an ingest proposal"
+    relevant:
+      - "Ingest Proposals"
+    note: "definition query; alias 'Ingest Proposal'"
+
+  - query: "ingest proposal review workflow"
+    relevant:
+      - "Ingest Proposals"
+    note: "procedural; tags ingest/workflow/review"
+
+  - query: "AIX AI exchange format"
+    relevant:
+      - "AIX (AI eXchange)"
+    note: "definition query; alias 'AIX format'"
+
+  - query: "interchange format with typed relationships"
+    relevant:
+      - "AIX (AI eXchange)"
+    note: "AIX adds path-independent typed relationships over OKF"
+
+  - query: "knowledge graph retrieval evaluation harness"
+    relevant:
+      - "Knowledge Graphs, Retrieval Infrastructure, and the Palantir Ontology"
+    note: "the reference that motivated issue #138 (recall-table argument)"
+
+  - query: "hybrid retrieval ontology palantir"
+    relevant:
+      - "Knowledge Graphs, Retrieval Infrastructure, and the Palantir Ontology"
+    note: "alias 'Palantir Ontology technical tour'"
+
+  - query: "discover then formalize ontology"
+    relevant:
+      - "Ontology-Backed Knowledge Graphs: Discover, Then Formalize"
+    note: "alias 'Discover then formalize'"
+
+  - query: "vector store cannot answer structural questions"
+    relevant:
+      - "Ontology-Backed Knowledge Graphs: Discover, Then Formalize"
+    note: "semantic search vs structured facts"
+
+  - query: "open knowledge format google markdown"
+    relevant:
+      - "Open Knowledge Format (OKF)"
+    note: "alias 'Google OKF'"
+
+  - query: "OKF bundle directory markdown yaml frontmatter"
+    relevant:
+      - "Open Knowledge Format (OKF)"
+    note: "format mechanics"

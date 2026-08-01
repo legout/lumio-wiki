@@ -49,13 +49,28 @@ The harness library itself lives in the `lumio-wiki` package:
 uv run pytest -q eval
 uv run pytest -q                       # whole workspace, eval included
 
-# The CLI (model-free by default; LanceDB stages run when installed)
+# The CLI. By default it runs every INSTALLED stage (zero-index + graph, plus
+# LanceDB BM25 when lumio-lancedb is present) so the table shows what each
+# stage buys. Pass --no-lancedb for a base-layer-only run.
 uv run lumio-wiki eval eval/fixture_kb --gold-set eval/gold_set.yaml
 uv run lumio-wiki eval eval/fixture_kb --gold-set eval/gold_set.yaml --json
 uv run lumio-wiki eval eval/fixture_kb --gold-set eval/gold_set.yaml --no-lancedb
 uv run lumio-wiki eval eval/fixture_kb --gold-set eval/gold_set.yaml \
     --semantic --synonym onboarding=ingestion
 ```
+
+## Two gold sets
+
+* **`gold_set.yaml`** — the deterministic synthetic fixture set. This is the CI
+  gate: no provider, no network, no LanceDB at the base layer.
+* **`project_wiki_gold_set.yaml`** — a real-world starter set over the Lumio
+  project Knowledge Base (the `.wiki`). It is the issue's "start with the
+  project .wiki KB plus one synthetic fixture KB" companion: a small, verified
+  baseline humans grow as the project KB evolves. Run it against the real KB:
+
+  ```bash
+  uv run lumio-wiki eval "$LUMIO_KB_PATH" --gold-set eval/project_wiki_gold_set.yaml
+  ```
 
 ## Growing the gold set
 

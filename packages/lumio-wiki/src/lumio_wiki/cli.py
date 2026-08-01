@@ -943,8 +943,18 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         stages = [retrieval_eval.ZeroIndexLexicalStage(), retrieval_eval.GraphExpansionStage()]
         report = retrieval_eval.evaluate(kb, gold_set, stages=stages, ks=ks)
     else:
+        # Inject the LanceDB adapter (loaded via importlib so lumio-wiki never
+        # imports lumio-lancedb; ADR-0010). When installed and no index dir was
+        # given, evaluate auto-builds a temp index so the default run shows what
+        # each installed stage buys (issue #138).
+        adapter = retrieval_eval.load_lancedb_adapter()
         report = retrieval_eval.evaluate(
-            kb, gold_set, ks=ks, lancedb_index_dir=index_dir, embedder=embedder
+            kb,
+            gold_set,
+            ks=ks,
+            lancedb_index_dir=index_dir,
+            embedder=embedder,
+            lancedb_adapter=adapter,
         )
 
     if args.json:

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import statistics
+from pathlib import Path
 
 import pytest
 from lumio_wiki import retrieval_eval as ev
@@ -129,6 +130,8 @@ def test_ac3_graph_disabled_is_the_zero_index_stage(fixture_kb, gold_set):
 @pytest.fixture()
 def lancedb_report(fixture_kb, gold_set, tmp_path):
     pytest.importorskip("lancedb")
+    adapter = ev.load_lancedb_adapter()
+    assert adapter is not None, "lumio-lancedb adapter should load when lancedb is installed"
     embedder = ev.DeterministicHashEmbedder(
         synonyms={"onboarding": "ingestion", "authorization": "access"}
     )
@@ -138,6 +141,7 @@ def lancedb_report(fixture_kb, gold_set, tmp_path):
         ks=K,
         lancedb_index_dir=tmp_path / "lance",
         embedder=embedder,
+        lancedb_adapter=adapter,
     )
 
 
@@ -181,9 +185,9 @@ def test_cli_eval_prints_recall_table(capsys, fixture_kb):
     rc = cli_main(
         [
             "eval",
-            str(__import__("pathlib").Path(__file__).parent / "fixture_kb"),
+            str(Path(__file__).parent / "fixture_kb"),
             "--gold-set",
-            str(__import__("pathlib").Path(__file__).parent / "gold_set.yaml"),
+            str(Path(__file__).parent / "gold_set.yaml"),
             "--no-lancedb",
         ]
     )
@@ -199,9 +203,9 @@ def test_cli_eval_json_is_valid(capsys, fixture_kb, tmp_path):
     rc = cli_main(
         [
             "eval",
-            str(__import__("pathlib").Path(__file__).parent / "fixture_kb"),
+            str(Path(__file__).parent / "fixture_kb"),
             "--gold-set",
-            str(__import__("pathlib").Path(__file__).parent / "gold_set.yaml"),
+            str(Path(__file__).parent / "gold_set.yaml"),
             "--index-dir",
             str(tmp_path / "lance"),
             "--json",

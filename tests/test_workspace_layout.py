@@ -33,6 +33,7 @@ def test_uv_workspace_root_is_coordination_only_with_three_members():
         "tests",
         "packages/lumio-lancedb/tests",
         "packages/lumio-wiki/tests",
+        "eval",
     ]
 
     member = _toml(MEMBER / "pyproject.toml")

@@ -203,15 +203,21 @@ class TestStages:
     def test_default_stages_adds_lancedb_when_index_dir_and_available(self):
         if not ev.lancedb_available():
             pytest.skip("lumio-lancedb not installed")
-        stages = ev.default_stages(lancedb_index_dir=Path("/tmp/x"))
+        adapter = ev.load_lancedb_adapter()
+        assert adapter is not None
+        stages = ev.default_stages(lancedb_index_dir=Path("/tmp/x"), lancedb_adapter=adapter)
         names = [s.name for s in stages]
         assert names == ["zero-index-lexical", "graph-expansion", "lancedb-bm25"]
 
     def test_default_stages_adds_semantic_hybrid_with_embedder(self):
         if not ev.lancedb_available():
             pytest.skip("lumio-lancedb not installed")
+        adapter = ev.load_lancedb_adapter()
+        assert adapter is not None
         stages = ev.default_stages(
-            lancedb_index_dir=Path("/tmp/x"), embedder=ev.DeterministicHashEmbedder()
+            lancedb_index_dir=Path("/tmp/x"),
+            embedder=ev.DeterministicHashEmbedder(),
+            lancedb_adapter=adapter,
         )
         names = [s.name for s in stages]
         assert names == [
@@ -221,6 +227,13 @@ class TestStages:
             "lancedb-semantic",
             "lancedb-hybrid",
         ]
+
+    def test_default_stages_omits_lancedb_without_injected_adapter(self):
+        # lumio-wiki cannot import lumio-lancedb, so no adapter => base ladder
+        # only, even when an index dir is supplied (ADR-0010 dependency guard).
+        stages = ev.default_stages(lancedb_index_dir=Path("/tmp/x"), lancedb_adapter=None)
+        names = [s.name for s in stages]
+        assert names == ["zero-index-lexical", "graph-expansion"]
 
 
 # ---------------------------------------------------------------------------

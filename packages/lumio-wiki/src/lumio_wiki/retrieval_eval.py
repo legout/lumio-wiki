@@ -55,6 +55,7 @@ from lumio_wiki.knowledge_base import (
     KnowledgeBase,
 )
 from lumio_wiki.records import RetrievalResult
+from lumio_wiki.retrieval import RetrievalAdapter
 
 __all__ = [
     "DEFAULT_KS",
@@ -76,6 +77,7 @@ __all__ = [
     "evaluate",
     "lancedb_available",
     "load_gold_set",
+    "load_lancedb_adapter",
     "recall_at_k",
 ]
 
@@ -291,14 +293,40 @@ class GraphExpansionStage:
 
 
 def lancedb_available() -> bool:
-    """Return True when the optional ``lumio-lancedb`` adapter imports cleanly."""
+    """Return True when the optional ``lumio-lancedb`` adapter is importable.
+
+    Probed with :func:`importlib.util.find_spec` (a string lookup, never an
+    import statement) so this module never trips lumio-wiki's downward-
+    dependency guard (ADR-0010): the ``lumio-wiki`` package must not import
+    ``lumio_lancedb`` / ``lancedb`` / ``pyarrow``. The caller loads the adapter
+    lazily via :func:`load_lancedb_adapter` only when this returns True.
+    """
+    import importlib.util
+
+    return (
+        importlib.util.find_spec("lumio_lancedb") is not None
+        and importlib.util.find_spec("lancedb") is not None
+        and importlib.util.find_spec("pyarrow") is not None
+    )
+
+
+def load_lancedb_adapter() -> RetrievalAdapter | None:
+    """Construct and return the LanceDB retrieval adapter, or ``None`` if absent.
+
+    Loaded via :func:`importlib.import_module` (a string lookup) so lumio-wiki
+    contains no ``import lumio_lancedb`` statement (ADR-0010 dependency guard);
+    this is the optional-plugin path — ``lumio-wiki`` has no static dependency
+    on ``lumio-lancedb``, but uses it when the workspace installs it.
+    """
+    if not lancedb_available():
+        return None
     try:
-        import lancedb  # noqa: F401
-        import lumio_lancedb.index  # noqa: F401
-        import pyarrow  # noqa: F401
+        import importlib
+
+        module = importlib.import_module("lumio_lancedb.index")
+        return module.LanceDBRetrievalAdapter()
     except Exception:
-        return False
-    return True
+        return None
 
 
 class _LanceDBStageBase:
@@ -402,15 +430,23 @@ def default_stages(
     *,
     lancedb_index_dir: Path | None = None,
     embedder: Embedder | None = None,
+    lancedb_adapter: RetrievalAdapter | None = None,
 ) -> list[Stage]:
     """Build the canonical stage ladder.
 
     Always includes zero-index lexical and graph expansion. Adds LanceDB BM25
-    when the adapter is available and an index dir is supplied. Adds semantic /
-    hybrid when both the adapter and an embedder are supplied.
+    when the adapter is installed, an index dir is supplied, AND a retrieval
+    adapter is injected. lumio-wiki cannot import ``lumio-lancedb`` itself
+    (ADR-0010), so the caller passes the loaded ``LanceDBRetrievalAdapter`` via
+    :func:`load_lancedb_adapter`. Adds semantic / hybrid when an embedder is
+    also supplied.
     """
     stages: list[Stage] = [ZeroIndexLexicalStage(), GraphExpansionStage()]
-    if lancedb_index_dir is not None and lancedb_available():
+    if (
+        lancedb_index_dir is not None
+        and lancedb_adapter is not None
+        and lancedb_available()
+    ):
         stages.append(LanceDBBM25Stage(index_dir=lancedb_index_dir))
         if embedder is not None:
             stages.append(LanceDBSemanticStage(index_dir=lancedb_index_dir, embedder=embedder))
@@ -543,13 +579,17 @@ class EvalReport:
 def _build_lancedb_index(
     kb: KnowledgeBase,
     index_dir: Path,
+    retrieval_adapter: RetrievalAdapter,
     *,
     embedder: Embedder | None,
 ) -> KnowledgeBase:
-    """Build a LanceDB derived index and return the adapter-bound Knowledge Base."""
-    from lumio_lancedb.index import LanceDBRetrievalAdapter  # type: ignore[import-not-found]
+    """Build a LanceDB derived index via ``retrieval_adapter``; return the bound KB.
 
-    return kb.build_index(index_dir, retrieval=LanceDBRetrievalAdapter(), embedder=embedder)
+    The adapter is injected by the caller (loaded via
+    :func:`load_lancedb_adapter`); lumio-wiki never imports the adapter package
+    itself (ADR-0010 dependency direction).
+    """
+    return kb.build_index(index_dir, retrieval=retrieval_adapter, embedder=embedder)
 
 
 def evaluate(
@@ -560,32 +600,40 @@ def evaluate(
     ks: Sequence[int] | None = None,
     lancedb_index_dir: Path | None = None,
     embedder: Embedder | None = None,
+    lancedb_adapter: RetrievalAdapter | None = None,
 ) -> EvalReport:
     """Run ``gold_set`` through ``stages`` over ``kb`` and return a recall@k report.
 
     When ``stages`` is omitted, :func:`default_stages` builds the canonical
-    ladder; LanceDB stages are included only when the adapter is available and
-    ``lancedb_index_dir`` is supplied. When LanceDB stages are requested but no
-    index is supplied, a fresh index is built into ``lancedb_index_dir`` (or a
-    temporary directory) so semantic/hybrid stages can run.
+    ladder. LanceDB stages require a ``lancedb_adapter`` (a loaded
+    ``LanceDBRetrievalAdapter``, obtained via :func:`load_lancedb_adapter`):
+    lumio-wiki cannot import ``lumio-lancedb`` (ADR-0010), so the caller injects
+    it. Without it, only the base (zero-index + graph) ladder runs. When LanceDB
+    stages run but no ``lancedb_index_dir`` is supplied, a fresh temp index is
+    built so semantic/hybrid stages can run.
     """
     resolved_ks = tuple(ks) if ks is not None else (gold_set.ks or DEFAULT_KS)
 
     if stages is None:
-        needs_lance = lancedb_available() and (
-            lancedb_index_dir is not None or embedder is not None
-        )
-        if needs_lance and lancedb_index_dir is None:
+        if (
+            lancedb_adapter is not None
+            and lancedb_available()
+            and lancedb_index_dir is None
+        ):
             import tempfile
 
             lancedb_index_dir = Path(tempfile.mkdtemp(prefix="lumio-eval-lance-"))
-        stages = default_stages(lancedb_index_dir=lancedb_index_dir, embedder=embedder)
+        stages = default_stages(
+            lancedb_index_dir=lancedb_index_dir,
+            embedder=embedder,
+            lancedb_adapter=lancedb_adapter,
+        )
 
-    # Build the LanceDB index once if any stage needs it and it isn't prebuilt.
+    # Build the LanceDB index once if any stage needs it and an adapter was injected.
     lance_stages = [s for s in stages if isinstance(s, _LanceDBStageBase)]
-    if lance_stages and lancedb_available():
+    if lance_stages and lancedb_adapter is not None and lancedb_available():
         index_dir = lance_stages[0]._index_dir  # noqa: SLF001 — all share one dir
-        bound_kb = _build_lancedb_index(kb, index_dir, embedder=embedder)
+        bound_kb = _build_lancedb_index(kb, index_dir, lancedb_adapter, embedder=embedder)
         for stage in lance_stages:
             stage._bound_kb = bound_kb  # noqa: SLF001 — inject adapter-bound KB
 
