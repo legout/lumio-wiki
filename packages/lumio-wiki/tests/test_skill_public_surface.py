@@ -19,8 +19,6 @@ import contextlib
 import io
 import re
 
-import pytest
-
 from lumio_wiki.cli import main
 from lumio_wiki.skill import resolve_protocol_path, resolve_skill_path
 

@@ -81,9 +81,7 @@ def main() -> int:
     # The app's CORE dependency on lumio-wiki; ignore the optional
     # ``lumio-wiki[s3]`` entry that appears under the app's own ``s3`` extra.
     app_member = [
-        item
-        for item in app_requirements
-        if item.startswith("lumio-wiki") and ";" not in item
+        item for item in app_requirements if item.startswith("lumio-wiki") and ";" not in item
     ]
     assert len(app_member) == 1, app_requirements
     assert ">=0.1.1" in app_member[0] and "<0.2.0" in app_member[0]

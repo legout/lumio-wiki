@@ -28,7 +28,6 @@ from lumio_wiki.knowledge_base import (
     fingerprint_sources,
 )
 from lumio_wiki.location import FilesystemLocation
-from lumio_wiki.records import SourceFingerprint
 from lumio_wiki.s3_location import (
     CURRENT_POINTER_OBJECT,
     DERIVED_DIR,
@@ -90,7 +89,7 @@ def _canonical(root: Path) -> dict[str, bytes]:
 @pytest.mark.parametrize("root", [VALID, CATEGORIZED], ids=lambda p: p.name)
 def test_publish_writes_every_canonical_file_under_the_version_prefix(root):
     store = _store()
-    manifest = publish_s3_version(store, "kb", source_root=root, version="v1")
+    publish_s3_version(store, "kb", source_root=root, version="v1")
 
     objects = _list_objects(store, "kb/v1/")
     # Every canonical file appears at its relative path under the prefix.
@@ -415,7 +414,6 @@ def test_coherently_altered_graph_falls_back_via_manifest_digest_check():
 
 def test_publish_requires_the_s3_extra(monkeypatch):
     """When obstore is not installed, publication raises an actionable error."""
-    import lumio_wiki.s3_publish as mod
 
     real_import = __import__
 

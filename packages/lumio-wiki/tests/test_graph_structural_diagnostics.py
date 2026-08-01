@@ -30,7 +30,6 @@ from lumio_wiki.records import (
     UnresolvedReferenceSample,
 )
 
-
 # ---------------------------------------------------------------------------
 # Page + Knowledge Base builders.
 # ---------------------------------------------------------------------------
