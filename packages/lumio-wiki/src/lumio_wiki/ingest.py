@@ -45,6 +45,7 @@ from lumio_wiki.records import (
     ValidationIssue,
     ValidationReport,
 )
+from lumio_wiki.source_registry import SourceRegistry
 
 if TYPE_CHECKING:
     from lumio_wiki.source_processor import SourceProcessor
@@ -136,6 +137,103 @@ class BlastRadius(msgspec.Struct, frozen=True):
     renames: list[str] = msgspec.field(default_factory=list)
 
 
+class SourceChangeImpact(msgspec.Struct, frozen=True):
+    """A page-level support result for a staged source lifecycle action."""
+
+    page_title: str
+    status: str
+
+
+class SourceLifecycleChange(msgspec.Struct, frozen=True):
+    """Private source action disclosed on an otherwise ordinary proposal."""
+
+    action: str
+    source_id: str
+    trigger: str
+    impacts: list[SourceChangeImpact] = msgspec.field(default_factory=list)
+
+
+#: Fixed, content-free label rendered for a source lifecycle trigger whose
+#: action is NOT one of the controlled ``retire`` / ``reactivate`` values (#133).
+#:
+#: A proposal persisted *before* action-controlled triggers — or a future
+#: proposal type — may carry a ``trigger`` string containing a content hash or
+#: secret-bearing detail. Rendering must NEVER echo the persisted trigger:
+#: the label is derived ONLY from the controlled ``action`` field. Any action
+#: outside the known vocabulary renders this single generic label. This guard
+#: is display-only: it neither rejects nor destroys the persisted proposal
+#: trigger, which stays available for operational semantics.
+SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED = "source lifecycle change"
+
+
+def safe_lifecycle_trigger_display(action: str) -> str:
+    """Return a display-safe, content-free label for a source lifecycle trigger.
+
+    The label is derived ONLY from the controlled ``action`` field of a
+    :class:`SourceLifecycleChange` — never from its persisted ``trigger``
+    string, which may carry a content hash or secret-bearing detail on a legacy
+    or future proposal. ``retire`` and ``reactivate`` map to two fixed
+    descriptive labels; every other value (including a future action that
+    itself carries secret material) maps to the single fixed
+    :data:`SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED` label.
+
+    This is the lumio-wiki boundary guard every Workshop rendering surface must
+    use for proposal lifecycle triggers; it mirrors
+    :func:`safe_candidate_trigger_display` (which masks legacy *candidate*
+    triggers) but derives its output from the action rather than the stored
+    trigger, because the proposal trigger is private operational state that is
+    never rendered. The guard is display-only: it never raises, never mutates,
+    and never destroys the persisted proposal trigger.
+    """
+    if action == "retire":
+        return "explicit source retirement"
+    if action == "reactivate":
+        return "explicit source reactivation"
+    return SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED
+
+
+#: Fixed, content-free label rendered for a source lifecycle impact status that
+#: is NOT one of the controlled ``still-supported`` / ``sole-source-lost``
+#: values (#133).
+#:
+#: A proposal persisted *before* the controlled impact-status vocabulary — or a
+#: future proposal type — may carry a ``SourceChangeImpact.status`` string
+#: containing secret-bearing detail (e.g. a future status that accidentally
+#: captured a credential). Rendering must NEVER echo the persisted status: the
+#: label is derived ONLY from an allowlist of the two known statuses. Any value
+#: outside that vocabulary renders this single generic label. This guard is
+#: display-only: it neither rejects nor destroys the persisted impact status,
+#: which stays available for operational semantics.
+SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED = "source-impact-unknown"
+
+
+def safe_lifecycle_impact_status_display(status: str) -> str:
+    """Return a display-safe, content-free label for a source lifecycle impact status.
+
+    The label is derived ONLY from an allowlist of the two controlled impact
+    statuses on a :class:`SourceChangeImpact` — ``still-supported`` and
+    ``sole-source-lost`` — never from an arbitrary persisted ``status`` string,
+    which may carry a content hash or secret-bearing detail on a legacy or
+    future proposal. Both allowlisted statuses render as their exact fixed
+    labels; every other value (including a future status that itself carries
+    secret material) maps to the single fixed
+    :data:`SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED` label.
+
+    This is the lumio-wiki boundary guard every Workshop rendering surface must
+    use for proposal lifecycle impact statuses; it mirrors
+    :func:`safe_lifecycle_trigger_display` (which derives a label from the
+    controlled action) but allowlists the status directly, because the impact
+    status is the value that is rendered for the reviewer. The guard is
+    display-only: it never raises, never mutates, and never destroys the
+    persisted impact status.
+    """
+    if status == "still-supported":
+        return "still-supported"
+    if status == "sole-source-lost":
+        return "sole-source-lost"
+    return SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED
+
+
 class IngestProposal(msgspec.Struct, frozen=True):
     """A staged set of proposed Markdown changes with validation gate.
 
@@ -159,6 +257,7 @@ class IngestProposal(msgspec.Struct, frozen=True):
     blast_radius: BlastRadius | None = None
     control_file: KnowledgeBaseControlFile | None = None
     okf_diagnostics: list[OkfImportDiagnostic] = msgspec.field(default_factory=list)
+    source_change: SourceLifecycleChange | None = None
 
 
 class ExternalImportCategoryMapping(msgspec.Struct, frozen=True):
@@ -1059,6 +1158,7 @@ class IngestStore:
         self.root = Path(root).resolve()
         self.raw_dir = self.root / "raw"
         self.proposals_dir = self.root / "proposals"
+        self.source_registry = SourceRegistry(self.root / "source-registry")
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.proposals_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, IngestProposal] = {}
@@ -1129,6 +1229,10 @@ __all__ = [
     "IngestProposal",
     "IngestStore",
     "ProposedPage",
+    "SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED",
+    "SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED",
+    "SourceChangeImpact",
+    "SourceLifecycleChange",
     "SourceProvenance",
     "TERMINAL_PROPOSAL_STATUSES",
     "compute_blast_radius",
@@ -1137,4 +1241,6 @@ __all__ = [
     "is_reviewable_proposal",
     "map_external_import_categories",
     "propose_external_import",
+    "safe_lifecycle_trigger_display",
+    "safe_lifecycle_impact_status_display",
 ]
