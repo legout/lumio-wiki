@@ -167,6 +167,7 @@ def test_the_graph_artifact_is_in_derived_files_not_canonical_files():
     graph_entry = next(f for f in manifest.derived_files if f.path == graph_key)
     raw = obstore.get(store, f"kb/v1/{graph_key}")
     import hashlib
+
     raw_bytes = bytes(raw.bytes())
 
     assert graph_entry.size == len(raw_bytes)
@@ -196,6 +197,7 @@ def test_reusing_a_version_label_fails_immutably():
     publish_s3_version(store, "kb", source_root=VALID, version="v1")
     with pytest.raises(KnowledgeBaseError, match="already exists"):
         publish_s3_version(store, "kb", source_root=VALID, version="v1")
+
 
 # ---------------------------------------------------------------------------
 # 3. A published version resolves to a byte-for-byte-equivalent Snapshot.
@@ -229,9 +231,7 @@ def test_a_second_concurrent_publication_detects_a_pointer_conflict():
     expected = _read_pointer(store, "kb").version
     assert expected == "v1"
     # Publisher A wins the race to publish v2 and advances the pointer.
-    publish_s3_version(
-        store, "kb", source_root=VALID, version="v2", expected_pointer_version="v1"
-    )
+    publish_s3_version(store, "kb", source_root=VALID, version="v2", expected_pointer_version="v1")
     assert _read_pointer(store, "kb").version == "v2"
     # Publisher B now tries to advance from the stale v1 expectation: conflict.
     with pytest.raises(S3PublicationConflict) as exc_info:
@@ -264,12 +264,8 @@ def test_expected_pointer_version_mismatch_raises_conflict_before_advancing():
 def test_consecutive_publications_advance_the_pointer_in_order():
     store = _store()
     publish_s3_version(store, "kb", source_root=VALID, version="v1")
-    publish_s3_version(
-        store, "kb", source_root=VALID, version="v2", expected_pointer_version="v1"
-    )
-    publish_s3_version(
-        store, "kb", source_root=VALID, version="v3", expected_pointer_version="v2"
-    )
+    publish_s3_version(store, "kb", source_root=VALID, version="v2", expected_pointer_version="v1")
+    publish_s3_version(store, "kb", source_root=VALID, version="v3", expected_pointer_version="v2")
     assert _read_pointer(store, "kb").version == "v3"
 
 
@@ -291,9 +287,7 @@ def test_a_reader_bound_to_the_old_snapshot_is_unaffected_by_activation():
     before_titles = {p.title for p in before.pages}
     before_fp = before.fingerprint
     # v2 has different content.
-    publish_s3_version(
-        store, "kb", source_root=VALID, version="v2", expected_pointer_version="v1"
-    )
+    publish_s3_version(store, "kb", source_root=VALID, version="v2", expected_pointer_version="v1")
     # The already-resolved Snapshot is unchanged (immutable in memory).
     assert {p.title for p in before.pages} == before_titles
     assert before.fingerprint == before_fp

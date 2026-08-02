@@ -160,17 +160,15 @@ def _require_graph_direction(direction: str) -> None:
     """Validate the traversal direction value."""
     if direction not in GRAPH_DIRECTIONS:
         raise ValueError(
-            f"unknown graph direction {direction!r}; expected one of "
-            f"{sorted(GRAPH_DIRECTIONS)}"
+            f"unknown graph direction {direction!r}; expected one of {sorted(GRAPH_DIRECTIONS)}"
         )
 
 
 def _require_non_negative_limit(name: str, value: int) -> None:
     """Validate that a graph traversal limit is a non-negative integer."""
     if value < 0:
-        raise ValueError(
-            f"{name} must be a non-negative integer, got {value}"
-        )
+        raise ValueError(f"{name} must be a non-negative integer, got {value}")
+
 
 class _GraphTopology(NamedTuple):
     """Authorized directed-graph topology snapshot for structural analysis.
@@ -245,6 +243,7 @@ def _compute_graph_topology(
         wcc_count=wcc_count,
         largest_wcc_size=largest,
     )
+
 
 # Navigation Index reserved derived-artifact semantics (issue #64).
 #
@@ -433,7 +432,6 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         """
         return [page for page in self.pages if (page.visibility or "") == "public"]
 
-
     def search_pages(
         self,
         query: str,
@@ -448,7 +446,6 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         """
         candidates = self.pages if pages is None else list(pages)
         return search_pages_over(candidates, query, limit)
-
 
     def related_from(self, title: str, relationship_type: str | None = None) -> list[Relationship]:
         """Return relationships whose source page has the given Canonical Title."""
@@ -616,9 +613,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         neighbors = self._graph_neighbor_fn(direction, scope)
 
         visited = {source_title}
-        queue: deque[tuple[str, list[str]]] = deque(
-            [(source_title, [source_title])]
-        )
+        queue: deque[tuple[str, list[str]]] = deque([(source_title, [source_title])])
         edges_expanded = 0
         while queue:
             current, path = queue.popleft()
@@ -644,9 +639,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
     def _graph_candidate(self, candidate_titles: Iterable[str] | None) -> frozenset[str]:
         """Return the authorized candidate title set, defaulting to all titles."""
         if candidate_titles is None:
-            return frozenset(
-                page.title for page in self.pages if page.title
-            )
+            return frozenset(page.title for page in self.pages if page.title)
         return frozenset(candidate_titles)
 
     def _graph_neighbor_fn(self, direction: str, scope: str = GRAPH_SCOPE_CANONICAL):
@@ -689,9 +682,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         else:  # GRAPH_DIRECTION_BOTH
 
             def neighbors(title: str):
-                return heapq.merge(
-                    outgoing.get(title, ()), incoming.get(title, ())
-                )
+                return heapq.merge(outgoing.get(title, ()), incoming.get(title, ()))
 
         return neighbors
 
@@ -886,9 +877,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         _require_graph_scope(scope)
         _require_non_negative_limit("max_hub_sample", max_hub_sample)
         _require_non_negative_limit("max_orphan_sample", max_orphan_sample)
-        _require_non_negative_limit(
-            "max_unresolved_sample", max_unresolved_sample
-        )
+        _require_non_negative_limit("max_unresolved_sample", max_unresolved_sample)
 
         index = self._knowledge_index()
         if scope == GRAPH_SCOPE_DISCOVERY:
@@ -915,9 +904,11 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         top_inbound_hubs = self._top_hubs(nodes, in_degree, max_hub_sample)
         top_outbound_hubs = self._top_hubs(nodes, out_degree, max_hub_sample)
 
-        unresolved = self._aggregate_unresolved_references(
-            candidate, max_unresolved_sample
-        ) if scope == GRAPH_SCOPE_DISCOVERY else ()
+        unresolved = (
+            self._aggregate_unresolved_references(candidate, max_unresolved_sample)
+            if scope == GRAPH_SCOPE_DISCOVERY
+            else ()
+        )
 
         return StructuralGraphReport(
             scope=scope,
@@ -968,9 +959,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         through :meth:`extraction_diagnostics`; each group carries a bounded,
         deterministic representative subset of source locations.
         """
-        path_to_title = {
-            page.path: page.title for page in self.pages if page.title
-        }
+        path_to_title = {page.path: page.title for page in self.pages if page.title}
         groups: dict[tuple[str, str], list[ExtractionDiagnostic]] = {}
         for diag in self._knowledge_index().extraction_diagnostics:
             src_title = path_to_title.get(diag.source_path)
@@ -1090,44 +1079,51 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
                 # Orphan repair: target has zero inbound edges.
                 if in_degree[tgt_title] == 0:
                     score += LINK_IMPACT_WEIGHT_ORPHAN_REPAIR
-                    signals.append(LinkImpactSignal(
-                        kind=LINK_IMPACT_KIND_ORPHAN_REPAIR,
-                        detail=(
-                            f"gives '{tgt_title}' its first inbound "
-                            f"{scope} connection (currently an inbound orphan)"
-                        ),
-                    ))
+                    signals.append(
+                        LinkImpactSignal(
+                            kind=LINK_IMPACT_KIND_ORPHAN_REPAIR,
+                            detail=(
+                                f"gives '{tgt_title}' its first inbound "
+                                f"{scope} connection (currently an inbound orphan)"
+                            ),
+                        )
+                    )
 
                 # Component joining: source and target in different WCCs.
                 if wcc_id[src_title] != wcc_id[tgt_title]:
                     score += LINK_IMPACT_WEIGHT_COMPONENT_JOIN
-                    signals.append(LinkImpactSignal(
-                        kind=LINK_IMPACT_KIND_COMPONENT_JOIN,
-                        detail=(
-                            "joins two weakly connected components "
-                            "(reduces WCC count by 1)"
-                        ),
-                    ))
+                    signals.append(
+                        LinkImpactSignal(
+                            kind=LINK_IMPACT_KIND_COMPONENT_JOIN,
+                            detail=(
+                                "joins two weakly connected components (reduces WCC count by 1)"
+                            ),
+                        )
+                    )
 
                 # Fragile strengthening: same WCC, no direct edge exists.
                 # Adding a direct edge strengthens the indirect connection.
                 elif tgt_title not in out_endpoints[src_title]:
                     score += LINK_IMPACT_WEIGHT_FRAGILE_STRENGTHENING
-                    signals.append(LinkImpactSignal(
-                        kind=LINK_IMPACT_KIND_FRAGILE_STRENGTHENING,
-                        detail=(
-                            "strengthens an indirect connection: source and "
-                            "target share a weakly connected component but no "
-                            "direct edge currently exists"
-                        ),
-                    ))
+                    signals.append(
+                        LinkImpactSignal(
+                            kind=LINK_IMPACT_KIND_FRAGILE_STRENGTHENING,
+                            detail=(
+                                "strengthens an indirect connection: source and "
+                                "target share a weakly connected component but no "
+                                "direct edge currently exists"
+                            ),
+                        )
+                    )
 
-            ranked.append(RankedLinkCandidate(
-                candidate=cand,
-                scope=scope,
-                impact_score=score,
-                signals=tuple(signals),
-            ))
+            ranked.append(
+                RankedLinkCandidate(
+                    candidate=cand,
+                    scope=scope,
+                    impact_score=score,
+                    signals=tuple(signals),
+                )
+            )
 
         # Deterministic ordering: highest impact first, then stable lexical
         # tie-break on the candidate's identity fields.
@@ -1333,8 +1329,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
                     prepended_stages.append(
                         TraceStage(
                             "fingerprint-check",
-                            "stale derived index rebuilt from current source "
-                            "before compose",
+                            "stale derived index rebuilt from current source before compose",
                         )
                     )
 
@@ -1351,11 +1346,9 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
 
         if prepended_stages:
             results = [
-                KnowledgeBase._with_prepended_stages(result, prepended_stages)
-                for result in results
+                KnowledgeBase._with_prepended_stages(result, prepended_stages) for result in results
             ]
         return results
-
 
     def fingerprint(self) -> SourceFingerprint:
         """Return the current source fingerprint for this Knowledge Base."""
@@ -1398,9 +1391,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         surface structural problems for maintenance awareness. It does not call
         an LLM and does not replace the publish validation gate.
         """
-        missing_summaries = sorted(
-            entry.path for entry in self.registry() if not entry.summary
-        )
+        missing_summaries = sorted(entry.path for entry in self.registry() if not entry.summary)
 
         validation = validate(self.root)
 
@@ -1678,9 +1669,7 @@ def _resolve_wikilink_target(
     return None, "broken"
 
 
-def _scan_body_links(
-    body: str, body_start_line: int
-) -> list[tuple[str, int, int]]:
+def _scan_body_links(body: str, body_start_line: int) -> list[tuple[str, int, int]]:
     """Return ``(destination_or_target, line_start, line_end)`` for each link.
 
     Scans for Markdown links ``[label](dest)`` (excluding images) and
@@ -1816,9 +1805,7 @@ def _extract_references(
                 )
                 if reason == "broken":
                     # Fall back to wikilink-style title/alias resolution.
-                    target_page, reason = _resolve_wikilink_target(
-                        dest, by_title, by_alias
-                    )
+                    target_page, reason = _resolve_wikilink_target(dest, by_title, by_alias)
 
             if target_page is not None:
                 if target_page.title == page.title:
@@ -1842,9 +1829,7 @@ def _extract_references(
                         line_start=line_start,
                         target=dest,
                         kind=reason,
-                        detail=(
-                            f"{reason} extracted-link target: {dest}"
-                        ),
+                        detail=(f"{reason} extracted-link target: {dest}"),
                     )
                 )
             # ``external``, ``escaping``, ``reserved`` are intentionally
@@ -1876,6 +1861,7 @@ def extract_references(pages: Sequence[CompiledPage]) -> list[ExtractedReference
     """
     return _extract_references(pages)[0]
 
+
 class _KnowledgeIndex:
     """In-memory exact-lookup and graph indexes derived from a list of pages."""
 
@@ -1905,9 +1891,7 @@ class _KnowledgeIndex:
                 (rel.target, rel.type) for rel in page.relationships
             )
             for rel in page.relationships:
-                self.incoming.setdefault(rel.target, []).append(
-                    (page.title, rel.type)
-                )
+                self.incoming.setdefault(rel.target, []).append((page.title, rel.type))
         # Canonical adjacency is stored pre-sorted by ``(endpoint, type)`` so
         # graph traversal iterates Relationship edges deterministically without
         # per-node materialization/sorting (ADR-0011, issue #106).
@@ -2132,9 +2116,7 @@ class _InMemoryKbSource:
         self._files = files
 
     def markdown_files(self) -> list[str]:
-        return sorted(
-            rel for rel in self._files if PurePosixPath(rel).suffix.lower() == ".md"
-        )
+        return sorted(rel for rel in self._files if PurePosixPath(rel).suffix.lower() == ".md")
 
     def read_bytes(self, rel: str) -> bytes:
         return self._files[rel]
@@ -2152,9 +2134,7 @@ def _reserved_artifact_basename_of(relative: str) -> str | None:
 def _markdown_files(root: Path) -> list[Path]:
     """Return Markdown files with case-insensitive ``.md`` extension matching."""
     return sorted(
-        file
-        for file in root.rglob("*")
-        if file.is_file() and file.suffix.lower() == ".md"
+        file for file in root.rglob("*") if file.is_file() and file.suffix.lower() == ".md"
     )
 
 
@@ -2411,23 +2391,18 @@ def _load_pages_and_validate(
         basename = PurePosixPath(relative).name
 
         try:
-            page, data = _load_page(
-                source.read_bytes(relative).decode("utf-8"), relative
-            )
+            page, data = _load_page(source.read_bytes(relative).decode("utf-8"), relative)
         except FrontmatterError as exc:
             # A reserved path that cannot even parse frontmatter is still a
             # blocking collision: report it as a reserved-artifact issue.
             if reserved_basename is not None:
-                label = RESERVED_ARTIFACT_LABELS[
-                    RESERVED_ARTIFACT_MARKERS[reserved_basename]
-                ]
+                label = RESERVED_ARTIFACT_LABELS[RESERVED_ARTIFACT_MARKERS[reserved_basename]]
                 issues.append(
                     ValidationIssue(
                         file=relative,
                         field="lumio",
                         message=(
-                            f"reserved {label} path '{basename}' has invalid "
-                            f"frontmatter: {exc}"
+                            f"reserved {label} path '{basename}' has invalid frontmatter: {exc}"
                         ),
                     )
                 )
@@ -2452,7 +2427,8 @@ def _load_pages_and_validate(
                 ValidationIssue(
                     file=relative,
                     field="lumio",
-                    message=classification.issue or (
+                    message=classification.issue
+                    or (
                         f"reserved '{basename}' is not a valid "
                         f"{RESERVED_ARTIFACT_MARKERS[reserved_basename]} marker"
                     ),
@@ -2557,9 +2533,7 @@ def _cross_page_issues(
     return issues
 
 
-def _orphan_issues(
-    pages: list[CompiledPage], index: _KnowledgeIndex
-) -> list[ValidationIssue]:
+def _orphan_issues(pages: list[CompiledPage], index: _KnowledgeIndex) -> list[ValidationIssue]:
     """Return orphan-page findings with canonical vs discovery scope disclosure.
 
     A page is an orphan when it has no inbound topology from OTHER pages.
@@ -2581,9 +2555,7 @@ def _orphan_issues(
         title = page.title
         if not title:
             continue
-        has_canonical_inbound = any(
-            src != title for src, _ in index.incoming.get(title, [])
-        )
+        has_canonical_inbound = any(src != title for src, _ in index.incoming.get(title, []))
         has_discovery_inbound = any(
             src != title for src, _ in index.discovery_incoming.get(title, [])
         )
@@ -2610,9 +2582,7 @@ def _orphan_issues(
                     file=page.path,
                     field="topology",
                     severity="warning",
-                    message=(
-                        "orphan page (discovery scope): no inbound topology at all"
-                    ),
+                    message=("orphan page (discovery scope): no inbound topology at all"),
                 )
             )
     return issues
@@ -2789,9 +2759,7 @@ def _as_hot_index_pins(value: Any) -> tuple[list[HotIndexPin], bool]:
         if not isinstance(title, str) or not title.strip():
             return [], False
         note = item.get("note")
-        pins.append(
-            HotIndexPin(title=title, note=str(note) if note is not None else None)
-        )
+        pins.append(HotIndexPin(title=title, note=str(note) if note is not None else None))
     return pins, True
 
 
@@ -2922,9 +2890,7 @@ def _load_and_validate_control_file(
     raw_categories = raw.get("categories")
     categories: list[ContentCategory] = []
     catalog_structurally_valid = True
-    if raw_categories is None or (
-        isinstance(raw_categories, list) and not raw_categories
-    ):
+    if raw_categories is None or (isinstance(raw_categories, list) and not raw_categories):
         # Absent or empty declaration applies the seeded default (ADR-0009).
         categories = list(SEED_CATEGORY_CATALOG)
     else:
@@ -3026,8 +2992,7 @@ def _load_and_validate_control_file(
                         file=CONTROL_FILE_BASENAME,
                         field="hot_index",
                         message=(
-                            f"unresolved Hot Index pin: {pin.title} is not a "
-                            f"Canonical Page Title"
+                            f"unresolved Hot Index pin: {pin.title} is not a Canonical Page Title"
                         ),
                     )
                 )
@@ -3054,9 +3019,7 @@ def load_control_file(path: str | Path) -> KnowledgeBaseControlFile | None:
     root = Path(path).resolve()
     control, issues = _load_and_validate_control_file(_FilesystemKbSource(root), None)
     if any(i.severity == "error" for i in issues):
-        raise ControlFileError(
-            "; ".join(i.message for i in issues if i.severity == "error")
-        )
+        raise ControlFileError("; ".join(i.message for i in issues if i.severity == "error"))
     return control
 
 
@@ -3120,8 +3083,10 @@ def _control_yaml_scalar(value: str) -> str:
     Simple identifiers are emitted bare for readability; anything containing a
     character YAML would reinterpret is double-quoted with backslash escapes.
     """
-    if value and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_\-./]*", value) and not value.startswith(
-        ("-", ".", "@", "%")
+    if (
+        value
+        and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_\-./]*", value)
+        and not value.startswith(("-", ".", "@", "%"))
     ):
         return value
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
@@ -3297,9 +3262,7 @@ def _fingerprint_sources(source: _KbSource) -> SourceFingerprint:
                 # Malformed reserved file: fingerprint it normally (blocking
                 # validation already reports the marker problem).
                 data = None
-            if data is not None and _classify_reserved_artifact(
-                data, reserved_basename
-            ).valid:
+            if data is not None and _classify_reserved_artifact(data, reserved_basename).valid:
                 continue
         sources.append(
             SourceFileDigest(
@@ -3356,13 +3319,7 @@ def is_fresh(previous: SourceFingerprint, current: SourceFingerprint) -> bool:
 
 def _nav_index_frontmatter() -> str:
     """Return the deterministic Navigation Index frontmatter marker block."""
-    return (
-        "---\n"
-        "lumio:\n"
-        "  artifact: navigation-index\n"
-        f"  version: {NAV_INDEX_VERSION}\n"
-        "---"
-    )
+    return f"---\nlumio:\n  artifact: navigation-index\n  version: {NAV_INDEX_VERSION}\n---"
 
 
 def _page_dir(page_path: str) -> str:
@@ -3398,7 +3355,7 @@ def _immediate_child_dirs(dir_path: str, index_dirs: set[str]) -> list[str]:
             continue
         prefix = dir_path + "/"
         if candidate.startswith(prefix):
-            rest = candidate[len(prefix):]
+            rest = candidate[len(prefix) :]
             if "/" not in rest:
                 children.append(candidate)
     return sorted(children)
@@ -3565,9 +3522,7 @@ def _stage_index(target: Path, content: str, *, prefix: str = ".lumio-nav-") -> 
     ``os.replace`` is atomic on POSIX. The destination is not touched yet.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(target.parent), prefix=prefix, suffix=".tmp"
-    )
+    fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=prefix, suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(content)
     return Path(tmp_name)
@@ -3589,8 +3544,7 @@ def publish_navigation_indexes(path: str | Path) -> list[Path]:
     collisions = [
         issue
         for issue in report.issues
-        if issue.field == "lumio"
-        and PurePosixPath(issue.file).name.lower() == NAV_INDEX_BASENAME
+        if issue.field == "lumio" and PurePosixPath(issue.file).name.lower() == NAV_INDEX_BASENAME
     ]
     if collisions:
         paths = ", ".join(sorted(issue.file for issue in collisions))
@@ -3687,9 +3641,7 @@ def _commit_reserved_artifacts(
         logical_path = _reserved_logical_path(relative, basename)
         reserved_paths.setdefault(logical_path, []).append(file)
         try:
-            data, _body, _line = _parse_frontmatter(
-                file.read_text(encoding="utf-8"), file
-            )
+            data, _body, _line = _parse_frontmatter(file.read_text(encoding="utf-8"), file)
         except FrontmatterError:
             reserved_validity[file] = False
         else:
@@ -3792,8 +3744,7 @@ def _commit_reserved_artifacts(
             if not target.exists():
                 continue
             if original_target is not None and (
-                target == original_target
-                or _same_physical_file(target, original_target)
+                target == original_target or _same_physical_file(target, original_target)
             ):
                 continue
             try:
@@ -3839,23 +3790,13 @@ def _commit_navigation_indexes(
 
 def _hot_index_frontmatter() -> str:
     """Return the deterministic Hot Index frontmatter marker block."""
-    return (
-        "---\n"
-        "lumio:\n"
-        f"  artifact: {HOT_INDEX_ARTIFACT}\n"
-        f"  version: {HOT_INDEX_VERSION}\n"
-        "---"
-    )
+    return f"---\nlumio:\n  artifact: {HOT_INDEX_ARTIFACT}\n  version: {HOT_INDEX_VERSION}\n---"
 
 
 def _activity_log_frontmatter() -> str:
     """Return the deterministic Activity Log frontmatter marker block."""
     return (
-        "---\n"
-        "lumio:\n"
-        f"  artifact: {ACTIVITY_LOG_ARTIFACT}\n"
-        f"  version: {ACTIVITY_LOG_VERSION}\n"
-        "---"
+        f"---\nlumio:\n  artifact: {ACTIVITY_LOG_ARTIFACT}\n  version: {ACTIVITY_LOG_VERSION}\n---"
     )
 
 
@@ -3943,11 +3884,7 @@ def append_activity_log_entry(
     log_path = root / ACTIVITY_LOG_BASENAME
     line = _format_activity_log_line(entry) + "\n"
     if not log_path.exists():
-        content = (
-            _activity_log_frontmatter()
-            + "\n\n# Activity Log\n\n"
-            + line
-        )
+        content = _activity_log_frontmatter() + "\n\n# Activity Log\n\n" + line
         _atomic_write_text(log_path, content)
         return log_path
     with log_path.open("a", encoding="utf-8") as handle:
@@ -3987,9 +3924,7 @@ def publish_hot_index(path: str | Path) -> list[Path]:
     root = Path(path).resolve()
     kb, _report = load_knowledge_base(root)
     content = generate_hot_index(kb.control, kb.pages)
-    contents: dict[str, str] = (
-        {HOT_INDEX_BASENAME: content} if content is not None else {}
-    )
+    contents: dict[str, str] = {HOT_INDEX_BASENAME: content} if content is not None else {}
     return _commit_reserved_artifacts(
         root, contents, basename=HOT_INDEX_BASENAME, force_write=True, stage_prefix=".lumio-hot-"
     )
@@ -4000,9 +3935,7 @@ def regenerate_hot_index(path: str | Path) -> list[Path]:
     root = Path(path).resolve()
     kb, _report = load_knowledge_base(root)
     content = generate_hot_index(kb.control, kb.pages)
-    contents: dict[str, str] = (
-        {HOT_INDEX_BASENAME: content} if content is not None else {}
-    )
+    contents: dict[str, str] = {HOT_INDEX_BASENAME: content} if content is not None else {}
     return _commit_reserved_artifacts(
         root, contents, basename=HOT_INDEX_BASENAME, force_write=False, stage_prefix=".lumio-hot-"
     )
@@ -4024,9 +3957,7 @@ def publish_reserved_artifacts(path: str | Path) -> list[Path]:
     kb, report = load_knowledge_base(root)
     collisions = _reserved_artifact_collisions(report)
     if collisions:
-        described = ", ".join(
-            sorted(_describe_reserved_collision(issue) for issue in collisions)
-        )
+        described = ", ".join(sorted(_describe_reserved_collision(issue) for issue in collisions))
         raise NavigationIndexCollisionError(
             f"Cannot publish with authored or malformed reserved artifacts: {described}"
         )
