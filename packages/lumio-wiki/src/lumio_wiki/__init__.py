@@ -20,9 +20,11 @@ from lumio_wiki.graph_state import (
 )
 from lumio_wiki.ingest import (
     BlastRadius,
+    BodyLinkRepairCandidate,
     ExternalImportCategoryMapping,
     IngestProposal,
     IngestStore,
+    PageRemoval,
     ProposedPage,
     SourceChangeImpact,
     SourceLifecycleChange,
@@ -327,6 +329,8 @@ __all__ = [
     "RETIREMENT_CANDIDATE_TRIGGER_UNRECOGNIZED",
     "RETIREMENT_CANDIDATE_TRIGGERS",
     "RankedLinkCandidate",
+    "BodyLinkRepairCandidate",
+    "PageRemoval",
     "MarkItDownSourceProcessor",
     "MANIFEST_OBJECT",
     "MissingDocumentExtraError",

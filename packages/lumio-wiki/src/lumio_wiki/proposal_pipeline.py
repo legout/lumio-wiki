@@ -18,10 +18,15 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+import msgspec.yaml as yaml
+
 from lumio_wiki import publish_reserved_artifacts
 from lumio_wiki.ingest import (
+    BodyLinkRepairCandidate,
     IngestProposal,
     IngestStore,
+    PageRemoval,
+    ProposedPage,
     SourceChangeImpact,
     SourceLifecycleChange,
     SourceProvenance,
@@ -32,6 +37,14 @@ from lumio_wiki.ingest import (
     compute_blast_radius,
     is_reviewable_proposal,
 )
+from lumio_wiki.knowledge_base import (
+    HotIndexPin,
+    KnowledgeBaseControlFile,
+    append_activity_log_entry,
+    extract_references,
+    make_activity_log_entry,
+)
+from lumio_wiki.knowledge_base import _parse_frontmatter as parse_frontmatter
 from lumio_wiki.publish import apply_proposed_pages, validate_candidate_knowledge_base
 from lumio_wiki.records import ValidationReport
 from lumio_wiki.source_registry import (
@@ -50,6 +63,78 @@ class ProposalPipelineError(Exception):
 
 class ProposalBlockedError(ProposalPipelineError):
     """A proposal cannot be published because validation blocks it."""
+
+
+def _drop_relationship_edges(data: dict, removed_title: str) -> bool:
+    """Drop frontmatter Relationship edges targeting ``removed_title``.
+
+    The default, reviewed repair for a Page Removal (issue #135, AC5): every
+    canonical Relationship whose target would otherwise disappear is removed
+    in the same proposal. Only edges are dropped; the page body is untouched
+    (body links become location-bearing repair candidates, never guessed —
+    AC6). Returns whether any edge was dropped.
+    """
+    changed = False
+    relationships = data.get("relationships")
+    if isinstance(relationships, list):
+        kept: list = []
+        for rel in relationships:
+            if isinstance(rel, dict) and str(rel.get("target", "")).strip() == removed_title:
+                changed = True
+                continue
+            kept.append(rel)
+        if changed:
+            data["relationships"] = kept
+    return changed
+
+
+def _repair_page_for_removal(
+    markdown: str, removed_title: str, source_path: str
+) -> tuple[str, bool]:
+    """Return a page's Markdown with Relationship edges to a removed page dropped.
+
+    Mirrors the rename reference-repair pattern (ADR-0016) but REMOVES the
+    edges instead of retargeting them: a removal has no chosen destination, so
+    the safe, reviewed repair is to drop the dangling canonical edge. Returns
+    ``(rewritten_markdown, was_changed)``.
+    """
+    try:
+        data, body, _ = parse_frontmatter(markdown, Path(source_path))
+    except Exception:
+        return markdown, False
+    changed = _drop_relationship_edges(data, removed_title)
+    if not changed:
+        return markdown, False
+    frontmatter = yaml.encode(data).decode("utf-8").strip()
+    return f"---\n{frontmatter}\n---\n{body}", True
+
+
+def _compute_removal_diff(
+    removed_title: str,
+    removed_page_path: str,
+    removed_page_markdown: str,
+    proposed_pages: list,
+    existing_pages: dict[str, str],
+) -> str:
+    """Unified diff for a Page Removal: a deletion block plus repair diffs.
+
+    The removed page is rendered as a unified-diff deletion (every line
+    prefixed ``-``) so a Maintainer sees exactly what is excluded from the
+    next Published Version, followed by the ordinary diffs of the dependent
+    pages whose Relationships were repaired.
+    """
+    lines: list[str] = [
+        f"deleted file: {removed_page_path}",
+        f"--- a/{removed_page_path}",
+    ]
+    for line in removed_page_markdown.splitlines():
+        lines.append(f"-{line}")
+    lines.append("")
+    repair_diff = _compute_diff(proposed_pages, existing_pages)
+    if repair_diff:
+        lines.append(repair_diff)
+    return "\n".join(lines)
+
 
 
 class ProposalPipeline:
@@ -251,6 +336,172 @@ class ProposalPipeline:
             raise
         return proposal
 
+    def propose_page_removal(
+        self,
+        title: str,
+        *,
+        reason: str = "",
+        affected_claim_notes: list[str] | None = None,
+    ) -> IngestProposal:
+        """Stage an explicit, reviewed Page Removal proposal (issue #135).
+
+        Builds and persists a proposal that excludes one Compiled Page from
+        the next Published Version and repairs every canonical Relationship
+        that would otherwise become invalid in the SAME proposal. A Page
+        Removal is never inferred from an omitted page (ADR-0014): it is an
+        explicit, declared mutation persisted, inspected, validated,
+        published, and discarded through this same Proposal Pipeline.
+
+        ``reason`` is the page-level lost-support rationale (the
+        ``sole-source-lost`` classification from a source lifecycle change, or
+        a Maintainer-supplied rationale for a direct removal). Per ADR-0014 the
+        claim-level lineage design is deferred (#137), so this records the
+        page-level rationale and optional Maintainer notes — never raw source
+        excerpts or Claim Lineage.
+        """
+        store = self._require_store()
+        proposal = self._assemble_page_removal(
+            title, reason=reason, affected_claim_notes=affected_claim_notes or []
+        )
+        store.save_proposal(proposal)
+        return store.get(proposal.id)
+
+    def _assemble_page_removal(
+        self,
+        title: str,
+        *,
+        reason: str,
+        affected_claim_notes: list[str],
+    ) -> IngestProposal:
+        """Assemble a Page Removal proposal without persisting it (#135).
+
+        Resolves the page by Canonical Title, generates the dependent-edge
+        repair revisions (dropping Relationships to the removed title),
+        collects location-bearing body-link repair candidates, drops a stale
+        Hot Index pin atomically when needed, and validates the removal + its
+        repairs as ONE candidate Knowledge Base. Mirrors the rename (#140)
+        and retire/reactivate source-lifecycle flows.
+        """
+        title = title.strip()
+        if not title:
+            raise ProposalPipelineError("page removal requires a Canonical Page Title")
+        target_page = None
+        for page in self._kb.pages:
+            if page.title == title:
+                target_page = page
+                break
+        if target_page is None or not target_page.path:
+            raise ProposalPipelineError(
+                f"no Compiled Page found for Canonical Title {title!r}"
+            )
+
+        # Relationship repair (AC5): every OTHER page with a canonical
+        # Relationship targeting the removed title gets a revision that DROPS
+        # those edges. Redirect is an explicit Maintainer edit to the staged
+        # proposal; the default, reviewed repair is to drop the dangling edge.
+        proposed_pages: list[ProposedPage] = []
+        for page in self._kb.pages:
+            if page.title == title or not page.path:
+                continue
+            if not any(rel.target == title for rel in page.relationships):
+                continue
+            try:
+                page_markdown = (self._kb.root / page.path).read_text(encoding="utf-8")
+            except OSError:
+                continue
+            repaired, changed = _repair_page_for_removal(page_markdown, title, page.path)
+            if not changed:
+                continue
+            proposed_pages.append(
+                ProposedPage(relative_path=page.path, title=page.title, markdown=repaired)
+            )
+
+        # Body-link repair candidates (AC6): location-bearing, never silently
+        # redirected to a guessed page. A remaining link surfaces post-removal
+        # as a non-blocking broken-internal-link warning.
+        body_link_repairs: list[BodyLinkRepairCandidate] = []
+        for ref in extract_references(self._kb.pages):
+            if ref.target_title == title and ref.source_title != title:
+                body_link_repairs.append(
+                    BodyLinkRepairCandidate(
+                        source_title=ref.source_title,
+                        source_path=ref.source_path,
+                        target_title=ref.target_title,
+                        origin=ref.origin,
+                        line_start=ref.line_start,
+                        line_end=ref.line_end,
+                    )
+                )
+
+        # Hot Index pin (AC7): an unresolved pin is a blocking validation
+        # error, so when the removed title is pinned the proposal drops the
+        # pin atomically via a proposed Control File.
+        control_file: KnowledgeBaseControlFile | None = None
+        kb_control = getattr(self._kb, "control", None)
+        if kb_control is not None and any(
+            pin.title == title for pin in kb_control.hot_index
+        ):
+            kept_pins = [
+                HotIndexPin(title=pin.title, note=pin.note)
+                for pin in kb_control.hot_index
+                if pin.title != title
+            ]
+            control_file = KnowledgeBaseControlFile(
+                version=kb_control.version,
+                categories=list(kb_control.categories),
+                hot_index=kept_pins,
+                mode=kb_control.mode,
+                path=kb_control.path,
+            )
+
+        # Validate the removal + repairs (+ pin drop) as ONE candidate. The
+        # authoritative gate is the full-candidate validation below; the
+        # ingest-routing validator is SKIPPED for a removal proposal because
+        # every proposed page is a REPAIR of an existing, already-classified,
+        # already-published page (it drops a relationship edge) — exactly as
+        # category moves and title renames skip routing re-validation.
+        page_validation = validate_candidate_knowledge_base(
+            proposed_pages,
+            self._kb.root,
+            removed_titles=[title],
+            control_file=control_file,
+        )
+        validation_report = ValidationReport(issues=list(page_validation.issues))
+
+        existing_pages = _existing_page_markdown(self._kb)
+        removed_markdown: str = existing_pages.get(title) or target_page.body
+        diff = _compute_removal_diff(
+            title, target_page.path, removed_markdown, proposed_pages, existing_pages
+        )
+        blast_radius = compute_blast_radius(proposed_pages, self._kb)
+
+        removal = PageRemoval(
+            title=title,
+            lost_support_reason=reason,
+            affected_claim_notes=list(affected_claim_notes),
+        )
+        provenance = SourceProvenance(
+            original_filename=None,
+            content_type=None,
+            converted_by="lumio-page-removal",
+            origin="lumio:page-removal",
+        )
+        return IngestProposal(
+            id=uuid.uuid4().hex,
+            status="staged",
+            created_at=datetime.now(UTC).isoformat(),
+            provenance=provenance,
+            proposed_pages=proposed_pages,
+            affected_pages=[page.title for page in proposed_pages],
+            diff=diff,
+            validation_report=validation_report,
+            blocked=not validation_report.is_valid,
+            blast_radius=blast_radius,
+            control_file=control_file,
+            removed_pages=[removal],
+            body_link_repairs=body_link_repairs,
+        )
+
     def assemble(
         self,
         distilled_markdown: str,
@@ -385,13 +636,42 @@ class ProposalPipeline:
             raise ProposalPipelineError(f"proposal {proposal_id!r} is not reviewable")
         if proposal.blocked:
             raise ProposalBlockedError(f"proposal {proposal_id!r} is blocked by validation")
-        candidate_report = validate_candidate_knowledge_base(proposal.proposed_pages, self._kb.root)
+        # issue #135: a Page Removal proposal carries removed titles and an
+        # optional Control File (Hot Index pin drop). Both are threaded
+        # through the authoritative candidate gate AND the apply step so the
+        # removal and its dependent-edge repairs publish as ONE atomic unit.
+        removed_titles = [removal.title for removal in proposal.removed_pages]
+        candidate_report = validate_candidate_knowledge_base(
+            proposal.proposed_pages,
+            self._kb.root,
+            removed_titles=removed_titles or None,
+            control_file=proposal.control_file,
+        )
         if not candidate_report.is_valid:
             raise ProposalBlockedError(
                 f"proposal {proposal_id!r} candidate failed validation: {candidate_report}"
             )
-        apply_proposed_pages(proposal.proposed_pages, self._kb.root)
+        apply_proposed_pages(
+            proposal.proposed_pages,
+            self._kb.root,
+            removed_titles=removed_titles or None,
+            control_file=proposal.control_file,
+        )
         publish_reserved_artifacts(self._kb.root)
+        # AC7: record the transition in the append-only Activity Log. Only a
+        # categorized Knowledge Base (one with a Control File) carries a
+        # portable Activity Log; legacy flat KBs do not. The entry records only
+        # the removed Canonical Titles and operation — never Claim Lineage
+        # (claim-level lineage is not modeled, ADR-0014).
+        if proposal.removed_pages and getattr(self._kb, "control", None) is not None:
+            append_activity_log_entry(
+                self._kb.root,
+                make_activity_log_entry(
+                    operation="page-removal",
+                    description="removed page(s): "
+                    + ", ".join(removal.title for removal in proposal.removed_pages),
+                ),
+            )
         published = self._store.publish(proposal_id)
         if published is None:
             raise ProposalPipelineError(f"proposal {proposal_id!r} was not publishable")
