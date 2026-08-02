@@ -21,14 +21,19 @@ from pathlib import Path
 import msgspec.yaml as yaml
 
 from lumio_wiki.knowledge_base import (
+    ACTIVITY_LOG_BASENAME,
+    HOT_INDEX_BASENAME,
+    NAV_INDEX_BASENAME,
+    KnowledgeBaseControlFile,
+    load_knowledge_base,
+    validate,
+    write_control_file,
+)
+from lumio_wiki.knowledge_base import (
     _as_sources as as_sources,
 )
 from lumio_wiki.knowledge_base import (
     _parse_frontmatter as parse_frontmatter,
-)
-from lumio_wiki.knowledge_base import (
-    load_knowledge_base,
-    validate,
 )
 from lumio_wiki.records import Source, ValidationReport
 
@@ -52,9 +57,17 @@ def _existing_paths_by_title(working_dir: Path) -> dict[str, str]:
     return {page.title: page.path for page in kb.pages if page.title and page.path}
 
 
+def _reserved_basenames() -> frozenset[str]:
+    """Return the reserved-artifact basenames a Page Removal must never delete."""
+    return frozenset({NAV_INDEX_BASENAME, HOT_INDEX_BASENAME, ACTIVITY_LOG_BASENAME})
+
+
 def apply_proposed_pages(
     proposed_pages: list,
     working_dir: str | Path,
+    *,
+    removed_titles: list[str] | None = None,
+    control_file: KnowledgeBaseControlFile | None = None,
 ) -> None:
     """Write proposed Compiled Pages into the canonical working directory.
 
@@ -65,6 +78,19 @@ def apply_proposed_pages(
     preserved and deduplicated against the proposed page's newly informing
     Sources, so the evidence trail is never silently replaced. Each target
     path must resolve inside ``working_dir``.
+
+    ``removed_titles`` (issue #135) removes the corresponding Compiled Page
+    files by Canonical Title AFTER the proposed page revisions are written, so
+    a single atomic proposal can repair dependent pages (dropping the
+    Relationships that targeted a removed page) and then remove the page. A
+    removal is an explicit, declared mutation: a page simply absent from
+    ``proposed_pages`` is never removed. A reserved published artifact
+    (Navigation/Hot Index, Activity Log) is never removed, and each removal
+    path must resolve inside ``working_dir``.
+
+    ``control_file`` (issue #135) writes a proposed Knowledge Base Control
+    File — used by a Page Removal that must drop a stale Hot Index pin
+    atomically with the removal. It is written only when supplied.
     """
     working_dir = Path(working_dir).resolve()
     existing_by_title = _existing_paths_by_title(working_dir)
@@ -121,6 +147,37 @@ def apply_proposed_pages(
             raise PublishError(f"Proposed page path escapes working directory: {relative_path}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(page.markdown, encoding="utf-8")
+
+    # issue #135: remove declared Compiled Page files by Canonical Title AFTER
+    # the dependent page revisions are written. A removal is explicit — a page
+    # merely absent from ``proposed_pages`` is untouched. Reserved published
+    # artifacts (Navigation/Hot Index, Activity Log) are never removed, and
+    # every removal path must resolve inside ``working_dir``.
+    if removed_titles:
+        removal_paths = _existing_paths_by_title(working_dir)
+        reserved = _reserved_basenames()
+        for title in removed_titles:
+            relative = removal_paths.get(title)
+            if relative is None:
+                # The page is already absent on disk (e.g. removed by a prior
+                # operation): nothing to remove. A removal proposal always
+                # validates the candidate tree first, so an unresolvable title
+                # never silently corrupts the Knowledge Base.
+                continue
+            target = (working_dir / relative).resolve()
+            if not target.is_relative_to(working_dir):
+                raise PublishError(
+                    f"Removed page path escapes working directory: {relative}"
+                )
+            if target.name in reserved:
+                raise PublishError(
+                    f"Cannot remove reserved published artifact: {relative}"
+                )
+            if target.exists():
+                target.unlink()
+
+    if control_file is not None:
+        write_control_file(working_dir, control_file)
 
 
 def merge_compound_sources(proposed_markdown: str, existing_markdown: str) -> str:
@@ -224,6 +281,9 @@ def apply_compound_revision(page, working_dir: str | Path) -> Path:
 def validate_candidate_knowledge_base(
     proposed_pages: list,
     knowledge_base_root: str | Path,
+    *,
+    removed_titles: list[str] | None = None,
+    control_file: KnowledgeBaseControlFile | None = None,
 ) -> ValidationReport:
     """Validate the fully applied candidate Knowledge Base before publication.
 
@@ -235,12 +295,22 @@ def validate_candidate_knowledge_base(
     resolve to an existing canonical title. Nothing on disk is mutated; the
     temporary tree is discarded, so a validation failure never leaves a partial
     candidate behind (#37 spec review).
+
+    ``removed_titles`` and ``control_file`` (issue #135) apply a Page
+    Removal's page deletions and Hot Index pin update to the throwaway
+    candidate so the removal and its dependent-edge repairs validate together
+    as ONE candidate — exactly the gate publication uses.
     """
     root = Path(knowledge_base_root)
     with tempfile.TemporaryDirectory() as tmp:
         candidate = Path(tmp) / "candidate"
         shutil.copytree(root, candidate, dirs_exist_ok=True)
-        apply_proposed_pages(proposed_pages, candidate)
+        apply_proposed_pages(
+            proposed_pages,
+            candidate,
+            removed_titles=removed_titles,
+            control_file=control_file,
+        )
         return validate(candidate)
 
 

@@ -153,6 +153,50 @@ class SourceLifecycleChange(msgspec.Struct, frozen=True):
     impacts: list[SourceChangeImpact] = msgspec.field(default_factory=list)
 
 
+class PageRemoval(msgspec.Struct, frozen=True):
+    """An explicit, reviewed removal of one Compiled Page (issue #135).
+
+    A Page Removal is an explicit Ingest Proposal mutation that excludes a
+    Compiled Page from the next Published Version and repairs every canonical
+    Relationship that would otherwise become invalid in the SAME proposal. It
+    is never inferred from an omitted page (ADR-0014): a page that simply does
+    not appear in a proposal's proposed output is untouched.
+
+    Per ADR-0014 the claim-level lineage design is deferred (issue #137), so
+    ``lost_support_reason`` is recorded at the PAGE level — the page-level
+    support classification (``sole-source-lost``) produced by a source
+    lifecycle change, or a Maintainer-supplied rationale for a direct removal.
+    ``affected_claim_notes`` carries optional, Maintainer-authored page-level
+    notes about which knowledge on the page lost support; it never embeds raw
+    source excerpts, source bytes, or Claim Lineage (which is not modeled).
+    """
+
+    title: str
+    lost_support_reason: str = ""
+    affected_claim_notes: list[str] = msgspec.field(default_factory=list)
+
+
+class BodyLinkRepairCandidate(msgspec.Struct, frozen=True):
+    """A location-bearing body-link repair candidate for a Page Removal (#135).
+
+    One internal Markdown/wikilink in another Compiled Page's body that
+    targeted the removed page. It is an explicit, location-bearing repair
+    CANDIDATE or diagnostic: it is never silently redirected to a guessed page
+    (ADR-0014, ADR-0016). The Maintainer decides whether to drop the link,
+    re-point it, or leave it (a remaining link surfaces post-removal as a
+    non-blocking broken-internal-link warning). ``origin`` is the resolver's
+    link origin (``markdown-link`` or ``wikilink``); ``line_start``/``line_end``
+    are 1-based and map to the source file.
+    """
+
+    source_title: str
+    source_path: str
+    target_title: str
+    origin: str = "markdown-link"
+    line_start: int = 0
+    line_end: int = 0
+
+
 #: Fixed, content-free label rendered for a source lifecycle trigger whose
 #: action is NOT one of the controlled ``retire`` / ``reactivate`` values (#133).
 #:
@@ -258,6 +302,12 @@ class IngestProposal(msgspec.Struct, frozen=True):
     control_file: KnowledgeBaseControlFile | None = None
     okf_diagnostics: list[OkfImportDiagnostic] = msgspec.field(default_factory=list)
     source_change: SourceLifecycleChange | None = None
+    # issue #135: explicit, reviewed Page Removals and their location-bearing
+    # body-link repair candidates. A removal is never inferred from an omitted
+    # page (ADR-0014): it is a declared mutation persisted, inspected,
+    # validated, published, and discarded through this same pipeline.
+    removed_pages: list[PageRemoval] = msgspec.field(default_factory=list)
+    body_link_repairs: list[BodyLinkRepairCandidate] = msgspec.field(default_factory=list)
 
 
 class ExternalImportCategoryMapping(msgspec.Struct, frozen=True):
@@ -1225,9 +1275,11 @@ class IngestStore:
 
 __all__ = [
     "BlastRadius",
+    "BodyLinkRepairCandidate",
     "ExternalImportCategoryMapping",
     "IngestProposal",
     "IngestStore",
+    "PageRemoval",
     "ProposedPage",
     "SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED",
     "SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED",

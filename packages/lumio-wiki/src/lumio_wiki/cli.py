@@ -762,9 +762,46 @@ def _cmd_proposal_inspect(args: argparse.Namespace) -> int:
             f"blast_radius:    new={len(br.new_titles)} changed={len(br.changed_titles)} "
             f"dup_title={len(br.duplicate_title_risks)} moves={len(br.category_moves)}"
         )
+    # issue #135: Page Removal disclosure (AC4) — removed titles, lost-support
+    # reasons, affected notes, and location-bearing body-link repair candidates.
+    for removal in proposal.removed_pages:
+        print(f"removed_page:    {removal.title}")
+        if removal.lost_support_reason:
+            print(f"  lost_support:  {removal.lost_support_reason}")
+        for note in removal.affected_claim_notes:
+            print(f"  affected:      {note}")
+    for candidate in proposal.body_link_repairs:
+        print(
+            f"body_link_repair: {candidate.source_title} -> {candidate.target_title} "
+            f"({candidate.origin}, line {candidate.line_start}, {candidate.source_path})"
+        )
     print()
     print("Diff:")
     print(proposal.diff or "(no textual diff)")
+    return 0
+
+
+def _cmd_remove_page(args: argparse.Namespace) -> int:
+    """Stage an explicit Page Removal proposal (issue #135)."""
+    _kb, pipeline = _proposal_pipeline(args)
+    try:
+        proposal = pipeline.propose_page_removal(args.title, reason=args.reason or "")
+    except ProposalPipelineError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    print(f"Staged proposal {proposal.id}")
+    print(f"  status:         {proposal.status}")
+    for removal in proposal.removed_pages:
+        print(f"  removed_page:   {removal.title}")
+        if removal.lost_support_reason:
+            print(f"  lost_support:   {removal.lost_support_reason}")
+    print(f"  repairs:        {len(proposal.proposed_pages)} dependent page(s)")
+    print(f"  body_links:     {len(proposal.body_link_repairs)} repair candidate(s)")
+    print(f"  blocked:        {proposal.blocked}")
+    print()
+    print("Review with:")
+    print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
+    if is_reviewable_proposal(proposal) and not proposal.blocked:
+        print(f"  lumio-wiki publish {args.path} {proposal.id}")
     return 0
 
 
@@ -1843,6 +1880,28 @@ def build_parser() -> argparse.ArgumentParser:
     discard_parser.add_argument("proposal_id", type=str, help="Proposal id to discard.")
     _add_ingest_dir_argument(discard_parser)
     discard_parser.set_defaults(func=_cmd_discard)
+
+    # remove-page (issue #135): stage an explicit Page Removal proposal.
+    remove_page_parser = subparsers.add_parser(
+        "remove-page",
+        help="Stage an explicit Page Removal proposal.",
+        description=(
+            "Stage an explicit, reviewed Page Removal proposal that excludes one "
+            "Compiled Page from the next Published Version and repairs every "
+            "canonical Relationship that would otherwise become invalid in the "
+            "same proposal (issue #135)."
+        ),
+    )
+    _add_kb_argument(remove_page_parser)
+    remove_page_parser.add_argument("title", type=str, help="Canonical Page Title to remove.")
+    remove_page_parser.add_argument(
+        "--reason",
+        type=str,
+        default="",
+        help="Page-level lost-support rationale (e.g. 'sole-source-lost').",
+    )
+    _add_ingest_dir_argument(remove_page_parser)
+    remove_page_parser.set_defaults(func=_cmd_remove_page)
 
     # health
     health_parser = subparsers.add_parser(
