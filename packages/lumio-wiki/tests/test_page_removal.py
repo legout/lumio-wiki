@@ -309,6 +309,39 @@ def test_partial_support_removal_keeps_the_page(tmp_path):
     assert "Policy" in [p.title for p in kb2.pages]
 
 
+def test_unresolved_body_link_surfaces_as_nonblocking_diagnostic(tmp_path):
+    """AC10: a body link to the removed page, left un-repaired, surfaces as a
+    non-blocking broken-internal-link diagnostic after publish — never silent.
+
+    Body links are NEVER silently redirected (AC6); a Maintainer who does not
+    repair one still gets a visible, non-blocking warning in the new version
+    rather than a silent break or a blocking failure.
+    """
+    root = _categorized_kb(tmp_path)
+    _write(
+        root,
+        "concepts/alpha.md",
+        _page("Alpha", body="Details in [[Beta]]."),
+    )
+    _write(root, "concepts/beta.md", _page("Beta"))
+    kb, pipeline = _pipeline(root, tmp_path)
+    proposal = pipeline.propose_page_removal("Beta")
+    # No body link is repaired in this proposal (only the relationship edge
+    # would be); Alpha's [[Beta]] wikilink is an un-repaired candidate.
+    assert any(c.target_title == "Beta" for c in proposal.body_link_repairs)
+
+    pipeline.publish(proposal.id)
+    kb2, report2 = load_knowledge_base(root)
+    # The published KB is VALID (body links are non-blocking)...
+    assert report2.is_valid, report2
+    # ...and the dangling link surfaces as a warning diagnostic, not silently.
+    link_warnings = [
+        i for i in report2.issues
+        if i.severity == "warning" and "internal link" in i.message and "Beta" in i.message
+    ]
+    assert link_warnings, "expected a broken-internal-link warning for the dangling [[Beta]]"
+
+
 # ---------------------------------------------------------------------------
 # AC4: inspect shows removed title, reason, diff, blast radius
 # ---------------------------------------------------------------------------
