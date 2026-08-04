@@ -79,7 +79,7 @@ If omitted, the CLI falls back to the `LUMIO_KB_PATH` environment variable.
 
 ```bash
 lumio-wiki setup <kb-path> [--skill-scope user|project | --agent <name>]  # project bootstrap; skill target optional
-lumio-wiki init <path>                       # scaffold a categorized Knowledge Base
+lumio-wiki init <path>                       # lower-level KB-only: scaffold a categorized Knowledge Base
 lumio-wiki validate <kb>                     # exit 0 if valid, 1 otherwise
 lumio-wiki search <kb> "<query>" [--limit N] # lexical search over titles, aliases, tags, summaries, bodies
 lumio-wiki page <kb> "<title>"               # read a Compiled Page by Canonical Title or alias
@@ -167,7 +167,10 @@ uv run lumio ask tests/fixtures/valid "What technology does Lumio use?"
 ## 2. Python library
 
 The `lumio_wiki` package is the portable, model-free Knowledge Base foundation.
-Every CLI command maps one-to-one to a public Python call.
+The core operations the CLI exposes — load, validate, search, retrieve, ingest,
+review, publish, and maintain — are public Python functions; CLI-only
+orchestration commands such as `setup`, `skill`, and `doctor` compose several
+of those primitives rather than mapping to a single call.
 
 ### Load, validate, search
 

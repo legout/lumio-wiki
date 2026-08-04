@@ -1214,13 +1214,14 @@ def test_setup_help_claims_env_loading(capsys):
 
 
 def test_module_usage_documents_optional_kb_path():
-    """The module usage table must match pathless CLI behavior."""
+    """The module docstring documents the pathless <kb> behavior so callers
+    know commands can omit the path once ``setup`` has written ``.env``
+    (issue #152; ADR-0017)."""
     import lumio_wiki.cli as cli_module
 
     usage = cli_module.__doc__ or ""
-    assert "``validate [path]``" in usage
-    assert "``search [path] <query>``" in usage
-    assert "``proposal list [path]``" in usage
+    assert "LUMIO_KB_PATH" in usage
+    assert ".env" in usage
 
 
 def test_kb_path_help_documents_env_and_env_file(capsys):
