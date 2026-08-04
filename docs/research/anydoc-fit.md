@@ -11,8 +11,8 @@
   `[documents]` extra is deferred to a separate, reviewed routing decision (see
   [Recommendation](#recommendation)).
 - **Spike artifacts:** [`experiments/anydoc/`](../../experiments/anydoc/) — reproducible
-  evaluation script, fixture matrix, and committed `results.json`. No `lumio-wiki` or
-  production dependency was touched.
+  evaluation script, fixture matrix, and committed `results.json` (which also
+  records the no-network audit). No `lumio-wiki` or production dependency was touched.
 
 Primary sources:
 
@@ -69,7 +69,7 @@ Markdown. The package releases the GIL during conversion and ships type stubs
 
 ## Spike methodology
 
-The spike ran AnyDoc **0.1.3** against a 35-file fixture matrix under
+The spike ran AnyDoc **0.1.3** against a 37-file fixture matrix under
 [`experiments/anydoc/fixtures/`](../../experiments/anydoc/fixtures/):
 
 - **Real-world Lumio sources** (DOCX/PDF/HTML) from
@@ -78,9 +78,13 @@ The spike ran AnyDoc **0.1.3** against a 35-file fixture matrix under
 - A **representative, redistributable subset of AnyDoc's own MIT-licensed `tests/fixtures/`**
   corpus — one or more files per claimed format (including legacy `.doc`, `.ppt`, `.xls`),
   plus the full `abuse/` set (zipbomb, imagebomb, hugerepeat, hugespan, deepxml) and
-  `malformed/` set (encrypted, truncated, empty, corrupt-styles, mismatched, unbalanced)
-  for the failure-mode audit. The fixture filenames carry an `--errors` / `--skips` /
-  `--recovers` suffix that documents each file's expected behaviour.
+  `malformed/` set (encrypted ODT, truncated, empty, corrupt-styles, mismatched,
+  unbalanced) for the failure-mode audit. The fixture filenames carry an `--errors` /
+  `--skips` / `--recovers` suffix that documents each file's expected behaviour.
+- Two **generated fixtures** for behaviour the upstream corpus does not cover: an
+  **encrypted PDF** (`encrypted--errors.pdf`, built with `pikepdf`, user/owner password
+  `lumio`) and a **mislabeled file** (`mislabeled-docx-as-pdf.pdf` — a DOCX whose bytes
+  are intact but whose extension says `.pdf`) to test content-based format detection.
 
 For every fixture the harness converts with AnyDoc and (for DOCX/HTML via MarkItDown and
 PDF via LiteParse — Lumio's actual `select_document_processor` routing from
@@ -144,25 +148,26 @@ Warm-median conversion latency on this environment (Python 3.14, aarch64, `warm_
 
 | converter | fixtures converted | median warm | max warm |
 | --- | --- | --- | --- |
-| **anydoc** | 23 (all office + text PDF) | **0.72 ms** | 22.6 ms |
-| markitdown | 10 (docx/rtf/csv it supports) | 62.8 ms | 347.4 ms |
-| liteparse | 2 (PDF) | 2 544.7 ms | 3 419.9 ms |
+| **anydoc** | 24 (all office + text PDF) | **0.75 ms** | 23.8 ms |
+| markitdown | 10 (docx/rtf/csv it supports) | 70.0 ms | 383.3 ms |
+| liteparse | 2 (PDF) | 2 636.6 ms | 3 457.7 ms |
 
 Representative direct comparisons (warm, ms):
 
 | fixture | anydoc | current route | speedup |
 | --- | --- | --- | --- |
-| `real-world/installation-handbook.docx` | 22.6 ms | markitdown 347.4 ms | ~15× |
-| `text.docx` | 3.8 ms | markitdown 80.6 ms | ~21× |
-| `real-world/2025-impact-report.pdf` (text) | 1.5 ms | liteparse 3 419.9 ms | ~2 350× |
-| `text.pdf` (text) | 5.5 ms | liteparse 1 669.5 ms | ~300× |
-| `handmade-merge.rtf` | 0.13 ms | markitdown 58.3 ms | ~450× |
+| `real-world/installation-handbook.docx` | 23.8 ms | markitdown 383.3 ms | ~16× |
+| `text.docx` | 3.9 ms | markitdown 89.4 ms | ~23× |
+| `real-world/2025-impact-report.pdf` (text) | 2.0 ms | liteparse 3 457.7 ms | ~1 700× |
+| `text.pdf` (text) | 6.0 ms | liteparse 1 815.6 ms | ~300× |
+| `handmade-merge.rtf` | 0.18 ms | markitdown 62.4 ms | ~345× |
 
 LiteParse's PDF latency is dominated by OCR, which it runs even when the page has a text
-layer. AnyDoc is two to three orders of magnitude faster on text-based PDF and an order
-of magnitude faster than MarkItDown on DOCX. Upstream claims a 4.7 ms median on a Ryzen
-9; this spike measured a 0.72 ms median on aarch64, so the "single-digit-millisecond"
-claim is confirmed (conservatively) rather than relying on it.
+layer. AnyDoc is two to three orders of magnitude faster on text-based PDF and about two
+orders of magnitude faster than MarkItDown on DOCX (markitdown median / anydoc median ≈
+70.0 / 0.75 ≈ 94×). Upstream claims a 4.7 ms median on a Ryzen 9; this spike measured a
+0.75 ms median on aarch64, so the "single-digit-millisecond" claim is confirmed
+(conservatively) rather than relying on it.
 
 ### 3. Quality — concrete output differences
 
@@ -171,7 +176,7 @@ preview, not aggregate scores.
 
 - **`installation-handbook.docx` (real-world):** nearly identical content (AnyDoc 2 862
   chars / 8 headings / 7 table rows / 16 list items; MarkItDown 2 831 / 7 / 7 / 16).
-  AnyDoc recovered one additional heading. Quality comparable; AnyDoc 15× faster.
+  AnyDoc recovered one additional heading. Quality comparable; AnyDoc ~16× faster.
 - **`2025-impact-report.pdf` (real-world, text-based):** AnyDoc preserves document
   **structure** as Markdown (2 120 chars, **7 headings, 8 table rows**); LiteParse
   returns **flat text** (2 255 chars, **0 headings, 0 table rows**). For Lumio's
@@ -183,6 +188,10 @@ preview, not aggregate scores.
   table rows, 4 footnotes); MarkItDown bloats to **20 136 chars with 0 headings** — it
   dumps near-raw content with no structure. Large quality gap on RTF.
 - **`handmade-tables.docx`:** AnyDoc preserves more table grid rows (4 vs MarkItDown's 3).
+- **`mislabeled-docx-as-pdf.pdf`:** a DOCX renamed `.pdf`. AnyDoc's content-based
+  detection reads it as `docx` and converts correctly (1 319 chars — identical to the
+  same file under its real name); the LiteParse baseline cannot (it sees non-PDF bytes
+  and errors). Mislabeled files convert correctly, as the upstream README claims.
 
 AnyDoc's single shared serializer means headings, tables, lists, and footnotes render
 consistently across `docx`, `doc`, `odt`, `rtf`, etc.; MarkItDown's per-format backends
@@ -193,15 +202,16 @@ vary in fidelity (and several simply error — see below).
 | format | anydoc | liteparse | markitdown (`[docx]` only, as Lumio ships) |
 | --- | :---: | :---: | :---: |
 | docx / docm | ✅ | — | ✅ |
-| doc (legacy) | ✅ | — | ❌ |
+| doc / ppt / xls (legacy binary) | ✅ | — | ❌ (`UnsupportedFormatException`) |
 | pptx / ppt / pps… | ✅ | — | ❌ (`MissingDependencyException`) |
-| xlsx / xls | ✅ | — | ❌ (`MissingDependencyException`) |
+| xlsx / xls | ✅ | — | ❌ (`MissingDependencyException` / `FileConversionException`) |
 | odt / ods / odp | ✅ | — | ❌ (unsupported) |
 | rtf | ✅ | — | ⚠️ (works, poor quality) |
 | epub | ✅ | — | ⚠️ (not tested here; upstream anydoc slightly trails) |
 | csv | ✅ | — | ✅ |
 | **pdf (text)** | ✅ | ✅ (slow) | — |
 | **pdf (scanned/image)** | ❌ **(no OCR)** | ✅ **(OCR)** | — |
+| **pdf (encrypted)** | ❌ **(clear `ConvertError`)** | — | — |
 | **html** | ❌ **(unsupported)** | — | ✅ |
 | images (png/jpg…) | ❌ | ✅ (OCR) | — |
 
@@ -209,7 +219,8 @@ Two coverage facts drive the verdict:
 
 - AnyDoc covers **11 office container formats** that Lumio's *actually-installed*
   `[documents]` extra cannot read today (PPTX/XLSX/ODT/ODS/ODP/DOC/PPT/XLS error or are
-  unsupported with `markitdown[docx]`). It would broaden Lumio's effective format
+  unsupported with `markitdown[docx]`, including the legacy binary `.doc`/`.ppt`/`.xls`
+  which MarkItDown rejects outright). It would broaden Lumio's effective format
   support dramatically with zero extra installs.
 - AnyDoc does **not** cover **HTML** and **cannot OCR scanned PDFs / images**. Both are
   live Lumio routes (HTML → MarkItDown; PDF/images → LiteParse OCR).
@@ -227,6 +238,7 @@ resource limit; every `--skips` / `--recovers` fixture degrades gracefully:
 | `deepxml--errors.docx` | `ConvertError: resource limit exceeded (max_xml_depth): element nesting exceeds 256` |
 | `hugerepeat` / `hugespan--errors.ods` | `ConvertError: resource limit exceeded (max_expansion): table repeat expansion exceeds the content budget` |
 | `encrypted--errors.odt` | `ConvertError: document is encrypted` |
+| `encrypted--errors.pdf` (generated) | `ConvertError: document is encrypted` |
 | `empty` / `truncated--errors.docx` | `ConvertError: unsupported input: unrecognized file content: name the format explicitly` |
 | `corrupt-styles--skips.docx` | **recovers** (1 257 chars) |
 | `mismatched--recovers.docx` | **recovers** (16 chars) |
@@ -243,9 +255,15 @@ budget). Error messages are specific and actionable rather than raw tracebacks.
 
 ### 6. Local-processing and privacy audit
 
-A `strace -f -e trace=network` run exercising every conversion path (PDF, DOCX
-document-model, PPTX, XLSX, plus format detection) recorded **zero network syscalls** —
-no `socket`, no `connect`, no `sendto`, no DNS resolution. Conversion is fully local:
+`evaluate.py` runs one conversion of each major kind (DOCX `to_markdown_bytes` +
+`to_document`, the generated encrypted/mislabeled fixtures) under
+`strace -f -e trace=network` in a child interpreter and records the result in
+`results.json` under `network_audit`. On this environment it reported
+**`outbound_syscalls: 0`** (no `socket`/`connect`/`sendto`/DNS) with the child
+exiting 0 — i.e. conversion is fully local. The exact command is recorded in
+`results.json` so the conclusion is reproducible (`strace` is required; the
+audit is skipped with a note if it is absent).
+
 AnyDoc has zero Python dependencies, bundles `pdf-inspector` for text PDF, and does not
 download models or contact any provider. (The hosted Firecrawl Parse OCR service is a
 separate product; the local wheel never calls it.) This satisfies the spike's
