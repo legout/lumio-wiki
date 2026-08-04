@@ -46,6 +46,9 @@ PROJECT_ROOT_MARKERS: tuple[str, ...] = (".git", ".hg")
 #: should be unquoted.
 _QUOTE_CHARS = ("'", '"')
 
+#: URI schemes accepted by the CLI's object-store Knowledge Base resolver.
+_OBJECT_STORE_SCHEMES: Final[frozenset[str]] = frozenset({"s3", "s3a", "gs", "gcs", "az", "abfs"})
+
 
 def read_kb_path_from_env_file(env_path: Path) -> str | None:
     """Return the non-empty ``LUMIO_KB_PATH`` value in ``env_path``, or ``None``.
@@ -77,10 +80,15 @@ def read_kb_path_from_env_file(env_path: Path) -> str | None:
 def resolve_env_value(value: str, env_dir: str | Path) -> str:
     """Resolve a ``.env`` value relative to the ``.env`` file's directory.
 
-    Absolute values pass through unchanged. Relative values resolve against
-    ``env_dir`` (the directory containing the ``.env`` file), never against the
-    current working directory.
+    Absolute values and supported object-store URIs pass through unchanged.
+    Relative local paths resolve against ``env_dir`` (the directory containing
+    the ``.env`` file), never against the current working directory. Embedded
+    NULs are rejected so malformed values become an actionable CLI diagnostic.
     """
+    if "\x00" in value:
+        raise ValueError("LUMIO_KB_PATH contains an embedded NUL")
+    if "://" in value and value.split("://", 1)[0].lower() in _OBJECT_STORE_SCHEMES:
+        return value
     path = Path(value)
     if path.is_absolute():
         return str(path)

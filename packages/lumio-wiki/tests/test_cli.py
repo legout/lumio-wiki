@@ -1012,7 +1012,7 @@ def test_subprocess_invalid_env_path_is_actionable(tmp_path: Path):
     """A path value with an embedded NUL must not produce a traceback."""
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".env").write_bytes(b"LUMIO_KB_PATH=\x00\n")
+    (project / ".env").write_bytes(b"LUMIO_KB_PATH=/tmp/\x00bad\n")
 
     result = _run_cli_in_subprocess(["validate"], cwd=project)
     assert result.returncode == 2

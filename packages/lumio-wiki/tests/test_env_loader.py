@@ -95,6 +95,11 @@ def test_resolve_env_value_keeps_absolute_path() -> None:
     assert resolve_env_value("/opt/kb", "/some/project") == "/opt/kb"
 
 
+def test_resolve_env_value_preserves_object_store_uri(tmp_path: Path) -> None:
+    uri = "s3://bucket/kb"
+    assert resolve_env_value(uri, tmp_path) == uri
+
+
 def test_resolve_env_value_makes_relative_against_env_dir(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

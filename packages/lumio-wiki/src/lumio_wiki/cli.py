@@ -191,7 +191,7 @@ def _build_publish_store(uri: str) -> tuple[object, str]:
     Mirrors :meth:`S3Location.from_url` store construction but returns the raw
     store and prefix so the publisher can write under the version prefix.
     """
-    from urllib.parse import urlparse
+    from urllib.parse import urlparse, urlunsplit
 
     from lumio_wiki.s3_location import _require_obstore
 
@@ -200,7 +200,7 @@ def _build_publish_store(uri: str) -> tuple[object, str]:
     if not parsed.scheme:
         raise CliError(f"not an object-store destination URI: {uri!r}")
     config, client_options = _s3_config_from_env()
-    authority_url = f"{parsed.scheme}://{parsed.netloc}"
+    authority_url = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
     try:
         store = obstore.store.from_url(
             authority_url,
