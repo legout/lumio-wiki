@@ -148,6 +148,12 @@ Raw bytes never reach the published KB, Reader retrieval, Citations, exports,
 or the canonical fingerprint (ADR-0014). `--compiled-page` and `--source-id`
 are required together.
 
+The private Source lifecycle has explicit commands (ADR-0014):
+`lumio-wiki source <kb> list` reports identities/status without disclosing
+raw bytes; `lumio-wiki source <kb> retire --source-id <id>` and `reactivate
+--source-id <id> --file <bytes>` stage ordinary reviewable proposals (the
+source stays active/retired until the proposal publishes).
+
 ### Plain text/Markdown passthrough (no separate original source)
 
 ```

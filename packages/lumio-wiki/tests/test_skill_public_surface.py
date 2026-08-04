@@ -193,6 +193,13 @@ def test_setup_is_canonical_first_run_across_all_public_surfaces():
     setup_help = _cli_help("setup")
     assert ".env" in setup_help, "setup --help must mention .env"
     assert "AGENTS.md" in setup_help, "setup --help must mention AGENTS.md"
+    # The `init` CLI help distinguishes itself as the lower-level KB-only
+    # operation so an agent reading `lumio-wiki init --help` does not mistake it
+    # for the canonical first run (AC2).
+    init_help = _cli_help("init")
+    assert "lower-level" in init_help.lower(), (
+        "init --help must document the lower-level KB-only operation"
+    )
 
 
 def test_generated_agents_md_guides_a_restarted_session():
@@ -256,3 +263,22 @@ def test_real_world_readme_names_exact_setup_and_restart_check():
     assert "restart" in readme.lower() or "new session" in readme.lower(), (
         "README must include a restart/new-session check"
     )
+
+
+def test_command_coverage_parity_for_relationship_and_source_lifecycle():
+    """Issue #148 required change #4: now that the typed-Relationship staging
+    (#151) and source-lifecycle (#149) CLI work has landed, the command-coverage
+    surfaces (SKILL.md and the usage docs) must both document
+    ``relationship stage`` and the ``source`` lifecycle so the surfaces cannot
+    diverge. ``test_every_cited_command_is_a_registered_public_cli_command``
+    already proves every cited command is real."""
+    root = Path(__file__).parents[3]
+    skill = resolve_skill_path().read_text(encoding="utf-8")
+    usage = (root / "docs" / "usage.md").read_text(encoding="utf-8")
+    for name, text in (("SKILL.md", skill), ("docs/usage.md", usage)):
+        assert "relationship stage" in text.lower(), (
+            f"{name}: must document relationship stage"
+        )
+        assert "lumio-wiki source" in text.lower(), (
+            f"{name}: must document the source lifecycle commands"
+        )

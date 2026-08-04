@@ -8,9 +8,10 @@ public :mod:`lumio_wiki` Python surface — no internal application modules.
 The dispatcher follows the same ``argparse`` + ``set_defaults(func=...)``
 convention the existing ``lumio`` CLI uses. Core operations (validate,
 search, page, related, paths, ingest, proposal, publish, health, lint,
-dream) call public ``lumio_wiki`` functions directly; CLI-only orchestration
-commands such as ``setup``, ``skill``, and ``doctor`` compose several of
-those primitives rather than mapping to a single call.
+dream) call public ``lumio_wiki`` functions directly. CLI-only commands do
+not map one-to-one to a public function: ``setup`` composes KB creation with
+project wiring (``.env`` and ``AGENTS.md``), ``skill`` installs the Agent
+Skill, and ``doctor`` reports install diagnostics.
 
 The optional ``<kb>`` positional argument can be omitted for read and write
 commands once ``setup`` has wired the project: it resolves from an exported
@@ -1892,8 +1893,12 @@ def build_parser() -> argparse.ArgumentParser:
     # init
     init_parser = subparsers.add_parser(
         "init",
-        help="Initialize a new categorized Knowledge Base at a path.",
-        description="Create a new categorized Knowledge Base root with a seeded Control File.",
+        help="Initialize a lower-level Knowledge Base directory (no project wiring).",
+        description=(
+            "Create a new categorized Knowledge Base root with a seeded Control "
+            "File. This is the lower-level KB-only operation; prefer 'setup' for "
+            "a project's first run, which also writes .env and AGENTS.md."
+        ),
     )
     init_parser.add_argument("path", type=Path, help="Directory to initialize (created if absent).")
     init_parser.set_defaults(func=_cmd_init)

@@ -96,6 +96,9 @@ lumio-wiki proposal inspect <kb> <id> [--json]   # review a proposal (metadata +
 lumio-wiki proposal validate <kb> <id>       # validate a proposal
 lumio-wiki publish <kb> <id>                 # publish a reviewed proposal
 lumio-wiki discard <kb> <id>                 # discard a proposal
+lumio-wiki relationship stage <kb> <src> <tgt> --type T  # stage a typed canonical Relationship proposal
+lumio-wiki cross-link <kb> [--stage]         # missing-link candidates (Extracted References); --stage repairs as links
+lumio-wiki source <kb> <list|retire|reactivate> --source-id <id>  # manage private Source lifecycle (ADR-0014)
 lumio-wiki publish-s3 <kb> <dest> --version <v>  # publish immutable S3 Published Version
               [--expected-pointer-version <v>]    # (compare-and-swap guard)
 lumio-wiki health <kb> [--rebuild]           # page counts, validation, Discovery Graph health
