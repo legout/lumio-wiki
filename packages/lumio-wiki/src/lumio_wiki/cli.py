@@ -47,12 +47,14 @@ from typing import Any
 
 import lumio_wiki
 from lumio_wiki import (
+    PREFERRED_RELATIONSHIP_TYPES,
     RETIREMENT_CANDIDATE_TRIGGERS,
     ControlFileError,
     Distiller,
     IngestStore,
     KnowledgeBase,
     KnowledgeBaseError,
+    MaintenanceError,
     ManagedIngestError,
     PassthroughMarkdownDistiller,
     ProposalBlockedError,
@@ -364,7 +366,11 @@ automatically when no `<kb>` argument is given).
 - `lumio-wiki lint` — read-only cross-page QA: validation, graph health, and
   canonical/discovery structural diagnostics with scope disclosure. Exit 1 if invalid.
 - `lumio-wiki cross-link` — missing-link candidates ranked by Discovery Graph
-  impact. Add `--stage` to stage reviewable repair proposals (never direct-writes).
+  impact. `--stage` repairs candidates as authored Markdown links (Extracted
+  References, Discovery Graph only); it never creates typed Relationships.
+- `lumio-wiki relationship stage <source> <target> --type T` — stage a typed
+  canonical Relationship proposal (e.g. `--type uses`). Distinct from
+  `cross-link --stage`; reviewed through the same proposal pipeline.
 - `lumio-wiki dream` — the Dream Cycle: read-only reflection (validation +
   health + structure + ranked candidates). Add `--stage [--limit N]` to stage
   the top repairs as ordinary Ingest Proposals for review. Add opt-in `--semantic`
@@ -647,8 +653,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     # ordinary text/Markdown/document ingest path is unchanged.
     if (compiled_page is None) != (source_id is None):
         raise CliError(
-            "--compiled-page and --source-id must be supplied together "
-            "(issue #149 managed ingest)."
+            "--compiled-page and --source-id must be supplied together (issue #149 managed ingest)."
         )
     source_path = Path(args.file)
     if not source_path.is_file():
@@ -867,6 +872,81 @@ def _cmd_remove_page(args: argparse.Namespace) -> int:
     print()
     print("Review with:")
     print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
+    if is_reviewable_proposal(proposal) and not proposal.blocked:
+        print(f"  lumio-wiki publish {args.path} {proposal.id}")
+    return 0
+
+
+def _cmd_relationship_stage(args: argparse.Namespace) -> int:
+    """Stage one reviewable typed Relationship proposal (issue #151).
+
+    Delegates to ``lumio_wiki.stage_relationship_proposal``: appends a typed
+    Relationship to the source page's frontmatter and stages a compound
+    revision through the ordinary Proposal Pipeline. A typed Relationship is a
+    canonical, reviewed edge resolved by Canonical Page Title — distinct from
+    ``cross-link --stage``, which only adds authored Markdown links that
+    become Extracted References (ADR-0011). Never direct-writes; never infers
+    a relationship type.
+    """
+    kb, _report = _load_kb(args.path)
+    source_title = args.source
+    target_title = args.target
+    rel_type = args.type
+
+    if not rel_type.strip():
+        raise CliError(
+            "relationship type must not be empty; preferred types are: "
+            + ", ".join(sorted(PREFERRED_RELATIONSHIP_TYPES)),
+            exit_code=1,
+        )
+
+    # Missing source page — actionable diagnostic (mirrors MaintenanceError).
+    source_page = next((p for p in kb.pages if p.title == source_title), None)
+    if source_page is None:
+        raise CliError(f"no Compiled Page titled {source_title!r}", exit_code=1)
+
+    # Unresolved target — actionable diagnostic.
+    if not any(p.title == target_title for p in kb.pages):
+        raise CliError(
+            f"unresolved target: {target_title!r} is not a Canonical Page Title",
+            exit_code=1,
+        )
+
+    # Duplicate edge — actionable diagnostic. The maintenance helper silently
+    # no-ops a duplicate; surface it instead of staging a no-op proposal.
+    if any(
+        rel.target == target_title and rel.type == rel_type for rel in source_page.relationships
+    ):
+        raise CliError(
+            f"relationship already exists: {source_title!r} -> {target_title!r} "
+            f"(type {rel_type!r}); nothing to stage",
+            exit_code=1,
+        )
+
+    ingest_dir = _resolve_ingest_dir(args, kb.root)
+    store = IngestStore(ingest_dir)
+    try:
+        proposal = lumio_wiki.stage_relationship_proposal(
+            args.path, source_title, target_title, rel_type, store=store
+        )
+    except MaintenanceError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+
+    print(f"Staged proposal {proposal.id}")
+    print(f"  status:         {proposal.status}")
+    print(f"  relationship:   {source_title!r} -> {target_title!r} (type {rel_type!r})")
+    print(f"  affected_pages: {', '.join(proposal.affected_pages) or '(none)'}")
+    print(f"  blocked:        {proposal.blocked}")
+    if rel_type not in PREFERRED_RELATIONSHIP_TYPES:
+        print(
+            f"  note: type {rel_type!r} is not a preferred Relationship type; "
+            f"preferred types are: {', '.join(sorted(PREFERRED_RELATIONSHIP_TYPES))}. "
+            f"Staged as a warning-level generic edge."
+        )
+    print()
+    print("Review with:")
+    print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
+    print(f"  lumio-wiki proposal validate {args.path} {proposal.id}")
     if is_reviewable_proposal(proposal) and not proposal.blocked:
         print(f"  lumio-wiki publish {args.path} {proposal.id}")
     return 0
@@ -2011,6 +2091,62 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ingest_dir_argument(remove_page_parser)
     remove_page_parser.set_defaults(func=_cmd_remove_page)
 
+    # relationship — stage typed Relationship proposals (issue #151).
+    relationship_parser = subparsers.add_parser(
+        "relationship",
+        help="Stage typed Relationship proposals through the proposal pipeline.",
+        description=(
+            "Stage reviewable, typed Relationship proposals through the ordinary "
+            "proposal pipeline (issue #151). A typed Relationship is a canonical, "
+            "reviewed edge resolved by Canonical Page Title — distinct from "
+            "`cross-link --stage`, which only adds authored Markdown links that "
+            "become Extracted References (ADR-0011). Never direct-writes; never "
+            "infers a relationship type."
+        ),
+    )
+    relationship_sub = relationship_parser.add_subparsers(
+        dest="relationship_command",
+        required=True,
+        metavar="<relationship command>",
+    )
+    relationship_stage = relationship_sub.add_parser(
+        "stage",
+        help="Stage one reviewable typed Relationship proposal.",
+        description=(
+            "Stage one reviewable typed Relationship proposal with an explicit "
+            "source Canonical Page Title, target Canonical Page Title, and "
+            "relationship type. Delegates to the public proposal pipeline; the "
+            "Knowledge Base on disk is unchanged until `publish`. Missing "
+            "source/target, an unresolved target, or a duplicate edge produce "
+            "actionable diagnostics. A non-preferred type stages as a "
+            "warning-level generic edge (preferred types: contradicts, "
+            "derived-from, extends, implements, relates-to, replaces, uses)."
+        ),
+    )
+    _add_kb_argument(relationship_stage)
+    relationship_stage.add_argument(
+        "source",
+        type=str,
+        help="Source Canonical Page Title (the page that owns the Relationship).",
+    )
+    relationship_stage.add_argument(
+        "target",
+        type=str,
+        help="Target Canonical Page Title (the page the Relationship points at).",
+    )
+    relationship_stage.add_argument(
+        "--type",
+        required=True,
+        type=str,
+        help=(
+            "Explicit Relationship type (e.g. relates-to, uses, extends, "
+            "implements, contradicts, derived-from, replaces). Non-preferred "
+            "types stage as warning-level generic edges; the type is never inferred."
+        ),
+    )
+    _add_ingest_dir_argument(relationship_stage)
+    relationship_stage.set_defaults(func=_cmd_relationship_stage)
+
     # health
     health_parser = subparsers.add_parser(
         "health",
@@ -2103,7 +2239,10 @@ def build_parser() -> argparse.ArgumentParser:
         "cross-link",
         help="List missing-link candidates, ranked by Discovery Graph impact.",
         description="Surface deterministic missing-link candidates (issue #90), ranked by "
-        "Discovery Graph impact (issue #127). Read-only unless --stage is given; staging "
+        "Discovery Graph impact (issue #127). Read-only unless --stage is given; --stage "
+        "repairs candidates as authored Markdown links (Extracted References in the "
+        "Discovery Graph) — it never creates typed canonical Relationships. Use "
+        "`lumio-wiki relationship stage` to promote a typed Relationship. Staging "
         "produces reviewable Ingest Proposals, never direct writes (ADR-0015).",
     )
     _add_kb_argument(cross_link_parser)

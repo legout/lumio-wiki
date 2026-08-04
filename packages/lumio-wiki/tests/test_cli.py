@@ -899,8 +899,9 @@ def test_kb_path_defaults_to_env_var(monkeypatch, capsys):
     assert "Technology Stack" in out
 
 
-def test_kb_path_missing_gives_actionable_error(monkeypatch, capsys):
+def test_kb_path_missing_gives_actionable_error(tmp_path, monkeypatch, capsys):
     """Neither positional nor env var → actionable error, exit 2."""
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("LUMIO_KB_PATH", raising=False)
     rc = main(["search", "query"])
     assert rc == 2
