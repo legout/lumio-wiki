@@ -4,6 +4,7 @@
 
 - **Status:** focused experiment proposed; no adoption decision has been made.
 - **Experiment:** [GitHub issue #146](https://github.com/legout/lumio/issues/146).
+- **Experiment harness:** [`experiments/mykg/`](../../experiments/mykg/) — candidate converter, runbook, and report template (Path B: harness only; the run-dependent metrics, audit, and recommendation stay deferred pending the maintainer inputs).
 - **Engineering documents:** an ADR and productization spec are deferred until the experiment produces an `adopt`, `defer`, or `reject` recommendation.
 
 ## Verdict
