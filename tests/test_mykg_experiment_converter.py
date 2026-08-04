@@ -69,8 +69,7 @@ def test_sample_session_maps_nodes_to_candidate_pages(converter, tmp_path):
     assert acme.lifecycle == "review"           # never 'approved'
     assert acme.visibility == "internal"        # conservative default
     assert acme.tags == ["organization"]        # type-derived tag (required, non-empty)
-    assert not acme.synthetic
-    assert len(acme.sources) == 1               # provenance present (non-synthetic)
+    assert len(acme.sources) == 1               # provenance present (>=1 Source required)
     assert acme.sources[0].id.startswith("mykg-")
 
     acme_md = (out / "entities" / f"{acme.slug}.md").read_text(encoding="utf-8")
@@ -183,18 +182,17 @@ def test_approved_lifecycle_is_rejected(converter, tmp_path):
         converter.convert_session(str(session), converter.Settings(default_lifecycle="approved"))
 
 
-def test_node_without_source_files_is_synthetic(converter, tmp_path):
+def test_node_without_source_files_is_skipped(converter, tmp_path):
+    # A myKG node without source_files has no provenance. It must NOT become a
+    # Synthetic Page (those are derived from other compiled knowledge); it is
+    # skipped, and edges into it become dangling candidates.
     nodes = [{"id": "a", "type": "Concept", "attributes": {"name": {"value": "Idea"}}}]
     session = _write_session(tmp_path, nodes, [])
     result = converter.convert_session(str(session), converter.Settings())
 
-    assert len(result.pages) == 1
-    page = result.pages[0]
-    assert page.synthetic
-    assert page.sources == []
-    rendered = converter.render_page(page)
-    assert "synthetic: true" in rendered
-    assert "sources:" not in rendered
+    assert result.pages == []
+    assert [skip["node_id"] for skip in result.skipped] == ["a"]
+    assert "provenance" in result.skipped[0]["reason"]
 
 
 def test_cli_converts_sample_to_tree(converter, tmp_path):
