@@ -1334,3 +1334,98 @@ def test_safe_lifecycle_impact_status_display_never_echoes_status_material() -> 
         assert "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" not in rendered
         assert "password=hunter2" not in rendered
         assert "token=abc123" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# register_or_reuse — the managed host-Distiller identity rule (issue #149).
+# ---------------------------------------------------------------------------
+
+
+def test_register_or_reuse_creates_a_new_active_identity(tmp_path):
+    registry = SourceRegistry(tmp_path / "ingest")
+
+    version, action = registry.register_or_reuse("handbook", b"v1")
+
+    assert action == "registered"
+    source = registry.get("handbook")
+    assert source.status == "active"
+    assert source.source_id == "handbook"
+    assert [v.content_hash for v in source.versions] == [version.content_hash]
+    # The version hash is over the original raw bytes (ADR-0014).
+    import hashlib
+
+    assert version.content_hash == hashlib.sha256(b"v1").hexdigest()
+    assert version.source_id == "handbook"
+
+
+def test_register_or_reuse_reuses_identical_bytes_idempotently(tmp_path):
+    registry = SourceRegistry(tmp_path / "ingest")
+    first, first_action = registry.register_or_reuse("handbook", b"v1")
+    assert first_action == "registered"
+    prior = _state_snapshot(registry)
+
+    reused, action = registry.register_or_reuse("handbook", b"v1")
+
+    assert action == "reused"
+    assert reused.content_hash == first.content_hash
+    assert reused.source_id == "handbook"
+    # No duplicate Source Version: the identity still has exactly one version.
+    source = registry.get("handbook")
+    assert [v.content_hash for v in source.versions] == [first.content_hash]
+    # No mutation at all — the retry is byte-identical to the first registration.
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+
+
+def test_register_or_reuse_changed_bytes_is_rejected_without_mutation(tmp_path):
+    registry = SourceRegistry(tmp_path / "ingest")
+    first, _ = registry.register_or_reuse("handbook", b"v1")
+    prior = _state_snapshot(registry)
+
+    with pytest.raises(SourceRegistryError, match="retire and reactivate"):
+        registry.register_or_reuse("handbook", b"v2-changed")
+
+    # No registry or version mutation: the single immutable version is intact.
+    source = registry.get("handbook")
+    assert [v.content_hash for v in source.versions] == [first.content_hash]
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+
+
+def test_register_or_reuse_retired_identity_is_rejected_until_reactivation(tmp_path):
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    retirement = pipeline.retire_source("policy")
+    pipeline.publish(retirement.id)
+
+    registry = store.source_registry
+    prior = _state_snapshot(registry)
+
+    with pytest.raises(SourceRegistryError, match="retired"):
+        registry.register_or_reuse("policy", b"policy-v1")
+
+    # Retired status is unchanged; reactivation is the only path back.
+    assert registry.get("policy").status == "retired"
+    assert _state_snapshot(registry) == prior
+
+
+def test_register_or_reuse_refusal_never_echoes_the_source_id(tmp_path):
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_or_reuse("handbook", b"v1")
+    secret_id = "sk-leaked-api-key"
+
+    with pytest.raises(SourceRegistryError) as exc:
+        registry.register_or_reuse(secret_id, b"v2")
+
+    assert secret_id not in str(exc.value)
+    assert "handbook" not in str(exc.value)
+
+
+def test_register_or_reuse_rejects_an_unsafe_id_at_the_boundary(tmp_path):
+    registry = SourceRegistry(tmp_path / "ingest")
+
+    with pytest.raises(SourceRegistryError):
+        registry.register_or_reuse("reports/secret.md", b"v1")
+    assert registry.list() == []

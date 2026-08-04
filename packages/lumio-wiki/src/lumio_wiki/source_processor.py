@@ -643,6 +643,27 @@ def select_document_processor(
     return None
 
 
+def source_converter_name(filename: str | None, content_type: str | None) -> str:
+    """Return the converter NAME a source routes to, WITHOUT invoking it.
+
+    Managed host-Distiller ingest (issue #149) records the converter in private
+    proposal provenance from routing alone: the host coding agent already
+    converted the original Knowledge Source and authored the Compiled Page, so
+    the ``[documents]`` extra is never required and no converter runs. The
+    values mirror :func:`select_document_processor` +
+    :class:`TextMarkdownSourceProcessor` routing so provenance is deterministic
+    and identical to the ordinary ingest path (``"markdown"``/``"text"`` for
+    text/Markdown, ``"liteparse"`` for PDF and images, ``"markitdown"`` for
+    DOCX, HTML, and broad document formats).
+    """
+    document_processor = select_document_processor(filename, content_type)
+    if isinstance(document_processor, PdfSourceProcessor):
+        return "liteparse"
+    if isinstance(document_processor, MarkItDownSourceProcessor):
+        return "markitdown"
+    return "markdown" if _is_markdown(filename, content_type) else "text"
+
+
 __all__ = [
     "CONVERSION_TIMEOUT",
     "DOCUMENTS_EXTRA_HINT",
@@ -661,4 +682,5 @@ __all__ = [
     "is_document_source",
     "run_conversion",
     "select_document_processor",
+    "source_converter_name",
 ]

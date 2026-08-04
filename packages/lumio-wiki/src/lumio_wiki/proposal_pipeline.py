@@ -168,6 +168,45 @@ class ProposalPipeline:
         """
         return self._require_store().source_registry.register_source(source_id, raw_bytes)
 
+    def managed_ingest(
+        self,
+        raw_bytes: bytes,
+        content_type: str | None,
+        filename: str | None,
+        source_id: str,
+        authored_markdown: str,
+    ) -> IngestProposal:
+        """Bind an original raw Knowledge Source and an authored page (issue #149).
+
+        The ONE deep, proposal-first host-Distiller operation over the Source
+        Processor, Source Registry, and Proposal Pipeline. It records private
+        provenance over the ORIGINAL bytes (converter name derived from routing
+        — the ``[documents]`` extra never runs because the host agent authored
+        the page), resolves the explicit ``source_id`` against the private
+        registry, blocks staging unless the authored page declares that id in
+        ``sources[].id``, and assembles + stages a single reviewable proposal
+        from the AUTHORED Markdown. Raw bytes are never written under the
+        Knowledge Base root: the registry retains identity/version hashes
+        privately (ADR-0014), so an identical retry reuses the current Source
+        Version without duplication and a changed-bytes retry is rejected
+        without registry or proposal mutation.
+        """
+        from lumio_wiki.ingest import _authored_page_declares_source, _managed_provenance
+
+        # 1. Provenance over the ORIGINAL bytes; no converter runs.
+        provenance = _managed_provenance(raw_bytes, content_type, filename, source_id)
+        # 2. Resolve the explicit source identity in PRIVATE registry state
+        #    (register new / reuse identical / reject changed / reject retired).
+        self._require_store().source_registry.register_or_reuse(source_id, raw_bytes)
+        # 3. The authored page must cite this source_id; a missing/mismatched
+        #    id blocks staging with an actionable diagnostic.
+        _authored_page_declares_source(authored_markdown, source_id)
+        # 4. The AUTHORED Markdown (not distilled text) determines page content.
+        proposal = self.assemble(authored_markdown, provenance, filename)
+        # 5. Stage WITHOUT raw bytes: identity/version hashes live privately in
+        #    the registry; raw bytes never reach the KB root or Reader/export.
+        return self.stage(proposal)
+
     def _source_impacts(self, source_id: str, action: str) -> list[SourceChangeImpact]:
         # Page-impact lookup matches the EXPLICIT registry ``source_id`` against
         # the ALREADY-PUBLIC ``CompiledPage.sources[].id`` declared on each page

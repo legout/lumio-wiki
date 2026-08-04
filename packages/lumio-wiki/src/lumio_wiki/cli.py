@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 import os
 import sys
 from pathlib import Path
@@ -52,6 +53,7 @@ from lumio_wiki import (
     IngestStore,
     KnowledgeBase,
     KnowledgeBaseError,
+    ManagedIngestError,
     PassthroughMarkdownDistiller,
     ProposalBlockedError,
     ProposalPipeline,
@@ -113,6 +115,14 @@ def default_index_dir(kb_root: str | Path) -> Path:
 def _resolve_ingest_dir(args: argparse.Namespace, kb_root: Path) -> Path:
     raw = getattr(args, "ingest_dir", None)
     return Path(raw) if raw else default_ingest_dir(kb_root)
+
+
+def _infer_content_type(path: Path) -> str:
+    """Infer a stable MIME type for CLI provenance, with a text fallback."""
+    suffix = path.suffix.lower()
+    if suffix in {".md", ".markdown"}:
+        return "text/markdown"
+    return mimetypes.guess_type(path.name)[0] or "text/plain"
 
 
 def _resolve_index_dir(args: argparse.Namespace, kb_root: Path) -> Path:
@@ -338,8 +348,14 @@ automatically when no `<kb>` argument is given).
 
 ### Ingest (you are the Distiller)
 
-1. Author a Compiled Page (YAML frontmatter + Markdown body) in a temp file.
-2. `lumio-wiki ingest <file>` — stages a reviewable Ingest Proposal.
+1. Author a Compiled Page (YAML frontmatter + Markdown body) that declares the
+   source identity in `sources[].id`.
+2. `lumio-wiki ingest <original-source> --compiled-page <page.md> --source-id <id>`
+   — bind the ORIGINAL raw source to your authored page under one stable
+   identity and stage a single reviewable Ingest Proposal. No `[documents]`
+   extra required (the converter name is derived from routing without running
+   it). Plain `lumio-wiki ingest <file>` stays available for text/Markdown
+   passthrough but does NOT establish a Source identity.
 3. `lumio-wiki proposal list` → `proposal inspect <id>` → `proposal validate <id>`.
 4. `lumio-wiki publish <id>` (or `lumio-wiki discard <id>`).
 
@@ -624,21 +640,57 @@ def _cmd_index(args: argparse.Namespace) -> int:
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
     kb, _report = _load_kb(args.path)
+    compiled_page = getattr(args, "compiled_page", None)
+    source_id = getattr(args, "source_id", None)
+    # issue #149: --compiled-page and --source-id select the managed
+    # host-Distiller mode and are required together. With neither present the
+    # ordinary text/Markdown/document ingest path is unchanged.
+    if (compiled_page is None) != (source_id is None):
+        raise CliError(
+            "--compiled-page and --source-id must be supplied together "
+            "(issue #149 managed ingest)."
+        )
     source_path = Path(args.file)
     if not source_path.is_file():
         raise CliError(f"source file not found: {source_path}")
     raw_bytes = source_path.read_bytes()
-    content_type = args.content_type
-    if content_type is None:
-        suffix = source_path.suffix.lower()
-        if suffix in {".md", ".markdown"}:
-            content_type = "text/markdown"
-        else:
-            content_type = "text/plain"
+    content_type = args.content_type or _infer_content_type(source_path)
 
     ingest_dir = _resolve_ingest_dir(args, kb.root)
     ingest_dir.mkdir(parents=True, exist_ok=True)
     store = IngestStore(ingest_dir)
+    pipeline = ProposalPipeline(kb, store=store)
+
+    if compiled_page is not None and source_id is not None:
+        # Managed host-Distiller ingest (issue #149): bind the ORIGINAL raw
+        # Knowledge Source to the host-agent-authored Compiled Page under one
+        # explicit source identity. The converter name is derived from routing
+        # without invoking it, so PDF/DOCX/HTML sources do NOT require the
+        # [documents] extra here — the host agent already authored the page.
+        if not compiled_page.is_file():
+            raise CliError(f"compiled-page file not found: {compiled_page}")
+        authored_markdown = compiled_page.read_text(encoding="utf-8")
+        try:
+            proposal = pipeline.managed_ingest(
+                raw_bytes, content_type, source_path.name, source_id, authored_markdown
+            )
+        except (ManagedIngestError, SourceRegistryError) as exc:
+            raise CliError(str(exc), exit_code=1) from exc
+        print(f"Staged proposal {proposal.id}")
+        print(f"  status:         {proposal.status}")
+        print(f"  source_id:      {proposal.provenance.source_id}")
+        print(f"  content_type:    {proposal.provenance.content_type}")
+        print(f"  converted_by:   {proposal.provenance.converted_by}")
+        print(f"  source_hash:    {proposal.provenance.source_hash}")
+        print(f"  affected_pages: {', '.join(proposal.affected_pages) or '(none)'}")
+        print(f"  blocked:        {proposal.blocked}")
+        print()
+        print("Review with:")
+        print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
+        print(f"  lumio-wiki proposal validate {args.path} {proposal.id}")
+        if is_reviewable_proposal(proposal) and not proposal.blocked:
+            print(f"  lumio-wiki publish {args.path} {proposal.id}")
+        return 0
 
     # Route through select_source_processor so text/Markdown uses the
     # dependency-free processor and document sources (PDF, image, DOCX, HTML,
@@ -688,7 +740,6 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         from lumio_wiki.ingest import _ensure_page_frontmatter
 
         distilled = _ensure_page_frontmatter(distilled, source_path.name)
-    pipeline = ProposalPipeline(kb, store=store)
     proposal = pipeline.assemble(distilled, provenance, source_path.name)
     # Stage without raw_bytes so no .md file is written inside the KB root.
     proposal = pipeline.stage(proposal)
@@ -760,6 +811,16 @@ def _cmd_proposal_inspect(args: argparse.Namespace) -> int:
     print(f"converted_by:    {proposal.provenance.converted_by}")
     if proposal.provenance.original_filename:
         print(f"original_file:   {proposal.provenance.original_filename}")
+    if proposal.provenance.content_type:
+        print(f"content_type:    {proposal.provenance.content_type}")
+    # issue #149: managed host-Distiller provenance — the explicit source
+    # identity the raw source was bound to, and the immutable content hash
+    # over the ORIGINAL bytes. These distinguish raw-source provenance from
+    # the authored Compiled Page content shown in the Diff below (AC4).
+    if proposal.provenance.source_id:
+        print(f"source_id:       {proposal.provenance.source_id}")
+    if proposal.provenance.source_hash:
+        print(f"source_hash:     {proposal.provenance.source_hash}")
     if proposal.raw_source_path:
         print(f"raw_source:      {proposal.raw_source_path}")
     if proposal.blast_radius is not None:
@@ -1798,7 +1859,31 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Distiller for the source: 'passthrough' (default, model-free) or "
             "'llm' (unattended OpenAI-compatible; requires lumio-wiki[llm] and "
-            "LUMIO_PROVIDER_* env vars)."
+            "LUMIO_PROVIDER_* env vars). Ignored in managed mode."
+        ),
+    )
+    ingest_parser.add_argument(
+        "--compiled-page",
+        type=Path,
+        default=None,
+        help=(
+            "Managed host-Distiller mode (issue #149): path to the host-agent-"
+            "authored Compiled Page Markdown to bind to the original source. "
+            "Required together with --source-id; when both are given the "
+            "original raw source is registered under that stable identity and "
+            "the authored page (which must declare the id in sources[].id) is "
+            "staged as one proposal. No document converter runs, so PDF/DOCX/"
+            "HTML sources do not need the [documents] extra."
+        ),
+    )
+    ingest_parser.add_argument(
+        "--source-id",
+        type=str,
+        default=None,
+        help=(
+            "Managed host-Distiller mode (issue #149): explicit, stable "
+            "Knowledge Source identity for the original raw source (a lowercase "
+            "ASCII label). Required together with --compiled-page."
         ),
     )
     _add_ingest_dir_argument(ingest_parser)
