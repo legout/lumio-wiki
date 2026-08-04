@@ -13,19 +13,19 @@ public functions:
 Command                                           Public function
 ================================================  ================================================
 ``init <path>``                                   :func:`lumio_wiki.write_control_file`
-``validate <path>``                               :func:`lumio_wiki.validate`
-``search <path> <query>``                         :meth:`KnowledgeBase.search_pages`
-``page <path> <title>``                           :meth:`KnowledgeBase.lookup_by_title`
-``related <path> <title>``                        :meth:`KnowledgeBase.related_pages`
-``paths <path> <source> <target>``               :meth:`KnowledgeBase.shortest_path`
-``ingest <path> <file>``                          :func:`create_proposal_without_provider`
-``proposal list <path>``                          :meth:`ProposalPipeline.list`
-``proposal inspect <path> <id>``                  :meth:`ProposalPipeline.review`
-``proposal validate <path> <id>``                 proposal validation report
-``publish <path> <id>``                           :meth:`ProposalPipeline.publish`
-``publish-s3 <path> <dest> --version <v>``        :func:`lumio_wiki.publish_s3_version`
-``discard <path> <id>``                           :meth:`ProposalPipeline.discard`
-``health <path>``                                 :meth:`KnowledgeBase.graph_health` + validation
+``validate [path]``                               :func:`lumio_wiki.validate`
+``search [path] <query>``                         :meth:`KnowledgeBase.search_pages`
+``page [path] <title>``                           :meth:`KnowledgeBase.lookup_by_title`
+``related [path] <title>``                        :meth:`KnowledgeBase.related_pages`
+``paths [path] <source> <target>``               :meth:`KnowledgeBase.shortest_path`
+``ingest [path] <file>``                          :func:`create_proposal_without_provider`
+``proposal list [path]``                          :meth:`ProposalPipeline.list`
+``proposal inspect [path] <id>``                  :meth:`ProposalPipeline.review`
+``proposal validate [path] <id>``                 proposal validation report
+``publish [path] <id>``                           :meth:`ProposalPipeline.publish`
+``publish-s3 [path] <dest> --version <v>``        :func:`lumio_wiki.publish_s3_version`
+``discard [path] <id>``                           :meth:`ProposalPipeline.discard`
+``health [path]``                                 :meth:`KnowledgeBase.graph_health` + validation
 ``doctor``                                        install diagnostics (optionals, skill path)
 ``skill path``                                    packaged skill location
 ``skill install --agent <name>``                  install skill for a supported coding agent

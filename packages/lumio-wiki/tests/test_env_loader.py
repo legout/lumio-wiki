@@ -221,10 +221,10 @@ def test_discover_reads_env_at_project_root_before_stopping(tmp_path: Path) -> N
 
 def test_loader_never_pollutes_os_environ(tmp_path: Path) -> None:
     """Reading a .env must not inject arbitrary keys into os.environ."""
-    arbitrary_key = "LUMIO_TEST_ARBITRARY_KEY_152"
+    arbitrary_key = "UNRELATED_PROJECT_SETTING"
     env = tmp_path / ".env"
     env.write_text(
-        f"{KB_PATH_ENV_VAR}=/kb\n{arbitrary_key}=secret\n",
+        f"{KB_PATH_ENV_VAR}=/kb\n{arbitrary_key}=not-loaded\n",
         encoding="utf-8",
     )
     os.environ.pop(arbitrary_key, None)

@@ -9,6 +9,7 @@ codes, and output contracts against the package's own test fixtures.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -18,7 +19,7 @@ import textwrap
 from pathlib import Path
 
 import lumio_wiki as lw
-import pytest
+import pytest  # type: ignore[import-not-found]
 from lumio_wiki import GRAPH_ARTIFACT_FILENAME
 from lumio_wiki.cli import build_parser, default_index_dir, main
 
@@ -98,8 +99,10 @@ def test_all_documented_commands_have_handlers():
     parser = build_parser()
     # Walk the subparsers to find every registered command.
     subparsers_action = next(
-        a for a in parser._actions if isinstance(a, type(parser._subparsers._group_actions[0]))
+        (a for a in parser._actions if isinstance(a, argparse._SubParsersAction)),
+        None,
     )
+    assert subparsers_action is not None
     # Top-level commands.
     expected_top_level = {
         "init",
@@ -118,7 +121,7 @@ def test_all_documented_commands_have_handlers():
         "doctor",
         "skill",
     }
-    assert expected_top_level <= set(subparsers_action.choices.keys())
+    assert expected_top_level <= set(subparsers_action.choices)
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +309,9 @@ def test_publish_writes_page_and_marks_terminal(
     assert (kb_root / "cli_page.md").is_file()
     # The proposal is now terminal.
     store2 = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    assert store2.get(pid).status == "published"
+    published = store2.get(pid)
+    assert published is not None
+    assert published.status == "published"
     # KB remains valid after publish.
     assert lw.validate(kb_root).is_valid
 
@@ -318,7 +323,9 @@ def test_discard_marks_proposal_terminal(kb_root: Path, source_file: Path):
     rc = main(["discard", str(kb_root), pid])
     assert rc == 0
     store2 = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    assert store2.get(pid).status == "discarded"
+    discarded = store2.get(pid)
+    assert discarded is not None
+    assert discarded.status == "discarded"
 
 
 def test_publish_unknown_proposal_returns_1(kb_root: Path):
@@ -1022,6 +1029,16 @@ def test_setup_help_claims_env_loading(capsys):
     assert "LUMIO_KB_PATH" in out
     # argparse wraps the description, so assert a phrase that fits one line.
     assert "LUMIO_KB_PATH from .env" in out
+
+
+def test_module_usage_documents_optional_kb_path():
+    """The module usage table must match pathless CLI behavior."""
+    import lumio_wiki.cli as cli_module
+
+    usage = cli_module.__doc__ or ""
+    assert "``validate [path]``" in usage
+    assert "``search [path] <query>``" in usage
+    assert "``proposal list [path]``" in usage
 
 
 def test_kb_path_help_documents_env_and_env_file(capsys):
@@ -1930,15 +1947,23 @@ def test_source_duplicate_register_is_refused_without_mutation(
 def test_source_register_rejects_invalid_source_id_safely(
     source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # A credential-shaped source id is rejected at the boundary; the rejected
-    # value is never echoed into the CLI output and nothing is persisted.
-    secret_id = "sk-leaked-api-key-1234567890"
+    # A malformed source id is rejected at the boundary; the rejected value
+    # is never echoed into the CLI output and nothing is persisted.
+    invalid_id = "invalid source id 152"
     rc = main(
-        ["source", "register", str(source_kb), "--source-id", secret_id, "--file", str(source_file)]
+        [
+            "source",
+            "register",
+            str(source_kb),
+            "--source-id",
+            invalid_id,
+            "--file",
+            str(source_file),
+        ]
     )
     assert rc != 0
     captured = capsys.readouterr()
     combined = captured.out + captured.err
-    assert secret_id not in combined
+    assert invalid_id not in combined
     store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert all(s.source_id != secret_id for s in store.source_registry.list())
+    assert all(s.source_id != invalid_id for s in store.source_registry.list())
