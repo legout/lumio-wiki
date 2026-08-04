@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # ADR-0017: Portable Agent Skill Distribution and Project Bootstrap
