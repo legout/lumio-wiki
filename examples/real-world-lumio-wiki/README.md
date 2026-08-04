@@ -43,9 +43,31 @@ python tools/validate_sources.py
 
 ## Start the coding-agent trial
 
-Start Pi, Codex, Claude Code, or another coding agent **from this directory**, then ask:
+Start Pi, Codex, Claude Code, or another coding agent **from this directory**.
+First run the canonical first-run command yourself (or have the agent run it):
 
-> Set up a portable Lumio Knowledge Base in `./knowledge-base` and ingest every file in `./sources`. Use the installed `lumio-wiki` CLI and its coding-agent workflow. Treat me as the Maintainer: keep every mutation proposal-first, show me each proposal's validation and blast radius, and wait for my approval before publishing. Do not install `lumio-lancedb` or the full `lumio` application.
+```bash
+lumio-wiki setup ./knowledge-base
+```
+
+`setup` is the canonical first run: it creates the Knowledge Base at
+`./knowledge-base`, writes `.env` (`LUMIO_KB_PATH`), and writes/updates
+`AGENTS.md` with the retrieval-ladder protocol so a restarted or new session
+can locate, retrieve from, cite, ingest into, and maintain the Knowledge Base.
+`lumio-wiki init ./knowledge-base` is the lower-level KB-only operation and
+skips that project wiring. Skill installation stays explicit — add
+`--skill-scope user` (or `--agent <name>`) only if you want the packaged
+workflow installed, then **restart the agent or start a new session** so the
+skill is discovered.
+
+Then ask the agent:
+
+> Ingest every file in `./sources` into the Lumio Knowledge Base at `./knowledge-base` using the installed `lumio-wiki` CLI and its coding-agent workflow. Treat me as the Maintainer: keep every mutation proposal-first, show me each proposal's validation and blast radius, and wait for my approval before publishing. Do not install `lumio-lancedb` or the full `lumio` application.
+
+**Restart / new-session check:** after a restart, the agent should resolve the
+Knowledge Base with no path argument — `lumio-wiki validate` (no `<kb>`)
+succeeds because the CLI reads `LUMIO_KB_PATH` from `.env`. If you installed a
+skill, confirm discovery ran in the new session before relying on it.
 
 This repository already provides the Lumio project instructions to agents started inside it. For a truly standalone test outside this repository, use the installed CLI's `skill path`, `skill protocol`, or `skill install --agent ...` commands to expose the packaged workflow to the chosen agent.
 

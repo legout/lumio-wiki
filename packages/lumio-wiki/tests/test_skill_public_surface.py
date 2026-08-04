@@ -22,7 +22,7 @@ from pathlib import Path
 
 import msgspec
 from lumio_wiki import __version__
-from lumio_wiki.cli import main
+from lumio_wiki.cli import _AGENTS_MD_SECTION, main
 from lumio_wiki.skill import resolve_protocol_path, resolve_skill_path
 
 
@@ -45,6 +45,30 @@ def _skill_and_protocol() -> list[tuple[str, str]]:
     return [
         (path.name, path.read_text()) for path in (resolve_skill_path(), resolve_protocol_path())
     ]
+
+
+def _generated_agents_md() -> str:
+    """The AGENTS.md section that ``lumio-wiki setup`` writes into a project.
+
+    ADR-0017 names the generated ``AGENTS.md`` as a parity surface alongside
+    ``SKILL.md``, the detailed protocol, CLI help, and the usage docs, so the
+    drift guard renders its template from the live CLI module (not a stale
+    source-tree copy) and asserts against the formatted result.
+    """
+    return _AGENTS_MD_SECTION.format(kb_path="/example/knowledge-base")
+
+
+def _cli_help(cmd: str) -> str:
+    """Capture the stdout of ``lumio-wiki <cmd> --help`` end-to-end."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+        try:
+            main([cmd, "--help"])
+        except SystemExit:
+            # argparse exits after printing --help; the captured stdout is
+            # the help text regardless of the exit code.
+            pass
+    return buf.getvalue()
 
 
 def test_skill_uses_portable_agent_skills_frontmatter_and_relative_protocol():
@@ -136,3 +160,125 @@ def test_protocol_instructs_not_covered_when_evidence_insufficient():
     low = protocol.lower()
     assert "not covered" in low
     assert "connectivity" in low or "topology" in low or "extracted reference" in low
+
+
+# --- Issue #148: first-run protocol and drift prevention (ADR-0017) ----------
+# ADR-0017 lists five parity surfaces: SKILL.md, the detailed PROTOCOL.md, the
+# generated AGENTS.md, CLI help, and the usage docs. The tests below lock the
+# facts that must stay identical across them so the surfaces cannot silently
+# diverge again.
+
+
+def test_setup_is_canonical_first_run_across_all_public_surfaces():
+    """Issue #148 AC1/AC2: every public surface makes ``lumio-wiki setup`` the
+    canonical first-run command, documents ``init`` as the lower-level KB-only
+    operation, and explains that setup writes ``.env`` and ``AGENTS.md``. The
+    ``setup`` CLI help is a parity surface too (ADR-0017)."""
+    root = Path(__file__).parents[3]
+    surfaces = {
+        "SKILL.md": resolve_skill_path().read_text(encoding="utf-8"),
+        "PROTOCOL.md": resolve_protocol_path().read_text(encoding="utf-8"),
+        "docs/usage.md": (root / "docs" / "usage.md").read_text(encoding="utf-8"),
+    }
+    for name, text in surfaces.items():
+        assert "lumio-wiki setup" in text, f"{name}: must name lumio-wiki setup"
+        assert "lower-level" in text.lower(), (
+            f"{name}: must document init as the lower-level KB-only operation"
+        )
+        assert ".env" in text, f"{name}: must explain setup writes .env"
+        assert "AGENTS.md" in text, f"{name}: must explain setup writes AGENTS.md"
+    # The `setup` CLI help describes the one-command bootstrap (writes .env and
+    # AGENTS.md), so a coding agent reading only `lumio-wiki setup --help` lands
+    # on the canonical first-run path too.
+    setup_help = _cli_help("setup")
+    assert ".env" in setup_help, "setup --help must mention .env"
+    assert "AGENTS.md" in setup_help, "setup --help must mention AGENTS.md"
+    # The `init` CLI help distinguishes itself as the lower-level KB-only
+    # operation so an agent reading `lumio-wiki init --help` does not mistake it
+    # for the canonical first run (AC2).
+    init_help = _cli_help("init")
+    assert "lower-level" in init_help.lower(), (
+        "init --help must document the lower-level KB-only operation"
+    )
+
+
+def test_generated_agents_md_guides_a_restarted_session():
+    """Issue #148 AC3: the AGENTS.md section that ``setup`` writes tells a
+    restarted/new session how to LOCATE, RETRIEVE FROM, CITE, INGEST INTO, and
+    MAINTAIN the existing Knowledge Base."""
+    text = _generated_agents_md()
+    # Locate: the recorded KB path (resolved from .env when no <kb> is given).
+    assert "LUMIO_KB_PATH" in text and "KB path" in text
+    # Retrieve: the full retrieval ladder (ladder 0..5).
+    for step in ("hot", "index", "search", "page", "related", "paths"):
+        assert f"lumio-wiki {step}" in text, f"ladder step {step!r} missing from AGENTS.md"
+    # Cite: cite-or-refuse guardrail naming title + path + passage.
+    assert "cite" in text.lower()
+    assert "passage" in text.lower()
+    # Ingest: host-Distiller managed ingest that binds the raw source.
+    assert "lumio-wiki ingest" in text
+    assert "Distiller" in text
+    # Maintain: maintenance commands (lint, cross-link, relationship, dream).
+    assert "lumio-wiki lint" in text
+    assert "lumio-wiki dream" in text
+
+
+def test_surfaces_distinguish_extracted_references_from_typed_relationships():
+    """Issue #148 AC4: the skill, protocol, and generated AGENTS.md keep
+    authored Markdown links / Extracted References distinct from reviewed typed
+    Relationships. In particular ``cross-link --stage`` is tied to Extracted
+    References and is never described as creating a typed canonical
+    Relationship; ``relationship stage`` is the typed-edge path."""
+    surfaces = {
+        "SKILL.md": resolve_skill_path().read_text(encoding="utf-8"),
+        "PROTOCOL.md": resolve_protocol_path().read_text(encoding="utf-8"),
+        "AGENTS.md": _generated_agents_md(),
+    }
+    for name, text in surfaces.items():
+        flat = re.sub(r"\s+", " ", text.lower())
+        assert "extracted reference" in flat, f"{name}: must name Extracted References"
+        assert "cross-link" in flat, f"{name}: must document cross-link"
+        # cross-link is described in terms of Extracted References (body-link
+        # topology), not as creating a typed canonical Relationship.
+        assert re.search(r"cross-link.{0,180}extracted", flat), (
+            f"{name}: cross-link must be tied to Extracted References, "
+            "not to typed Relationships"
+        )
+        assert "relationship stage" in flat, (
+            f"{name}: must document relationship stage as the typed-edge command"
+        )
+        assert "typed" in flat, f"{name}: must name typed Relationships"
+
+
+def test_real_world_readme_names_exact_setup_and_restart_check():
+    """Issue #148 AC7: the real-world trial README names the exact first-run
+    command (``lumio-wiki setup``) and tells the agent to restart or start a new
+    session so the Knowledge Base and an optional installed skill are both
+    discovered."""
+    root = Path(__file__).parents[3]
+    readme = (root / "examples" / "real-world-lumio-wiki" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    assert "lumio-wiki setup" in readme, "README must name the exact setup command"
+    assert "restart" in readme.lower() or "new session" in readme.lower(), (
+        "README must include a restart/new-session check"
+    )
+
+
+def test_command_coverage_parity_for_relationship_and_source_lifecycle():
+    """Issue #148 required change #4: now that the typed-Relationship staging
+    (#151) and source-lifecycle (#149) CLI work has landed, the command-coverage
+    surfaces (SKILL.md and the usage docs) must both document
+    ``relationship stage`` and the ``source`` lifecycle so the surfaces cannot
+    diverge. ``test_every_cited_command_is_a_registered_public_cli_command``
+    already proves every cited command is real."""
+    root = Path(__file__).parents[3]
+    skill = resolve_skill_path().read_text(encoding="utf-8")
+    usage = (root / "docs" / "usage.md").read_text(encoding="utf-8")
+    for name, text in (("SKILL.md", skill), ("docs/usage.md", usage)):
+        assert "relationship stage" in text.lower(), (
+            f"{name}: must document relationship stage"
+        )
+        assert "lumio-wiki source" in text.lower(), (
+            f"{name}: must document the source lifecycle commands"
+        )

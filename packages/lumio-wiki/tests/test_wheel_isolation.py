@@ -190,6 +190,32 @@ def test_wheel_contains_skill_and_protocol(isolated_wheel_env: dict):
     assert "lumio_wiki/skill.py" in names
 
 
+def test_built_wheel_skill_protects_canonical_first_run_and_relationship_parity(
+    isolated_wheel_env: dict,
+):
+    """Issue #148 / ADR-0017: the first-run and Relationship parity facts are
+    validated against the BUILT-WHEEL copy of the skill and protocol, not only
+    the editable source tree. A stale or mismatched wheel cannot ship: the
+    installed-wheel surface is the drift-protection point ADR-0017 names."""
+    import zipfile
+
+    wheel_path: Path = isolated_wheel_env["wheel"]
+    with zipfile.ZipFile(wheel_path) as zf:
+        skill_text = zf.read("lumio_wiki/data/skill/SKILL.md").decode("utf-8")
+        protocol_text = zf.read("lumio_wiki/data/skill/PROTOCOL.md").decode("utf-8")
+    for name, text in (("SKILL.md", skill_text), ("PROTOCOL.md", protocol_text)):
+        flat = " ".join(text.lower().split())
+        # setup is the canonical first run; init is the lower-level KB-only op.
+        assert "lumio-wiki setup" in flat, f"{name}: must name lumio-wiki setup"
+        assert "lower-level" in flat, f"{name}: must document init as lower-level"
+        # Extracted References stay distinct from typed Relationships; the
+        # typed-edge command and the cross-link command are both documented.
+        assert "extracted reference" in flat, f"{name}: must name Extracted References"
+        assert "cross-link" in flat, f"{name}: must document cross-link"
+        assert "relationship stage" in flat, f"{name}: must document relationship stage"
+        assert "typed" in flat, f"{name}: must name typed Relationships"
+
+
 def test_skill_path_resolves_from_isolated_install(isolated_wheel_env: dict):
     """AC4: the CLI deterministically locates the packaged skill from the built wheel."""
     python = isolated_wheel_env["python"]

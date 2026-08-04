@@ -79,7 +79,7 @@ If omitted, the CLI falls back to the `LUMIO_KB_PATH` environment variable.
 
 ```bash
 lumio-wiki setup <kb-path> [--skill-scope user|project | --agent <name>]  # project bootstrap; skill target optional
-lumio-wiki init <path>                       # scaffold a categorized Knowledge Base
+lumio-wiki init <path>                       # lower-level KB-only: scaffold a categorized Knowledge Base
 lumio-wiki validate <kb>                     # exit 0 if valid, 1 otherwise
 lumio-wiki search <kb> "<query>" [--limit N] # lexical search over titles, aliases, tags, summaries, bodies
 lumio-wiki page <kb> "<title>"               # read a Compiled Page by Canonical Title or alias
@@ -96,6 +96,9 @@ lumio-wiki proposal inspect <kb> <id> [--json]   # review a proposal (metadata +
 lumio-wiki proposal validate <kb> <id>       # validate a proposal
 lumio-wiki publish <kb> <id>                 # publish a reviewed proposal
 lumio-wiki discard <kb> <id>                 # discard a proposal
+lumio-wiki relationship stage <kb> <src> <tgt> --type T  # stage a typed canonical Relationship proposal
+lumio-wiki cross-link <kb> [--stage]         # missing-link candidates (Extracted References); --stage repairs as links
+lumio-wiki source <kb> <list|retire|reactivate> --source-id <id>  # manage private Source lifecycle (ADR-0014)
 lumio-wiki publish-s3 <kb> <dest> --version <v>  # publish immutable S3 Published Version
               [--expected-pointer-version <v>]    # (compare-and-swap guard)
 lumio-wiki health <kb> [--rebuild]           # page counts, validation, Discovery Graph health
@@ -167,7 +170,10 @@ uv run lumio ask tests/fixtures/valid "What technology does Lumio use?"
 ## 2. Python library
 
 The `lumio_wiki` package is the portable, model-free Knowledge Base foundation.
-Every CLI command maps one-to-one to a public Python call.
+The core operations the CLI exposes — load, validate, search, retrieve, ingest,
+review, publish, and maintain — are public Python functions; CLI-only
+orchestration commands such as `setup`, `skill`, and `doctor` compose several
+of those primitives rather than mapping to a single call.
 
 ### Load, validate, search
 

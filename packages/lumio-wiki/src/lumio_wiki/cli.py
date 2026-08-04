@@ -6,32 +6,17 @@ repository or importing the full web application. Every command calls the
 public :mod:`lumio_wiki` Python surface — no internal application modules.
 
 The dispatcher follows the same ``argparse`` + ``set_defaults(func=...)``
-convention the existing ``lumio`` CLI uses. Commands map one-to-one onto
-public functions:
+convention the existing ``lumio`` CLI uses. Core operations (validate,
+search, page, related, paths, ingest, proposal, publish, health, lint,
+dream) call public ``lumio_wiki`` functions directly. CLI-only commands do
+not map one-to-one to a public function: ``setup`` composes KB creation with
+project wiring (``.env`` and ``AGENTS.md``), ``skill`` installs the Agent
+Skill, and ``doctor`` reports install diagnostics.
 
-================================================  ================================================
-Command                                           Public function
-================================================  ================================================
-``init <path>``                                   :func:`lumio_wiki.write_control_file`
-``validate [path]``                               :func:`lumio_wiki.validate`
-``search [path] <query>``                         :meth:`KnowledgeBase.search_pages`
-``page [path] <title>``                           :meth:`KnowledgeBase.lookup_by_title`
-``related [path] <title>``                        :meth:`KnowledgeBase.related_pages`
-``paths [path] <source> <target>``               :meth:`KnowledgeBase.shortest_path`
-``ingest [path] <file>``                          :func:`create_proposal_without_provider`
-``proposal list [path]``                          :meth:`ProposalPipeline.list`
-``proposal inspect [path] <id>``                  :meth:`ProposalPipeline.review`
-``proposal validate [path] <id>``                 proposal validation report
-``publish [path] <id>``                           :meth:`ProposalPipeline.publish`
-``publish-s3 [path] <dest> --version <v>``        :func:`lumio_wiki.publish_s3_version`
-``discard [path] <id>``                           :meth:`ProposalPipeline.discard`
-``health [path]``                                 :meth:`KnowledgeBase.graph_health` + validation
-``doctor``                                        install diagnostics (optionals, skill path)
-``skill path``                                    packaged skill location
-``skill install (--scope <scope>|--agent <name>)`` explicit skill installation
-``skill status [target]``                         inspect installed skill drift
-``skill update [target]``                         atomically refresh an installed skill
-================================================  ================================================
+The optional ``<kb>`` positional argument can be omitted for read and write
+commands once ``setup`` has wired the project: it resolves from an exported
+``LUMIO_KB_PATH`` and then the nearest project ``.env`` (issue #152;
+ADR-0017).
 
 The base Distiller is the host coding agent (``PassthroughMarkdownDistiller``):
 no OpenAI client is required for text and Markdown ingestion.
@@ -1908,8 +1893,12 @@ def build_parser() -> argparse.ArgumentParser:
     # init
     init_parser = subparsers.add_parser(
         "init",
-        help="Initialize a new categorized Knowledge Base at a path.",
-        description="Create a new categorized Knowledge Base root with a seeded Control File.",
+        help="Initialize a lower-level Knowledge Base directory (no project wiring).",
+        description=(
+            "Create a new categorized Knowledge Base root with a seeded Control "
+            "File. This is the lower-level KB-only operation; prefer 'setup' for "
+            "a project's first run, which also writes .env and AGENTS.md."
+        ),
     )
     init_parser.add_argument("path", type=Path, help="Directory to initialize (created if absent).")
     init_parser.set_defaults(func=_cmd_init)

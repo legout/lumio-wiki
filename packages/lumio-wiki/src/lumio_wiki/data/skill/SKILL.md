@@ -90,6 +90,7 @@ root directory in every command below.
 | `lumio-wiki lint <kb>` | Read-only cross-page QA report: validation, graph health, canonical/discovery structural diagnostics, scope disclosure. Exit 1 when invalid (ADR-0015). |
 | `lumio-wiki cross-link <kb> [--limit N] [--stage]` | Missing-link candidates ranked by Discovery Graph impact. `--stage` stages one reviewable repair proposal per top candidate; never direct-writes. |
 | `lumio-wiki relationship stage <kb> <source> <target> --type T` | Stage a typed canonical Relationship proposal (e.g. `--type uses`). Distinct from `cross-link --stage` (authored Markdown links / Extracted References); reviewed through the same proposal pipeline. |
+| `lumio-wiki source <kb> <register\|list\|retire\|reactivate> --source-id <id>` | Manage private Knowledge Source lifecycle state (ADR-0014). Explicit `retire`/`reactivate` stage ordinary reviewable proposals; `list` reports identities/status without disclosing raw bytes. |
 | `lumio-wiki dream <kb> [--limit N] [--stage] [--semantic]` | Deterministic Dream Cycle reflection plus optional semantic review; `--semantic` requires the `[llm]` extra and remains proposal-first. |
 | `lumio-wiki doctor` | Version, detected optional extras, and packaged skill location. |
 | `lumio-wiki skill path` | Absolute path of the packaged `SKILL.md` inside the installed wheel. |
