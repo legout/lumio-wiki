@@ -42,11 +42,13 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import lumio_wiki
 from lumio_wiki import (
     RETIREMENT_CANDIDATE_TRIGGERS,
     ControlFileError,
+    Distiller,
     IngestStore,
     KnowledgeBase,
     KnowledgeBaseError,
@@ -175,7 +177,7 @@ def _s3_config_from_env() -> tuple[dict[str, str], dict[str, object]]:
     return config, client_options
 
 
-def _resolve_object_store_location(uri: str) -> object:
+def _resolve_object_store_location(uri: str) -> Any:
     """Construct an S3 Knowledge Base Location from a URI + environment config."""
     from lumio_wiki.s3_location import S3Location
 
@@ -211,7 +213,7 @@ def _build_publish_store(uri: str) -> tuple[object, str]:
     return store, prefix
 
 
-def _open_read_kb(path: object) -> KnowledgeBase:
+def _open_read_kb(path: str | Path) -> KnowledgeBase:
     """Open a Knowledge Base for read commands from a local path or S3 URI."""
     value = str(path)
     if _is_object_store_uri(value):
@@ -223,7 +225,7 @@ def _open_read_kb(path: object) -> KnowledgeBase:
     return kb
 
 
-def _validate_location(path: object):
+def _validate_location(path: str | Path):
     """Validate a local path or resolve+validate an S3 URI into a report."""
     value = str(path)
     if _is_object_store_uri(value):
@@ -736,7 +738,7 @@ def _cmd_proposal_list(args: argparse.Namespace) -> int:
 
 def _encode_proposal(proposal) -> str:
     """Serialize a proposal to indented JSON via the canonical msgspec codec."""
-    import msgspec
+    import msgspec  # type: ignore[import-not-found]
 
     return msgspec.json.format(msgspec.json.encode(proposal), indent=2).decode("utf-8")
 
@@ -1224,7 +1226,7 @@ def _detect_module(name: str) -> bool:
         return False
 
 
-def _build_distiller(args: argparse.Namespace):
+def _build_distiller(args: argparse.Namespace) -> Distiller:
     """Construct the Distiller selected by ``--distiller`` (issue #101).
 
     ``passthrough`` (default) uses the model-free
@@ -1265,6 +1267,7 @@ def _build_distiller(args: argparse.Namespace):
             return OpenAIDistiller(model=model, base_url=base_url, api_key=api_key)
         except OpenAIDistillerError as exc:
             raise CliError(str(exc)) from exc
+    raise CliError(f"unsupported distiller: {choice}")
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -1512,9 +1515,9 @@ def _resolve_default_kb_path() -> str | None:
     Returns ``None`` when neither source yields a value so :func:`main` can
     surface a single actionable error.
     """
-    exported = os.environ.get(KB_PATH_ENV_VAR)
-    if exported:
-        return exported
+    if KB_PATH_ENV_VAR in os.environ:
+        exported = os.environ[KB_PATH_ENV_VAR]
+        return exported if exported.strip() else None
     return discover_kb_path_from_project_env()
 
 
@@ -2127,7 +2130,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     skill_install.set_defaults(func=_cmd_skill_install)
 
-
     # source (nested) — private Knowledge Source lifecycle (issue #133)
     source_parser = subparsers.add_parser(
         "source",
@@ -2187,9 +2189,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_kb_argument(source_retire)
     _add_ingest_dir_argument(source_retire)
-    source_retire.add_argument(
-        "--source-id", required=True, help="Source identity to retire."
-    )
+    source_retire.add_argument("--source-id", required=True, help="Source identity to retire.")
     source_retire.set_defaults(func=_cmd_source_retire)
 
     source_candidate = source_sub.add_parser(
@@ -2202,9 +2202,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_kb_argument(source_candidate)
     _add_ingest_dir_argument(source_candidate)
-    source_candidate.add_argument(
-        "--source-id", required=True, help="Active source identity."
-    )
+    source_candidate.add_argument("--source-id", required=True, help="Active source identity.")
     _candidate_trigger_help = "Signal that prompted the review. One of: " + ", ".join(
         repr(trigger) for trigger in RETIREMENT_CANDIDATE_TRIGGERS
     )

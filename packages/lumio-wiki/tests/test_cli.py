@@ -893,9 +893,7 @@ def _run_cli_in_subprocess(args: list[str], cwd: Path) -> subprocess.CompletedPr
     )
 
 
-def test_env_file_loaded_when_no_positional_and_no_env_var(
-    tmp_path: Path, monkeypatch, capsys
-):
+def test_env_file_loaded_when_no_positional_and_no_env_var(tmp_path: Path, monkeypatch, capsys):
     """With no positional and no exported var, LUMIO_KB_PATH is read from .env."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("LUMIO_KB_PATH", raising=False)
@@ -909,18 +907,14 @@ def test_env_file_loaded_when_no_positional_and_no_env_var(
     assert "Technology Stack" in out
 
 
-def test_positional_path_overrides_env_file_and_env_var(
-    tmp_path: Path, monkeypatch, capsys
-):
+def test_positional_path_overrides_env_file_and_env_var(tmp_path: Path, monkeypatch, capsys):
     """Positional <kb> takes precedence over both the env var and .env."""
     monkeypatch.chdir(tmp_path)
     real_kb = tmp_path / "real-kb"
     shutil.copytree(FIXTURES / "valid", real_kb)
     # Both lower-precedence sources point at nonexistent paths.
     monkeypatch.setenv("LUMIO_KB_PATH", str(tmp_path / "env-kb"))
-    (tmp_path / ".env").write_text(
-        f"LUMIO_KB_PATH={tmp_path / 'file-kb'}\n", encoding="utf-8"
-    )
+    (tmp_path / ".env").write_text(f"LUMIO_KB_PATH={tmp_path / 'file-kb'}\n", encoding="utf-8")
 
     rc = main(["search", str(real_kb), "Technology"])
     assert rc == 0
@@ -934,9 +928,7 @@ def test_exported_env_var_overrides_env_file(tmp_path: Path, monkeypatch, capsys
     real_kb = tmp_path / "real-kb"
     shutil.copytree(FIXTURES / "valid", real_kb)
     # .env points at a nonexistent path; the exported var points at the real KB.
-    (tmp_path / ".env").write_text(
-        f"LUMIO_KB_PATH={tmp_path / 'file-kb'}\n", encoding="utf-8"
-    )
+    (tmp_path / ".env").write_text(f"LUMIO_KB_PATH={tmp_path / 'file-kb'}\n", encoding="utf-8")
     monkeypatch.setenv("LUMIO_KB_PATH", str(real_kb))
 
     rc = main(["search", "Technology"])
@@ -945,9 +937,20 @@ def test_exported_env_var_overrides_env_file(tmp_path: Path, monkeypatch, capsys
     assert "Technology Stack" in out
 
 
-def test_missing_or_malformed_env_file_gives_actionable_error(
-    tmp_path: Path, monkeypatch, capsys
-):
+def test_empty_exported_env_does_not_fall_back_to_env_file(tmp_path: Path, monkeypatch, capsys):
+    """An explicitly empty process value remains authoritative over .env."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LUMIO_KB_PATH", "")
+    (tmp_path / ".env").write_text(f"LUMIO_KB_PATH={tmp_path / 'valid-kb'}\n", encoding="utf-8")
+
+    rc = main(["search", "Technology"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "no Knowledge Base path provided" in err
+    assert ".env" in err
+
+
+def test_missing_or_malformed_env_file_gives_actionable_error(tmp_path: Path, monkeypatch, capsys):
     """A malformed .env (no key=value) yields a single actionable error."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("LUMIO_KB_PATH", raising=False)
@@ -1488,9 +1491,7 @@ def test_source_reactivate_stages_new_version_under_existing_id(
     assert main(["publish", str(source_kb), retire_id]) == 0
     capsys.readouterr()  # drain publish output
     assert (
-        lw.IngestStore(source_kb / ".lumio" / "ingest")
-        .source_registry.get("policy")
-        .status
+        lw.IngestStore(source_kb / ".lumio" / "ingest").source_registry.get("policy").status
         == "retired"
     )
 
@@ -1517,9 +1518,7 @@ def test_source_reactivate_stages_new_version_under_existing_id(
 
     # The source stays retired until the reactivation proposal publishes.
     assert (
-        lw.IngestStore(source_kb / ".lumio" / "ingest")
-        .source_registry.get("policy")
-        .status
+        lw.IngestStore(source_kb / ".lumio" / "ingest").source_registry.get("policy").status
         == "retired"
     )
     assert main(["publish", str(source_kb), reactivate_id]) == 0
