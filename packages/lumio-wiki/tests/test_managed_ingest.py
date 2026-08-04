@@ -165,10 +165,18 @@ def test_managed_ingest_repeats_with_identical_bytes_reusing_source_version(
     raw = b"%PDF-1.4 identical bytes"
 
     first = pipeline.managed_ingest(
-        raw, "application/pdf", "r.pdf", "annual-impact-report", _authored_page("annual-impact-report")
+        raw,
+        "application/pdf",
+        "r.pdf",
+        "annual-impact-report",
+        _authored_page("annual-impact-report"),
     )
     second = pipeline.managed_ingest(
-        raw, "application/pdf", "r.pdf", "annual-impact-report", _authored_page("annual-impact-report")
+        raw,
+        "application/pdf",
+        "r.pdf",
+        "annual-impact-report",
+        _authored_page("annual-impact-report"),
     )
 
     source = store.source_registry.get("annual-impact-report")
@@ -190,7 +198,11 @@ def test_managed_ingest_changed_bytes_fail_without_mutation_directing_to_workflo
     pipeline, store = _pipeline(kb, tmp_path)
     raw = b"%PDF-1.4 v1"
     pipeline.managed_ingest(
-        raw, "application/pdf", "r.pdf", "annual-impact-report", _authored_page("annual-impact-report")
+        raw,
+        "application/pdf",
+        "r.pdf",
+        "annual-impact-report",
+        _authored_page("annual-impact-report"),
     )
     source = store.source_registry.get("annual-impact-report")
     first_hash = source.versions[-1].content_hash
