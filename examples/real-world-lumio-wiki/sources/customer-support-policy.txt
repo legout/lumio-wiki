@@ -1,0 +1,36 @@
+ATLAS HEATWORKS
+CUSTOMER SUPPORT AND WARRANTY POLICY
+Policy owner: Maya Chen, Operations Director
+Revision: 3.2
+Effective: 1 February 2026
+
+1. SUPPORT PRIORITIES
+
+Priority 1 (P1): Complete loss of heating or hot water while the outdoor temperature is below 5°C, a refrigerant alarm, or an electrical safety concern. Customer Support must acknowledge a P1 case within 30 minutes. The responsible service hub must provide remote or on-site technical response within 4 hours.
+
+Priority 2 (P2): Reduced heating performance, recurring pressure loss, unusual compressor noise, or loss of one heating zone while basic heating remains available. Customer Support must respond within 1 business day.
+
+Priority 3 (P3): Documentation requests, billing questions, app access, cosmetic damage, or non-urgent scheduling. Customer Support must respond within 3 business days.
+
+2. STANDARD PRODUCT WARRANTY
+
+Every Aster 8 and Aster 12 installation includes a five-year product warranty beginning on the commissioning date. Workmanship is covered for two years. Consumables, accidental damage, unauthorized modification, and missed maintenance are excluded as described in the customer agreement.
+
+3. CAREPLUS EXTENSION
+
+CarePlus extends the product warranty from five years to seven years only when all of the following are true:
+
+- the system is registered within 30 calendar days after commissioning;
+- commissioning was completed by an Atlas-certified installer;
+- one documented preventive-maintenance visit is completed in every 12-month service period; and
+- only approved replacement parts and refrigerant procedures are used.
+
+A late annual service does not immediately cancel CarePlus. The customer has a 45-day cure period after Atlas sends the overdue notice. If service remains incomplete after that period, coverage returns to the standard five-year term. Customer Support may not promise an exception; exceptions require written approval from the Operations Director.
+
+4. ROUTING
+
+Cases are assigned by installation postcode to East Yard or West Yard. When the assigned hub cannot meet a P1 target, the duty coordinator may transfer the case to the other hub. Transfers must remain visible in the case record.
+
+5. RECORDS
+
+The commissioning record establishes the warranty start date. Annual service records establish continuing CarePlus eligibility. Support conversations do not replace either record.

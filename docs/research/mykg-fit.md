@@ -1,5 +1,11 @@
 # myKG fit for Lumio
 
+## Tracking
+
+- **Status:** focused experiment proposed; no adoption decision has been made.
+- **Experiment:** [GitHub issue #146](https://github.com/legout/lumio/issues/146).
+- **Engineering documents:** an ADR and productization spec are deferred until the experiment produces an `adopt`, `defer`, or `reject` recommendation.
+
 ## Verdict
 
 myKG is a much better fit for Lumio than for selayer, but it is not a drop-in dependency.
