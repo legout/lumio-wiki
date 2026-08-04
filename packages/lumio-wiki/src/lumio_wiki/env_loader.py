@@ -130,7 +130,14 @@ def discover_kb_path_from_project_env(start_dir: str | Path | None = None) -> st
         env_path = current / ".env"
         if env_path.exists():
             value = read_kb_path_from_env_file(env_path)
-            return resolve_env_value(value, current) if value else None
+            if not value:
+                return None
+            try:
+                return resolve_env_value(value, current)
+            except (OSError, RuntimeError, ValueError):
+                # Malformed path values (including embedded NULs and symlink
+                # loops) become the same actionable missing-path diagnostic.
+                return None
         if current == boundary:
             return None
         current = current.parent

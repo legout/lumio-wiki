@@ -876,8 +876,13 @@ def _clean_subprocess_env() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key != "LUMIO_KB_PATH"}
 
 
-def _run_cli_in_subprocess(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    """Run the lumio-wiki CLI in a fresh process; capture stdout/stderr/exit code."""
+def _run_cli_in_subprocess(
+    args: list[str], cwd: Path, *, env_overrides: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run the CLI in a fresh process with optional environment overrides."""
+    env = _clean_subprocess_env()
+    if env_overrides:
+        env.update(env_overrides)
     return subprocess.run(
         [
             sys.executable,
@@ -886,7 +891,7 @@ def _run_cli_in_subprocess(args: list[str], cwd: Path) -> subprocess.CompletedPr
             *args,
         ],
         cwd=str(cwd),
-        env=_clean_subprocess_env(),
+        env=env,
         capture_output=True,
         text=True,
         timeout=60,
@@ -937,6 +942,38 @@ def test_exported_env_var_overrides_env_file(tmp_path: Path, monkeypatch, capsys
     assert "Technology Stack" in out
 
 
+def test_subprocess_positional_path_overrides_env_and_env_file(tmp_path: Path):
+    """Fresh process: positional path outranks exported env and project .env."""
+    project = tmp_path / "project"
+    project.mkdir()
+    real_kb = project / "real-kb"
+    shutil.copytree(FIXTURES / "valid", real_kb)
+    (project / ".env").write_text(f"LUMIO_KB_PATH={project / 'file-kb'}\n", encoding="utf-8")
+    result = _run_cli_in_subprocess(
+        ["search", str(real_kb), "Technology"],
+        cwd=project,
+        env_overrides={"LUMIO_KB_PATH": str(project / "env-kb")},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Technology Stack" in result.stdout
+
+
+def test_subprocess_exported_env_overrides_env_file(tmp_path: Path):
+    """Fresh process: exported LUMIO_KB_PATH outranks project .env."""
+    project = tmp_path / "project"
+    project.mkdir()
+    real_kb = project / "real-kb"
+    shutil.copytree(FIXTURES / "valid", real_kb)
+    (project / ".env").write_text(f"LUMIO_KB_PATH={project / 'file-kb'}\n", encoding="utf-8")
+    result = _run_cli_in_subprocess(
+        ["search", "Technology"],
+        cwd=project,
+        env_overrides={"LUMIO_KB_PATH": str(real_kb)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Technology Stack" in result.stdout
+
+
 def test_empty_exported_env_does_not_fall_back_to_env_file(tmp_path: Path, monkeypatch, capsys):
     """An explicitly empty process value remains authoritative over .env."""
     monkeypatch.chdir(tmp_path)
@@ -962,6 +999,18 @@ def test_missing_or_malformed_env_file_gives_actionable_error(tmp_path: Path, mo
     err = capsys.readouterr().err
     assert "LUMIO_KB_PATH" in err
     assert ".env" in err
+
+
+def test_subprocess_invalid_env_path_is_actionable(tmp_path: Path):
+    """A path value with an embedded NUL must not produce a traceback."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_bytes(b"LUMIO_KB_PATH=\x00\n")
+
+    result = _run_cli_in_subprocess(["validate"], cwd=project)
+    assert result.returncode == 2
+    assert "no Knowledge Base path provided" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_setup_help_claims_env_loading(capsys):
