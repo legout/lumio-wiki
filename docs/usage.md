@@ -78,7 +78,7 @@ the Knowledge Base root directory (or an `s3://` URI with `[s3]` installed).
 If omitted, the CLI falls back to the `LUMIO_KB_PATH` environment variable.
 
 ```bash
-lumio-wiki setup <kb-path> [--agent <name>] [--no-agents-md]  # one-command project setup
+lumio-wiki setup <kb-path> [--skill-scope user|project | --agent <name>]  # project bootstrap; skill target optional
 lumio-wiki init <path>                       # scaffold a categorized Knowledge Base
 lumio-wiki validate <kb>                     # exit 0 if valid, 1 otherwise
 lumio-wiki search <kb> "<query>" [--limit N] # lexical search over titles, aliases, tags, summaries, bodies
@@ -100,8 +100,10 @@ lumio-wiki publish-s3 <kb> <dest> --version <v>  # publish immutable S3 Publishe
               [--expected-pointer-version <v>]    # (compare-and-swap guard)
 lumio-wiki health <kb> [--rebuild]           # page counts, validation, Discovery Graph health
 lumio-wiki doctor                            # install shape: version, optionals, skill location
-lumio-wiki skill install --agent <name>      # install the Agent Skill into a coding agent
-              # agents: pi, hermes, codex, claude-code
+lumio-wiki skill install --scope user|project # explicit shared cross-client install
+lumio-wiki skill install --agent <name>       # compatibility fallback: pi, hermes, codex, claude-code
+lumio-wiki skill status [--scope user|project | --agent <name>] # read-only drift state
+lumio-wiki skill update [--scope user|project | --agent <name>] # explicit atomic refresh
 ```
 
 **Reading from S3.** Any read command (`validate`, `search`, `page`,
@@ -210,6 +212,7 @@ for r in results:
 ```
 
 Output:
+
 ```
 Title:    Technology Stack
 Path:     technology.md
@@ -359,17 +362,34 @@ run commands. The packaged **Agent Skill** (`SKILL.md` + `PROTOCOL.md`) gives
 the agent a structured protocol for the retrieval ladder, ingest workflow, and
 guardrails.
 
-### Install the Agent Skill
+### Install and maintain the Agent Skill
+
+The wheel is the canonical skill contract. Installation is always explicit;
+installing `lumio-wiki` or running ordinary `setup` never writes into an agent's
+instruction directories.
+
+Prefer the shared cross-client user scope:
 
 ```bash
-lumio-wiki skill install --agent pi
-lumio-wiki skill install --agent hermes
-lumio-wiki skill install --agent codex
-lumio-wiki skill install --agent claude-code
+lumio-wiki skill install --scope user
+# ~/.agents/skills/lumio-wiki/
+
+lumio-wiki skill status --scope user
+lumio-wiki skill update --scope user
 ```
 
-This copies `SKILL.md` and `PROTOCOL.md` into the agent's conventional skill
-directory. Pass `--dest <dir>` to override the destination.
+A trusted repository may instead opt into a project-local copy:
+
+```bash
+lumio-wiki skill install --scope project
+# ./.agents/skills/lumio-wiki/
+```
+
+Project scope travels with the checkout and is therefore part of that
+repository's instruction trust surface. Review it like other executable agent
+instructions. Each copy contains a manifest with the distribution version and
+bundle hash; `status` reports `missing`, `current`, `stale`, or `corrupt`, and
+`update` performs an explicit atomic refresh.
 
 ### opencode (or any agent that runs shell commands)
 
@@ -381,8 +401,9 @@ for you:
 ```bash
 cd my-project
 lumio-wiki setup ./wiki
-# or, to also install the skill for a native-skill agent:
-# lumio-wiki setup ./wiki --agent claude-code
+# or explicitly request a shared project/user skill install:
+# lumio-wiki setup ./wiki --skill-scope project
+# lumio-wiki setup ./wiki --skill-scope user
 ```
 
 This writes `LUMIO_KB_PATH=./wiki` to `.env` and a `## Lumio Knowledge Base`
@@ -458,17 +479,18 @@ lumio-wiki related "Authentication Architecture" --scope discovery --trace
 
 ### Claude Code / Codex / Pi / Hermes
 
-These agents have native skill support:
+Use shared user scope when the client scans `.agents/skills`. Client-specific
+compatibility destinations remain available as explicit fallbacks:
 
 ```bash
-lumio-wiki skill install --agent claude-code   # installs to ~/.claude/skills/
-lumio-wiki skill install --agent codex         # installs to ~/.codex/skills/
-lumio-wiki skill install --agent pi            # installs to ~/.pi/skills/
-lumio-wiki skill install --agent hermes        # installs to ~/.hermes/skills/
+lumio-wiki skill install --agent claude-code   # ~/.claude/skills/lumio-wiki/
+lumio-wiki skill install --agent codex         # ~/.codex/skills/lumio-wiki/
+lumio-wiki skill install --agent pi            # ~/.pi/agent/skills/lumio-wiki/
+lumio-wiki skill install --agent hermes        # ~/.hermes/skills/lumio-wiki/
 ```
 
-After install, the agent automatically knows the retrieval ladder, ingest
-workflow, and guardrails from `SKILL.md`.
+Restart the agent or start a new session after installation or update so the
+client discovers the refreshed `SKILL.md`.
 
 ### FAQ: how does the agent harness know where the wiki is?
 
@@ -480,8 +502,8 @@ settings), and the `lumio-wiki` CLI resolves it automatically when no
 
 **If the wiki doesn't exist yet:** run `lumio-wiki setup ./wiki`. It creates
 an empty categorized Knowledge Base (`lumio.yaml` + `.lumio/ingest` + `.lumio/index`)
-writes `.env` and `AGENTS.md`, and optionally installs the skill for a native-skill
-agent (`--agent claude-code`). Add your first `.md` Compiled Pages under `./wiki`,
+writes `.env` and `AGENTS.md`, and installs no skill unless an explicit
+`--skill-scope` or `--agent` target is supplied. Add your first `.md` Compiled Pages under `./wiki`,
 then `lumio-wiki validate`. The setup is idempotent: re-running it on an
 existing KB only updates `.env`, `AGENTS.md`, and the optional skill install.
 

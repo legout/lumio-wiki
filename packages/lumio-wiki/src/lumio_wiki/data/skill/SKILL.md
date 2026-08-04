@@ -12,10 +12,10 @@ description: >-
   include "lumio", "knowledge base", "wiki", "compiled page", "ingest",
   "proposal", "publish", "navigation index", "hot index", "graph path",
   "related pages", "retrieval ladder", and "validate the Knowledge Base".
-version: 0.1.1
-user-invocable: true
-argument-hint: "[init|validate|hot|index|search|page|related|paths|ingest|proposal|publish|discard|health|lint|cross-link|relationship|dream|doctor|skill] [args]"
 license: Apache 2.0
+metadata:
+  distribution: lumio-wiki
+  version: "0.1.1"
 ---
 
 Manage a portable Lumio Knowledge Base from this coding agent. Every operation
@@ -24,7 +24,8 @@ below invokes the public `lumio-wiki` CLI, which in turn calls the public
 no LanceDB, no OpenAI client required for base behavior. This skill invokes
 only public CLI/Python behavior and never parses the private MessagePack
 Discovery Graph artifact — reach graph state through `related`, `paths`, and
-`health` only.
+`health` only. Read the [detailed coding-agent protocol](PROTOCOL.md) only when
+the concise workflow below is insufficient.
 
 ## Setup
 
@@ -34,9 +35,13 @@ Discovery Graph artifact — reach graph state through `related`, `paths`, and
    OpenAI-compatible Distiller, `pip install 'lumio-wiki[all]'` for both).
 2. Run `lumio-wiki doctor` once per session to see the install shape: version,
    which optional capabilities are present, and where the packaged skill lives.
-3. If the user has not yet got a Knowledge Base, run `lumio-wiki init <path>`
-   to create one. The Knowledge Base is a directory of compiled Markdown
-   pages plus a root `lumio.yaml` Control File.
+3. For a project's first run, use `lumio-wiki setup <path>`. It creates or
+   detects the Knowledge Base and writes project `.env` plus `AGENTS.md` for
+   restarted and cross-client sessions. `lumio-wiki init <path>` is the
+   lower-level KB-only operation.
+4. Skill installation is explicit. Prefer `lumio-wiki skill install --scope
+   user` for a shared cross-client copy; use project scope only for a trusted
+   repository. Check drift with `skill status` and refresh with `skill update`.
 
 You are the default **Distiller**. For text and Markdown Knowledge Sources,
 the `PassthroughMarkdownDistiller` passes your authored Markdown straight
@@ -60,12 +65,13 @@ repository for the full glossary.
 
 ## Commands
 
-The CLI mirrors the public Python surface one-to-one. `<kb>` is the
-Knowledge Base root directory in every command below.
+The CLI is the portable public operating surface. `<kb>` is the Knowledge Base
+root directory in every command below.
 
 | Command | What it does |
 |---|---|
-| `lumio-wiki init <path>` | Create a categorized KB root with a seeded Control File. |
+| `lumio-wiki setup <path> [--skill-scope user\|project\|--agent <name>]` | Canonical first run: create/detect the KB and write project `.env` plus `AGENTS.md`; skill installation remains explicit. |
+| `lumio-wiki init <path>` | Lower-level KB-only operation: create a categorized root with a seeded Control File. |
 | `lumio-wiki validate <kb>` | Load and validate every page, Control File, link, and reserved artifact. Exit 1 on errors. |
 | `lumio-wiki hot <kb>` | Render the Maintainer-pinned Hot Index (ladder 0). Curated entry pages. |
 | `lumio-wiki index <kb> [dir]` | Render the generated Navigation Index (ladder 1). Root catalog, or a directory's shallow index. |
@@ -88,7 +94,10 @@ Knowledge Base root directory in every command below.
 | `lumio-wiki doctor` | Version, detected optional extras, and packaged skill location. |
 | `lumio-wiki skill path` | Absolute path of the packaged `SKILL.md` inside the installed wheel. |
 | `lumio-wiki skill protocol` | Absolute path of the packaged `PROTOCOL.md`. |
-| `lumio-wiki skill install --agent <name>` | Copy the skill + protocol into a coding agent's skill directory. Agents: `pi`, `hermes`, `codex`, `claude-code`. |
+| `lumio-wiki skill install --scope user\|project` | Explicitly install the canonical bundle into shared cross-client scope. User is preferred; project requires a trusted repository. |
+| `lumio-wiki skill install --agent <name>` | Explicit compatibility fallback for `pi`, `hermes`, `codex`, or `claude-code`. |
+| `lumio-wiki skill status [--scope user\|project\|--agent <name>]` | Read-only missing/current/stale/corrupt drift report. Defaults to shared user scope. |
+| `lumio-wiki skill update [--scope user\|project\|--agent <name>]` | Atomically refresh an installed copy from the current wheel. |
 
 ## Workflow: the retrieval ladder
 
@@ -208,18 +217,19 @@ not installed by default:
 `lumio-wiki doctor` reports which extras are present and names the exact
 install command for any that are missing.
 
-## Install the skill into another agent
+## Install and maintain the skill
 
 ```
-lumio-wiki skill install --agent pi
-lumio-wiki skill install --agent hermes
-lumio-wiki skill install --agent codex
-lumio-wiki skill install --agent claude-code
+lumio-wiki skill install --scope user
+lumio-wiki skill status --scope user
+lumio-wiki skill update --scope user
 ```
 
-The command copies `SKILL.md` and `PROTOCOL.md` into the agent's conventional
-skill directory and prints the destination. Pass `--dest <dir>` to override
-the destination, and `--overwrite` to replace an existing copy.
+Shared user scope (`~/.agents/skills/lumio-wiki/`) is preferred for cross-client
+reuse. Project scope is opt-in for trusted repositories. Compatibility targets
+remain available through `--agent pi|hermes|codex|claude-code`. Every copy has a
+version/hash manifest; status is read-only and update is explicit and atomic.
+Restart the agent or start a new session after install/update.
 
 ## Non-goals
 

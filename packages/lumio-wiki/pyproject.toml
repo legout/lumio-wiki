@@ -53,4 +53,4 @@ packages = ["src/lumio_wiki"]
 # proper Python packages (each has an __init__.py), so this is belt-and-
 # suspenders: hatchling includes package data automatically, but the explicit
 # force-include guarantees the .md files ship even under strict build configs.
-force-include = { "src/lumio_wiki/data/skill/SKILL.md" = "lumio_wiki/data/skill/SKILL.md", "src/lumio_wiki/data/protocol/PROTOCOL.md" = "lumio_wiki/data/protocol/PROTOCOL.md" }
+force-include = { "src/lumio_wiki/data/skill/SKILL.md" = "lumio_wiki/data/skill/SKILL.md", "src/lumio_wiki/data/skill/PROTOCOL.md" = "lumio_wiki/data/skill/PROTOCOL.md" }

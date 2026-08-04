@@ -20,6 +20,8 @@ this file is the authoritative release-blocking check.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -71,8 +73,14 @@ def _create_isolated_venv(venv_dir: Path) -> tuple[Path, Path]:
 def _assert_heavyweight_not_importable(python: Path) -> None:
     """Assert none of the forbidden optional deps are importable in the venv."""
     forbidden = (
-        "lancedb", "pyarrow", "stario", "piccolo",
-        "openai", "liteparse", "markitdown", "lumio",
+        "lancedb",
+        "pyarrow",
+        "stario",
+        "piccolo",
+        "openai",
+        "liteparse",
+        "markitdown",
+        "lumio",
     )
     for module in forbidden:
         result = subprocess.run(
@@ -160,14 +168,23 @@ def test_wheel_contains_skill_and_protocol(isolated_wheel_env: dict):
     wheel_path: Path = isolated_wheel_env["wheel"]
     import zipfile
 
+    skill_name = "lumio_wiki/data/skill/SKILL.md"
+    protocol_name = "lumio_wiki/data/skill/PROTOCOL.md"
     with zipfile.ZipFile(wheel_path) as zf:
         names = zf.namelist()
-    assert "lumio_wiki/data/skill/SKILL.md" in names, (
-        f"SKILL.md not found in wheel; contents: {names}"
-    )
-    assert "lumio_wiki/data/protocol/PROTOCOL.md" in names, (
-        f"PROTOCOL.md not found in wheel; contents: {names}"
-    )
+        skill_text = zf.read(skill_name).decode("utf-8")
+        protocol_text = zf.read(protocol_name).decode("utf-8")
+    assert skill_name in names, f"SKILL.md not found in wheel; contents: {names}"
+    assert protocol_name in names, f"PROTOCOL.md not found in wheel skill bundle; contents: {names}"
+
+    import msgspec
+
+    _opening, frontmatter, _body = skill_text.split("---", 2)
+    metadata = msgspec.yaml.decode(frontmatter.encode("utf-8"))
+    assert metadata["name"] == "lumio-wiki"
+    assert metadata["metadata"]["distribution"] == "lumio-wiki"
+    assert "(PROTOCOL.md)" in skill_text
+    assert protocol_text.startswith("# Lumio Wiki Coding-Agent Protocol")
     # The CLI module must also be present.
     assert "lumio_wiki/cli.py" in names
     assert "lumio_wiki/skill.py" in names
@@ -469,11 +486,205 @@ def test_isolated_skill_install(isolated_wheel_env: dict, tmp_path: Path):
     assert result.returncode == 0, f"skill install failed:\n{result.stderr}"
     assert (dest / "SKILL.md").is_file()
     assert (dest / "PROTOCOL.md").is_file()
+    assert (dest / ".lumio-skill-manifest.json").is_file()
     # The installed skill content must match the packaged source.
     from lumio_wiki.skill import resolve_skill_path
 
     assert (dest / "SKILL.md").read_text() == resolve_skill_path().read_text()
 
+    status = subprocess.run(
+        [
+            str(script),
+            "skill",
+            "status",
+            "--agent",
+            "claude-code",
+            "--dest",
+            str(dest),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert status.returncode == 0, status.stderr
+    assert "state:             current" in status.stdout
+
+    manifest_path = dest / ".lumio-skill-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["distribution_version"] = "0.0.0"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    stale = subprocess.run(
+        [
+            str(script),
+            "skill",
+            "status",
+            "--agent",
+            "claude-code",
+            "--dest",
+            str(dest),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert stale.returncode == 1
+    assert "state:             stale" in stale.stdout
+    stale_update = subprocess.run(
+        [
+            str(script),
+            "skill",
+            "update",
+            "--agent",
+            "claude-code",
+            "--dest",
+            str(dest),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert stale_update.returncode == 0, stale_update.stderr
+    assert "stale -> current" in stale_update.stdout
+
+    (dest / "SKILL.md").write_text("corrupt", encoding="utf-8")
+    corrupt = subprocess.run(
+        [
+            str(script),
+            "skill",
+            "status",
+            "--agent",
+            "claude-code",
+            "--dest",
+            str(dest),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert corrupt.returncode == 1
+    assert "state:             corrupt" in corrupt.stdout
+
+    updated = subprocess.run(
+        [
+            str(script),
+            "skill",
+            "update",
+            "--agent",
+            "claude-code",
+            "--dest",
+            str(dest),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert updated.returncode == 0, updated.stderr
+    assert "corrupt -> current" in updated.stdout
+
+    home = tmp_path / "home"
+    home.mkdir()
+    user_env = {**os.environ, "HOME": str(home)}
+    user_install = subprocess.run(
+        [str(script), "skill", "install", "--scope", "user"],
+        capture_output=True,
+        text=True,
+        env=user_env,
+    )
+    assert user_install.returncode == 0, user_install.stderr
+    assert (home / ".agents" / "skills" / "lumio-wiki" / "SKILL.md").is_file()
+
+    vendor_install = subprocess.run(
+        [str(script), "skill", "install", "--agent", "codex"],
+        capture_output=True,
+        text=True,
+        env=user_env,
+    )
+    assert vendor_install.returncode == 0, vendor_install.stderr
+    assert (home / ".codex" / "skills" / "lumio-wiki" / "SKILL.md").is_file()
+
+    project = tmp_path / "project"
+    project.mkdir()
+    project_install = subprocess.run(
+        [str(script), "skill", "install", "--scope", "project"],
+        capture_output=True,
+        text=True,
+        cwd=project,
+    )
+    assert project_install.returncode == 0, project_install.stderr
+    assert (project / ".agents" / "skills" / "lumio-wiki" / "SKILL.md").is_file()
+
+
+def test_isolated_skill_upgrade_from_prior_wheel(
+    isolated_wheel_env: dict,
+    tmp_path: Path,
+):
+    """The genuine pre-#150 wheel becomes stale and updates after upgrade."""
+    prior_wheel = (
+        Path(__file__).parent / "fixtures" / "prior_wheels" / "lumio_wiki-0.1.1-py3-none-any.whl"
+    )
+    assert prior_wheel.is_file()
+    assert hashlib.sha256(prior_wheel.read_bytes()).hexdigest() == (
+        "043bc432fa361ef2a7827644f84c77b2cfb7c8c13cbcae1fae61cc9ddf9e113a"
+    )
+    python = _create_isolated_venv(tmp_path / "upgrade-venv")[0]
+    bin_dir = python.parent
+    subprocess.run(
+        [str(python), "-m", "pip", "install", "--no-deps", str(prior_wheel)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [str(python), "-m", "pip", "install", "msgpack>=1.0", "msgspec[yaml]>=0.21.1"],
+        check=True,
+        capture_output=True,
+    )
+    script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
+    home = tmp_path / "upgrade-home"
+    home.mkdir()
+    environment = {**os.environ, "HOME": str(home)}
+
+    installed = subprocess.run(
+        [str(script), "skill", "install", "--agent", "codex"],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    subprocess.run(
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "--no-deps",
+            str(isolated_wheel_env["wheel"]),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    stale = subprocess.run(
+        [str(script), "skill", "status", "--agent", "codex"],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert stale.returncode == 1
+    assert "state:             stale" in stale.stdout
+    assert "installed_version: (none)" in stale.stdout
+    assert "legacy manifest-less" in stale.stdout
+
+    updated = subprocess.run(
+        [str(script), "skill", "update", "--agent", "codex"],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert updated.returncode == 0, updated.stderr
+    current = subprocess.run(
+        [str(script), "skill", "status", "--agent", "codex"],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert current.returncode == 0, current.stderr
+    assert "state:             current" in current.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -500,10 +711,7 @@ def test_base_install_rejects_pdf_with_actionable_missing_extra_error(
 
     # Init a KB so the ingest command can load it.
     kb_root = tmp_path / "kb"
-    init_cmd = (
-        "from lumio_wiki.cli import main; import sys; "
-        f'sys.exit(main(["init", "{kb_root}"]))'
-    )
+    init_cmd = f'from lumio_wiki.cli import main; import sys; sys.exit(main(["init", "{kb_root}"]))'
     subprocess.run(
         [str(python), "-c", init_cmd],
         capture_output=True,
@@ -537,10 +745,7 @@ def test_base_install_rejects_docx_with_actionable_missing_extra_error(
     """AC4 + AC6: a base install produces the actionable error for DOCX too."""
     python = isolated_wheel_env["python"]
     kb_root = tmp_path / "kb"
-    init_cmd = (
-        "from lumio_wiki.cli import main; import sys; "
-        f'sys.exit(main(["init", "{kb_root}"]))'
-    )
+    init_cmd = f'from lumio_wiki.cli import main; import sys; sys.exit(main(["init", "{kb_root}"]))'
     subprocess.run(
         [str(python), "-c", init_cmd],
         capture_output=True,

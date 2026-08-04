@@ -18,7 +18,10 @@ from __future__ import annotations
 import contextlib
 import io
 import re
+from pathlib import Path
 
+import msgspec
+from lumio_wiki import __version__
 from lumio_wiki.cli import main
 from lumio_wiki.skill import resolve_protocol_path, resolve_skill_path
 
@@ -42,6 +45,26 @@ def _skill_and_protocol() -> list[tuple[str, str]]:
     return [
         (path.name, path.read_text()) for path in (resolve_skill_path(), resolve_protocol_path())
     ]
+
+
+def test_skill_uses_portable_agent_skills_frontmatter_and_relative_protocol():
+    """Issue #150: the wheel contract follows the portable Agent Skills shape."""
+    skill_path = resolve_skill_path()
+    text = skill_path.read_text(encoding="utf-8")
+    _opening, frontmatter, _body = text.split("---", 2)
+    data = msgspec.yaml.decode(frontmatter.encode("utf-8"))
+
+    allowed = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}
+    assert isinstance(data, dict)
+    assert set(data) <= allowed
+    assert data["name"] == "lumio-wiki"
+    assert isinstance(data["description"], str)
+    assert data["metadata"] == {
+        "distribution": "lumio-wiki",
+        "version": __version__,
+    }
+    assert "(PROTOCOL.md)" in text
+    assert (skill_path.parent / "PROTOCOL.md").is_file()
 
 
 def test_skill_never_instructs_private_msgpack_parsing():
@@ -68,6 +91,22 @@ def test_every_cited_command_is_a_registered_public_cli_command():
         cited = set(pattern.findall(text))
         unknown = {cmd for cmd in cited if not _command_is_registered(cmd)}
         assert not unknown, f"{name} cites unknown commands: {sorted(unknown)}"
+
+
+def test_skill_management_and_setup_are_in_parity_across_public_surfaces():
+    root = Path(__file__).parents[3]
+    surfaces = {
+        **dict(_skill_and_protocol()),
+        "docs/usage.md": (root / "docs" / "usage.md").read_text(encoding="utf-8"),
+    }
+    for name, text in surfaces.items():
+        assert "lumio-wiki skill install --scope user" in text, name
+        assert "lumio-wiki skill status" in text, name
+        assert "lumio-wiki skill update" in text, name
+        assert "restart" in text.lower() or "new session" in text.lower(), name
+    for name, text in _skill_and_protocol():
+        assert "lumio-wiki setup" in text, name
+        assert "lower-level" in text.lower(), name
 
 
 def test_skill_documents_the_full_retrieval_ladder():

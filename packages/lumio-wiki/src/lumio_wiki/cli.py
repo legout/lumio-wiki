@@ -28,7 +28,9 @@ Command                                           Public function
 ``health [path]``                                 :meth:`KnowledgeBase.graph_health` + validation
 ``doctor``                                        install diagnostics (optionals, skill path)
 ``skill path``                                    packaged skill location
-``skill install --agent <name>``                  install skill for a supported coding agent
+``skill install (--scope <scope>|--agent <name>)`` explicit skill installation
+``skill status [target]``                         inspect installed skill drift
+``skill update [target]``                         atomically refresh an installed skill
 ================================================  ================================================
 
 The base Distiller is the host coding agent (``PassthroughMarkdownDistiller``):
@@ -303,20 +305,34 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         _write_agents_md_section(agents_md, kb_path)
         print(f"  AGENTS.md:      {agents_md}")
 
-    # 4. Optional skill install.
-    if getattr(args, "agent", None):
-        from lumio_wiki.skill import SkillError, install_skill
+    # 4. Optional, explicit skill install. Project bootstrap never writes into
+    # an agent trust surface unless one target was requested (ADR-0017).
+    agent = getattr(args, "agent", None)
+    scope = getattr(args, "skill_scope", None)
+    if agent is not None or scope is not None:
+        from lumio_wiki.skill import SkillError, install_skill, skill_status
 
         try:
-            target = install_skill(
-                agent=args.agent,
-                dest=None,
-                overwrite=getattr(args, "overwrite", False),
-            )
+            status = skill_status(agent, scope=scope, project_dir=project_dir)
+            if status.state == "current":
+                print(f"  skill install:  CURRENT ({status.target})")
+            elif status.state == "missing" or getattr(args, "overwrite", False):
+                target = install_skill(
+                    agent,
+                    scope=scope,
+                    project_dir=project_dir,
+                    overwrite=getattr(args, "overwrite", False),
+                )
+                print(f"  skill install:  {target}")
+                print("  skill discovery: restart the agent or start a new session")
+            else:
+                print(
+                    f"  skill install:  SKIPPED ({status.state}; run "
+                    f"'lumio-wiki skill update' for this target)",
+                    file=sys.stderr,
+                )
         except SkillError as exc:
             print(f"  skill install:  SKIPPED ({exc})", file=sys.stderr)
-        else:
-            print(f"  skill install:  {target}")
 
     print()
     print("Setup complete. Next steps:")
@@ -1466,16 +1482,99 @@ def _cmd_skill_protocol(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_skill_install(args: argparse.Namespace) -> int:
-    from lumio_wiki.skill import SkillError, install_skill
+def _skill_target_values(
+    args: argparse.Namespace,
+) -> tuple[str | None, str | None, Path | None]:
+    agent = getattr(args, "agent", None)
+    scope = getattr(args, "scope", None)
+    dest = getattr(args, "dest", None)
+    if agent is not None and not isinstance(agent, str):
+        raise CliError("skill agent must be a string")
+    if scope is not None and not isinstance(scope, str):
+        raise CliError("skill scope must be a string")
+    if dest is not None and not isinstance(dest, Path):
+        raise CliError("skill destination must be a path")
+    return agent, scope, dest
 
+
+def _print_skill_status(status) -> None:
+    print(f"state:             {status.state}")
+    print(f"target:            {status.target}")
+    print(f"target_kind:       {status.target_kind}")
+    print(f"packaged_version:  {status.packaged_version}")
+    print(f"packaged_hash:     {status.packaged_hash}")
+    print(f"installed_version: {status.installed_version or '(none)'}")
+    print(f"installed_hash:    {status.installed_hash or '(none)'}")
+    print(f"detail:            {status.detail}")
+
+
+def _cmd_skill_install(args: argparse.Namespace) -> int:
+    from lumio_wiki.skill import SkillError, install_skill, skill_status
+
+    agent, scope, dest = _skill_target_values(args)
     try:
-        target = install_skill(agent=args.agent, dest=args.dest, overwrite=args.overwrite)
+        status = skill_status(agent, scope=scope, dest=dest, project_dir=Path.cwd())
+        if status.state == "current" and not args.overwrite:
+            print(
+                "error: destination already contains the current skill; "
+                "no installation was performed",
+                file=sys.stderr,
+            )
+            _print_skill_status(status)
+            return 1
+        if status.state != "missing" and not args.overwrite:
+            print(
+                f"error: installed skill is {status.state}; run 'lumio-wiki skill "
+                "update' for the same target or pass --overwrite explicitly",
+                file=sys.stderr,
+            )
+            return 1
+        target = install_skill(
+            agent,
+            scope=scope,
+            dest=dest,
+            project_dir=Path.cwd(),
+            overwrite=args.overwrite,
+        )
     except SkillError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(f"Installed lumio-wiki Agent Skill for {args.agent!r}:")
+    print("Installed lumio-wiki Agent Skill:")
     print(f"  {target}")
+    print("Restart the agent or start a new session to discover the installed skill.")
+    return 0
+
+
+def _cmd_skill_status(args: argparse.Namespace) -> int:
+    from lumio_wiki.skill import SkillError, skill_status
+
+    agent, scope, dest = _skill_target_values(args)
+    try:
+        status = skill_status(agent, scope=scope, dest=dest, project_dir=Path.cwd())
+    except SkillError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    _print_skill_status(status)
+    return 0 if status.state == "current" else 1
+
+
+def _cmd_skill_update(args: argparse.Namespace) -> int:
+    from lumio_wiki.skill import SkillError, skill_status, update_skill
+
+    agent, scope, dest = _skill_target_values(args)
+    try:
+        before = skill_status(agent, scope=scope, dest=dest, project_dir=Path.cwd())
+        target = update_skill(agent, scope=scope, dest=dest, project_dir=Path.cwd())
+        after = skill_status(agent, scope=scope, dest=dest, project_dir=Path.cwd())
+    except SkillError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if before.state == "current":
+        print(f"lumio-wiki Agent Skill is already current: {target}")
+    else:
+        print(f"Updated lumio-wiki Agent Skill ({before.state} -> {after.state}):")
+        print(f"  {target}")
+        print("Restart the agent or start a new session to discover the updated skill.")
     return 0
 
 
@@ -1716,6 +1815,35 @@ def _add_graph_scope_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_skill_target_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    required: bool,
+) -> None:
+    target = parser.add_mutually_exclusive_group(required=required)
+    target.add_argument(
+        "--scope",
+        choices=["user", "project"],
+        default=None,
+        help=(
+            "Shared Agent Skills scope: user installs under ~/.agents/skills; "
+            "project installs under ./.agents/skills. Defaults to user when omitted."
+        ),
+    )
+    target.add_argument(
+        "--agent",
+        choices=["pi", "hermes", "codex", "claude-code"],
+        default=None,
+        help="Compatibility target for a client-specific user skill directory.",
+    )
+    parser.add_argument(
+        "--dest",
+        type=Path,
+        default=None,
+        help="Override a selected agent's destination directory.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the ``lumio-wiki`` argument parser."""
     parser = argparse.ArgumentParser(
@@ -1752,11 +1880,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Knowledge Base root directory (created if it does not exist).",
     )
-    setup_parser.add_argument(
+    setup_skill_target = setup_parser.add_mutually_exclusive_group()
+    setup_skill_target.add_argument(
         "--agent",
         choices=["pi", "hermes", "codex", "claude-code"],
         default=None,
-        help="Install the Agent Skill for this coding agent after setup.",
+        help="Explicitly install the Agent Skill for this compatibility target.",
+    )
+    setup_skill_target.add_argument(
+        "--skill-scope",
+        choices=["user", "project"],
+        default=None,
+        help="Explicitly install the shared Agent Skill at user or project scope.",
     )
     setup_parser.add_argument(
         "--no-agents-md",
@@ -1766,7 +1901,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite an existing skill when --agent is given.",
+        help="Replace a stale or corrupt skill when an install target is requested.",
     )
     setup_parser.set_defaults(func=_cmd_setup)
 
@@ -2306,8 +2441,11 @@ def build_parser() -> argparse.ArgumentParser:
     # skill (nested)
     skill_parser = subparsers.add_parser(
         "skill",
-        help="Locate or install the packaged Agent Skill.",
-        description="Resolve the packaged Agent Skill path or install it for a coding agent.",
+        help="Locate, install, inspect, or update the packaged Agent Skill.",
+        description=(
+            "Manage explicit cross-client, project, or compatibility-target Agent Skill "
+            "copies. The installed wheel remains the canonical contract."
+        ),
     )
     skill_sub = skill_parser.add_subparsers(
         dest="skill_command", required=False, metavar="<skill-command>"
@@ -2329,30 +2467,38 @@ def build_parser() -> argparse.ArgumentParser:
 
     skill_install = skill_sub.add_parser(
         "install",
-        help="Install the packaged Agent Skill for a supported coding agent.",
+        help="Explicitly install the canonical skill bundle.",
         description=(
-            "Copy the packaged Agent Skill into a coding agent's skill directory. "
-            "Supported agents: pi, hermes, codex, claude-code."
+            "Install into shared user/project .agents/skills or a supported client's "
+            "compatibility directory. Installation never happens as a package side effect."
         ),
     )
-    skill_install.add_argument(
-        "--agent",
-        required=True,
-        choices=["pi", "hermes", "codex", "claude-code"],
-        help="Target coding agent.",
-    )
-    skill_install.add_argument(
-        "--dest",
-        type=Path,
-        default=None,
-        help="Override destination directory (default: agent's conventional skill dir).",
-    )
+    _add_skill_target_arguments(skill_install, required=True)
     skill_install.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite an existing skill at the destination.",
+        help="Explicitly replace an existing stale or corrupt destination.",
     )
     skill_install.set_defaults(func=_cmd_skill_install)
+
+    skill_status_parser = skill_sub.add_parser(
+        "status",
+        help="Report missing, current, stale, or corrupt without modifying files.",
+        description="Compare an installed copy and manifest with the current wheel bundle.",
+    )
+    _add_skill_target_arguments(skill_status_parser, required=False)
+    skill_status_parser.set_defaults(func=_cmd_skill_status)
+
+    skill_update = skill_sub.add_parser(
+        "update",
+        help="Explicitly refresh an installed skill from the current wheel.",
+        description=(
+            "Atomically refresh a stale or corrupt destination. Missing destinations must "
+            "be installed first."
+        ),
+    )
+    _add_skill_target_arguments(skill_update, required=False)
+    skill_update.set_defaults(func=_cmd_skill_update)
 
     # source (nested) — private Knowledge Source lifecycle (issue #133)
     source_parser = subparsers.add_parser(
