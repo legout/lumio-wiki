@@ -292,6 +292,67 @@ else:
     pipeline.discard(proposal.id)
 ```
 
+### Use myKG as an experiment-only upstream extractor
+
+Lumio can evaluate [myKG](https://github.com/SenolIsci/mykg) as an out-of-process,
+corpus-level extractor. This is an experiment harness, **not** a runtime
+integration: myKG is not a `lumio-wiki` dependency, its output is never
+canonical by itself, and every imported page or Relationship still passes
+through Lumio's proposal and Maintainer-review gates.
+
+Before a real run, choose a private corpus, pin the myKG version and
+model/provider configuration, set a cost/time budget, and choose a private
+artifact directory. The complete runbook and blank evaluation report are in
+[`experiments/mykg/`](../experiments/mykg/README.md).
+
+Convert an existing myKG session—or try the included synthetic sample—into a
+temporary Compiled Markdown tree:
+
+```bash
+uv run python experiments/mykg/convert_mykg.py \
+  --session experiments/mykg/sample \
+  --out /tmp/mykg-candidates \
+  --default-lifecycle review \
+  --default-visibility internal
+```
+
+The output contains candidate pages plus private
+`relationship-candidates.jsonl` and `conversion-report.json` sidecars. The
+converter never writes extracted edges into page `relationships:` frontmatter.
+Stage the candidate pages through the ordinary external-import proposal path:
+
+```python
+from lumio_wiki import (
+    IngestStore,
+    SourceProvenance,
+    import_external_compiled_markdown,
+    load_knowledge_base,
+    propose_external_import,
+)
+from lumio_wiki.proposal_pipeline import ProposalPipeline
+
+kb, report = load_knowledge_base("my-kb")
+parsed = import_external_compiled_markdown("/tmp/mykg-candidates")
+proposal = propose_external_import(
+    parsed,
+    kb,
+    SourceProvenance(
+        original_filename="mykg-session",
+        content_type="application/x-mykg-session",
+        converted_by="mykg-experiment",
+    ),
+)
+store = IngestStore(kb.root / ".lumio" / "ingest")
+pipeline = ProposalPipeline(kb, store=store)
+pipeline.stage(proposal)
+```
+
+Use `lumio-wiki proposal inspect`, `proposal validate`, and `publish` for the
+normal review flow. Review the private relationship sidecar separately; only
+accepted claims should be staged with `lumio-wiki relationship stage`. Never
+publish the raw corpus, myKG session files, confidence values, source paths, or
+private sidecars into the Knowledge Base.
+
 ### Publishing to S3 (immutable Published Versions)
 
 ```python
