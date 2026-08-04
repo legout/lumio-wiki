@@ -52,8 +52,14 @@ automatically when no `<kb>` argument is given).
 
 ### Ingest (you are the Distiller)
 
-1. Author a Compiled Page (YAML frontmatter + Markdown body) in a temp file.
-2. `lumio-wiki ingest <file>` — stages a reviewable Ingest Proposal.
+1. Author a Compiled Page (YAML frontmatter + Markdown body) that declares the
+   source identity in `sources[].id`.
+2. `lumio-wiki ingest <original-source> --compiled-page <page.md> --source-id <id>`
+   — bind the ORIGINAL raw source to your authored page under one stable
+   identity and stage a single reviewable Ingest Proposal. No `[documents]`
+   extra required (the converter name is derived from routing without running
+   it). Plain `lumio-wiki ingest <file>` stays available for text/Markdown
+   passthrough but does NOT establish a Source identity.
 3. `lumio-wiki proposal list` → `proposal inspect <id>` → `proposal validate <id>`.
 4. `lumio-wiki publish <id>` (or `lumio-wiki discard <id>`).
 
