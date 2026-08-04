@@ -64,6 +64,10 @@ from lumio_wiki import (
     validate,
     write_control_file,
 )
+from lumio_wiki.env_loader import (
+    KB_PATH_ENV_VAR,
+    discover_kb_path_from_project_env,
+)
 from lumio_wiki.knowledge_base import (
     DEFAULT_GRAPH_MAX_DEPTH,
     DEFAULT_GRAPH_MAX_EDGES,
@@ -1497,21 +1501,35 @@ def _cmd_source_reactivate(args: argparse.Namespace) -> int:
 
 
 def _resolve_default_kb_path() -> str | None:
-    """Return the ``LUMIO_KB_PATH`` env var, or ``None`` if unset."""
-    return os.environ.get("LUMIO_KB_PATH")
+    """Resolve a default KB path when no positional ``<kb>`` was given.
+
+    Applies the documented precedence (issue #152, ADR-0017), minus the
+    positional argument which argparse already handled:
+
+    1. an exported process ``LUMIO_KB_PATH`` (never overwritten by a file); then
+    2. ``LUMIO_KB_PATH`` from the nearest trusted project ``.env``.
+
+    Returns ``None`` when neither source yields a value so :func:`main` can
+    surface a single actionable error.
+    """
+    exported = os.environ.get(KB_PATH_ENV_VAR)
+    if exported:
+        return exported
+    return discover_kb_path_from_project_env()
 
 
 def _add_kb_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "path",
         nargs="?",
-        default=_resolve_default_kb_path(),
+        default=None,
         type=str,
         help=(
             "Knowledge Base root directory, or an S3 object-store URI "
             "(s3://bucket/path) resolved as an immutable Published Version "
-            "(issue #120; requires lumio-wiki[s3]). Falls back to "
-            "LUMIO_KB_PATH if omitted."
+            "(issue #120; requires lumio-wiki[s3]). When omitted, resolved "
+            "in order: an exported LUMIO_KB_PATH, then LUMIO_KB_PATH from the "
+            "nearest project .env (issue #152; ADR-0017)."
         ),
     )
 
@@ -1579,8 +1597,10 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Create a Knowledge Base (or use an existing one), write .env with "
             "LUMIO_KB_PATH, write/update AGENTS.md with the retrieval-ladder "
-            "protocol, and optionally install the Agent Skill. After setup, the "
-            "lumio-wiki CLI resolves the KB path from LUMIO_KB_PATH automatically."
+            "protocol, and optionally install the Agent Skill. After setup, "
+            "subsequent lumio-wiki commands load LUMIO_KB_PATH from .env "
+            "automatically, so no <kb> argument is needed (issue #152; "
+            "ADR-0017)."
         ),
     )
     setup_parser.add_argument(
@@ -2269,12 +2289,17 @@ def main(argv: list[str] | None = None) -> int:
     if not hasattr(args, "func"):
         parser.print_help()
         return 1
-    # Commands using _add_kb_argument can omit <kb> when LUMIO_KB_PATH is
-    # set. If neither was provided, fail with actionable guidance.
+    # Commands using _add_kb_argument can omit <kb>. Resolve the default now
+    # (exported LUMIO_KB_PATH, then the nearest project .env) so the value is
+    # computed once, in the live process, rather than at parser-build time
+    # (issue #152, ADR-0017). If nothing yields a value, fail with guidance.
+    if hasattr(args, "path") and args.path is None:
+        args.path = _resolve_default_kb_path()
     if hasattr(args, "path") and args.path is None:
         print(
             "error: no Knowledge Base path provided. Pass <kb-path> as a "
-            "positional argument or set LUMIO_KB_PATH.",
+            "positional argument, export LUMIO_KB_PATH, or run "
+            "'lumio-wiki setup <kb>' to write .env.",
             file=sys.stderr,
         )
         return 2
