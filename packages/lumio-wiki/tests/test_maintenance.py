@@ -39,6 +39,33 @@ def kb_with_candidate(kb_root: Path) -> Path:
     return kb_root
 
 
+@pytest.fixture
+def kb_with_same_directory_candidate(kb_root: Path) -> Path:
+    """A KB whose cross-link candidate resolves within the source directory."""
+    overview = kb_root / "concepts" / "overview.md"
+    overview_text = overview.read_text(encoding="utf-8")
+    glossary = (
+        overview_text
+        .replace('title: "Lumio Overview"', 'title: "Glossary"')
+        .replace('id: "lumio-overview"', 'id: "glossary"')
+        .replace('# Lumio Overview', '# Glossary')
+    )
+    (kb_root / "concepts" / "glossary.md").write_text(glossary, encoding="utf-8")
+    overview.write_text(
+        overview_text.rstrip() + "\n\nThe Glossary explains the KB terminology.\n",
+        encoding="utf-8",
+    )
+    return kb_root
+
+
+@pytest.fixture
+def real_world_kb(tmp_path: Path) -> Path:
+    """Copy the committed Atlas Heatworks trial fixture into a writable KB."""
+    root = tmp_path / "atlas-heatworks-kb"
+    shutil.copytree(FIXTURES / "real_world_atlas_kb", root)
+    return root
+
+
 def _store(kb_root: Path) -> IngestStore:
     store_dir = kb_root / ".lumio" / "ingest"
     store_dir.mkdir(parents=True, exist_ok=True)
@@ -410,29 +437,46 @@ def test_cli_relationship_stage_publish_exposes_canonical_edge(kb_root: Path, ca
     assert "Acme Corp" in overview
 
 
-def test_cli_cross_link_stage_is_markdown_link_only(kb_with_candidate: Path, capsys):
+def test_cli_cross_link_stage_is_discovery_only(
+    kb_with_same_directory_candidate: Path, capsys
+):
     # AC#6: ``cross-link --stage`` repairs a candidate as an authored Markdown
-    # link — it never creates a typed canonical Relationship. (Whether that
-    # link also becomes a discovery-scope Extracted Reference depends on the
-    # link resolving without escaping; here the repair is cross-directory, so
-    # it stays an authored link and never a canonical edge.)
-    rc = main(["cross-link", str(kb_with_candidate), "--stage"])
+    # link that becomes an Extracted Reference. It never creates a typed
+    # canonical Relationship.
+    rc = main(["cross-link", str(kb_with_same_directory_candidate), "--stage"])
     out = capsys.readouterr().out
     assert rc == 0
     assert "staged_proposals:    1" in out
     pid = _extract_staged_id(out)
-    assert main(["publish", str(kb_with_candidate), pid]) == 0
+    assert main(["publish", str(kb_with_same_directory_candidate), pid]) == 0
     capsys.readouterr()  # drain publish output
-    assert main(["validate", str(kb_with_candidate)]) == 0
+    assert main(["validate", str(kb_with_same_directory_candidate)]) == 0
 
-    # The repair is an authored Markdown link, NOT a typed canonical
-    # Relationship: no frontmatter ``relationships:``, and canonical-graph
-    # traversal does not reach the target.
-    overview = (kb_with_candidate / "concepts" / "overview.md").read_text(encoding="utf-8")
-    assert "[Acme Corp]" in overview
+    overview = (
+        kb_with_same_directory_candidate / "concepts" / "overview.md"
+    ).read_text(encoding="utf-8")
+    assert "[Glossary](glossary.md)" in overview
     assert "relationships:" not in overview
-    main(["related", str(kb_with_candidate), "Lumio Overview", "--scope", "canonical"])
-    assert "Acme Corp" not in capsys.readouterr().out
+    main(
+        [
+            "related",
+            str(kb_with_same_directory_candidate),
+            "Lumio Overview",
+            "--scope",
+            "canonical",
+        ]
+    )
+    assert "Glossary" not in capsys.readouterr().out
+    main(
+        [
+            "related",
+            str(kb_with_same_directory_candidate),
+            "Lumio Overview",
+            "--scope",
+            "discovery",
+        ]
+    )
+    assert "Glossary" in capsys.readouterr().out
 
 
 def test_canonical_vs_discovery_scope_distinction(kb_root: Path, capsys):
@@ -473,3 +517,93 @@ def test_canonical_vs_discovery_scope_distinction(kb_root: Path, capsys):
     # The same-directory body link is a discovery-ONLY edge (no typed edge).
     assert "Glossary" not in canonical
     assert "Glossary" in discovery
+
+
+def test_cli_relationship_stage_real_world_fixture(real_world_kb: Path, capsys):
+    """AC#8: stage a meaningful Atlas Heatworks canonical edge beside discovery topology."""
+    assert main(["validate", str(real_world_kb)]) == 0
+    capsys.readouterr()
+
+    # The authored catalog link is discovery-only before any Relationship is
+    # staged; canonical traversal does not manufacture an edge from it.
+    main(
+        [
+            "related",
+            str(real_world_kb),
+            "Atlas Heatworks",
+            "--scope",
+            "canonical",
+        ]
+    )
+    assert "Aster Series Product Catalog" not in capsys.readouterr().out
+    main(
+        [
+            "related",
+            str(real_world_kb),
+            "Atlas Heatworks",
+            "--scope",
+            "discovery",
+        ]
+    )
+    assert "Aster Series Product Catalog" in capsys.readouterr().out
+
+    rc = main(
+        [
+            "relationship",
+            "stage",
+            str(real_world_kb),
+            "Customer Support and Warranty Policy",
+            "Aster Series Product Catalog",
+            "--type",
+            "governs",
+        ]
+    )
+    stage_out = capsys.readouterr().out
+    assert rc == 0
+    assert "governs" in stage_out
+    pid = _extract_proposal_id(stage_out)
+
+    # Before publication, the canonical graph is unchanged and the ordinary
+    # proposal review commands can inspect and validate the staged result.
+    main(
+        [
+            "related",
+            str(real_world_kb),
+            "Customer Support and Warranty Policy",
+            "--scope",
+            "canonical",
+        ]
+    )
+    assert "Aster Series Product Catalog" not in capsys.readouterr().out
+    assert main(["proposal", "inspect", str(real_world_kb), pid]) == 0
+    capsys.readouterr()
+    assert main(["proposal", "validate", str(real_world_kb), pid]) == 0
+    capsys.readouterr()
+
+    assert main(["publish", str(real_world_kb), pid]) == 0
+    capsys.readouterr()
+    assert main(["validate", str(real_world_kb)]) == 0
+    capsys.readouterr()
+
+    # Publication exposes the meaningful typed edge in canonical traversal;
+    # discovery scope includes it as the canonical-plus-extracted superset.
+    main(
+        [
+            "related",
+            str(real_world_kb),
+            "Customer Support and Warranty Policy",
+            "--scope",
+            "canonical",
+        ]
+    )
+    assert "Aster Series Product Catalog" in capsys.readouterr().out
+    main(
+        [
+            "related",
+            str(real_world_kb),
+            "Customer Support and Warranty Policy",
+            "--scope",
+            "discovery",
+        ]
+    )
+    assert "Aster Series Product Catalog" in capsys.readouterr().out
