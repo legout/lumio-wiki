@@ -19,6 +19,11 @@ import msgspec
 #: fields (which stay ``str``) so legacy/future persisted values still decode.
 SourceLifecycleAction = Literal["retire", "reactivate"]
 
+#: Controlled result vocabulary for managed source registration (#149). Kept
+#: off the persisted msgspec structs because it describes the operation result,
+#: not registry state.
+SourceRegistrationAction = Literal["registered", "reused"]
+
 #: Controlled status vocabulary for a private Knowledge Source identity.
 SourceStatus = Literal["active", "retired"]
 
@@ -289,7 +294,9 @@ class SourceRegistry:
         self._commit(msgspec.structs.replace(self._state, sources=sources))
         return version
 
-    def register_or_reuse(self, source_id: str, raw_bytes: bytes) -> tuple[SourceVersion, str]:
+    def register_or_reuse(
+        self, source_id: str, raw_bytes: bytes
+    ) -> tuple[SourceVersion, SourceRegistrationAction]:
         """Resolve a managed host-Distiller source identity (issue #149).
 
         One deep identity rule for the managed ``ingest --compiled-page

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 import os
 import sys
 from pathlib import Path
@@ -108,6 +109,14 @@ def default_index_dir(kb_root: str | Path) -> Path:
 def _resolve_ingest_dir(args: argparse.Namespace, kb_root: Path) -> Path:
     raw = getattr(args, "ingest_dir", None)
     return Path(raw) if raw else default_ingest_dir(kb_root)
+
+
+def _infer_content_type(path: Path) -> str:
+    """Infer a stable MIME type for CLI provenance, with a text fallback."""
+    suffix = path.suffix.lower()
+    if suffix in {".md", ".markdown"}:
+        return "text/markdown"
+    return mimetypes.guess_type(path.name)[0] or "text/plain"
 
 
 def _resolve_index_dir(args: argparse.Namespace, kb_root: Path) -> Path:
@@ -639,13 +648,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     if not source_path.is_file():
         raise CliError(f"source file not found: {source_path}")
     raw_bytes = source_path.read_bytes()
-    content_type = args.content_type
-    if content_type is None:
-        suffix = source_path.suffix.lower()
-        if suffix in {".md", ".markdown"}:
-            content_type = "text/markdown"
-        else:
-            content_type = "text/plain"
+    content_type = args.content_type or _infer_content_type(source_path)
 
     ingest_dir = _resolve_ingest_dir(args, kb.root)
     ingest_dir.mkdir(parents=True, exist_ok=True)
@@ -670,6 +673,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         print(f"Staged proposal {proposal.id}")
         print(f"  status:         {proposal.status}")
         print(f"  source_id:      {proposal.provenance.source_id}")
+        print(f"  content_type:    {proposal.provenance.content_type}")
         print(f"  converted_by:   {proposal.provenance.converted_by}")
         print(f"  source_hash:    {proposal.provenance.source_hash}")
         print(f"  affected_pages: {', '.join(proposal.affected_pages) or '(none)'}")

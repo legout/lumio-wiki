@@ -351,6 +351,51 @@ def test_managed_ingest_binds_source_and_authored_page(
     assert registered.versions[0].content_hash == hashlib.sha256(source.read_bytes()).hexdigest()
 
 
+@pytest.mark.parametrize(
+    ("suffix", "expected_content_type", "expected_converter"),
+    [
+        (".pdf", "application/pdf", "liteparse"),
+        (
+            ".docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "markitdown",
+        ),
+        (".html", "text/html", "markitdown"),
+        (".md", "text/markdown", "markdown"),
+        (".txt", "text/plain", "text"),
+    ],
+)
+def test_managed_ingest_infers_original_content_type(
+    kb_root: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    suffix: str,
+    expected_content_type: str,
+    expected_converter: str,
+):
+    source = tmp_path / f"report{suffix}"
+    source.write_bytes(b"original source bytes")
+    page = tmp_path / "authored.md"
+    page.write_text(_MANAGED_PAGE, encoding="utf-8")
+
+    rc = main(
+        [
+            "ingest",
+            str(kb_root),
+            str(source),
+            "--compiled-page",
+            str(page),
+            "--source-id",
+            "annual-impact-report",
+        ]
+    )
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert f"content_type:    {expected_content_type}" in out
+    assert f"converted_by:   {expected_converter}" in out
+
+
 def test_managed_ingest_compiled_page_and_source_id_are_required_together(
     kb_root: Path, tmp_path: Path
 ):
@@ -377,7 +422,9 @@ def test_managed_ingest_missing_source_id_in_page_blocks_with_actionable_error(
     source.write_bytes(b"%PDF-1.4")
     page = tmp_path / "authored.md"
     # The page cites a DIFFERENT source id than the one passed on the CLI.
-    page.write_text(_MANAGED_PAGE.replace("annual-impact-report", "some-other-id"), encoding="utf-8")
+    page.write_text(
+        _MANAGED_PAGE.replace("annual-impact-report", "some-other-id"), encoding="utf-8"
+    )
 
     rc = main(
         [
