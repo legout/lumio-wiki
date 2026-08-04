@@ -291,6 +291,140 @@ def test_proposal_validate_reports_valid(kb_root: Path, source_file: Path):
     assert rc == 0
 
 
+# ---------------------------------------------------------------------------
+# issue #149 — managed host-Distiller ingest (binds the original source +
+# authored page under one stable source identity).
+# ---------------------------------------------------------------------------
+
+
+_MANAGED_PAGE = (
+    "---\n"
+    'title: "Managed Impact Report"\n'
+    "aliases: []\n"
+    'tags:\n  - "report"\n'
+    'summary: "Authored from the PDF."\n'
+    'lifecycle: "draft"\n'
+    'visibility: "internal"\n'
+    "sources:\n"
+    '  - id: "annual-impact-report"\n'
+    '    title: "2025 Impact Report"\n'
+    "relationships: []\n"
+    "synthetic: false\n"
+    "---\n\n"
+    "# Managed Impact Report\n\n"
+    "Body authored from the original PDF.\n"
+)
+
+
+def test_managed_ingest_binds_source_and_authored_page(
+    kb_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    source = tmp_path / "2025-impact-report.pdf"
+    source.write_bytes(b"%PDF-1.4 original impact report bytes")
+    page = tmp_path / "authored.md"
+    page.write_text(_MANAGED_PAGE, encoding="utf-8")
+
+    rc = main(
+        [
+            "ingest",
+            str(kb_root),
+            str(source),
+            "--compiled-page",
+            str(page),
+            "--source-id",
+            "annual-impact-report",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Staged proposal" in out
+    assert "source_id:      annual-impact-report" in out
+    assert "converted_by:   liteparse" in out
+    assert "source_hash:" in out
+    # The private Source identity was registered with an immutable version.
+    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
+    registered = store.source_registry.get("annual-impact-report")
+    assert registered.status == "active"
+    assert len(registered.versions) == 1
+    import hashlib
+
+    assert registered.versions[0].content_hash == hashlib.sha256(source.read_bytes()).hexdigest()
+
+
+def test_managed_ingest_compiled_page_and_source_id_are_required_together(
+    kb_root: Path, tmp_path: Path
+):
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"%PDF-1.4")
+    page = tmp_path / "authored.md"
+    page.write_text(_MANAGED_PAGE, encoding="utf-8")
+
+    # Only --compiled-page (no --source-id) must fail.
+    rc = main(["ingest", str(kb_root), str(source), "--compiled-page", str(page)])
+    assert rc != 0
+    # Only --source-id (no --compiled-page) must fail.
+    rc = main(["ingest", str(kb_root), str(source), "--source-id", "annual-impact-report"])
+    assert rc != 0
+    # Nothing was staged by the rejected invocations.
+    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
+    assert store.list() == []
+
+
+def test_managed_ingest_missing_source_id_in_page_blocks_with_actionable_error(
+    kb_root: Path, tmp_path: Path
+):
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"%PDF-1.4")
+    page = tmp_path / "authored.md"
+    # The page cites a DIFFERENT source id than the one passed on the CLI.
+    page.write_text(_MANAGED_PAGE.replace("annual-impact-report", "some-other-id"), encoding="utf-8")
+
+    rc = main(
+        [
+            "ingest",
+            str(kb_root),
+            str(source),
+            "--compiled-page",
+            str(page),
+            "--source-id",
+            "annual-impact-report",
+        ]
+    )
+    assert rc != 0
+
+
+def test_managed_ingest_inspect_distinguishes_provenance_from_authored_content(
+    kb_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    source = tmp_path / "2025-impact-report.pdf"
+    source.write_bytes(b"%PDF-1.4 original")
+    page = tmp_path / "authored.md"
+    page.write_text(_MANAGED_PAGE, encoding="utf-8")
+    main(
+        [
+            "ingest",
+            str(kb_root),
+            str(source),
+            "--compiled-page",
+            str(page),
+            "--source-id",
+            "annual-impact-report",
+        ]
+    )
+    capsys.readouterr()  # drain ingest output.
+    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
+    pid = store.list()[0].id
+    rc = main(["proposal", "inspect", str(kb_root), pid])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Raw-source provenance block.
+    assert "source_id:       annual-impact-report" in out
+    assert "source_hash:" in out
+    assert "converted_by:    liteparse" in out
+    # Authored Compiled Page content (the diff).
+    assert "Body authored from the original PDF" in out
+
+
 def test_publish_writes_page_and_marks_terminal(
     kb_root: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
 ):

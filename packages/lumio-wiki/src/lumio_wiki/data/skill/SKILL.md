@@ -42,7 +42,8 @@ You are the default **Distiller**. For text and Markdown Knowledge Sources,
 the `PassthroughMarkdownDistiller` passes your authored Markdown straight
 into a reviewable Ingest Proposal — no second model provider or API key is
 needed. Author the proposed Compiled Page Markdown yourself (frontmatter +
-body), then ingest it through `lumio-wiki ingest`.
+body), then bind it to the original source with
+`lumio-wiki ingest <kb> <source> --compiled-page <page> --source-id <id>`.
 
 ## Ubiquitous language
 
@@ -72,7 +73,8 @@ Knowledge Base root directory in every command below.
 | `lumio-wiki page <kb> <title>` | Read a Compiled Page by Canonical Page Title (falls back to alias). Prints frontmatter + body. |
 | `lumio-wiki related <kb> <title> [--relationship-type T] [--depth N] [--max-edges N] [--max-results N] [--scope canonical\|discovery] [--direction outgoing\|incoming\|both] [--trace]` | Bounded graph traversal of related Canonical Page Titles. |
 | `lumio-wiki paths <kb> <source> <target> [--scope canonical\|discovery] [--direction ...] [--max-depth N] [--max-edges N] [--trace]` | Shortest directed path between two titles, hop-bounded. |
-| `lumio-wiki ingest <kb> <file> [--content-type T]` | Read a text/Markdown file, distill it (you are the Distiller), stage a reviewable Ingest Proposal. |
+| `lumio-wiki ingest <kb> <file> [--content-type T]` | Read a text/Markdown file, distill it (you are the Distiller), stage a reviewable Ingest Proposal. No private Source identity is established. |
+| `lumio-wiki ingest <kb> <source> --compiled-page <page.md> --source-id <id>` | Managed host-Distiller ingest (issue #149): bind the ORIGINAL raw source to your authored Compiled Page under one stable identity; registers the source, stages the authored page as one proposal. No `[documents]` extra required. |
 | `lumio-wiki proposal list <kb>` | List staged proposals. |
 | `lumio-wiki proposal inspect <kb> <id> [--json]` | Print proposal metadata, blast radius, diff (or full JSON). |
 | `lumio-wiki proposal validate <kb> <id>` | Print the proposal's validation report. Exit 1 on errors. |
@@ -119,22 +121,39 @@ manufacture support (an Extracted Reference is topology, never Evidence).
 
 ## Workflow: ingest (you are the Distiller)
 
-1. The user provides a text or Markdown Knowledge Source (a file path, pasted
-   text, or a URL you fetch). For PDF/DOCX/image sources, the `[documents]`
-   extra must be installed — `lumio-wiki doctor` reports it.
+The managed host-Distiller mode binds the ORIGINAL raw Knowledge Source and
+your authored Compiled Page under one stable source identity, so provenance
+records the real source (not a throwaway temp file). Prefer it whenever you
+have the original source file.
+
+1. The user provides the original Knowledge Source (a PDF, DOCX, HTML, TXT, or
+   Markdown file). You do NOT convert it yourself — no `[documents]` extra is
+   required for managed ingest.
 2. Author the proposed Compiled Page Markdown: YAML frontmatter (title,
    aliases, tags, summary, lifecycle, visibility, sources, relationships,
    synthetic) plus a body. Match the existing Knowledge Base's voice and
-   structure.
-3. Write the Markdown to a temp file, then
-   `lumio-wiki ingest <kb> <file>`. The CLI prints the staged proposal id,
-   affected pages, blocked status, and blast radius.
+   structure. **The page MUST declare the source identity in `sources[].id`.**
+3. Choose a stable, lowercase `--source-id` for the original source (e.g.
+   `annual-impact-report`) and bind both in ONE command:
+   `lumio-wiki ingest <kb> <original-source> --compiled-page <page.md>
+   --source-id <id>`. The CLI registers the original bytes under that identity
+   (reusing the Source Version on an identical retry; rejecting changed bytes
+   until you retire/reactivate), derives the converter name from routing
+   WITHOUT running it, stages the authored page as one proposal, and prints
+   the proposal id, source id/hash, affected pages, and blocked status.
 4. Inspect the proposal:
-   `lumio-wiki proposal inspect <kb> <id>` (metadata + diff) and
+   `lumio-wiki proposal inspect <kb> <id>` (provenance + diff) and
    `lumio-wiki proposal validate <kb> <id>` (validation report).
 5. If valid and the user approves, `lumio-wiki publish <kb> <id>`. If the
    user rejects it, `lumio-wiki discard <kb> <id>`. Proposal-first is the
-   default write mode: validation always runs before publish.
+   default write mode: validation always runs before publish. A discarded
+   proposal leaves the source identity active-but-unsupported; an identical
+   retry reuses it safely.
+
+Plain text/Markdown passthrough (no separate original source) still works:
+`lumio-wiki ingest <kb> <file>` distills the file and stages it, but it does
+NOT establish a private Source identity — use the managed mode whenever you
+have the original bytes to preserve lineage.
 
 ## Workflow: maintenance (you are the Maintainer)
 

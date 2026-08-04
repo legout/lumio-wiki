@@ -15,6 +15,7 @@ adapter in the full application (``lumio.distiller``).
 from __future__ import annotations
 
 import difflib
+import hashlib
 import tempfile
 import uuid
 from collections.abc import Iterable
@@ -63,6 +64,14 @@ class SourceProvenance(msgspec.Struct, frozen=True):
     # ``reader-upload:<filename>``) so a reviewing Maintainer can see the
     # submission origin without re-deriving it. ``None`` for normal uploads.
     origin: str | None = None
+    # The explicit Knowledge Source identity this proposal was bound to under
+    # the managed host-Distiller workflow (issue #149): ``ingest <source>
+    # --compiled-page <page> --source-id <id>``. ``None`` for ordinary ingest
+    # (legacy compatibility), which never establishes a private Source
+    # identity. The id is a public, Maintainer-authored label that also appears
+    # in the authored page's ``sources[].id``; the registry's version hashes
+    # and status stay private (ADR-0014).
+    source_id: str | None = None
 
 
 class ProposedPage(msgspec.Struct, frozen=True):
@@ -345,6 +354,73 @@ def _provenance_for(normalized, filename, content_type):
     )
 
 
+class ManagedIngestError(ValueError):
+    """A managed host-Distiller ingest (issue #149) could not be staged.
+
+    Raised before staging when the authored Compiled Page does not declare the
+    chosen ``source_id`` in ``sources[].id`` (an inconsistent proposal would
+    otherwise bind a page to a source it does not cite). Identity conflicts
+    (active-with-different-bytes, retired) are raised by the Source Registry
+    as :class:`SourceRegistryError`.
+    """
+
+
+def _managed_provenance(
+    raw_bytes: bytes,
+    content_type: str | None,
+    filename: str | None,
+    source_id: str,
+) -> SourceProvenance:
+    """Build provenance for managed ingest from the ORIGINAL raw bytes.
+
+    The converter name is derived from routing alone
+    (:func:`lumio_wiki.source_processor.source_converter_name`) — the host
+    agent already converted the source and authored the page, so the
+    ``[documents]`` extra is never required and no converter runs. The hash is
+    over the original bytes, identical to the Source Registry's
+    ``content_hash`` so private provenance and registry identity agree
+    (ADR-0014: original raw bytes determine identity and the version hash).
+    """
+    from lumio_wiki.source_processor import source_converter_name
+
+    return SourceProvenance(
+        original_filename=filename,
+        content_type=content_type,
+        converted_by=source_converter_name(filename, content_type),
+        source_hash=hashlib.sha256(raw_bytes).hexdigest(),
+        source_id=source_id,
+    )
+
+
+def _declared_source_ids(markdown: str) -> set[str]:
+    """Return every ``sources[].id`` declared across the authored page(s)."""
+    ids: set[str] = set()
+    for document in _split_distilled_pages(markdown):
+        data = _safe_frontmatter(document)
+        sources = data.get("sources")
+        if isinstance(sources, list):
+            for item in sources:
+                if isinstance(item, dict):
+                    ids.add(str(item.get("id", "")).strip())
+    return ids
+
+
+def _authored_page_declares_source(markdown: str, source_id: str) -> None:
+    """Block staging unless the authored page declares ``source_id`` (issue #149).
+
+    The authored Compiled Page must declare the chosen ``source_id`` in
+    ``sources[].id`` so the page's Source ID resolves to the registered
+    Knowledge Source. A missing or mismatched id blocks staging with an
+    actionable diagnostic; compound revisions may retain additional existing
+    Sources, so the id only needs to appear once across the page(s).
+    """
+    if source_id not in _declared_source_ids(markdown):
+        raise ManagedIngestError(
+            f"authored Compiled Page must declare source_id {source_id!r} in "
+            f"sources[].id (issue #149 managed ingest)"
+        )
+
+
 def _ensure_page_frontmatter(text: str, filename: str | None) -> str:
     """Wrap extracted document text in minimal page frontmatter.
 
@@ -420,6 +496,51 @@ def create_proposal_without_provider(
     if store is not None:
         proposal = pipeline.stage(proposal, raw_bytes=raw_bytes, filename=filename)
     return proposal
+
+
+def create_managed_ingest_proposal(
+    raw_bytes: bytes,
+    content_type: str | None,
+    filename: str | None,
+    source_id: str,
+    authored_markdown: str,
+    kb,
+    *,
+    store: IngestStore,
+) -> IngestProposal:
+    """Bind an original raw Knowledge Source and an authored page (issue #149).
+
+    The ONE deep, proposal-first host-Distiller operation over the Source
+    Processor, Source Registry, and Proposal Pipeline. It accepts both the
+    original raw source bytes (e.g. a PDF/DOCX/HTML/Markdown/TXT file) and the
+    host agent's authored Compiled Page Markdown, and stages a single
+    reviewable Ingest Proposal that binds them:
+
+    * records the original filename, content type, converter, and content hash
+      in private proposal provenance (the converter name is derived from
+      routing; the ``[documents]`` extra is never required and no converter
+      runs, because the host agent already authored the page);
+    * resolves the explicit ``source_id`` against the private Source Registry
+      — a new id registers the bytes immediately, an active id with identical
+      bytes is reused idempotently, and an active id with changed bytes (or a
+      retired id) is rejected without mutation and names the explicit
+      retirement/reactivation workflow;
+    * blocks staging unless the authored page declares ``source_id`` in
+      ``sources[].id``; and
+    * assembles the proposal from the AUTHORED Markdown (not distilled text)
+      and stages it. Raw bytes are never written under the Knowledge Base
+      root — the registry retains identity/version hashes privately
+      (ADR-0014), so a retry with identical bytes is always safe.
+
+    The ``store`` is required: the private Source Registry lives in the ingest
+    store (``<store>/source-registry``), independent of publication.
+    """
+    from lumio_wiki.proposal_pipeline import ProposalPipeline
+
+    pipeline = ProposalPipeline(kb, store=store)
+    return pipeline.managed_ingest(
+        raw_bytes, content_type, filename, source_id, authored_markdown
+    )
 
 
 def _extract_title(markdown: str) -> str | None:

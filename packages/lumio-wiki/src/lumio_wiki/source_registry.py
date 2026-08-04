@@ -289,6 +289,59 @@ class SourceRegistry:
         self._commit(msgspec.structs.replace(self._state, sources=sources))
         return version
 
+    def register_or_reuse(self, source_id: str, raw_bytes: bytes) -> tuple[SourceVersion, str]:
+        """Resolve a managed host-Distiller source identity (issue #149).
+
+        One deep identity rule for the managed ``ingest --compiled-page
+        --source-id`` workflow, so callers never reproduce registry/proposal
+        coordination:
+
+        * a NEW ``source_id`` registers the original bytes immediately and
+          returns ``(version, "registered")``;
+        * an ACTIVE identity whose CURRENT Source Version has the SAME content
+          hash is reused idempotently — no duplicate Source Version is created —
+          and returns ``(current_version, "reused")``;
+        * an ACTIVE identity with DIFFERENT bytes is rejected WITHOUT registry
+          mutation and names the explicit retirement/reactivation workflow; and
+        * a RETIRED identity is rejected until the Maintainer reactivates it.
+
+        Identity is by the explicit ``source_id`` only — filename/path never
+        establishes continuing identity (ADR-0014). The id is validated at the
+        boundary so a pasted path, URL, content hash, or credential is never
+        persisted, and the refusal errors never echo the (possibly
+        secret-bearing) id. Unlike :meth:`register_source`, the same-hash case
+        is the deliberate idempotent path: a retry of a managed ingest with
+        identical bytes is always safe (registration is independent of
+        publication, so a discarded proposal leaves an active-but-unsupported
+        source that a retry reuses).
+        """
+        _validate_source_id(source_id)
+        new_hash = hashlib.sha256(raw_bytes).hexdigest()
+        existing = next(
+            (source for source in self._state.sources if source.source_id == source_id),
+            None,
+        )
+        if existing is None:
+            version = _source_version(source_id, raw_bytes)
+            sources = list(self._state.sources)
+            sources.append(
+                KnowledgeSource(source_id=source_id, status="active", versions=[version])
+            )
+            self._commit(msgspec.structs.replace(self._state, sources=sources))
+            return version, "registered"
+        if existing.status != "active":
+            raise SourceRegistryError(
+                "Knowledge Source is retired; reactivate it to record a new Source Version"
+            )
+        current = existing.versions[-1]
+        if current.content_hash == new_hash:
+            return current, "reused"
+        raise SourceRegistryError(
+            "Knowledge Source is active with different bytes; replacement is "
+            "not available through managed ingest — retire and reactivate to "
+            "add a reviewed new version"
+        )
+
     def stage_retirement(self, source_id: str) -> PendingSourceTransition:
         """Validate and prepare a retirement without changing source status."""
         source = self.get(source_id)
