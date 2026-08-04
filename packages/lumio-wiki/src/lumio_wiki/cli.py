@@ -13,19 +13,19 @@ public functions:
 Command                                           Public function
 ================================================  ================================================
 ``init <path>``                                   :func:`lumio_wiki.write_control_file`
-``validate <path>``                               :func:`lumio_wiki.validate`
-``search <path> <query>``                         :meth:`KnowledgeBase.search_pages`
-``page <path> <title>``                           :meth:`KnowledgeBase.lookup_by_title`
-``related <path> <title>``                        :meth:`KnowledgeBase.related_pages`
-``paths <path> <source> <target>``               :meth:`KnowledgeBase.shortest_path`
-``ingest <path> <file>``                          :func:`create_proposal_without_provider`
-``proposal list <path>``                          :meth:`ProposalPipeline.list`
-``proposal inspect <path> <id>``                  :meth:`ProposalPipeline.review`
-``proposal validate <path> <id>``                 proposal validation report
-``publish <path> <id>``                           :meth:`ProposalPipeline.publish`
-``publish-s3 <path> <dest> --version <v>``        :func:`lumio_wiki.publish_s3_version`
-``discard <path> <id>``                           :meth:`ProposalPipeline.discard`
-``health <path>``                                 :meth:`KnowledgeBase.graph_health` + validation
+``validate [path]``                               :func:`lumio_wiki.validate`
+``search [path] <query>``                         :meth:`KnowledgeBase.search_pages`
+``page [path] <title>``                           :meth:`KnowledgeBase.lookup_by_title`
+``related [path] <title>``                        :meth:`KnowledgeBase.related_pages`
+``paths [path] <source> <target>``               :meth:`KnowledgeBase.shortest_path`
+``ingest [path] <file>``                          :func:`create_proposal_without_provider`
+``proposal list [path]``                          :meth:`ProposalPipeline.list`
+``proposal inspect [path] <id>``                  :meth:`ProposalPipeline.review`
+``proposal validate [path] <id>``                 proposal validation report
+``publish [path] <id>``                           :meth:`ProposalPipeline.publish`
+``publish-s3 [path] <dest> --version <v>``        :func:`lumio_wiki.publish_s3_version`
+``discard [path] <id>``                           :meth:`ProposalPipeline.discard`
+``health [path]``                                 :meth:`KnowledgeBase.graph_health` + validation
 ``doctor``                                        install diagnostics (optionals, skill path)
 ``skill path``                                    packaged skill location
 ``skill install --agent <name>``                  install skill for a supported coding agent
@@ -42,11 +42,13 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import lumio_wiki
 from lumio_wiki import (
     RETIREMENT_CANDIDATE_TRIGGERS,
     ControlFileError,
+    Distiller,
     IngestStore,
     KnowledgeBase,
     KnowledgeBaseError,
@@ -63,6 +65,10 @@ from lumio_wiki import (
     seeded_control_file,
     validate,
     write_control_file,
+)
+from lumio_wiki.env_loader import (
+    KB_PATH_ENV_VAR,
+    discover_kb_path_from_project_env,
 )
 from lumio_wiki.knowledge_base import (
     DEFAULT_GRAPH_MAX_DEPTH,
@@ -171,7 +177,7 @@ def _s3_config_from_env() -> tuple[dict[str, str], dict[str, object]]:
     return config, client_options
 
 
-def _resolve_object_store_location(uri: str) -> object:
+def _resolve_object_store_location(uri: str) -> Any:
     """Construct an S3 Knowledge Base Location from a URI + environment config."""
     from lumio_wiki.s3_location import S3Location
 
@@ -185,7 +191,7 @@ def _build_publish_store(uri: str) -> tuple[object, str]:
     Mirrors :meth:`S3Location.from_url` store construction but returns the raw
     store and prefix so the publisher can write under the version prefix.
     """
-    from urllib.parse import urlparse
+    from urllib.parse import urlparse, urlunsplit
 
     from lumio_wiki.s3_location import _require_obstore
 
@@ -194,7 +200,7 @@ def _build_publish_store(uri: str) -> tuple[object, str]:
     if not parsed.scheme:
         raise CliError(f"not an object-store destination URI: {uri!r}")
     config, client_options = _s3_config_from_env()
-    authority_url = f"{parsed.scheme}://{parsed.netloc}"
+    authority_url = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
     try:
         store = obstore.store.from_url(
             authority_url,
@@ -207,7 +213,7 @@ def _build_publish_store(uri: str) -> tuple[object, str]:
     return store, prefix
 
 
-def _open_read_kb(path: object) -> KnowledgeBase:
+def _open_read_kb(path: str | Path) -> KnowledgeBase:
     """Open a Knowledge Base for read commands from a local path or S3 URI."""
     value = str(path)
     if _is_object_store_uri(value):
@@ -219,7 +225,7 @@ def _open_read_kb(path: object) -> KnowledgeBase:
     return kb
 
 
-def _validate_location(path: object):
+def _validate_location(path: str | Path):
     """Validate a local path or resolve+validate an S3 URI into a report."""
     value = str(path)
     if _is_object_store_uri(value):
@@ -732,7 +738,7 @@ def _cmd_proposal_list(args: argparse.Namespace) -> int:
 
 def _encode_proposal(proposal) -> str:
     """Serialize a proposal to indented JSON via the canonical msgspec codec."""
-    import msgspec
+    import msgspec  # type: ignore[import-not-found]
 
     return msgspec.json.format(msgspec.json.encode(proposal), indent=2).decode("utf-8")
 
@@ -1220,7 +1226,7 @@ def _detect_module(name: str) -> bool:
         return False
 
 
-def _build_distiller(args: argparse.Namespace):
+def _build_distiller(args: argparse.Namespace) -> Distiller:
     """Construct the Distiller selected by ``--distiller`` (issue #101).
 
     ``passthrough`` (default) uses the model-free
@@ -1261,6 +1267,7 @@ def _build_distiller(args: argparse.Namespace):
             return OpenAIDistiller(model=model, base_url=base_url, api_key=api_key)
         except OpenAIDistillerError as exc:
             raise CliError(str(exc)) from exc
+    raise CliError(f"unsupported distiller: {choice}")
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -1497,21 +1504,35 @@ def _cmd_source_reactivate(args: argparse.Namespace) -> int:
 
 
 def _resolve_default_kb_path() -> str | None:
-    """Return the ``LUMIO_KB_PATH`` env var, or ``None`` if unset."""
-    return os.environ.get("LUMIO_KB_PATH")
+    """Resolve a default KB path when no positional ``<kb>`` was given.
+
+    Applies the documented precedence (issue #152, ADR-0017), minus the
+    positional argument which argparse already handled:
+
+    1. an exported process ``LUMIO_KB_PATH`` (never overwritten by a file); then
+    2. ``LUMIO_KB_PATH`` from the nearest trusted project ``.env``.
+
+    Returns ``None`` when neither source yields a value so :func:`main` can
+    surface a single actionable error.
+    """
+    if KB_PATH_ENV_VAR in os.environ:
+        exported = os.environ[KB_PATH_ENV_VAR]
+        return exported if exported.strip() else None
+    return discover_kb_path_from_project_env()
 
 
 def _add_kb_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "path",
         nargs="?",
-        default=_resolve_default_kb_path(),
+        default=None,
         type=str,
         help=(
             "Knowledge Base root directory, or an S3 object-store URI "
             "(s3://bucket/path) resolved as an immutable Published Version "
-            "(issue #120; requires lumio-wiki[s3]). Falls back to "
-            "LUMIO_KB_PATH if omitted."
+            "(issue #120; requires lumio-wiki[s3]). When omitted, resolved "
+            "in order: an exported LUMIO_KB_PATH, then LUMIO_KB_PATH from the "
+            "nearest project .env (issue #152; ADR-0017)."
         ),
     )
 
@@ -1579,8 +1600,10 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Create a Knowledge Base (or use an existing one), write .env with "
             "LUMIO_KB_PATH, write/update AGENTS.md with the retrieval-ladder "
-            "protocol, and optionally install the Agent Skill. After setup, the "
-            "lumio-wiki CLI resolves the KB path from LUMIO_KB_PATH automatically."
+            "protocol, and optionally install the Agent Skill. After setup, "
+            "subsequent lumio-wiki commands load LUMIO_KB_PATH from .env "
+            "automatically, so no <kb> argument is needed (issue #152; "
+            "ADR-0017)."
         ),
     )
     setup_parser.add_argument(
@@ -2107,7 +2130,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     skill_install.set_defaults(func=_cmd_skill_install)
 
-
     # source (nested) — private Knowledge Source lifecycle (issue #133)
     source_parser = subparsers.add_parser(
         "source",
@@ -2167,9 +2189,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_kb_argument(source_retire)
     _add_ingest_dir_argument(source_retire)
-    source_retire.add_argument(
-        "--source-id", required=True, help="Source identity to retire."
-    )
+    source_retire.add_argument("--source-id", required=True, help="Source identity to retire.")
     source_retire.set_defaults(func=_cmd_source_retire)
 
     source_candidate = source_sub.add_parser(
@@ -2182,9 +2202,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_kb_argument(source_candidate)
     _add_ingest_dir_argument(source_candidate)
-    source_candidate.add_argument(
-        "--source-id", required=True, help="Active source identity."
-    )
+    source_candidate.add_argument("--source-id", required=True, help="Active source identity.")
     _candidate_trigger_help = "Signal that prompted the review. One of: " + ", ".join(
         repr(trigger) for trigger in RETIREMENT_CANDIDATE_TRIGGERS
     )
@@ -2269,12 +2287,17 @@ def main(argv: list[str] | None = None) -> int:
     if not hasattr(args, "func"):
         parser.print_help()
         return 1
-    # Commands using _add_kb_argument can omit <kb> when LUMIO_KB_PATH is
-    # set. If neither was provided, fail with actionable guidance.
+    # Commands using _add_kb_argument can omit <kb>. Resolve the default now
+    # (exported LUMIO_KB_PATH, then the nearest project .env) so the value is
+    # computed once, in the live process, rather than at parser-build time
+    # (issue #152, ADR-0017). If nothing yields a value, fail with guidance.
+    if hasattr(args, "path") and args.path is None:
+        args.path = _resolve_default_kb_path()
     if hasattr(args, "path") and args.path is None:
         print(
             "error: no Knowledge Base path provided. Pass <kb-path> as a "
-            "positional argument or set LUMIO_KB_PATH.",
+            "positional argument, export LUMIO_KB_PATH, or run "
+            "'lumio-wiki setup <kb>' to write .env.",
             file=sys.stderr,
         )
         return 2

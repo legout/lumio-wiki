@@ -9,13 +9,17 @@ codes, and output contracts against the package's own test fixtures.
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import shutil
+import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
 import lumio_wiki as lw
-import pytest
+import pytest  # type: ignore[import-not-found]
 from lumio_wiki import GRAPH_ARTIFACT_FILENAME
 from lumio_wiki.cli import build_parser, default_index_dir, main
 
@@ -95,8 +99,10 @@ def test_all_documented_commands_have_handlers():
     parser = build_parser()
     # Walk the subparsers to find every registered command.
     subparsers_action = next(
-        a for a in parser._actions if isinstance(a, type(parser._subparsers._group_actions[0]))
+        (a for a in parser._actions if isinstance(a, argparse._SubParsersAction)),
+        None,
     )
+    assert subparsers_action is not None
     # Top-level commands.
     expected_top_level = {
         "init",
@@ -115,7 +121,7 @@ def test_all_documented_commands_have_handlers():
         "doctor",
         "skill",
     }
-    assert expected_top_level <= set(subparsers_action.choices.keys())
+    assert expected_top_level <= set(subparsers_action.choices)
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +309,9 @@ def test_publish_writes_page_and_marks_terminal(
     assert (kb_root / "cli_page.md").is_file()
     # The proposal is now terminal.
     store2 = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    assert store2.get(pid).status == "published"
+    published = store2.get(pid)
+    assert published is not None
+    assert published.status == "published"
     # KB remains valid after publish.
     assert lw.validate(kb_root).is_valid
 
@@ -315,7 +323,9 @@ def test_discard_marks_proposal_terminal(kb_root: Path, source_file: Path):
     rc = main(["discard", str(kb_root), pid])
     assert rc == 0
     store2 = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    assert store2.get(pid).status == "discarded"
+    discarded = store2.get(pid)
+    assert discarded is not None
+    assert discarded.status == "discarded"
 
 
 def test_publish_unknown_proposal_returns_1(kb_root: Path):
@@ -858,6 +868,270 @@ def test_setup_env_var_enables_implicit_path(tmp_path, monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
+# Project .env loading (issue #152, ADR-0017)
+#
+# A fresh lumio-wiki subprocess must load LUMIO_KB_PATH from the project
+# .env that `setup` wrote. The in-process tests below assert precedence
+# (positional > exported env > .env > actionable error); the subprocess
+# tests are the authoritative fresh-process proof the in-process
+# monkeypatch.setenv simulation in the test above could not provide.
+# ---------------------------------------------------------------------------
+
+
+def _clean_subprocess_env() -> dict[str, str]:
+    """A subprocess env without LUMIO_KB_PATH so only the project .env is seen."""
+    return {key: value for key, value in os.environ.items() if key != "LUMIO_KB_PATH"}
+
+
+def _run_cli_in_subprocess(
+    args: list[str], cwd: Path, *, env_overrides: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run the CLI in a fresh process with optional environment overrides."""
+    env = _clean_subprocess_env()
+    if env_overrides:
+        env.update(env_overrides)
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from lumio_wiki.cli import main; raise SystemExit(main())",
+            *args,
+        ],
+        cwd=str(cwd),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def test_env_file_loaded_when_no_positional_and_no_env_var(tmp_path: Path, monkeypatch, capsys):
+    """With no positional and no exported var, LUMIO_KB_PATH is read from .env."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LUMIO_KB_PATH", raising=False)
+    kb = tmp_path / "kb"
+    shutil.copytree(FIXTURES / "valid", kb)
+    (tmp_path / ".env").write_text(f"LUMIO_KB_PATH={kb}\n", encoding="utf-8")
+
+    rc = main(["search", "Technology"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Technology Stack" in out
+
+
+def test_positional_path_overrides_env_file_and_env_var(tmp_path: Path, monkeypatch, capsys):
+    """Positional <kb> takes precedence over both the env var and .env."""
+    monkeypatch.chdir(tmp_path)
+    real_kb = tmp_path / "real-kb"
+    shutil.copytree(FIXTURES / "valid", real_kb)
+    # Both lower-precedence sources point at nonexistent paths.
+    monkeypatch.setenv("LUMIO_KB_PATH", str(tmp_path / "env-kb"))
+    (tmp_path / ".env").write_text(f"LUMIO_KB_PATH={tmp_path / 'file-kb'}\n", encoding="utf-8")
+
+    rc = main(["search", str(real_kb), "Technology"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Technology Stack" in out
+
+
+def test_exported_env_var_overrides_env_file(tmp_path: Path, monkeypatch, capsys):
+    """An exported LUMIO_KB_PATH wins over a .env value."""
+    monkeypatch.chdir(tmp_path)
+    real_kb = tmp_path / "real-kb"
+    shutil.copytree(FIXTURES / "valid", real_kb)
+    # .env points at a nonexistent path; the exported var points at the real KB.
+    (tmp_path / ".env").write_text(f"LUMIO_KB_PATH={tmp_path / 'file-kb'}\n", encoding="utf-8")
+    monkeypatch.setenv("LUMIO_KB_PATH", str(real_kb))
+
+    rc = main(["search", "Technology"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Technology Stack" in out
+
+
+def test_subprocess_positional_path_overrides_env_and_env_file(tmp_path: Path):
+    """Fresh process: positional path outranks exported env and project .env."""
+    project = tmp_path / "project"
+    project.mkdir()
+    real_kb = project / "real-kb"
+    shutil.copytree(FIXTURES / "valid", real_kb)
+    (project / ".env").write_text(f"LUMIO_KB_PATH={project / 'file-kb'}\n", encoding="utf-8")
+    result = _run_cli_in_subprocess(
+        ["search", str(real_kb), "Technology"],
+        cwd=project,
+        env_overrides={"LUMIO_KB_PATH": str(project / "env-kb")},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Technology Stack" in result.stdout
+
+
+def test_subprocess_exported_env_overrides_env_file(tmp_path: Path):
+    """Fresh process: exported LUMIO_KB_PATH outranks project .env."""
+    project = tmp_path / "project"
+    project.mkdir()
+    real_kb = project / "real-kb"
+    shutil.copytree(FIXTURES / "valid", real_kb)
+    (project / ".env").write_text(f"LUMIO_KB_PATH={project / 'file-kb'}\n", encoding="utf-8")
+    result = _run_cli_in_subprocess(
+        ["search", "Technology"],
+        cwd=project,
+        env_overrides={"LUMIO_KB_PATH": str(real_kb)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Technology Stack" in result.stdout
+
+
+def test_empty_exported_env_does_not_fall_back_to_env_file(tmp_path: Path, monkeypatch, capsys):
+    """An explicitly empty process value remains authoritative over .env."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LUMIO_KB_PATH", "")
+    (tmp_path / ".env").write_text(f"LUMIO_KB_PATH={tmp_path / 'valid-kb'}\n", encoding="utf-8")
+
+    rc = main(["search", "Technology"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "no Knowledge Base path provided" in err
+    assert ".env" in err
+
+
+def test_missing_or_malformed_env_file_gives_actionable_error(tmp_path: Path, monkeypatch, capsys):
+    """A malformed .env (no key=value) yields a single actionable error."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LUMIO_KB_PATH", raising=False)
+    # Not a KEY=value line, so LUMIO_KB_PATH is absent.
+    (tmp_path / ".env").write_text("this line is malformed\n", encoding="utf-8")
+
+    rc = main(["search", "query"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "LUMIO_KB_PATH" in err
+    assert ".env" in err
+
+
+def test_subprocess_invalid_env_path_is_actionable(tmp_path: Path):
+    """A path value with an embedded NUL must not produce a traceback."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_bytes(b"LUMIO_KB_PATH=/tmp/\x00bad\n")
+
+    result = _run_cli_in_subprocess(["validate"], cwd=project)
+    assert result.returncode == 2
+    assert "no Knowledge Base path provided" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_setup_help_claims_env_loading(capsys):
+    """AC7: setup help/usage matches the tested .env-loading behavior."""
+    with pytest.raises(SystemExit):
+        main(["setup", "--help"])
+    out = capsys.readouterr().out
+    assert ".env" in out
+    assert "LUMIO_KB_PATH" in out
+    # argparse wraps the description, so assert a phrase that fits one line.
+    assert "LUMIO_KB_PATH from .env" in out
+
+
+def test_module_usage_documents_optional_kb_path():
+    """The module usage table must match pathless CLI behavior."""
+    import lumio_wiki.cli as cli_module
+
+    usage = cli_module.__doc__ or ""
+    assert "``validate [path]``" in usage
+    assert "``search [path] <query>``" in usage
+    assert "``proposal list [path]``" in usage
+
+
+def test_kb_path_help_documents_env_and_env_file(capsys):
+    """AC7: the <kb> argument help documents the .env fallback."""
+    with pytest.raises(SystemExit):
+        main(["validate", "--help"])
+    out = capsys.readouterr().out
+    assert "LUMIO_KB_PATH" in out
+    assert ".env" in out
+
+
+def test_subprocess_setup_then_validate_reads_env(tmp_path: Path):
+    """AC1: a fresh `lumio-wiki validate` reads LUMIO_KB_PATH from project .env.
+
+    This is the authoritative fresh-subprocess reproduction of the bug report:
+    setup writes .env, then a SEPARATE process validates with no positional
+    path and no exported environment variable.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    kb = project / "kb"
+    shutil.copytree(FIXTURES / "valid", kb)
+
+    setup = _run_cli_in_subprocess(["setup", str(kb)], cwd=project)
+    assert setup.returncode == 0, setup.stderr
+
+    validate = _run_cli_in_subprocess(["validate"], cwd=project)
+    assert validate.returncode == 0, validate.stderr
+
+
+def test_subprocess_journey_reads_env_for_path_commands(tmp_path: Path):
+    """AC2: each path-bearing command resolves LUMIO_KB_PATH from .env.
+
+    After setup, validate, search, page, proposal list, lint, and health all
+    run with no positional <kb> and no exported variable in a fresh process.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    shutil.copytree(FIXTURES / "valid", project / "kb")
+
+    setup = _run_cli_in_subprocess(["setup", str(project / "kb")], cwd=project)
+    assert setup.returncode == 0, setup.stderr
+
+    journeys: list[tuple[list[str], str | None]] = [
+        (["validate"], None),
+        (["search", "Technology"], "Technology Stack"),
+        (["page", "Technology Stack"], "Technology Stack"),
+        (["proposal", "list"], None),
+        (["lint"], None),
+        (["health"], None),
+    ]
+    for command, expected in journeys:
+        result = _run_cli_in_subprocess(command, cwd=project)
+        assert result.returncode == 0, f"{command}: {result.stderr or result.stdout}"
+        if expected is not None:
+            assert expected in result.stdout, f"{command}: {result.stdout}"
+
+
+def test_subprocess_env_file_does_not_leak_arbitrary_keys(tmp_path: Path):
+    """AC6: reading .env never injects arbitrary keys into the process env."""
+    project = tmp_path / "project"
+    project.mkdir()
+    shutil.copytree(FIXTURES / "valid", project / "kb")
+    arbitrary = "LUMIO_TEST_LEAK_KEY_152"
+    # Run setup, then append an arbitrary key to .env.
+    setup = _run_cli_in_subprocess(["setup", str(project / "kb")], cwd=project)
+    assert setup.returncode == 0, setup.stderr
+    env_file = project / ".env"
+    env_file.write_text(
+        env_file.read_text(encoding="utf-8") + f"{arbitrary}=secret\n",
+        encoding="utf-8",
+    )
+    # A fresh process that resolves the KB must not expose the arbitrary key.
+    # Run a raw Python probe (not the CLI) so only the loader runs.
+    probe_script = (
+        "import os, sys; "
+        "from lumio_wiki.env_loader import discover_kb_path_from_project_env; "
+        "discover_kb_path_from_project_env(); "
+        f"sys.stdout.write('LEAKED' if os.environ.get({arbitrary!r}) else 'clean')"
+    )
+    probe = subprocess.run(
+        [sys.executable, "-c", probe_script],
+        cwd=str(project),
+        env=_clean_subprocess_env(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert "clean" in probe.stdout, probe.stdout
+
+
+# ---------------------------------------------------------------------------
 # source subcommands: private Knowledge Source lifecycle (issue #133)
 # ---------------------------------------------------------------------------
 
@@ -1283,9 +1557,7 @@ def test_source_reactivate_stages_new_version_under_existing_id(
     assert main(["publish", str(source_kb), retire_id]) == 0
     capsys.readouterr()  # drain publish output
     assert (
-        lw.IngestStore(source_kb / ".lumio" / "ingest")
-        .source_registry.get("policy")
-        .status
+        lw.IngestStore(source_kb / ".lumio" / "ingest").source_registry.get("policy").status
         == "retired"
     )
 
@@ -1312,9 +1584,7 @@ def test_source_reactivate_stages_new_version_under_existing_id(
 
     # The source stays retired until the reactivation proposal publishes.
     assert (
-        lw.IngestStore(source_kb / ".lumio" / "ingest")
-        .source_registry.get("policy")
-        .status
+        lw.IngestStore(source_kb / ".lumio" / "ingest").source_registry.get("policy").status
         == "retired"
     )
     assert main(["publish", str(source_kb), reactivate_id]) == 0
@@ -1677,15 +1947,23 @@ def test_source_duplicate_register_is_refused_without_mutation(
 def test_source_register_rejects_invalid_source_id_safely(
     source_kb: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # A credential-shaped source id is rejected at the boundary; the rejected
-    # value is never echoed into the CLI output and nothing is persisted.
-    secret_id = "sk-leaked-api-key-1234567890"
+    # A malformed source id is rejected at the boundary; the rejected value
+    # is never echoed into the CLI output and nothing is persisted.
+    invalid_id = "invalid source id 152"
     rc = main(
-        ["source", "register", str(source_kb), "--source-id", secret_id, "--file", str(source_file)]
+        [
+            "source",
+            "register",
+            str(source_kb),
+            "--source-id",
+            invalid_id,
+            "--file",
+            str(source_file),
+        ]
     )
     assert rc != 0
     captured = capsys.readouterr()
     combined = captured.out + captured.err
-    assert secret_id not in combined
+    assert invalid_id not in combined
     store = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    assert all(s.source_id != secret_id for s in store.source_registry.list())
+    assert all(s.source_id != invalid_id for s in store.source_registry.list())
