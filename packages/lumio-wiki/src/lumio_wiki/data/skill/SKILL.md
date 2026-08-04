@@ -14,7 +14,7 @@ description: >-
   "related pages", "retrieval ladder", and "validate the Knowledge Base".
 version: 0.1.1
 user-invocable: true
-argument-hint: "[init|validate|hot|index|search|page|related|paths|ingest|proposal|publish|discard|health|lint|cross-link|dream|doctor|skill] [args]"
+argument-hint: "[init|validate|hot|index|search|page|related|paths|ingest|proposal|publish|discard|health|lint|cross-link|relationship|dream|doctor|skill] [args]"
 license: Apache 2.0
 ---
 
@@ -81,6 +81,7 @@ Knowledge Base root directory in every command below.
 | `lumio-wiki health <kb> [--rebuild]` | Page counts, validation status, Discovery Graph health + fingerprint. `--rebuild` materializes a fresh graph artifact (actionable recovery); a bad/missing artifact never blocks zero-index operation. |
 | `lumio-wiki lint <kb>` | Read-only cross-page QA report: validation, graph health, canonical/discovery structural diagnostics, scope disclosure. Exit 1 when invalid (ADR-0015). |
 | `lumio-wiki cross-link <kb> [--limit N] [--stage]` | Missing-link candidates ranked by Discovery Graph impact. `--stage` stages one reviewable repair proposal per top candidate; never direct-writes. |
+| `lumio-wiki relationship stage <kb> <source> <target> --type T` | Stage a typed canonical Relationship proposal (e.g. `--type uses`). Distinct from `cross-link --stage` (authored Markdown links / Extracted References); reviewed through the same proposal pipeline. |
 | `lumio-wiki dream <kb> [--limit N] [--stage] [--semantic]` | Deterministic Dream Cycle reflection plus optional semantic review; `--semantic` requires the `[llm]` extra and remains proposal-first. |
 | `lumio-wiki doctor` | Version, detected optional extras, and packaged skill location. |
 | `lumio-wiki skill path` | Absolute path of the packaged `SKILL.md` inside the installed wheel. |
@@ -154,7 +155,16 @@ Knowledge Base connected:
    Add opt-in `--semantic` (requires the `[llm]` extra) to stage semantic
    findings through the same proposal-first path.
 4. `lumio-wiki cross-link <kb>` is the focused variant when you only want
-   the candidate list (or only link repairs, `--stage`).
+   the candidate list (or only link repairs, `--stage`). `cross-link --stage`
+   only adds authored Markdown links (Extracted References, discovery-graph
+   topology) — it never creates a typed canonical Relationship.
+5. `lumio-wiki relationship stage <kb> <source> <target> --type T` promotes a
+   typed canonical Relationship (e.g. `--type uses`) through the same
+   proposal-first pipeline. It is the canonical-graph counterpart to
+   `cross-link --stage`; the type is never inferred. Preferred types:
+   `contradicts`, `derived-from`, `extends`, `implements`, `relates-to`,
+   `replaces`, `uses` (a non-preferred type stages as a warning-level
+   generic edge).
 
 The same operations exist on the public Python surface
 (`lumio_wiki.run_lint`, `lumio_wiki.run_dream_cycle`,

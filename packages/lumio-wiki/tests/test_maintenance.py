@@ -298,3 +298,178 @@ def test_cli_dream_stage(kb_with_candidate: Path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "staged_proposals:    1" in out
+
+
+# ---------------------------------------------------------------------------
+# relationship stage CLI (issue #151): typed Relationship proposals.
+#
+# A typed Relationship is a canonical, reviewed edge (canonical-graph scope).
+# It is distinct from ``cross-link --stage``, which only adds authored
+# Markdown links that become Extracted References (discovery-graph scope).
+# ---------------------------------------------------------------------------
+
+
+def _extract_proposal_id(output: str) -> str:
+    """Pull the staged proposal id from a ``Staged proposal <id>`` line."""
+    return output.split("Staged proposal")[1].split()[0]
+
+
+def _extract_staged_id(output: str) -> str:
+    """Pull the proposal id from a cross-link/dream ``staged: <id>`` line."""
+    return output.split("staged:")[1].split()[0]
+
+
+def test_cli_relationship_stage_stages_typed_edge(kb_root: Path, capsys):
+    rc = main([
+        "relationship", "stage", str(kb_root),
+        "Lumio Overview", "Acme Corp", "--type", "uses",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Staged proposal" in out
+    assert "'Lumio Overview' -> 'Acme Corp' (type 'uses')" in out
+    assert "blocked:        False" in out
+    # AC#3: the staged proposal flows through the ordinary proposal pipeline
+    # (validate here; publish is exercised by the canonical-edge test below).
+    pid = _extract_proposal_id(out)
+    assert main(["proposal", "validate", str(kb_root), pid]) == 0
+    # The Knowledge Base on disk is unchanged before publish (proposal-first).
+    overview = (kb_root / "concepts" / "overview.md").read_text(encoding="utf-8")
+    assert "relationships:" not in overview
+
+
+def test_cli_relationship_stage_non_preferred_type_warns(kb_root: Path, capsys):
+    # The issue's own example uses a non-preferred type (``governs``): it must
+    # stage as a warning-level generic edge, not be rejected.
+    rc = main([
+        "relationship", "stage", str(kb_root),
+        "Lumio Overview", "Acme Corp", "--type", "governs",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Staged proposal" in out
+    assert "not a preferred Relationship type" in out
+
+
+def test_cli_relationship_stage_missing_source(kb_root: Path, capsys):
+    rc = main([
+        "relationship", "stage", str(kb_root),
+        "No Such Page", "Acme Corp", "--type", "uses",
+    ])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "no Compiled Page titled" in err
+    assert "No Such Page" in err
+
+
+def test_cli_relationship_stage_unresolved_target(kb_root: Path, capsys):
+    rc = main([
+        "relationship", "stage", str(kb_root),
+        "Lumio Overview", "No Such Target", "--type", "uses",
+    ])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "unresolved target" in err
+    assert "No Such Target" in err
+
+
+def test_cli_relationship_stage_duplicate_edge(kb_root: Path, capsys):
+    # Publish a typed edge first, then staging the same edge is a duplicate.
+    main(["relationship", "stage", str(kb_root), "Lumio Overview", "Acme Corp", "--type", "uses"])
+    pid = _extract_proposal_id(capsys.readouterr().out)
+    assert main(["publish", str(kb_root), pid]) == 0
+    capsys.readouterr()  # drain publish output
+    rc = main([
+        "relationship", "stage", str(kb_root),
+        "Lumio Overview", "Acme Corp", "--type", "uses",
+    ])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "relationship already exists" in err
+
+
+def test_cli_relationship_stage_publish_exposes_canonical_edge(kb_root: Path, capsys):
+    # AC#5/#8: before publish, canonical traversal does not reach the target.
+    main(["related", str(kb_root), "Lumio Overview"])
+    assert "Acme Corp" not in capsys.readouterr().out
+
+    main(["relationship", "stage", str(kb_root), "Lumio Overview", "Acme Corp", "--type", "uses"])
+    pid = _extract_proposal_id(capsys.readouterr().out)
+    assert main(["publish", str(kb_root), pid]) == 0
+    capsys.readouterr()  # drain publish output
+
+    # After publish, the canonical graph exposes the typed edge (and the
+    # discovery scope, a superset, does too); the Knowledge Base stays valid.
+    main(["related", str(kb_root), "Lumio Overview", "--scope", "canonical"])
+    assert "Acme Corp" in capsys.readouterr().out
+    main(["related", str(kb_root), "Lumio Overview", "--scope", "discovery"])
+    assert "Acme Corp" in capsys.readouterr().out
+    assert main(["validate", str(kb_root)]) == 0
+    overview = (kb_root / "concepts" / "overview.md").read_text(encoding="utf-8")
+    assert "relationships:" in overview
+    assert "Acme Corp" in overview
+
+
+def test_cli_cross_link_stage_is_markdown_link_only(kb_with_candidate: Path, capsys):
+    # AC#6: ``cross-link --stage`` repairs a candidate as an authored Markdown
+    # link — it never creates a typed canonical Relationship. (Whether that
+    # link also becomes a discovery-scope Extracted Reference depends on the
+    # link resolving without escaping; here the repair is cross-directory, so
+    # it stays an authored link and never a canonical edge.)
+    rc = main(["cross-link", str(kb_with_candidate), "--stage"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "staged_proposals:    1" in out
+    pid = _extract_staged_id(out)
+    assert main(["publish", str(kb_with_candidate), pid]) == 0
+    capsys.readouterr()  # drain publish output
+    assert main(["validate", str(kb_with_candidate)]) == 0
+
+    # The repair is an authored Markdown link, NOT a typed canonical
+    # Relationship: no frontmatter ``relationships:``, and canonical-graph
+    # traversal does not reach the target.
+    overview = (kb_with_candidate / "concepts" / "overview.md").read_text(encoding="utf-8")
+    assert "[Acme Corp]" in overview
+    assert "relationships:" not in overview
+    main(["related", str(kb_with_candidate), "Lumio Overview", "--scope", "canonical"])
+    assert "Acme Corp" not in capsys.readouterr().out
+
+
+def test_canonical_vs_discovery_scope_distinction(kb_root: Path, capsys):
+    """AC#8: a typed Relationship is a canonical edge; a same-directory body
+    link is a discovery-only Extracted Reference. The two scopes differ."""
+    # Author a same-directory sibling page (mirrors a valid fixture page) and an
+    # authored same-directory body link, which resolves (no ``..``) to a
+    # discovery-only Extracted Reference.
+    overview_src = (kb_root / "concepts" / "overview.md").read_text(encoding="utf-8")
+    glossary_src = (
+        overview_src
+        .replace('title: "Lumio Overview"', 'title: "Glossary"')
+        .replace('id: "lumio-overview"', 'id: "glossary"')
+    )
+    (kb_root / "concepts" / "glossary.md").write_text(glossary_src, encoding="utf-8")
+    overview = kb_root / "concepts" / "overview.md"
+    overview.write_text(
+        overview.read_text(encoding="utf-8").rstrip()
+        + "\n\nSee the [Glossary](glossary.md) for terms.\n",
+        encoding="utf-8",
+    )
+
+    # Stage + publish a typed Relationship to Acme Corp (a canonical edge).
+    main(["relationship", "stage", str(kb_root), "Lumio Overview", "Acme Corp", "--type", "uses"])
+    pid = _extract_proposal_id(capsys.readouterr().out)
+    assert main(["publish", str(kb_root), pid]) == 0
+    capsys.readouterr()  # drain publish output
+    assert main(["validate", str(kb_root)]) == 0
+
+    main(["related", str(kb_root), "Lumio Overview", "--scope", "canonical"])
+    canonical = capsys.readouterr().out
+    main(["related", str(kb_root), "Lumio Overview", "--scope", "discovery"])
+    discovery = capsys.readouterr().out
+
+    # The typed Relationship is canonical (and thus also present in discovery).
+    assert "Acme Corp" in canonical
+    assert "Acme Corp" in discovery
+    # The same-directory body link is a discovery-ONLY edge (no typed edge).
+    assert "Glossary" not in canonical
+    assert "Glossary" in discovery
