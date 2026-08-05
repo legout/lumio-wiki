@@ -93,9 +93,9 @@ ingest/review workflows.
 
 **Dependencies:** `lumio-wiki>=0.1.1,<0.2.0`, `lumio-lancedb>=0.1.1,<0.2.0`,
 plus the operational stack (`stario`, `piccolo[sqlite]`, `openai`,
-`liteparse`, `markitdown[docx]`, `lancedb`, `pyarrow`, `gitPython`,
-`msgspec[yaml]`). Optional `semantic` extra pulls in `sentence-transformers`
-for local embeddings.
+`liteparse`, `markitdown[docx]`, `firecrawl-anydoc`, `lancedb`, `pyarrow`,
+`gitPython`, `msgspec[yaml]`). Optional `semantic` extra pulls in
+`sentence-transformers` for local embeddings.
 
 ## Dependency direction
 

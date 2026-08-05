@@ -429,6 +429,55 @@ class TestAnyDocSourceProcessor:
 
 
 # ---------------------------------------------------------------------------
+# AnyDocSourceProcessor against the REAL AnyDoc converter (issue #154, AC5)
+# ---------------------------------------------------------------------------
+
+
+class TestAnyDocRealConverter:
+    """Exercise the real AnyDoc adapter (no fake converter) for a supported
+    office format, deterministic output, the explicit CSV format hint, and an
+    observable malformed-input error. These run where the ``[documents]`` extra
+    is installed (the workspace). The full hostile/mislabeled fixture matrix is
+    validated by the #153 spike harness (``experiments/anydoc/``)."""
+
+    def test_real_docx_converts_with_anydoc_provenance(self):
+        docx = _make_docx("Real AnyDoc body")
+        proc = AnyDocSourceProcessor(runner=_sync_runner)
+        result = proc.process("real.docx", None, docx)
+
+        assert result.converted_by == "anydoc"
+        assert "Real AnyDoc body" in result.text
+        assert result.source_hash == hashlib.sha256(docx).hexdigest()
+        # Office formats have no page boundaries: heading-based sections, no
+        # invented page numbers.
+        for section in result.sections:
+            assert section.page_number is None
+
+    def test_real_output_is_deterministic(self):
+        docx = _make_docx("Determinism body")
+        proc = AnyDocSourceProcessor(runner=_sync_runner)
+        first = proc.process("det.docx", None, docx)
+        second = proc.process("det.docx", None, docx)
+        assert first.text == second.text
+        assert first.source_hash == second.source_hash
+
+    def test_real_csv_uses_explicit_format_hint(self):
+        # CSV has no magic-byte signature, so the adapter names the format.
+        csv_bytes = b"name,score\nalpha,1\nbeta,2\n"
+        proc = AnyDocSourceProcessor(runner=_sync_runner)
+        result = proc.process("data.csv", None, csv_bytes)
+        assert result.converted_by == "anydoc"
+        assert "alpha" in result.text
+
+    def test_real_malformed_input_raises_observable_error(self):
+        # Unrecognizable bytes -> AnyDoc ConvertError, surfaced as an observable
+        # SourceProcessorError (never silently discarded or rerouted).
+        proc = AnyDocSourceProcessor(runner=_sync_runner)
+        with pytest.raises(SourceProcessorError, match="could not be converted"):
+            proc.process("bad.docx", None, b"this is not a real office document at all")
+
+
+# ---------------------------------------------------------------------------
 # Bounded extraction
 # ---------------------------------------------------------------------------
 

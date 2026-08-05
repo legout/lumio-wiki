@@ -17,7 +17,7 @@ inside a **coding-agent harness** (opencode, Claude Code, Codex, etc.).
 
 ```bash
 pip install lumio-wiki                       # foundation
-pip install 'lumio-wiki[documents]'          # + PDF/DOCX/image ingestion
+pip install 'lumio-wiki[documents]'          # + PDF/image/office/HTML ingestion (LiteParse/AnyDoc/MarkItDown)
 pip install 'lumio-wiki[llm]'                # + unattended OpenAI-compatible Distiller
 pip install 'lumio-wiki[all]'                # documents + llm (still no LanceDB)
 pip install 'lumio-wiki[s3]'                 # + S3-native KB Locations (ADR-0013)

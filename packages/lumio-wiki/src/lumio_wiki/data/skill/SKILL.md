@@ -31,8 +31,8 @@ the concise workflow below is insufficient.
 
 1. Confirm `lumio-wiki` is installed: `lumio-wiki --version`. If missing,
    `pip install lumio-wiki` (or `pip install 'lumio-wiki[documents]'` for
-   PDF/DOCX/image sources, `pip install 'lumio-wiki[llm]'` for an unattended
-   OpenAI-compatible Distiller, `pip install 'lumio-wiki[all]'` for both).
+   PDF/image/office/HTML sources, `pip install 'lumio-wiki[llm]'` for an
+   unattended OpenAI-compatible Distiller, `pip install 'lumio-wiki[all]'` for both).
 2. Run `lumio-wiki doctor` once per session to see the install shape: version,
    which optional capabilities are present, and where the packaged skill lives.
 3. For a project's first run, use `lumio-wiki setup <path>`. It creates or
@@ -205,9 +205,10 @@ The same operations exist on the public Python surface
 The base install handles text and Markdown. Optional extras are declared but
 not installed by default:
 
-- `lumio-wiki[documents]` — LiteParse + MarkItDown + AnyDoc for PDF,
-  scanned-PDF, image, office (Word/PowerPoint/Excel/OpenDocument/RTF/EPUB/CSV),
-  HTML, and other document conversion.
+- `lumio-wiki[documents]` — document conversion, routed per format
+  (ADR-0018): PDF / scanned-PDF / image → LiteParse (OCR + real page numbers);
+  office formats (Word/PowerPoint/Excel/OpenDocument/RTF/EPUB/CSV) → AnyDoc;
+  HTML and other broad formats → MarkItDown.
 - `lumio-wiki[llm]` — an unattended OpenAI-compatible Distiller (use when you
   do NOT want the host coding agent to be the Distiller).
 - `lumio-wiki[all]` — both.
