@@ -30,7 +30,7 @@ FIXTURES = ROOT / "tests" / "fixtures" / "valid"
 # extra is never required and fake raw bytes suffice for every format.
 FORMAT_PROVENANCE = [
     ("2025-impact-report.pdf", "application/pdf", "liteparse"),
-    ("2025-impact-report.docx", None, "markitdown"),
+    ("2025-impact-report.docx", None, "anydoc"),
     ("2025-impact-report.html", "text/html", "markitdown"),
     ("2025-impact-report.md", "text/markdown", "markdown"),
     ("2025-impact-report.txt", "text/plain", "text"),

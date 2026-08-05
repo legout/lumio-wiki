@@ -16,7 +16,7 @@ lumio-wiki = "lumio_wiki.cli:main"
 # command; document-converter and provider Distiller code paths name the
 # extra when invoked without it).
 [project.optional-dependencies]
-documents = ["liteparse>=2.4.0", "markitdown[docx]>=0.1.6"]
+documents = ["liteparse>=2.4.0", "markitdown[docx]>=0.1.6", "firecrawl-anydoc==0.1.3"]
 llm = ["openai>=1.40.0"]
 # Issue #120, ADR-0013: the optional S3 capability reads immutable Knowledge
 # Base Snapshots directly from object storage via ``obstore``. Declared but NOT
@@ -27,6 +27,7 @@ s3 = ["obstore>=0.11.0"]
 all = [
   "liteparse>=2.4.0",
   "markitdown[docx]>=0.1.6",
+  "firecrawl-anydoc==0.1.3",
   "openai>=1.40.0",
   "obstore>=0.11.0",
 ]

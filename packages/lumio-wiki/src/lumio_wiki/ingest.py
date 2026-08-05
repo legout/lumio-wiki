@@ -57,7 +57,7 @@ class SourceProvenance(msgspec.Struct, frozen=True):
 
     original_filename: str | None
     content_type: str | None
-    converted_by: str  # "liteparse" or "markitdown"
+    converted_by: str  # "liteparse", "anydoc", or "markitdown"
     source_hash: str | None = None
     # Lineage marker for sources promoted from a Conversation Source submission
     # (#36). Carries the original Conversation Source provenance (e.g.
@@ -441,10 +441,11 @@ def select_source_processor(filename: str | None, content_type: str | None) -> S
     """Route a Knowledge Source to its Source Processor (issue #100).
 
     Text and Markdown sources use the dependency-free
-    :class:`TextMarkdownSourceProcessor`. Document sources (PDF, image, DOCX,
+    :class:`TextMarkdownSourceProcessor`. Document sources (PDF, image, office,
     HTML, and broad document formats) use :class:`PdfSourceProcessor`
-    (LiteParse) or :class:`MarkItDownSourceProcessor` (MarkItDown) from the
-    ``[documents]`` extra. When the extra is absent, the document processor's
+    (LiteParse), :class:`AnyDocSourceProcessor` (AnyDoc), or
+    :class:`MarkItDownSourceProcessor` (MarkItDown) from the ``[documents]``
+    extra (ADR-0018). When the extra is absent, the document processor's
     ``process`` raises :class:`MissingDocumentExtraError` with the exact
     install command.
     """
@@ -470,8 +471,8 @@ def create_proposal_without_provider(
     """Model-free ingestion for text, Markdown, and document Knowledge Sources.
 
     Routes the source through :func:`select_source_processor` (text/Markdown →
-    :class:`TextMarkdownSourceProcessor`; documents → LiteParse/MarkItDown via
-    the ``[documents]`` extra) and distills through the
+    :class:`TextMarkdownSourceProcessor`; documents → LiteParse/AnyDoc/MarkItDown
+    via the ``[documents]`` extra) and distills through the
     :class:`PassthroughMarkdownDistiller` so a source reaches a reviewable
     Ingest Proposal without an OpenAI-compatible provider (issue #95, AC4;
     document support added by issue #100). When ``store`` is given, the
@@ -489,7 +490,7 @@ def create_proposal_without_provider(
     # Document sources produce extracted text, not authored page Markdown.
     # Wrap it in minimal frontmatter so the Proposal Pipeline can process it;
     # the host agent refines the page during review (issue #100, AC3).
-    if normalized.converted_by in ("liteparse", "markitdown"):
+    if normalized.converted_by in ("liteparse", "anydoc", "markitdown"):
         distilled = _ensure_page_frontmatter(distilled, filename)
     pipeline = ProposalPipeline(kb, store=store)
     proposal = pipeline.assemble(distilled, provenance, filename)

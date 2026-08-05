@@ -16,6 +16,7 @@ FORBIDDEN = {
     "openai",
     "liteparse",
     "markitdown",
+    "anydoc",
 }
 
 

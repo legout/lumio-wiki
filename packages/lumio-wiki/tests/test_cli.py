@@ -364,7 +364,7 @@ def test_managed_ingest_binds_source_and_authored_page(
         (
             ".docx",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "markitdown",
+            "anydoc",
         ),
         (".html", "text/html", "markitdown"),
         (".md", "text/markdown", "markdown"),

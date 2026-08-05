@@ -111,10 +111,10 @@ def documents_wheel_env(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def test_documents_extra_installs_converters(documents_wheel_env: Path):
-    """AC3: ``[documents]`` actually installs LiteParse + MarkItDown."""
+    """AC3: ``[documents]`` actually installs LiteParse + MarkItDown + AnyDoc."""
     python = documents_wheel_env
     result = subprocess.run(
-        [str(python), "-c", "import liteparse, markitdown; print('documents extras ok')"],
+        [str(python), "-c", "import liteparse, markitdown, anydoc; print('documents extras ok')"],
         capture_output=True,
         text=True,
     )

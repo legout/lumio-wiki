@@ -1,10 +1,10 @@
 """Issue #100: the ``lumio-wiki[documents]`` ingestion capability.
 
-Tests the document Source Processor implementations (PdfSourceProcessor and
-MarkItDownSourceProcessor), the routing logic, bounded extraction, stable
-page/section numbers, timeout behavior, actionable malformed/encrypted-input
-errors, and the full document → distill → propose journey through the same
-Pipeline as text/Markdown sources.
+Tests the document Source Processor implementations (PdfSourceProcessor,
+AnyDocSourceProcessor, and MarkItDownSourceProcessor), the routing logic,
+bounded extraction, stable page/section numbers, timeout behavior, actionable
+malformed/encrypted-input errors, and the full document → distill → propose
+journey through the same Pipeline as text/Markdown sources.
 
 These tests run in the workspace environment where LiteParse and MarkItDown
 are installed (they are workspace-level dependencies of the full ``lumio``
@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 from lumio_wiki.source_processor import (
     DOCUMENTS_EXTRA_HINT,
+    AnyDocSourceProcessor,
     MarkItDownSourceProcessor,
     MissingDocumentExtraError,
     NormalizedSection,
@@ -32,6 +33,7 @@ from lumio_wiki.source_processor import (
     is_document_source,
     run_conversion,
     select_document_processor,
+    source_converter_name,
 )
 
 # A minimal but valid PDF with a text layer. LiteParse extracts page text
@@ -123,18 +125,36 @@ class TestRouting:
         proc = select_document_processor(None, "image/png")
         assert isinstance(proc, PdfSourceProcessor)
 
-    def test_docx_routes_to_markitdown(self):
+    def test_docx_routes_to_anydoc(self):
         proc = select_document_processor("doc.docx", None)
-        assert isinstance(proc, MarkItDownSourceProcessor)
+        assert isinstance(proc, AnyDocSourceProcessor)
+
+    def test_office_formats_route_to_anydoc(self):
+        """The full office superset routes to AnyDoc (issue #154, ADR-0018)."""
+        office_exts = (
+            ".doc", ".docx", ".docm",
+            ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
+            ".xls", ".xlsx", ".xlsm", ".xlsb",
+            ".odt", ".ods", ".odp",
+            ".rtf", ".epub", ".csv",
+        )
+        for ext in office_exts:
+            proc = select_document_processor(f"file{ext}", None)
+            assert isinstance(proc, AnyDocSourceProcessor), (
+                f"{ext} should route to AnyDoc"
+            )
 
     def test_html_routes_to_markitdown(self):
         proc = select_document_processor("page.html", None)
         assert isinstance(proc, MarkItDownSourceProcessor)
 
-    def test_broad_document_formats_route_to_markitdown(self):
-        for ext in (".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".csv", ".json"):
+    def test_broad_formats_not_covered_by_anydoc_route_to_markitdown(self):
+        """HTML and the broad formats AnyDoc does not cover stay on MarkItDown."""
+        for ext in (".html", ".htm", ".xml", ".json", ".rst"):
             proc = select_document_processor(f"file{ext}", None)
-            assert isinstance(proc, MarkItDownSourceProcessor), f"{ext} should route to MarkItDown"
+            assert isinstance(proc, MarkItDownSourceProcessor), (
+                f"{ext} should route to MarkItDown"
+            )
 
     def test_text_and_markdown_return_none(self):
         assert select_document_processor("note.md", None) is None
@@ -154,6 +174,20 @@ class TestRouting:
         assert is_document_source("note.md", None) is False
         assert is_document_source("note.txt", None) is False
         assert is_document_source(None, "text/plain") is False
+
+    def test_source_converter_name_matches_routing(self):
+        """The converter NAME from routing alone mirrors the processor routing
+        (issue #154): office → anydoc, PDF/images → liteparse, HTML → markitdown."""
+        assert source_converter_name("doc.docx", None) == "anydoc"
+        assert source_converter_name("sheet.xlsx", None) == "anydoc"
+        assert source_converter_name("data.csv", None) == "anydoc"
+        assert source_converter_name("book.epub", None) == "anydoc"
+        assert source_converter_name("report.pdf", None) == "liteparse"
+        assert source_converter_name("scan.png", None) == "liteparse"
+        assert source_converter_name("page.html", None) == "markitdown"
+        assert source_converter_name("data.json", None) == "markitdown"
+        assert source_converter_name("note.md", None) == "markdown"
+        assert source_converter_name("note.txt", None) == "text"
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +330,102 @@ class TestMarkItDownSourceProcessor:
         proc = MarkItDownSourceProcessor(converter=empty_converter, runner=_sync_runner)
         with pytest.raises(SourceProcessorError, match="no extractable text"):
             proc.process("blank.docx", None, _make_docx())
+
+
+# ---------------------------------------------------------------------------
+# AnyDocSourceProcessor (issue #154, ADR-0018)
+# ---------------------------------------------------------------------------
+
+
+class TestAnyDocSourceProcessor:
+    def test_processes_office_doc_into_heading_sections(self):
+        def fake_convert(content, filename):
+            return "# Heading\n\nBody text.\n\n## Sub\n\nMore.\n"
+
+        proc = AnyDocSourceProcessor(converter=fake_convert, runner=_sync_runner)
+        result = proc.process("report.docx", None, b"PK-office-bytes")
+
+        assert isinstance(result, NormalizedSource)
+        assert result.converted_by == "anydoc"
+        assert "Body text." in result.text
+        assert len(result.sections) >= 1
+        # AnyDoc produces a single blob — sections are heading-based, so
+        # page_number is None (never invented).
+        for section in result.sections:
+            assert section.page_number is None
+
+    def test_source_hash_is_sha256_of_raw_bytes(self):
+        proc = AnyDocSourceProcessor(converter=lambda c, f: "# T\n\nbody\n", runner=_sync_runner)
+        raw = b"office-bytes"
+        result = proc.process("doc.xlsx", None, raw)
+        assert result.source_hash == hashlib.sha256(raw).hexdigest()
+
+    def test_filename_content_type_and_converted_by_preserved(self):
+        proc = AnyDocSourceProcessor(converter=lambda c, f: "# T\n\nbody\n", runner=_sync_runner)
+        result = proc.process("slides.pptx", "application/vnd.ms-powerpoint", b"bytes")
+        assert result.filename == "slides.pptx"
+        assert result.content_type == "application/vnd.ms-powerpoint"
+        assert result.converted_by == "anydoc"
+
+    def test_empty_content_raises(self):
+        proc = AnyDocSourceProcessor(runner=_sync_runner)
+        with pytest.raises(SourceProcessorError, match="empty"):
+            proc.process("empty.docx", None, b"")
+
+    def test_oversized_source_raises(self):
+        proc = AnyDocSourceProcessor(runner=_sync_runner)
+        huge = b"x" * (26 * 1024 * 1024)
+        with pytest.raises(SourceProcessorError, match="size limit"):
+            proc.process("huge.pptx", None, huge)
+
+    def test_failed_conversion_is_observable_never_silent(self):
+        """A failed AnyDoc conversion surfaces an error; it is NEVER silently
+        discarded and NEVER silently rerouted to another converter (issue #154
+        fallback / ADR-0018)."""
+
+        def bad_converter(content, filename):
+            raise RuntimeError("ConvertError: resource limit exceeded")
+
+        proc = AnyDocSourceProcessor(converter=bad_converter, runner=_sync_runner)
+        with pytest.raises(SourceProcessorError, match="could not be converted"):
+            proc.process("bomb.docx", None, b"bytes")
+
+    def test_no_extractable_text_raises(self):
+        def empty_converter(content, filename):
+            return ""
+
+        proc = AnyDocSourceProcessor(converter=empty_converter, runner=_sync_runner)
+        with pytest.raises(SourceProcessorError, match="no extractable text"):
+            proc.process("blank.odt", None, b"bytes")
+
+    def test_caps_max_chars(self):
+        long_text = "A" * 500_000
+        proc = AnyDocSourceProcessor(
+            converter=lambda content, fn: long_text,
+            runner=_sync_runner,
+            max_chars=1000,
+        )
+        result = proc.process("big.csv", None, b"bytes")
+        assert len(result.text) <= 1000
+
+    def test_missing_extra_raises_actionable_error(self, monkeypatch):
+        """A base install requesting AnyDoc raises the exact install command."""
+        real_import = __import__
+
+        def block_anydoc(name, *args, **kwargs):
+            if name == "anydoc":
+                raise ImportError("simulated: anydoc not installed")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.__import__", block_anydoc)
+        import sys
+
+        monkeypatch.delitem(sys.modules, "anydoc", raising=False)
+
+        proc = AnyDocSourceProcessor(runner=_sync_runner)
+        with pytest.raises(MissingDocumentExtraError) as exc_info:
+            proc.process("doc.docx", None, b"bytes")
+        assert "lumio-wiki[documents]" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +592,7 @@ class TestDocumentJourney:
             kb,
         )
 
-        assert proposal.provenance.converted_by == "markitdown"
+        assert proposal.provenance.converted_by == "anydoc"
         assert len(proposal.proposed_pages) >= 1
 
 

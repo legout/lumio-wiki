@@ -80,6 +80,7 @@ def _assert_heavyweight_not_importable(python: Path) -> None:
         "openai",
         "liteparse",
         "markitdown",
+        "anydoc",
         "lumio",
     )
     for module in forbidden:

@@ -6,11 +6,14 @@ A Source Processor is the first stage of ingestion. It turns raw Knowledge
 Source bytes into a :class:`NormalizedSource` — normalized text plus stable,
 line-addressable sections — without depending on a model provider or a web
 request. Text and Markdown are handled by UTF-8 decoding and require no
-heavyweight converter (AC4); document formats (PDF, scanned-PDF/OCR, image,
-DOCX, HTML, and broad document sources) are handled by
-:class:`PdfSourceProcessor` and :class:`MarkItDownSourceProcessor`, which
-lazily import LiteParse and MarkItDown only when the ``[documents]`` extra is
-installed. A base install that requests a document converter raises
+heavyweight converter (AC4); document formats are handled by three layered
+converters (ADR-0018): :class:`PdfSourceProcessor` (PDF and images → LiteParse,
+which supplies real page boundaries and OCR for scanned pages),
+:class:`AnyDocSourceProcessor` (office formats → AnyDoc, which dominates
+MarkItDown on coverage, fidelity, and speed), and
+:class:`MarkItDownSourceProcessor` (HTML and the remaining broad document
+formats). Each lazily imports its converter only when the ``[documents]``
+extra is installed. A base install that requests a document converter raises
 :class:`MissingDocumentExtraError` with the exact install command.
 """
 
@@ -161,24 +164,33 @@ DOCUMENTS_EXTRA_HINT = "pip install 'lumio-wiki[documents]'"
 _PDF_SIGNATURE = b"%PDF-"
 _ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 
-# Content-type / extension routing (ADR-0001). PDFs and images → LiteParse
-# (which supplies real page boundaries and OCR for scanned pages); everything
-# else → MarkItDown (broad document conversion).
+# Content-type / extension routing (ADR-0001, layered by ADR-0018). PDFs and
+# images → LiteParse (real page boundaries and OCR for scanned pages); office
+# formats → AnyDoc (broad, fast, dependency-free office conversion); HTML and
+# the remaining broad document formats → MarkItDown.
 _LITEPARSE_CONTENT_TYPES = frozenset({"application/pdf"})
 _LITEPARSE_EXTENSIONS = frozenset({".pdf"})
 _IMAGE_CONTENT_TYPE_PREFIX = "image/"
 _IMAGE_EXTENSIONS = frozenset(
     {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp"}
 )
-_MARKITDOWN_EXTENSIONS = frozenset(
+# AnyDoc office-format superset (issue #154, ADR-0018): Word, PowerPoint, Excel,
+# OpenDocument, RTF, EPUB, and CSV, including the legacy binary (.doc/.ppt/.xls)
+# and macro-enabled/container variants. AnyDoc dominates MarkItDown on these.
+_ANYDOC_EXTENSIONS = frozenset(
     {
-        ".docx", ".doc", ".html", ".htm",
-        ".xls", ".xlsx", ".ppt", ".pptx",
+        ".doc", ".docx", ".docm",
+        ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
+        ".xls", ".xlsx", ".xlsm", ".xlsb",
         ".odt", ".ods", ".odp",
-        ".csv", ".xml", ".json", ".rst", ".rtf",
+        ".rtf", ".epub", ".csv",
     }
 )
-_DOCUMENT_EXTENSIONS = _LITEPARSE_EXTENSIONS | _IMAGE_EXTENSIONS | _MARKITDOWN_EXTENSIONS
+# MarkItDown retains HTML and the broad formats AnyDoc does not cover.
+_MARKITDOWN_EXTENSIONS = frozenset({".html", ".htm", ".xml", ".json", ".rst"})
+_DOCUMENT_EXTENSIONS = (
+    _LITEPARSE_EXTENSIONS | _IMAGE_EXTENSIONS | _MARKITDOWN_EXTENSIONS | _ANYDOC_EXTENSIONS
+)
 
 
 def _require_documents_extra(module: str) -> None:
@@ -337,6 +349,25 @@ def _default_markitdown_converter(content: bytes, filename: str | None) -> str:
     ext = PurePath(filename).suffix if filename else None
     result = markitdown.MarkItDown().convert(io.BytesIO(content), file_extension=ext)
     return result.text_content
+
+
+def _default_anydoc_converter(content: bytes, filename: str | None) -> str:
+    """Lazy AnyDoc converter: returns GitHub-Flavored Markdown for office docs.
+
+    AnyDoc (``firecrawl-anydoc``, imported as ``anydoc``) auto-detects the format
+    from content for signature-bearing office formats; the signature-less CSV
+    format is named explicitly so a ``.csv`` source converts deterministically
+    (issue #154, ADR-0018). Uses ``importlib`` rather than a top-level
+    ``import`` so the module source contains no forbidden import statement
+    (ADR-0010 base-install invariant). AnyDoc enforces its own resource limits
+    (``max_entry_bytes`` / ``max_xml_depth`` / ``max_expansion``) inside the
+    converter, so a hostile source is rejected before it can exhaust memory.
+    """
+    _require_documents_extra("anydoc")
+    anydoc = importlib.import_module("anydoc")
+    ext = PurePath(filename).suffix.lower() if filename else ""
+    fmt = "csv" if ext == ".csv" else None
+    return anydoc.to_markdown_bytes(content, fmt)
 
 
 def _pages_to_sections(
@@ -609,6 +640,84 @@ class MarkItDownSourceProcessor:
         )
 
 
+class AnyDocSourceProcessor:
+    """Convert office document sources through AnyDoc into heading-based sections.
+
+    Routed through AnyDoc (``firecrawl-anydoc``; ADR-0018) for the office
+    superset (Word/PowerPoint/Excel/OpenDocument/RTF/EPUB/CSV and their
+    container variants). AnyDoc produces a single Markdown blob without page
+    boundaries, so stable heading-based sections are derived from that Markdown
+    — exactly like :class:`MarkItDownSourceProcessor` — and citations identify
+    the original filename plus a stable section (never an invented page
+    number). AnyDoc enforces resource limits inside the converter, so no
+    external zip-bomb guard is needed. ``converted_by`` is ``"anydoc"``.
+
+    Fallback is explicit and observable (issue #154): a failed conversion is
+    NEVER silently discarded and NEVER silently rerouted to another converter
+    (which would break deterministic ``converted_by`` provenance and require the
+    general extractor-provider abstraction this issue forbids). A failure raises
+    an observable :class:`SourceProcessorError` naming the cause; a missing
+    ``[documents]`` extra raises :class:`MissingDocumentExtraError`.
+
+    The converter and runner are injectable for testing. When ``converter`` is
+    ``None``, the default AnyDoc converter is used.
+    """
+
+    def __init__(
+        self,
+        converter: Callable[[bytes, str | None], str] | None = None,
+        *,
+        max_chars: int = MAX_EXTRACTED_CHARS,
+        timeout: float = CONVERSION_TIMEOUT,
+        runner: Callable[..., Any] | None = None,
+    ) -> None:
+        self._converter = converter
+        self._max_chars = max_chars
+        self._timeout = timeout
+        self._runner = runner
+
+    def process(
+        self, filename: str | None, content_type: str | None, content: bytes
+    ) -> NormalizedSource:
+        if not content:
+            raise SourceProcessorError("Knowledge Source is empty")
+        if len(content) > MAX_SOURCE_BYTES:
+            raise SourceProcessorError(
+                "Knowledge Source exceeds the 25 MiB size limit"
+            )
+        runner = self._runner or run_conversion
+        if self._converter is not None:
+            converter = self._converter
+        else:
+            # Check the extra before spawning so the error type survives
+            # (spawn serializes exceptions as strings).
+            _require_documents_extra("anydoc")
+            converter = _default_anydoc_converter
+        try:
+            raw_text = runner(converter, content, filename, timeout=self._timeout)
+        except (SourceProcessorError, MissingDocumentExtraError):
+            raise
+        except Exception as exc:
+            raise SourceProcessorError(
+                f"the document could not be converted: {exc}"
+            ) from exc
+        text = _bound_text((raw_text or "").strip(), limit=self._max_chars)
+        if not text:
+            raise SourceProcessorError(
+                "the document contained no extractable text; it may be empty"
+            )
+        digest = hashlib.sha256(content).hexdigest()
+        sections = _sections(filename, text, digest)[:MAX_SECTIONS]
+        return NormalizedSource(
+            text=text,
+            sections=sections,
+            converted_by="anydoc",
+            source_hash=digest,
+            filename=filename,
+            content_type=content_type,
+        )
+
+
 def is_document_source(filename: str | None, content_type: str | None) -> bool:
     """Return whether a source requires a document converter (not text/markdown)."""
     suffix = PurePath(filename or "").suffix.lower()
@@ -623,14 +732,16 @@ def is_document_source(filename: str | None, content_type: str | None) -> bool:
 def select_document_processor(
     filename: str | None, content_type: str | None
 ) -> SourceProcessor | None:
-    """Route a document source to LiteParse or MarkItDown.
+    """Route a document source to LiteParse, AnyDoc, or MarkItDown.
 
     Returns ``None`` for text and Markdown sources (handled by
     :class:`TextMarkdownSourceProcessor`). For document sources, returns a
-    :class:`PdfSourceProcessor` (PDF and images → LiteParse) or
-    :class:`MarkItDownSourceProcessor` (DOCX, HTML, and broad documents →
-    MarkItDown). The routing mirrors the historical converter routing
-    (ADR-0001) so provenance is deterministic.
+    :class:`PdfSourceProcessor` (PDF and images → LiteParse, which supplies real
+    page boundaries and OCR), an :class:`AnyDocSourceProcessor` (office formats
+    → AnyDoc), or a :class:`MarkItDownSourceProcessor` (HTML and the remaining
+    broad document formats → MarkItDown). The routing layers AnyDoc on top of
+    the historical converter routing (ADR-0001) per ADR-0018 so provenance is
+    deterministic.
     """
     suffix = PurePath(filename or "").suffix.lower()
     ct = (content_type or "").split(";")[0].strip().lower()
@@ -638,6 +749,8 @@ def select_document_processor(
         return PdfSourceProcessor()
     if suffix in _LITEPARSE_EXTENSIONS or suffix in _IMAGE_EXTENSIONS:
         return PdfSourceProcessor()
+    if suffix in _ANYDOC_EXTENSIONS:
+        return AnyDocSourceProcessor()
     if suffix in _MARKITDOWN_EXTENSIONS:
         return MarkItDownSourceProcessor()
     return None
@@ -653,12 +766,14 @@ def source_converter_name(filename: str | None, content_type: str | None) -> str
     values mirror :func:`select_document_processor` +
     :class:`TextMarkdownSourceProcessor` routing so provenance is deterministic
     and identical to the ordinary ingest path (``"markdown"``/``"text"`` for
-    text/Markdown, ``"liteparse"`` for PDF and images, ``"markitdown"`` for
-    DOCX, HTML, and broad document formats).
+    text/Markdown, ``"liteparse"`` for PDF and images, ``"anydoc"`` for office
+    formats, ``"markitdown"`` for HTML and remaining broad document formats).
     """
     document_processor = select_document_processor(filename, content_type)
     if isinstance(document_processor, PdfSourceProcessor):
         return "liteparse"
+    if isinstance(document_processor, AnyDocSourceProcessor):
+        return "anydoc"
     if isinstance(document_processor, MarkItDownSourceProcessor):
         return "markitdown"
     return "markdown" if _is_markdown(filename, content_type) else "text"
@@ -667,6 +782,7 @@ def source_converter_name(filename: str | None, content_type: str | None) -> str
 __all__ = [
     "CONVERSION_TIMEOUT",
     "DOCUMENTS_EXTRA_HINT",
+    "AnyDocSourceProcessor",
     "DocumentSourceProcessor",
     "MarkItDownSourceProcessor",
     "MAX_EXTRACTED_CHARS",

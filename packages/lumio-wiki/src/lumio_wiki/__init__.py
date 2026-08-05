@@ -244,6 +244,7 @@ from lumio_wiki.source_registry import (
 )
 from lumio_wiki.source_processor import (
     DOCUMENTS_EXTRA_HINT,
+    AnyDocSourceProcessor,
     DocumentSourceProcessor,
     MarkItDownSourceProcessor,
     MissingDocumentExtraError,
@@ -262,6 +263,7 @@ __all__ = [
     "ACTIVITY_LOG_ARTIFACT",
     "ACTIVITY_LOG_BASENAME",
     "ACTIVITY_LOG_VERSION",
+    "AnyDocSourceProcessor",
     "EXTRACTOR_VERSION",
     "ExtractionDiagnostic",
     "ActivityLogEntry",

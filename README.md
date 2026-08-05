@@ -107,6 +107,7 @@ Once an Operator has deployed Lumio (above) or you are running locally:
 ### Developer — run locally
 
 Requirements: **Python ≥ 3.14** and [uv](https://docs.astral.sh/uv/).
+
 ```bash
 uv sync                       # install dependencies + the package
 uv run lumio validate tests/fixtures/valid   # smoke-test the SDK against the sample KB
@@ -130,7 +131,7 @@ provider.
 
 ```bash
 pip install lumio-wiki                       # foundation: load, validate, search, traverse, ingest, publish
-pip install 'lumio-wiki[documents]'          # + LiteParse/MarkItDown for PDF/DOCX/HTML ingestion
+pip install 'lumio-wiki[documents]'          # + LiteParse/MarkItDown/AnyDoc for PDF/image/office/HTML ingestion
 pip install 'lumio-wiki[llm]'                # + an unattended OpenAI-compatible Distiller
 pip install 'lumio-wiki[all]'                # documents + llm together (still no LanceDB)
 pip install lumio-lancedb                    # + enhanced BM25/semantic/hybrid retrieval
@@ -139,7 +140,7 @@ pip install lumio                            # the full deployable web applicati
 
 The base wheel depends only on `msgspec[yaml]` and `msgpack`; it does not
 install the web application, LanceDB/PyArrow, Stario/Piccolo, OpenAI,
-LiteParse, or MarkItDown. Optional capabilities are described under
+LiteParse, MarkItDown, or AnyDoc. Optional capabilities are described under
 Optional capabilities below; the full packaging, ownership, and migration
 contract lives in `docs/packaging.md`.
 
@@ -157,7 +158,7 @@ the exact install command when invoked without it.
 
 | Extra | Brings | Capability |
 |---|---|---|
-| `lumio-wiki[documents]` | LiteParse, MarkItDown | PDF / scanned-PDF / image / DOCX / HTML ingestion. The base wheel handles text and Markdown. |
+| `lumio-wiki[documents]` | LiteParse, MarkItDown, AnyDoc | PDF / scanned-PDF / image (LiteParse, with OCR + page numbers), office formats — Word/PowerPoint/Excel/OpenDocument/RTF/EPUB/CSV (AnyDoc), HTML and broad formats (MarkItDown). The base wheel handles text and Markdown. |
 | `lumio-wiki[llm]` | `openai` | Unattended Distiller backed by an OpenAI-compatible provider. The base wheel uses the host coding agent as the Distiller. |
 | `lumio-wiki[all]` | both of the above | Document conversion + unattended distillation together. Still LanceDB-free. |
 | `lumio-lancedb` | LanceDB, PyArrow | BM25 / vector / semantic / hybrid retrieval. `lumio-wiki` never imports it; install it explicitly when you want enhanced ranking. |
@@ -206,8 +207,8 @@ offline FakeProvider.
 |---|---|---|
 | `LUMIO_KB_PATH` | `tests/fixtures/valid` | Path to the compiled Knowledge Base the app loads. |
 | `LUMIO_STORAGE_MODE` | `git` | `git`, `shared`, or `hybrid`. |
-| `LUMIO_GIT_SOURCE` | _(none)_ | Git URL for the canonical KB (used by `git` and `hybrid`). |
-| `LUMIO_SHARED_SOURCE` | _(none)_ | Shared-storage path (used by `shared` and `hybrid`). |
+| `LUMIO_GIT_SOURCE` | *(none)* | Git URL for the canonical KB (used by `git` and `hybrid`). |
+| `LUMIO_SHARED_SOURCE` | *(none)* | Shared-storage path (used by `shared` and `hybrid`). |
 | `LUMIO_CONFIG_PATH` | `data/config` | Runtime config: storage-mode and write-mode state. |
 | `LUMIO_INGEST_PATH` | `data/ingest` | Staged ingest proposals and uploaded raw sources. |
 | `LUMIO_PUBLISH_PATH` | `data/publish` | Published-version records. |
@@ -309,9 +310,9 @@ Role gates are enforced as middleware.
 
 | Route | Role | Purpose |
 |---|---|---|
-| `GET /health` | _(none)_ | Liveness probe. |
-| `GET/POST /setup` | _(first-run only)_ | Create the Owner account; disabled once one exists. |
-| `GET/POST /login` · `GET/POST /register` · `POST /logout` | _(auth)_ | Session login / logout; self-service Reader registration (disabled until an Owner exists). |
+| `GET /health` | *(none)* | Liveness probe. |
+| `GET/POST /setup` | *(first-run only)* | Create the Owner account; disabled once one exists. |
+| `GET/POST /login` · `GET/POST /register` · `POST /logout` | *(auth)* | Session login / logout; self-service Reader registration (disabled until an Owner exists). |
 | `GET/POST /chat` · `POST /chat/ask` · `GET /chat/reading-room` · `GET /chat/threads` · `GET /chat/threads/{id}` | Reader | Chat + Citation Workspace: cited answer with retrieval trace. Selecting a Citation opens the cited Compiled Page in the Reading Room column (or a responsive sheet on narrower displays); the page and cited range are URL-addressable and survive reload, Back/Forward, and shared deep links. |
 | `GET /kb` · `GET /kb/page/{title}` · `GET /kb/export` | Reader | Reading Room: browse published Compiled Pages, deterministic lexical search (title, alias, tag, summary, body) with prev/next ranked-result navigation, full-width standalone document reading, and Markdown export (raw sources excluded). No chat composer or generated answer on the standalone surface. |
 | `POST /v1/chat/completions` | Reader | OpenAI-compatible endpoint; same retrieval, citation, refusal, and guardrails as `/chat`. Returns a `lumio` extension block with citations, trace, and `covered`. |
@@ -322,7 +323,7 @@ Role gates are enforced as middleware.
 
 **Storage modes** (see `LUMIO_STORAGE_MODE`):
 
-- `git` _(default)_ — Git is the canonical source; Lumio pulls on boot and
+- `git` *(default)* — Git is the canonical source; Lumio pulls on boot and
   commits/pushes on publish.
 - `shared` — a shared-storage path is canonical (when Git is unavailable).
 - `hybrid` — Git is canonical; shared storage mirrors bundles.

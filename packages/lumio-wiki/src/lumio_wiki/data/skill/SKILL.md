@@ -205,8 +205,9 @@ The same operations exist on the public Python surface
 The base install handles text and Markdown. Optional extras are declared but
 not installed by default:
 
-- `lumio-wiki[documents]` — LiteParse + MarkItDown for PDF, scanned-PDF, image,
-  DOCX, HTML, and other document conversion.
+- `lumio-wiki[documents]` — LiteParse + MarkItDown + AnyDoc for PDF,
+  scanned-PDF, image, office (Word/PowerPoint/Excel/OpenDocument/RTF/EPUB/CSV),
+  HTML, and other document conversion.
 - `lumio-wiki[llm]` — an unattended OpenAI-compatible Distiller (use when you
   do NOT want the host coding agent to be the Distiller).
 - `lumio-wiki[all]` — both.

@@ -1418,7 +1418,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print(f"lumio-wiki {lumio_wiki.__version__}")
     print(f"python:    {sys.version.split()[0]}")
     optionals = {
-        "documents": _detect_module("liteparse") and _detect_module("markitdown"),
+        "documents": _detect_module("liteparse") and _detect_module("markitdown") and _detect_module("anydoc"),
         "llm": _detect_module("openai"),
         "s3": _detect_module("obstore"),
         "lancedb": _detect_module("lancedb"),

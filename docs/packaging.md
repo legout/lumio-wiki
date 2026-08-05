@@ -53,8 +53,8 @@ The standalone, model-free LLM Wiki toolkit. Owns the canonical contracts:
   wheel data and resolvable via `lumio-wiki skill`.
 
 **Dependencies:** `msgpack`, `msgspec[yaml]` only. It does **not** depend on
-LanceDB, PyArrow, Stario, Piccolo, OpenAI, LiteParse, MarkItDown, or any
-application module. Verified in every release by
+LanceDB, PyArrow, Stario, Piccolo, OpenAI, LiteParse, MarkItDown, AnyDoc, or
+any application module. Verified in every release by
 `scripts/verify_lumio_wiki_wheel.py` (run from CI in an isolated venv) and
 by `packages/lumio-wiki/tests/test_wheel_isolation.py`.
 
@@ -123,7 +123,7 @@ of them pulls in another `lumio-*` distribution.
 
 | Extra | Adds | Capability |
 |---|---|---|
-| `lumio-wiki[documents]` | LiteParse, MarkItDown | PDF / scanned-PDF / image / DOCX / HTML ingestion. The base wheel handles text and Markdown. |
+| `lumio-wiki[documents]` | LiteParse, MarkItDown, AnyDoc | PDF / scanned-PDF / image (LiteParse, OCR + page numbers), office formats — Word/PowerPoint/Excel/OpenDocument/RTF/EPUB/CSV (AnyDoc), HTML and broad formats (MarkItDown). The base wheel handles text and Markdown. |
 | `lumio-wiki[llm]` | `openai` | Unattended Distiller backed by an OpenAI-compatible provider. The base wheel uses the host coding agent as the Distiller (`--distiller passthrough`). |
 | `lumio-wiki[all]` | both of the above | Document conversion + unattended distillation together. Still LanceDB-free. |
 
