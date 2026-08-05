@@ -1,11 +1,24 @@
-"""Generate the DOCX and PDF Knowledge Sources for the Atlas Heatworks trial."""
+"""Generate the binary Knowledge Sources for the Atlas Heatworks trial.
+
+Supported targets (controlled via CLI args, all enabled by default):
+
+* ``docx`` → ``installation-handbook.docx`` (python-docx)
+* ``pdf``  → ``2025-impact-report.pdf`` (reportlab)
+* ``pptx`` → ``aster-pricing-deck.pptx`` (python-pptx)
+* ``xlsx`` → ``aster-careplus-matrix.xlsx`` (openpyxl)
+
+The committed fixtures are reproducible content fixtures. Regenerate them
+after editing this script or whenever a fixture is added.
+"""
 
 # The source prose intentionally stays readable as paragraphs instead of line-fragment tuples.
 # ruff: noqa: E501
 
+import argparse
 import sys
 from importlib import import_module
 from pathlib import Path
+from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ROOT / "sources"
@@ -234,7 +247,180 @@ def generate_pdf() -> Path:
     return path
 
 
-if __name__ == "__main__":
+def generate_pptx() -> Path:
+    pptx_module = import_module("pptx")
+    prs = pptx_module.Presentation()
+    prs.core_properties.title = "Atlas Heatworks Aster Pricing Sheet"
+    prs.core_properties.subject = (
+        "Internal pricing and lead-time reference for Aster 8 and Aster 12"
+    )
+    prs.core_properties.author = "Atlas Heatworks Technical Office"
+
+    title_slide = prs.slides.add_slide(prs.slide_layouts[0])
+    title_slide.shapes.title.text = "Aster Series Pricing"
+    title_slide.placeholders[
+        1
+    ].text = "Internal reference · Atlas Heatworks Technical Office · Effective 1 March 2026"
+
+    bullets_layout = prs.slide_layouts[1]
+    for title, lead, points in (
+        (
+            "Aster 8 — small heat-pump",
+            "8 kW nominal output, three heating zones",
+            (
+                "Catalog edition 2026.1",
+                "Standard cylinder 180 litres",
+                "Manufacturer Norrby Climate Systems",
+                "Refrigerant R-32 factory charge 1.15 kg",
+            ),
+        ),
+        (
+            "Aster 12 — larger heat-pump",
+            "12 kW nominal output, up to five heating zones",
+            (
+                "Catalog edition 2026.1",
+                "Standard cylinder 250 litres",
+                "Manufacturer Norrby Climate Systems",
+                "Refrigerant R-32 factory charge 1.65 kg",
+            ),
+        ),
+        (
+            "CarePlus notes",
+            (
+                "CarePlus extends the standard five-year product warranty to seven years when registration is "
+                "timely and annual service is documented."
+            ),
+            (
+                "Eligibility governed by Customer Support and Warranty Policy",
+                "Operations Director approves exceptions only",
+                "Late service triggers a 45-day cure period",
+            ),
+        ),
+    ):
+        slide = prs.slides.add_slide(bullets_layout)
+        slide.shapes.title.text = title
+        body = slide.placeholders[1].text_frame
+        body.text = lead
+        for point in points:
+            para = body.add_paragraph()
+            para.text = point
+            para.level = 1
+
+    path = SOURCES / "aster-pricing-deck.pptx"
+    prs.save(path)
+    return path
+
+
+def generate_xlsx() -> Path:
+    openpyxl = import_module("openpyxl")
+    styles_module = import_module("openpyxl.styles")
+    Font = styles_module.Font
+    PatternFill = styles_module.PatternFill
+    Alignment = styles_module.Alignment
+    Border = styles_module.Border
+    Side = styles_module.Side
+    Workbook = openpyxl.Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Aster catalog"
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1F4D46", end_color="1F4D46", fill_type="solid")
+    thin = Side(border_style="thin", color="888888")
+    border = Border(top=thin, bottom=thin, left=thin, right=thin)
+
+    ws.append(
+        ["Model", "Nominal output", "Zones", "Cylinder", "Refrigerant", "SCOP", "Manufacturer"]
+    )
+    for col in range(1, 8):
+        cell = ws.cell(row=1, column=col)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = border
+    ws.append(
+        [
+            "Aster 8",
+            "8 kW at A7/W35",
+            "Up to 3",
+            "180 L",
+            "R-32 1.15 kg",
+            "4.6",
+            "Norrby Climate Systems",
+        ]
+    )
+    ws.append(
+        [
+            "Aster 12",
+            "12 kW at A7/W35",
+            "Up to 5",
+            "250 L",
+            "R-32 1.65 kg",
+            "4.3",
+            "Norrby Climate Systems",
+        ]
+    )
+    for row in ws.iter_rows(min_row=2, max_row=3, min_col=1, max_col=7):
+        for cell in row:
+            cell.border = border
+
+    ws = wb.create_sheet("CarePlus eligibility")
+    ws.append(["Requirement", "Status"])
+    for column in (1, 2):
+        cell = ws.cell(row=1, column=column)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = border
+    for requirement, status in (
+        ("Registered within 30 calendar days of commissioning", "Required"),
+        ("Commissioned by Atlas-certified installer", "Required"),
+        ("Annual preventive-maintenance visit every 12 months", "Required"),
+        ("Approved replacement parts and refrigerant procedures", "Required"),
+        ("Late annual service cure period", "45 days"),
+    ):
+        ws.append([requirement, status])
+    for row in ws.iter_rows(min_row=2, max_row=6, min_col=1, max_col=2):
+        for cell in row:
+            cell.border = border
+    ws.column_dimensions["A"].width = 52
+    ws.column_dimensions["B"].width = 22
+
+    path = SOURCES / "aster-careplus-matrix.xlsx"
+    wb.save(path)
+    return path
+
+
+GENERATORS: dict[str, Callable[[], Path]] = {
+    "docx": generate_docx,
+    "pdf": generate_pdf,
+    "pptx": generate_pptx,
+    "xlsx": generate_xlsx,
+}
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate Atlas Heatworks binary Knowledge Source fixtures.",
+    )
+    parser.add_argument(
+        "--targets",
+        nargs="+",
+        choices=sorted(GENERATORS),
+        default=sorted(GENERATORS),
+        help="Subset of fixtures to regenerate (default: all).",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
     SOURCES.mkdir(parents=True, exist_ok=True)
-    for generated in (generate_docx(), generate_pdf()):
-        sys.stdout.write(f"{generated.relative_to(ROOT)}\n")
+    for target in args.targets:
+        path = GENERATORS[target]()
+        sys.stdout.write(f"{path.relative_to(ROOT)}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

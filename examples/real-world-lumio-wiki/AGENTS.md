@@ -34,7 +34,11 @@ automatically when no `<kb>` argument is given).
 - `lumio-wiki lint` — read-only cross-page QA: validation, graph health, and
   canonical/discovery structural diagnostics with scope disclosure. Exit 1 if invalid.
 - `lumio-wiki cross-link` — missing-link candidates ranked by Discovery Graph
-  impact. Add `--stage` to stage reviewable repair proposals (never direct-writes).
+  impact. `--stage` repairs candidates as authored Markdown links (Extracted
+  References, Discovery Graph only); it never creates typed Relationships.
+- `lumio-wiki relationship stage <source> <target> --type T` — stage a typed
+  canonical Relationship proposal (e.g. `--type uses`). Distinct from
+  `cross-link --stage`; reviewed through the same proposal pipeline.
 - `lumio-wiki dream` — the Dream Cycle: read-only reflection (validation +
   health + structure + ranked candidates). Add `--stage [--limit N]` to stage
   the top repairs as ordinary Ingest Proposals for review. Add opt-in `--semantic`

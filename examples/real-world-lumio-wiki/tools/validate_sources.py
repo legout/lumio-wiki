@@ -5,18 +5,37 @@ import sys
 from pathlib import Path
 
 from lumio_wiki.source_processor import (  # type: ignore[import-not-found]
+    AnyDocSourceProcessor,
+    PdfSourceProcessor,
     TextMarkdownSourceProcessor,
     select_document_processor,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ROOT / "sources"
+
+# Markers must remain stable because they anchor downstream evaluation questions.
 EXPECTED_MARKERS = {
     "company-overview.md": ("Atlas Heatworks", "BrightHome Access Fund"),
     "customer-support-policy.txt": ("CarePlus", "45-day cure period"),
     "product-catalog.html": ("Aster 12", "Norrby Climate Systems"),
     "installation-handbook.docx": ("Commissioning gate", "Atlas-certified installer"),
     "2025-impact-report.pdf": ("428", "1,840"),
+    "aster-pricing-deck.pptx": ("Aster 12", "CarePlus"),
+    "aster-careplus-matrix.xlsx": ("Aster 12", "CarePlus"),
+}
+
+# Routing expectations match issue #154 / ADR-0018:
+# office superset → AnyDoc; PDFs and images → LiteParse (pdf);
+# HTML → MarkItDown; txt/md → text passthrough.
+EXPECTED_PROCESSOR = {
+    "company-overview.md": (TextMarkdownSourceProcessor, "markdown"),
+    "customer-support-policy.txt": (TextMarkdownSourceProcessor, "text"),
+    "product-catalog.html": (None, "markitdown"),
+    "installation-handbook.docx": (AnyDocSourceProcessor, "anydoc"),
+    "2025-impact-report.pdf": (PdfSourceProcessor, "liteparse"),
+    "aster-pricing-deck.pptx": (AnyDocSourceProcessor, "anydoc"),
+    "aster-careplus-matrix.xlsx": (AnyDocSourceProcessor, "anydoc"),
 }
 
 
@@ -39,11 +58,24 @@ def main() -> None:
         if processor is None:
             processor = TextMarkdownSourceProcessor()
 
+        expected_cls, expected_converter = EXPECTED_PROCESSOR[path.name]
+        if expected_cls is not None and not isinstance(processor, expected_cls):
+            failures.append(
+                f"{path.name}: expected {expected_cls.__name__}, got {type(processor).__name__}"
+            )
+            continue
+
         try:
             normalized = processor.process(path.name, content_type, path.read_bytes())
         except Exception as exc:  # Surface converter diagnostics in this smoke tool.
             failures.append(f"{path.name}: {type(exc).__name__}: {exc}")
             continue
+
+        if normalized.converted_by != expected_converter:
+            failures.append(
+                f"{path.name}: expected converted_by={expected_converter!r}, "
+                f"got {normalized.converted_by!r}"
+            )
 
         normalized_text = str(normalized.text)
         missing_markers = [
