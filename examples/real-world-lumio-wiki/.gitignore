@@ -1,3 +1,11 @@
 .venv/
 knowledge-base/
 .eval/
+# "Finally" stage (#157): smoke transcripts, the running server's PID, and
+# the throwaway data/ the hand-driven app writes when started from here.
+# lumio.sqlite is the default metadata DB (auth/audit/chat) `lumio serve`
+# creates at its CWD when LUMIO_METADATA_DB_PATH is unset.
+lumio-smoke/
+.lumio.pid
+data/
+lumio.sqlite

@@ -31,10 +31,16 @@ The corpus describes **Atlas Heatworks**, a fictional heat-pump installer. It is
 │   ├── run_maintenance.sh
 │   ├── stage_dream_repair.sh
 │   ├── install_skill.sh
-│   └── eval_lancedb.sh    # "Later" lexical-vs-lancedb comparison (#156)
+│   ├── eval_lancedb.sh    # "Later" lexical-vs-lancedb comparison (#156)
+│   └── smoke_lumio.sh     # "Finally" browser/API smoke over lumio serve (#157)
 ├── bootstrap.sh
-└── bootstrap-lancedb.sh   # "Later" stage: layer lumio-lancedb onto the venv
+├── bootstrap-lancedb.sh   # "Later" stage: layer lumio-lancedb onto the venv
+└── bootstrap-lumio.sh     # "Finally" stage: layer the full lumio app (#157)
 ```
+
+The "Finally" stage also writes `lumio-smoke/` (one transcript per smoke run),
+`.lumio.pid` (the running server's PID during a smoke), and a throwaway `data/`
+config while `lumio serve` is up — all gitignored.
 
 ## Installation
 
@@ -307,6 +313,154 @@ lumio-lancedb directly, whichever the packaging layout requires"):
   because the harness is model-free and exposes no answers or per-query timing;
 - a **refusal/answer-quality harness does not exist yet** — refusal questions
   are carried in the gold set but cannot be scored by recall\@k.
+
+## Finally: bundled `lumio` app browser smoke (#157)
+
+After the Knowledge Base is published with `lumio-wiki[documents]`, the
+"Finally" stage layers the full deployable `lumio` application onto the
+**same** venv and proves the same published Knowledge Base is consumable through
+Lumio's HTTP surface — Chat, Reading Room, and the OpenAI-compatible API. This
+is a **read-only** stage: the smoke only asks questions; it publishes nothing,
+so the proposal-first publication contract is never bypassed.
+
+```bash
+# 1. Base install first (creates .venv with lumio-wiki[documents]).
+./bootstrap.sh
+
+# 2. Layer the full lumio app onto the same venv; refuses to run if lumio is
+#    already installed. Prints `lumio-wiki doctor` and `lumio --version`.
+./bootstrap-lumio.sh
+
+# 3. Publish the Knowledge Base (see the end-to-end walkthrough above), then:
+bash tools/smoke_lumio.sh
+```
+
+### What it does
+
+`tools/smoke_lumio.sh` boots `lumio serve` on a free local port over the
+published Atlas Heatworks Knowledge Base, using **shared** storage so the app
+serves the local published directory without a Git remote. Each run gets a
+fresh, throwaway data directory (`lumio-smoke/<timestamp>/data`) so first-run
+Owner setup is reproducible. The smoke then:
+
+1. validates the Knowledge Base with `lumio-wiki validate`;
+2. starts `lumio serve` in the background and writes its PID to `.lumio.pid`;
+3. polls `GET /health` until the app reports `{"ok": true}`;
+4. runs first-run Owner setup (`POST /setup`), logs in (`POST /login`), and
+   asks **one** question through `POST /v1/chat/completions`;
+5. asserts the answer is `covered` and carries **at least one citation**;
+6. writes the transcript to `lumio-smoke/<timestamp>/transcript.json`;
+7. tears the server down and removes `.lumio.pid`.
+
+The question defaults to the first Factual-retrieval question in
+`evaluation/questions.md`. Override it with `LUMIO_SMOKE_QUESTION` to repoint
+the smoke at a different page, and override `LUMIO_KB_PATH` to serve a KB at a
+non-default location.
+
+### Where logs and transcripts land
+
+`tools/smoke_lumio.sh` writes to `./lumio-smoke/` (gitignored), one directory
+per run stamped with a UTC timestamp:
+
+- `lumio-smoke/<timestamp>/transcript.json` — the verdict, the question, the
+  covered flag, the cited page titles, and the full chat-completion response;
+- `lumio-smoke/<timestamp>/server.log` — the `lumio serve` stdout/stderr
+  (boot diagnostics, retrieval-trace warnings, the boot banner that names the
+  Chat / Reading Room / Owner routes);
+- `lumio-smoke/<timestamp>/data/` — the throwaway `LUMIO_CONFIG_PATH` (auth,
+  audit, and chat SQLite DBs) for that run;
+- `lumio-smoke/<timestamp>/kb/` — the throwaway working copy shared storage
+  pulled from the published KB.
+
+`.lumio.pid` (at the example root) holds the running server's PID while the
+smoke is up and is removed on teardown.
+
+### How to inspect the smoke transcript
+
+```bash
+# Latest run's verdict, citations, and answer text:
+jq '{verdict, covered, citation_count, cited_pages, answer_text: .answer.choices[0].message.content}' \
+    "$(ls -1dt lumio-smoke/*/ | head -1)transcript.json"
+
+# Re-read a past run's server boot banner:
+sed -n '1,20p' "$(ls -1dt lumio-smoke/*/ | head -1)server.log"
+```
+
+To drive the browser UI by hand, start the app manually with the same storage
+mode and a pinned port, then open the printed Chat URL:
+
+```bash
+LUMIO_KB_PATH=./knowledge-base \
+LUMIO_STORAGE_MODE=shared LUMIO_SHARED_SOURCE=./knowledge-base \
+LUMIO_CONFIG_PATH=./data LUMIO_METADATA_DB_PATH=./data/lumio.sqlite \
+lumio serve --host 127.0.0.1 --port 8000
+#   -> open http://127.0.0.1:8000/chat (first-run Owner setup at /setup)
+```
+
+### How to reset state
+
+The smoke is self-cleaning: it tears the server down and removes `.lumio.pid` on
+exit, and every run's data lives under its own `lumio-smoke/<timestamp>/`
+directory. To wipe **all** smoke artifacts (transcripts, throwaway data/working
+copies, the PID file):
+
+```bash
+rm -rf lumio-smoke/ .lumio.pid
+```
+
+To reset the hand-driven app's own state, remove its `data/` directory: both
+the config (`LUMIO_CONFIG_PATH`) and the metadata DB
+(`LUMIO_METADATA_DB_PATH=./data/lumio.sqlite` — the auth/audit/chat tables)
+live there, so deleting `data/` re-runs first-run Owner setup cleanly. (If you
+started the app without `LUMIO_METADATA_DB_PATH`, the metadata DB defaults to
+`./lumio.sqlite` at the CWD — remove that too.) The published Knowledge Base
+itself (`./knowledge-base`) is never mutated by the smoke — shared storage
+copies it into a throwaway working directory.
+
+### Screenshots and visual inspection
+
+The JSON transcript is the hermetic deliverable (the issue's "otherwise just
+dump the JSON transcript" path). The smoke does NOT drive a browser itself: the
+`/chat` UI is a Datastar single-page app behind Reader auth, so a meaningful
+screenshot needs an authenticated browser session, which the bundled app has no
+CLI for. For visual inspection, run the manual `lumio serve` command above,
+complete first-run Owner setup at `/setup`, and open `/chat` in your browser. A
+headless capture can be scripted with the external `agent-browser` CLI against
+that authenticated session if desired.
+
+### Product findings (deviations from the literal issue scope)
+
+Issue #157 was written against the intended HTTP surface; the shipped `lumio`
+app exposes a different (richer) shape, so the scripts adapt to what is
+deployed rather than the issue's literal endpoint names:
+
+- the issue's `GET /healthz` is **`GET /health`**, which returns
+  `{"ok": true}` with no authentication;
+- the issue's `POST /api/chat` is **`POST /v1/chat/completions`** — the
+  OpenAI-compatible JSON endpoint routed through the **same Chat Gateway** as
+  the `/chat` UI. The native `/chat/ask` is a Datastar Server-Sent-Events
+  endpoint that streams HTML patches, so it cannot be exercised by a single
+  JSON POST; `/v1/chat/completions` is the scriptable equivalent and returns
+  `{lumio: {covered, citations: [{page_title, …}]}}`;
+- the issue's refusal guard "refuse to run if `lumio-lancedb` is already
+  installed without the lancedb extra" is **necessarily void**: `lumio`
+  (packages/lumio) **hard-depends** on `lumio-lancedb` plus `lancedb` and
+  `pyarrow` (see `packages/lumio/pyproject.toml`), so installing the app
+  always installs the adapter. `bootstrap-lumio.sh` instead enforces the
+  meaningful, symmetric stage-separation guard — **refuse if `lumio` is already
+  installed** — mirroring `bootstrap-lancedb.sh`'s "refuse if `lumio` is
+  installed";
+- the smoke is **fully offline**: with no `LUMIO_PROVIDER_*` set, the app
+  falls back to the `FakeProvider`, which synthesizes answers (with page
+  citations) from retrieved Evidence and never makes a network call. This is
+  how the smoke satisfies the "no live network calls" guardrail;
+- screenshots are **not automated**: the issue's "agent-browser or the bundled
+  CLI if available; otherwise dump the JSON transcript" resolves to the JSON
+  transcript as the deliverable. The bundled app has no screenshot CLI, and the
+  `/chat` UI is a Datastar SPA behind Reader auth, so a meaningful screenshot
+  needs an authenticated browser session (see "Screenshots and visual
+  inspection" above); a headless capture via the external `agent-browser` is a
+  manual step against that session, not part of the hermetic smoke;
 
 ## Trial boundaries
 
