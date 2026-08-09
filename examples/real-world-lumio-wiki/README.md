@@ -299,9 +299,33 @@ exact Canonical Page Title, so a stale anchor would otherwise print a
 misleading all-zero table). Re-align `relevant`/`seeds` in `gold-v1.yaml`
 whenever you rebuild the KB with different titles.
 
-### Product findings (deviations from the literal issue scope)
+### Real-embedder spike (sentence-transformers)
 
-Issue #156 was written before/as the eval harness landed, so the scripts adapt
+`lumio-wiki eval --semantic` always uses the deterministic hash embedder
+(issue #158 tracks `--model` parity with `search`). To measure a **real**
+learned embedder against the same gold set, install the embeddings extra and
+run the spike script:
+
+```bash
+uv pip install --python .venv/bin/python \
+    '<repo>/packages/lumio-lancedb[embeddings]'
+python tools/eval_semantic_st.py                      # all-MiniLM-L6-v2 (default)
+python tools/eval_semantic_st.py --model BAAI/bge-small-en-v1.5
+```
+
+The script plugs sentence-transformers directly into
+`retrieval_eval.evaluate()` (no `packages/` change), prints per-stage
+recall\@k, and writes `.eval/semantic-st.json`. The model downloads from
+HuggingFace once (~90 MB); runs are offline afterwards.
+
+Measured on gold-v1 (all-MiniLM-L6-v2): semantic recall\@3 **0.750**, hybrid
+recall\@3 **0.950** (vs 0.350 / 0.850 with the hash stand-in) — the hash
+numbers were a fixture artifact. BM25 still leads semantic alone (0.950 vs
+0.750 at \@3) on this small vocabulary-rich corpus; hybrid matches BM25 at
+\@3 and beats it at \@1 (0.600 vs 0.500). Note the semantic stage's cosine
+floor can return `(none)` for off-distribution questions — the designed
+"not covered" behavior, not a bug.
+
 to the shipped CLI rather than the issue's literal command shapes (the issue
 hedges twice: "or the lexical stage appropriate to current CLI" and "or
 lumio-lancedb directly, whichever the packaging layout requires"):
