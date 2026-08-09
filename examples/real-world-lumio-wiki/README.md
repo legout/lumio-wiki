@@ -23,14 +23,17 @@ The corpus describes **Atlas Heatworks**, a fictional heat-pump installer. It is
 │   ├── aster-pricing-deck.pptx
 │   └── aster-careplus-matrix.xlsx
 ├── evaluation/
-│   └── questions.md       # questions to ask after publication; do not ingest
+│   ├── questions.md       # questions to ask after publication; do not ingest
+│   └── gold-v1.yaml       # "Later" recall@k gold set (query -> relevant titles)
 ├── tools/
 │   ├── generate_binary_sources.py
 │   ├── validate_sources.py
 │   ├── run_maintenance.sh
 │   ├── stage_dream_repair.sh
-│   └── install_skill.sh
-└── bootstrap.sh
+│   ├── install_skill.sh
+│   └── eval_lancedb.sh    # "Later" lexical-vs-lancedb comparison (#156)
+├── bootstrap.sh
+└── bootstrap-lancedb.sh   # "Later" stage: layer lumio-lancedb onto the venv
 ```
 
 ## Installation
@@ -195,6 +198,115 @@ example, but the field itself must be present.
 `tools/install_skill.sh` is idempotent. The packaged skill discovers the KB
 through `LUMIO_KB_PATH`; after restart it can answer evaluation questions
 without any path argument.
+
+## Later comparison: `lumio-lancedb` retrieval (#156)
+
+After the Knowledge Base is published with `lumio-wiki[documents]`, the
+"Later" stage layers the optional `lumio-lancedb` adapter onto the **same**
+venv and compares enhanced retrieval against the same published Knowledge Base.
+`lumio-lancedb` is a **separate package** (not a `lumio-wiki[lancedb]` extra):
+the base `lumio-wiki` install stays model- and LanceDB-free, and
+`bootstrap-lancedb.sh` layers the adapter on top without recreating the venv.
+
+```bash
+# 1. Base install first (creates .venv with lumio-wiki[documents]).
+./bootstrap.sh
+
+# 2. Layer lumio-lancedb onto the same venv; refuses to run if the full
+#    `lumio` application is installed. Prints `lumio-wiki doctor` so
+#    extra[lancedb] is visible as "installed".
+./bootstrap-lancedb.sh
+
+# 3. Publish the Knowledge Base (see the end-to-end walkthrough above), then:
+bash tools/eval_lancedb.sh
+```
+
+### What it measures
+
+`tools/eval_lancedb.sh` runs `lumio-wiki eval` twice against the versioned gold
+set `evaluation/gold-v1.yaml` and turns the two machine-readable reports into one
+human-readable, per-question side-by-side:
+
+- **lexical run** — `lumio-wiki eval --gold-set evaluation/gold-v1.yaml
+  --no-lancedb` (zero-index lexical + Discovery Graph expansion only);
+- **lancedb run** — `lumio-wiki eval --gold-set evaluation/gold-v1.yaml` with the
+  adapter present, which adds the LanceDB BM25 stage.
+
+The shipped `eval` harness is **model-free recall\@k measurement** (issue #138):
+for each gold query it reports, per retrieval stage, which Canonical Page Titles
+surface in the top-k. There is **no** LLM-as-judge and **no** answer-quality or
+per-question latency scoring — only retrieval-stage recall at the page-title
+level. The script reports whole-run wall-clock latency (the harness exposes no
+per-query timing) and is honest about that limit.
+
+### What a reviewer should look for
+
+- the per-question **lex vs bm25 recall\@3** and the `improved` / `regressed` /
+  `same` delta — does the LanceDB stage surface the expected relevant page where
+  lexical missed it (or vice versa)?
+- the **aggregate recall\@k per stage** tables (the headline evidence that
+  enhanced retrieval changes results on the same questions);
+- **graph expansion** recall on the seeded relationship questions;
+- the **refusal questions** section — these are recorded in the gold set with
+  empty `relevant` (no supporting page exists) and are **not scoreable** by the
+  recall\@k harness (it drops empty-relevant rows). A correct refusal therefore
+  cannot be measured here yet — see "product findings" below.
+
+### Opt-in semantic/hybrid stages
+
+By default the comparison is lexical vs LanceDB BM25 (no embedder, no Torch).
+Set `LUMIO_EVAL_SEMANTIC=1` to also run the LanceDB semantic and hybrid stages
+using the harness's deterministic, offline hash embedder (no provider, no
+network — `lumio-wiki eval --semantic`), with a few `--synonym` paraphrase
+collapses to demonstrate semantic recall lexical search misses:
+
+```bash
+LUMIO_EVAL_SEMANTIC=1 bash tools/eval_lancedb.sh
+```
+
+For real (non-deterministic) embeddings, install the adapter's `[embeddings]`
+extra (`LUMIO_LANCEDB_EMBEDDINGS=1 ./bootstrap-lancedb.sh`) and point the CLI at
+a provider or local model via `LUMIO_PROVIDER_*` / `--model`. The example does
+not do this by default to keep the venv Torch-free.
+
+### Where outputs land
+
+`tools/eval_lancedb.sh` writes to `./.eval/` (gitignored) and prints the same
+report to stdout:
+
+- `.eval/lexical.json`, `.eval/lancedb.json` — the raw `lumio-wiki eval --json`
+  reports;
+- `.eval/comparison.md` — the rendered side-by-side.
+
+### Gold set format and anchoring
+
+`evaluation/gold-v1.yaml` is the format the shipped `lumio-wiki eval --gold-set`
+command consumes: a YAML document mapping each query to its expected relevant
+Canonical Page Titles (plus optional graph seeds and a note), with one row per
+question in `evaluation/questions.md`. The `relevant` titles are anchored to the
+**source-stem page titles** the walkthrough's step-5 recipe produces
+(`company-overview`, `customer-support-policy`, …). If your coding agent
+authored different page titles, update `relevant` in `gold-v1.yaml` before
+running the comparison — recall is matched by exact Canonical Page Title.
+
+### Product findings (deviations from the literal issue scope)
+
+Issue #156 was written before/as the eval harness landed, so the scripts adapt
+to the shipped CLI rather than the issue's literal command shapes (the issue
+hedges twice: "or the lexical stage appropriate to current CLI" and "or
+lumio-lancedb directly, whichever the packaging layout requires"):
+
+- the issue's `gold-v1.jsonl` ("expected citation path or refusal marker") is
+  realized as **`gold-v1.yaml`** because `lumio-wiki eval --gold-set` decodes a
+  YAML query\->titles document; a flat JSONL fixture would not load;
+- the issue's `--stage keyword` lexical run is **`--no-lancedb`** (zero-index
+  lexical + graph expansion), and the lancedb-backed run is the default
+  `lumio-wiki eval` (which adds LanceDB BM25 when the adapter is present);
+- the issue's per-question "answer snippet / citation correctness / latency"
+  columns map to **recall\@k at the page-title level** plus whole-run latency,
+  because the harness is model-free and exposes no answers or per-query timing;
+- a **refusal/answer-quality harness does not exist yet** — refusal questions
+  are carried in the gold set but cannot be scored by recall\@k.
 
 ## Trial boundaries
 
