@@ -7,13 +7,18 @@
 # LLM-as-judge and does not score answer quality — see
 # packages/lumio-wiki/src/lumio_wiki/retrieval_eval.py.
 #
-# The `relevant` titles are the page titles the README walkthrough's step-5
-# recipe deterministically produces (one Compiled Page per source, titled by the
-# source stem): company-overview, customer-support-policy, product-catalog,
-# installation-handbook, 2025-impact-report, aster-pricing-deck,
-# aster-careplus-matrix. If your coding agent authored different titles, update
-# `relevant` here before running tools/eval_lancedb.sh — recall is measured by
-# exact Canonical Page Title.
+# The `relevant` and `seeds` titles below are the Canonical Page Titles of the
+# published Knowledge Base. Recall is measured by EXACT title match, so these
+# entries must be re-aligned whenever the KB is rebuilt with different titles
+# (the coding-agent trial flow lets the agent author titles, so they vary per
+# run). tools/eval_lancedb.sh preflights this: it resolves every relevant/seed
+# entry against the KB and fails fast with the available titles instead of
+# printing a misleading all-zero recall table.
+#
+# Current anchor: the agent-authored Atlas Heatworks KB (Atlas Heatworks,
+# Customer Support and Warranty Policy, Aster Series Product Catalog,
+# Installation Handbook, Atlas Heatworks 2025 Impact Report, Aster Series
+# Pricing, Aster CarePlus Eligibility Matrix).
 #
 # Two questions in evaluation/questions.md are deliberate refusals (no
 # supporting page exists). They are recorded with empty `relevant` + a note so
@@ -26,69 +31,69 @@ name: gold-v1
 description: >-
   Atlas Heatworks retrieval gold set for the lumio-lancedb "Later" comparison.
   One row per question in evaluation/questions.md; relevant titles anchored to
-  the source-stem Compiled Pages the README walkthrough produces.
+  the Canonical Page Titles of the published agent-authored Knowledge Base.
 ks: [1, 3, 5]
 queries:
   # --- Factual retrieval ---
   - query: "What response target applies when a customer loses all heating below 5°C?"
     relevant:
-      - "customer-support-policy"
+      - "Customer Support and Warranty Policy"
     note: "P1: acknowledge within 30 minutes, on-site/remote response within 4 hours."
 
   - query: "What is the nominal output and standard cylinder size of the Aster 12?"
     relevant:
-      - "product-catalog"
+      - "Aster Series Product Catalog"
     note: "12 kW at A7/W35; 250-litre standard cylinder."
 
   - query: "Who owns installer certification and the Installation Handbook?"
     relevant:
-      - "company-overview"
-      - "installation-handbook"
-    note: "Tomas Reed, Technical Training Lead, owns both (company-overview names him)."
+      - "Atlas Heatworks"
+      - "Installation Handbook"
+    note: "Tomas Reed, Technical Training Lead, owns both (Atlas Heatworks names him)."
 
   - query: "How many systems did Atlas commission in 2025?"
     relevant:
-      - "2025-impact-report"
+      - "Atlas Heatworks 2025 Impact Report"
     note: "2025 commissioning volume lives in the impact report."
 
   # --- Synthesis and relationship reasoning ---
   - query: "Which Aster model is the better catalog fit for a four-zone building, and what qualification must happen before selection?"
     relevant:
-      - "product-catalog"
+      - "Aster Series Product Catalog"
     note: "Aster 8 covers up to three zones, Aster 12 up to five; a four-zone fit is the Aster 12. A site survey and heat-loss calculation are required before selection."
 
   - query: "How do commissioning and annual maintenance records affect CarePlus coverage?"
     relevant:
-      - "customer-support-policy"
-      - "aster-careplus-matrix"
+      - "Customer Support and Warranty Policy"
+      - "Aster CarePlus Eligibility Matrix"
     note: "CarePlus eligibility: register within 30 days, certified commissioning, annual service each 12-month period. A late service triggers a 45-day cure period before coverage reverts."
 
   - query: "How are Norrby Climate Systems, Atlas Heatworks, and the Aster product line related?"
     relevant:
-      - "company-overview"
-      - "product-catalog"
+      - "Atlas Heatworks"
+      - "Aster Series Product Catalog"
     seeds:
-      - "company-overview"
-      - "product-catalog"
+      - "Atlas Heatworks"
+      - "Aster Series Product Catalog"
     note: "Relationship question: Norrby Climate Systems manufactures the Aster line for Atlas Heatworks. Seeds exercise the Discovery Graph expansion stage."
 
   - query: "Which 2025 operational result is connected to the BrightHome Access Fund?"
     relevant:
-      - "2025-impact-report"
-      - "company-overview"
+      - "Atlas Heatworks 2025 Impact Report"
+      - "Atlas Heatworks"
     seeds:
-      - "company-overview"
-    note: "BrightHome Access Fund is funded from 1% of annual installation revenue (company-overview); the 2025 figure is an operational result (2025-impact-report)."
+      - "Atlas Heatworks"
+    note: "BrightHome Access Fund is funded from 1% of annual installation revenue (Atlas Heatworks); the 2025 figure is an operational result (Atlas Heatworks 2025 Impact Report)."
 
   # --- Procedure ---
   - query: "What must an installer verify before commissioning, and which records must be handed over afterward?"
     relevant:
-      - "installation-handbook"
+      - "Installation Handbook"
     note: "Pre-commissioning checks and handover records are defined in the Installation Handbook."
 
   - query: "What happens if annual service is late, and who can approve an exception?"
     relevant:
-      - "customer-support-policy"
+      - "Customer Support and Warranty Policy"
     note: "A 45-day cure period follows the overdue notice; only the Operations Director may approve a written exception."
 
   # --- Refusal and scope (no supporting page; expected refusal) ---

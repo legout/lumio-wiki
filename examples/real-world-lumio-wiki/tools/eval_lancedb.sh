@@ -42,12 +42,11 @@ fi
 # The lexical run does not need lancedb, but the whole point of this script is
 # the lancedb-backed comparison — fail early with an actionable hint if the
 # adapter is absent.
-if ! "$VENV/bin/python" - <<'PY'
+if ! "$VENV/bin/python" - <<'PY'; then
 import importlib.util, sys
 ok = all(importlib.util.find_spec(n) is not None for n in ("lumio_lancedb", "lancedb", "pyarrow"))
 sys.exit(0 if ok else 1)
 PY
-then
 	echo "error: lumio-lancedb adapter not importable; run ./bootstrap-lancedb.sh first" >&2
 	exit 1
 fi
@@ -59,6 +58,71 @@ fi
 
 if [[ ! -d "$KB" ]]; then
 	echo "error: Knowledge Base not found at $KB; run 'lumio-wiki setup $KB' and publish first" >&2
+	exit 1
+fi
+
+# Preflight: recall is measured by EXACT Canonical Page Title match, so every
+# gold `relevant`/`seeds` entry must resolve to a published page. Fail fast
+# with the available titles instead of reporting a misleading all-zero recall
+# table (a title-anchored gold set against differently-titled pages scores
+# 0.00 everywhere even when retrieval is perfect).
+if ! GOLD="$GOLD" KB="$KB" "$VENV/bin/python" - <<'PY'; then
+import os
+import re
+import sys
+from pathlib import Path
+
+import msgspec
+
+
+class _GoldQuery(msgspec.Struct):
+	query: str
+	relevant: list[str] = msgspec.field(default_factory=list)
+	seeds: list[str] | None = None
+
+
+class _GoldSet(msgspec.Struct):
+	queries: list[_GoldQuery] = msgspec.field(default_factory=list)
+
+
+gold = msgspec.yaml.decode(Path(os.environ["GOLD"]).read_text(encoding="utf-8"), type=_GoldSet)
+kb = Path(os.environ["KB"])
+
+titles: dict[str, str] = {}
+for md in sorted(kb.rglob("*.md")):
+	if ".lumio" in md.parts:
+		continue
+	match = re.match(r"^---\n(.*?)\n---\n", md.read_text(encoding="utf-8"), re.S)
+	if not match:
+		continue
+	try:
+		frontmatter = msgspec.yaml.decode(match.group(1))
+	except msgspec.DecodeError:
+		continue
+	title = frontmatter.get("title") if isinstance(frontmatter, dict) else None
+	if title:
+		titles[str(title)] = md.relative_to(kb).as_posix()
+
+missing: list[tuple[str, str]] = []
+for row in gold.queries:
+	for ref in [*(row.relevant or []), *(row.seeds or [])]:
+		if ref and ref.strip() and ref.strip() not in titles:
+			missing.append((row.query, ref.strip()))
+
+if missing:
+	print("error: gold set titles do not match the published Knowledge Base.", file=sys.stderr)
+	print("recall is measured by exact Canonical Page Title; these entries have no page:", file=sys.stderr)
+	for query, ref in missing:
+		print(f"  - {ref!r}  (query: {query[:70]})", file=sys.stderr)
+	print("\navailable Canonical Page Titles:", file=sys.stderr)
+	for title, path in titles.items():
+		print(f"  - {title}  ({path})", file=sys.stderr)
+	print(
+		"\nAlign `relevant`/`seeds` in evaluation/gold-v1.yaml with the titles above and re-run.",
+		file=sys.stderr,
+	)
+	sys.exit(1)
+PY
 	exit 1
 fi
 

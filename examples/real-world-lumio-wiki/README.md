@@ -289,11 +289,15 @@ report to stdout:
 `evaluation/gold-v1.yaml` is the format the shipped `lumio-wiki eval --gold-set`
 command consumes: a YAML document mapping each query to its expected relevant
 Canonical Page Titles (plus optional graph seeds and a note), with one row per
-question in `evaluation/questions.md`. The `relevant` titles are anchored to the
-**source-stem page titles** the walkthrough's step-5 recipe produces
-(`company-overview`, `customer-support-policy`, …). If your coding agent
-authored different page titles, update `relevant` in `gold-v1.yaml` before
-running the comparison — recall is matched by exact Canonical Page Title.
+question in `evaluation/questions.md`. The `relevant` and `seeds` titles are
+anchored to the **Canonical Page Titles of the published agent-authored KB**
+(`Atlas Heatworks`, `Customer Support and Warranty Policy`, …). Because the
+coding-agent trial flow lets the agent author titles, they vary per run —
+`tools/eval_lancedb.sh` preflights the gold set against the KB and fails fast
+with the available titles if any entry does not resolve (recall is matched by
+exact Canonical Page Title, so a stale anchor would otherwise print a
+misleading all-zero table). Re-align `relevant`/`seeds` in `gold-v1.yaml`
+whenever you rebuild the KB with different titles.
 
 ### Product findings (deviations from the literal issue scope)
 
