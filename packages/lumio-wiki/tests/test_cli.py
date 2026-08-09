@@ -185,6 +185,59 @@ def test_search_no_matches_returns_0(kb_root: Path, capsys: pytest.CaptureFixtur
     assert "No pages matched" in capsys.readouterr().out
 
 
+def test_search_rejects_unknown_mode(kb_root: Path):
+    # argparse ``choices`` validation exits 2 before any retrieval runs.
+    with pytest.raises(SystemExit):
+        main(["search", str(kb_root), "warranty", "--mode", "bm25"])
+
+
+def test_search_semantic_guard_when_lancedb_unavailable(
+    monkeypatch: pytest.MonkeyPatch, kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    """--mode semantic degrades to an install-hint CliError (exit 2) instead of
+    an opaque ImportError when lumio-lancedb is absent (ADR-0010)."""
+    from lumio_wiki import retrieval_eval
+
+    monkeypatch.setattr(retrieval_eval, "lancedb_available", lambda: False)
+    rc = main(["search", str(kb_root), "warranty", "--mode", "semantic"])
+    assert rc == 2
+    assert "lumio-lancedb" in capsys.readouterr().err
+
+
+def test_search_semantic_needs_embedder_hint(
+    monkeypatch: pytest.MonkeyPatch, kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    """With lumio-lancedb present but no embedder available, --mode semantic
+    reports the embedder install hint (exit 2) rather than a bare ImportError."""
+    import importlib.util
+
+    from lumio_wiki import retrieval_eval
+
+    monkeypatch.setattr(retrieval_eval, "lancedb_available", lambda: True)
+    # Force the local sentence-transformers path to look absent and clear the
+    # provider env so neither embedder source resolves.
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "sentence_transformers":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    for var in (
+        "LUMIO_PROVIDER_BASE_URL",
+        "LUMIO_PROVIDER_API_KEY",
+        "LUMIO_EMBEDDING_MODEL",
+        "LUMIO_PROVIDER_MODEL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    rc = main(["search", str(kb_root), "warranty", "--mode", "hybrid"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "embedder" in err
+    assert "lumio-lancedb[embeddings]" in err
+
+
 # ---------------------------------------------------------------------------
 # page
 # ---------------------------------------------------------------------------

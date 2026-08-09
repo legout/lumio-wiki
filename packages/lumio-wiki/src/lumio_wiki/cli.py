@@ -480,23 +480,171 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 0 if report.is_valid else 1
 
 
+# ---------------------------------------------------------------------------
+# Embedder resolution for semantic/hybrid search (ADR-0010: lazy heavy deps).
+#
+# The base CLI never imports sentence-transformers / openai / lumio_lancedb at
+# module load; they are pulled in only when a caller asks for --mode
+# semantic|hybrid. lumio-lancedb ships no concrete Embedder, so the CLI builds
+# one here from either an OpenAI-compatible provider or a local model (#75).
+# ---------------------------------------------------------------------------
+
+
+class _LocalEmbedder:
+    """Sentence-transformers backed Embedder (lumio-lancedb[embeddings])."""
+
+    def __init__(self, model_name: str) -> None:
+        import importlib
+
+        from lumio_wiki.embeddings import EmbeddingModelInfo  # stdlib-only record
+
+        # Lazy: lumio-lancedb[embeddings] only. Loaded via importlib (a string
+        # lookup) so the base package keeps no static sentence-transformers
+        # import (ADR-0010) and static analysis doesn't flag the optional dep.
+        SentenceTransformer = importlib.import_module("sentence_transformers").SentenceTransformer
+        self._model = SentenceTransformer(model_name)
+        dim_fn = getattr(
+            self._model,
+            "get_embedding_dimension",
+            getattr(self._model, "get_sentence_embedding_dimension", lambda: 384),
+        )
+        self._info = EmbeddingModelInfo(model_name, int(dim_fn()))
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._model.encode(texts, normalize_embeddings=True).tolist()
+
+    @property
+    def model_info(self):
+        return self._info
+
+
+class _ProviderEmbedder:
+    """OpenAI-compatible ``/embeddings`` backed Embedder (lumio-wiki[llm])."""
+
+    def __init__(self, *, base_url: str, api_key: str, model: str) -> None:
+        import importlib
+
+        from lumio_wiki.embeddings import EmbeddingModelInfo
+
+        try:
+            openai = importlib.import_module("openai")
+        except ImportError as exc:  # pragma: no cover - only hit with provider env
+            raise CliError(
+                "provider embedder needs the 'openai' package; install "
+                "'lumio-wiki[llm]' or 'openai'."
+            ) from exc
+        self._client = openai.OpenAI(base_url=base_url, api_key=api_key)
+        self._model = model
+        probe = self._client.embeddings.create(model=model, input=["lumio"])
+        self._info = EmbeddingModelInfo(model, len(probe.data[0].embedding))
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        resp = self._client.embeddings.create(model=self._model, input=texts)
+        ordered = sorted(resp.data, key=lambda item: item.index)
+        return [item.embedding for item in ordered]
+
+    @property
+    def model_info(self):
+        return self._info
+
+
+def _resolve_embedder(model: str | None):
+    """Build a concrete Embedder for semantic/hybrid search.
+
+    Provider-first (``LUMIO_PROVIDER_*`` -> OpenAI-compatible ``/embeddings``),
+    else a local sentence-transformers model (``lumio-lancedb[embeddings]``).
+    Heavy deps are imported lazily so the base CLI stays framework-free
+    (ADR-0010).
+    """
+    import importlib.util
+
+    base_url = os.environ.get("LUMIO_PROVIDER_BASE_URL")
+    api_key = os.environ.get("LUMIO_PROVIDER_API_KEY")
+    provider_model = (
+        model
+        or os.environ.get("LUMIO_EMBEDDING_MODEL")
+        or os.environ.get("LUMIO_PROVIDER_MODEL")
+    )
+    if base_url and api_key and provider_model:
+        return _ProviderEmbedder(base_url=base_url, api_key=api_key, model=provider_model)
+
+    if importlib.util.find_spec("sentence_transformers") is None:
+        raise CliError(
+            "semantic/hybrid search needs an embedder: install "
+            "'lumio-lancedb[embeddings]' (local) or set LUMIO_PROVIDER_BASE_URL + "
+            "LUMIO_PROVIDER_API_KEY + (LUMIO_EMBEDDING_MODEL or --model) for a "
+            "remote endpoint."
+        )
+    return _LocalEmbedder(model or "all-MiniLM-L6-v2")
+
+
 def _cmd_search(args: argparse.Namespace) -> int:
     kb = _open_read_kb(args.path)
-    results = kb.search_pages(args.query, limit=args.limit)
+
+    # Default lexical path: zero-index, model-free, no derived index. Preserves
+    # the original ``search`` behaviour and the offline invariant (PRD-0002:22).
+    if args.mode == "lexical":
+        results = kb.search_pages(args.query, limit=args.limit)
+        if not results:
+            print("No pages matched the query.")
+            return 0
+        for result in results:
+            page = result.page
+            print(f"## {page.title}")
+            if page.summary:
+                print(f"summary: {page.summary}")
+            print(f"path:    {page.path}")
+            print(f"score:   {result.score}")
+            if result.matched_fields:
+                print(f"matched: {', '.join(result.matched_fields)}")
+            if result.snippet:
+                print(f"snippet: {result.snippet}")
+            print()
+        return 0
+
+    # semantic / hybrid — needs lumio-lancedb + an Embedder (ADR-0010, #75).
+    import importlib
+    from lumio_wiki import retrieval_eval
+
+    if not retrieval_eval.lancedb_available():
+        raise CliError(
+            f"--mode {args.mode} needs lumio-lancedb; install with:  "
+            "pip install lumio-lancedb  (or lumio-lancedb[embeddings] for local "
+            "sentence-transformers)."
+        )
+    embedder = _resolve_embedder(args.model)
+    index_dir = args.index_dir or str(Path(args.path) / ".lumio" / "lance")
+    # Build/refresh the derived LanceDB index; binds the adapter to the KB and
+    # writes BM25 + embedding tables under index_dir (issue #75, #138).
+    kb = importlib.import_module("lumio_lancedb").build_lancedb_index(
+        kb, index_dir, embedder=embedder
+    )
+    results = kb.retrieve(
+        args.query,
+        limit=args.limit,
+        index_dir=index_dir,
+        mode=args.mode,
+        embedder=embedder,
+    )
     if not results:
-        print("No pages matched the query.")
+        print("No Evidence matched the query.")
         return 0
     for result in results:
-        page = result.page
-        print(f"## {page.title}")
-        if page.summary:
-            print(f"summary: {page.summary}")
-        print(f"path:    {page.path}")
-        print(f"score:   {result.score}")
-        if result.matched_fields:
-            print(f"matched: {', '.join(result.matched_fields)}")
-        if result.snippet:
-            print(f"snippet: {result.snippet}")
+        cite = result.citation
+        print(f"## {cite.page_title}")
+        print(f"path:   {cite.relative_path}")
+        source = getattr(cite, "source", None)
+        if source:
+            print(f"source: {source}")
+        line_start = getattr(cite, "line_start", None)
+        if line_start is not None:
+            line_end = getattr(cite, "line_end", line_start)
+            print(f"lines:  {line_start}-{line_end}")
+        print(f"score:  {result.score}")
+        if getattr(result, "reason", None):
+            print(f"reason: {result.reason}")
+        if getattr(result, "snippet", None):
+            print(f"\n{result.snippet}\n")
         print()
     return 0
 
@@ -1915,12 +2063,33 @@ def build_parser() -> argparse.ArgumentParser:
     # search
     search_parser = subparsers.add_parser(
         "search",
-        help="Lexical page search over titles, aliases, tags, summaries, and bodies.",
-        description="Deterministic zero-index lexical search. No external index required.",
+        help="Retrieve citation-ready Evidence: lexical (default), semantic, or hybrid.",
+        description=(
+            "Retrieval over the Knowledge Base. Default mode is zero-index lexical "
+            "(no index or model required). --mode semantic/hybrid add embedding-based "
+            "retrieval and need lumio-lancedb + an embedder (lumio-lancedb[embeddings] "
+            "or LUMIO_PROVIDER_*)."
+        ),
     )
     _add_kb_argument(search_parser)
     search_parser.add_argument("query", type=str, help="Search query.")
     search_parser.add_argument("--limit", type=int, default=20, help="Max results (default: 20).")
+    search_parser.add_argument(
+        "--mode",
+        choices=("lexical", "semantic", "hybrid"),
+        default="lexical",
+        help="Retrieval mode (default: lexical). semantic/hybrid need lumio-lancedb + an embedder.",
+    )
+    search_parser.add_argument(
+        "--model",
+        default=None,
+        help="Embedding model: local sentence-transformers name or provider model id.",
+    )
+    search_parser.add_argument(
+        "--index-dir",
+        default=None,
+        help="Derived LanceDB index dir for semantic/hybrid (default: <kb>/.lumio/lance).",
+    )
     search_parser.set_defaults(func=_cmd_search)
 
     # page

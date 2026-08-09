@@ -75,7 +75,7 @@ root directory in every command below.
 | `lumio-wiki validate <kb>` | Load and validate every page, Control File, link, and reserved artifact. Exit 1 on errors. |
 | `lumio-wiki hot <kb>` | Render the Maintainer-pinned Hot Index (ladder 0). Curated entry pages. |
 | `lumio-wiki index <kb> [dir]` | Render the generated Navigation Index (ladder 1). Root catalog, or a directory's shallow index. |
-| `lumio-wiki search <kb> <query> [--limit N]` | Deterministic lexical search over titles, aliases, tags, summaries, bodies. Zero-index; no external index. |
+| `lumio-wiki search <kb> <query> [--limit N] [--mode lexical\|semantic\|hybrid] [--model M] [--index-dir D]` | Retrieve citation-ready Evidence. Default `--mode lexical` is deterministic zero-index (no index/model). `--mode semantic\|hybrid` add embedding-based retrieval; need `lumio-lancedb` + an embedder (`lumio-lancedb[embeddings]` or `LUMIO_PROVIDER_*`). |
 | `lumio-wiki page <kb> <title>` | Read a Compiled Page by Canonical Page Title (falls back to alias). Prints frontmatter + body. |
 | `lumio-wiki related <kb> <title> [--relationship-type T] [--depth N] [--max-edges N] [--max-results N] [--scope canonical\|discovery] [--direction outgoing\|incoming\|both] [--trace]` | Bounded graph traversal of related Canonical Page Titles. |
 | `lumio-wiki paths <kb> <source> <target> [--scope canonical\|discovery] [--direction ...] [--max-depth N] [--max-edges N] [--trace]` | Shortest directed path between two titles, hop-bounded. |
@@ -110,7 +110,9 @@ soon as you have citation-ready Evidence that supports the question.
 1. **Navigation Indexes** — `lumio-wiki index <kb> [dir]`. The generated
    catalog of every page by directory.
 2. **Deterministic search** — `lumio-wiki search <kb> "<query>"`. Zero-index
-   lexical search; no external index.
+   lexical search; no external index. Add `--mode semantic` or `--mode hybrid`
+   (needs `lumio-lancedb` + an embedder) as an escalation rung when lexical
+   surface matching is insufficient.
 3. **Focused page read** — `lumio-wiki page <kb> "<title>"`. Read one page to
    confirm it supports a claim and copy the exact passage.
 4. **Related-page lookup** — `lumio-wiki related <kb> "<title>" [--scope
@@ -215,7 +217,9 @@ not installed by default:
 - `lumio-lancedb` — enhanced BM25 / semantic / hybrid retrieval. The base
   zero-index retrieval is always available; clients keep the same
   RetrievalResult / Evidence / citation / Trace contract when the adapter is
-  installed.
+  installed. Once installed, `lumio-wiki search --mode semantic|hybrid`
+  retrieves through it from the CLI (needs an embedder:
+  `lumio-lancedb[embeddings]` or `LUMIO_PROVIDER_*`).
 
 `lumio-wiki doctor` reports which extras are present and names the exact
 install command for any that are missing.
@@ -239,7 +243,9 @@ Restart the agent or start a new session after install/update.
 - This skill does not start the Lumio web application. The browser app, Chat
   Gateway, Agent Runtime, auth/roles, operational database, and storage sync
   live in the full `lumio` distribution.
-- This skill does not implement LanceDB/enhanced retrieval. Install
-  `lumio-lancedb` separately if you need BM25, semantic, or hybrid ranking.
+- This skill does not implement LanceDB/enhanced retrieval itself, but
+  `lumio-wiki search --mode semantic|hybrid` exposes it when `lumio-lancedb`
+  (+ an embedder) is installed. Install `lumio-lancedb` (or
+  `lumio-lancedb[embeddings]`) to enable BM25, semantic, or hybrid ranking.
 - This skill does not bypass validation. Proposal-first is the default write
   mode; validation always runs before publish.
