@@ -500,12 +500,18 @@ class EvalReport:
     ks: tuple[int, ...]
     stages: list[StageAggregate]
     queries: list[QueryOutcome]
+    # Name of the embedder used for semantic/hybrid stages (its
+    # ``model_info.name``), or ``None`` for a model-free run. Surfaced so a
+    # reviewer can tell the deterministic hash stand-in from a real embedding
+    # model at a glance (issue #158).
+    embedder: str | None = None
 
     def to_dict(self) -> dict:
         """Machine-readable serialization (stable for CI diffing / JSON output)."""
         return {
             "gold_set": self.gold_set,
             "gold_set_size": self.gold_set_size,
+            "embedder": self.embedder,
             "ks": list(self.ks),
             "stages": [
                 {
@@ -551,8 +557,10 @@ class EvalReport:
     def to_table(self) -> str:
         """Human-readable recall@k table: one row per stage."""
         k_header = "  ".join(f"recall@{k}" for k in self.ks)
-        lines = [
-            f"Gold set: {self.gold_set} ({self.gold_set_size} queries)",
+        lines = [f"Gold set: {self.gold_set} ({self.gold_set_size} queries)"]
+        if self.embedder:
+            lines.append(f"Embedder: {self.embedder}")
+        lines += [
             "",
             f"{'stage':<22} {'n':>3}  {k_header}  status",
             "-" * (22 + 3 + 2 + len(self.ks) * 10 + 2 + 12),
@@ -708,6 +716,7 @@ def evaluate(
         ks=resolved_ks,
         stages=stage_aggregates,
         queries=query_outcomes,
+        embedder=embedder.model_info.name if embedder is not None else None,
     )
 
 

@@ -1269,7 +1269,21 @@ def _cmd_eval(args: argparse.Namespace) -> int:
                 raise CliError(f"--synonym expects KEY=VALUE, got {pair!r}")
             key, val = pair.split("=", 1)
             synonyms[key.strip()] = val.strip()
-        embedder = retrieval_eval.DeterministicHashEmbedder(synonyms=synonyms or None)
+        # Score a real embedding model when one is requested, mirroring
+        # ``search --model``: an explicit ``--model``, or any provider env
+        # (``LUMIO_PROVIDER_BASE_URL`` / ``LUMIO_PROVIDER_API_KEY``). The same
+        # ``_resolve_embedder`` gives eval and search shared provider-first /
+        # local-fallback behavior and error messages (issue #158). Without
+        # either, keep the hermetic DeterministicHashEmbedder so the default
+        # ``--semantic`` run stays offline and CI-stable.
+        provider_configured = bool(
+            os.environ.get("LUMIO_PROVIDER_BASE_URL")
+            or os.environ.get("LUMIO_PROVIDER_API_KEY")
+        )
+        if args.model or provider_configured:
+            embedder = _resolve_embedder(args.model)
+        else:
+            embedder = retrieval_eval.DeterministicHashEmbedder(synonyms=synonyms or None)
 
     index_dir = Path(args.index_dir) if args.index_dir else None
     if args.no_lancedb:
@@ -2502,8 +2516,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--semantic",
         action="store_true",
         help=(
-            "Enable LanceDB semantic/hybrid stages using a deterministic, offline "
-            "hash embedder (no provider, no network)."
+            "Enable LanceDB semantic/hybrid stages. Without --model, uses a "
+            "deterministic, offline hash embedder (no provider, no network); "
+            "pass --model (or set LUMIO_PROVIDER_*) to score a real embedding "
+            "model, mirroring `search --model`."
         ),
     )
     eval_parser.add_argument(
@@ -2511,7 +2527,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         metavar="KEY=VALUE",
-        help="Collapse a paraphrase to a shared token for the --semantic embedder.",
+        help="Collapse a paraphrase to a shared token for the --semantic hash embedder.",
+    )
+    eval_parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "Embedding model for --semantic: local sentence-transformers name or "
+            "provider model id. Without --model (and no LUMIO_PROVIDER_*), "
+            "--semantic uses the hermetic deterministic hash embedder."
+        ),
     )
     eval_parser.set_defaults(func=_cmd_eval)
 

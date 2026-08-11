@@ -102,6 +102,7 @@ lumio-wiki source <kb> <list|retire|reactivate> --source-id <id>  # manage priva
 lumio-wiki publish-s3 <kb> <dest> --version <v>  # publish immutable S3 Published Version
               [--expected-pointer-version <v>]    # (compare-and-swap guard)
 lumio-wiki health <kb> [--rebuild]           # page counts, validation, Discovery Graph health
+lumio-wiki eval <kb> [--gold-set <f>] [--semantic [--model <name>]] [--json]  # recall@k per retrieval stage (#138)
 lumio-wiki doctor                            # install shape: version, optionals, skill location
 lumio-wiki skill install --scope user|project # explicit shared cross-client install
 lumio-wiki skill install --agent <name>       # compatibility fallback: pi, hermes, codex, claude-code
@@ -631,6 +632,25 @@ results = adapter.retrieve(kb.pages, "how does authentication work?", limit=5)
 The full `lumio` app selects zero-index or LanceDB via `LUMIO_RETRIEVAL_BACKEND`
 (default: `lancedb`). Switch without code changes — just install/uninstall the
 adapter and flip the env var.
+
+### Scoring a real embedder in `eval`
+
+`lumio-wiki eval --semantic` measures recall@k for the semantic/hybrid stages.
+Without `--model` it uses a deterministic, offline hash embedder (no provider,
+no network) so the run stays hermetic and CI-stable. Pass `--model` to score a
+real embedding model — the same resolver `search --model` uses, so eval and
+search share provider-first / local-fallback behavior:
+
+```bash
+lumio-wiki eval <kb> --gold-set gold.yaml --semantic                          # deterministic hash embedder (offline)
+lumio-wiki eval <kb> --gold-set gold.yaml --semantic --model all-MiniLM-L6-v2  # local sentence-transformers (lumio-lancedb[embeddings])
+LUMIO_PROVIDER_BASE_URL=… LUMIO_PROVIDER_API_KEY=… \
+  lumio-wiki eval <kb> --gold-set gold.yaml --semantic --model text-embedding-3-small --json  # OpenAI-compatible /embeddings; JSON names the model used
+```
+
+The JSON report (and table) carry an `embedder` field naming the model that
+scored the run (`lumio-eval-deterministic-hash` for the stand-in), so a
+reviewer can tell the hash stand-in from a real model at a glance (#158).
 
 ---
 

@@ -239,6 +239,187 @@ def test_search_semantic_needs_embedder_hint(
 
 
 # ---------------------------------------------------------------------------
+# eval (issue #138 / #158)
+# ---------------------------------------------------------------------------
+
+
+def _eval_gold_set(kb_root: Path) -> Path:
+    """Write a minimal gold set referencing the valid fixture's pages."""
+    gold = kb_root / "gold_set.yaml"
+    gold.write_text(
+        'name: "valid-fixture"\n'
+        "ks: [1, 3]\n"
+        "queries:\n"
+        '  - query: "technology"\n'
+        "    relevant:\n"
+        '      - "Technology Stack"\n',
+        encoding="utf-8",
+    )
+    return gold
+
+
+def test_eval_semantic_default_uses_hash_embedder(
+    monkeypatch: pytest.MonkeyPatch, kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    """--semantic without --model (and no provider env) keeps the hermetic
+    DeterministicHashEmbedder, identified by name in the JSON report (#158)."""
+    for var in (
+        "LUMIO_PROVIDER_BASE_URL",
+        "LUMIO_PROVIDER_API_KEY",
+        "LUMIO_EMBEDDING_MODEL",
+        "LUMIO_PROVIDER_MODEL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    gold = _eval_gold_set(kb_root)
+    rc = main(["eval", str(kb_root), "--gold-set", str(gold), "--semantic", "--json"])
+    assert rc == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["embedder"] == "lumio-eval-deterministic-hash"
+
+
+def test_eval_semantic_model_resolves_real_embedder(
+    monkeypatch: pytest.MonkeyPatch, kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    """--semantic --model routes through the same _resolve_embedder as `search`
+    and surfaces the resolved model name (#158)."""
+    from lumio_wiki import cli
+    from lumio_wiki.embeddings import EmbeddingModelInfo
+
+    class _FakeEmbedder:
+        def __init__(self) -> None:
+            self._info = EmbeddingModelInfo("fake-model", 8)
+
+        def embed(self, texts: list[str]):
+            return [[0.0] * 8 for _ in texts]
+
+        @property
+        def model_info(self) -> EmbeddingModelInfo:
+            return self._info
+
+    captured: dict[str, str | None] = {}
+
+    def fake_resolve(model: str | None):
+        captured["model"] = model
+        return _FakeEmbedder()
+
+    monkeypatch.setattr(cli, "_resolve_embedder", fake_resolve)
+    gold = _eval_gold_set(kb_root)
+    rc = main(
+        [
+            "eval",
+            str(kb_root),
+            "--gold-set",
+            str(gold),
+            "--semantic",
+            "--model",
+            "all-MiniLM-L6-v2",
+            "--json",
+        ]
+    )
+    assert rc == 0
+    assert captured["model"] == "all-MiniLM-L6-v2"
+    assert json.loads(capsys.readouterr().out)["embedder"] == "fake-model"
+
+
+def test_eval_semantic_provider_env_routes_to_resolver(
+    monkeypatch: pytest.MonkeyPatch, kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    """Provider env (LUMIO_PROVIDER_*) without --model still resolves a real
+    embedder — provider-first parity with `search` (#158)."""
+    from lumio_wiki import cli
+    from lumio_wiki.embeddings import EmbeddingModelInfo
+
+    class _FakeEmbedder:
+        def __init__(self) -> None:
+            self._info = EmbeddingModelInfo("provider-model", 8)
+
+        def embed(self, texts: list[str]):
+            return [[0.0] * 8 for _ in texts]
+
+        @property
+        def model_info(self) -> EmbeddingModelInfo:
+            return self._info
+
+    monkeypatch.setattr(cli, "_resolve_embedder", lambda model: _FakeEmbedder())
+    monkeypatch.setenv("LUMIO_PROVIDER_BASE_URL", "https://embed.example/v1")
+    monkeypatch.setenv("LUMIO_PROVIDER_API_KEY", "key")
+    gold = _eval_gold_set(kb_root)
+    rc = main(["eval", str(kb_root), "--gold-set", str(gold), "--semantic", "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["embedder"] == "provider-model"
+
+
+def test_resolve_embedder_prefers_provider_over_local(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """``_resolve_embedder`` selects ``_ProviderEmbedder`` over local
+    sentence-transformers when provider env + model are set (provider-first
+    precedence, identical to `search`) — issue #158 acceptance criterion."""
+    import sys
+    import types
+    from unittest.mock import MagicMock
+
+    from lumio_wiki import cli
+
+    # Stub the openai module so _ProviderEmbedder never opens a real client /
+    # socket; works whether or not the optional [llm] extra is installed.
+    fake_client = MagicMock()
+    fake_client.embeddings.create.return_value = types.SimpleNamespace(
+        data=[types.SimpleNamespace(embedding=[0.0] * 8, index=0)]
+    )
+    fake_openai = types.ModuleType("openai")
+    fake_openai.OpenAI = MagicMock(return_value=fake_client)
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+
+    monkeypatch.setenv("LUMIO_PROVIDER_BASE_URL", "https://embed.example/v1")
+    monkeypatch.setenv("LUMIO_PROVIDER_API_KEY", "key")
+    embedder = cli._resolve_embedder("provider-model-id")
+    assert isinstance(embedder, cli._ProviderEmbedder)
+    assert embedder.model_info.name == "provider-model-id"
+    assert embedder.model_info.dimension == 8
+
+
+def test_eval_semantic_model_missing_extra_guidance(
+    monkeypatch: pytest.MonkeyPatch, kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    """--model with sentence-transformers absent and no provider env yields the
+    same actionable embedder hint as `search` (exit 2), not a bare ImportError."""
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "sentence_transformers":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    for var in (
+        "LUMIO_PROVIDER_BASE_URL",
+        "LUMIO_PROVIDER_API_KEY",
+        "LUMIO_EMBEDDING_MODEL",
+        "LUMIO_PROVIDER_MODEL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    gold = _eval_gold_set(kb_root)
+    rc = main(
+        [
+            "eval",
+            str(kb_root),
+            "--gold-set",
+            str(gold),
+            "--semantic",
+            "--model",
+            "all-MiniLM-L6-v2",
+        ]
+    )
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "embedder" in err
+    assert "lumio-lancedb[embeddings]" in err
+
+
+# ---------------------------------------------------------------------------
 # page
 # ---------------------------------------------------------------------------
 

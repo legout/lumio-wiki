@@ -310,3 +310,25 @@ class TestEvaluate:
         table = report.to_table()
         assert "recall@5" in table
         assert "zero-index-lexical" in table
+
+    def test_report_records_embedder_name_when_embedder_supplied(self):
+        # evaluate() surfaces the embedder's model_info.name so a reviewer can
+        # tell hash-stand-in from a real model at a glance (issue #158).
+        kb = self._kb()
+        gs = ev.GoldSet(name="t", queries=(ev.GoldQuery("term", frozenset({"Hub"})),))
+        emb = ev.DeterministicHashEmbedder()
+        report = ev.evaluate(kb, gs, embedder=emb)
+        assert report.embedder == emb.model_info.name
+        assert report.to_dict()["embedder"] == emb.model_info.name
+        table = report.to_table()
+        assert "Embedder:" in table
+        assert emb.model_info.name in table
+
+    def test_report_embedder_is_none_without_embedder(self):
+        # A model-free run records no embedder and keeps the table unchanged.
+        kb = self._kb()
+        gs = ev.GoldSet(name="t", queries=(ev.GoldQuery("term", frozenset({"Hub"})),))
+        report = ev.evaluate(kb, gs)
+        assert report.embedder is None
+        assert report.to_dict()["embedder"] is None
+        assert "Embedder:" not in report.to_table()
