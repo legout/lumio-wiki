@@ -71,7 +71,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run the gold set through the retrieval stages with a real embedding model."
     )
-    parser.add_argument("--kb", default=os.environ.get("LUMIO_KB_PATH", str(ROOT / "knowledge-base")))
+    parser.add_argument(
+        "--kb", default=os.environ.get("LUMIO_KB_PATH", str(ROOT / "knowledge-base"))
+    )
     parser.add_argument("--gold", default=str(ROOT / "evaluation" / "gold-v1.yaml"))
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--out", default=str(ROOT / ".eval" / "semantic-st.json"))
@@ -100,7 +102,10 @@ def main(argv: list[str] | None = None) -> int:
     gold_set = retrieval_eval.load_gold_set(args.gold)
     adapter = retrieval_eval.load_lancedb_adapter()
     if adapter is None:
-        print("error: lumio-lancedb adapter not importable; run ./bootstrap-lancedb.sh", file=sys.stderr)
+        print(
+            "error: lumio-lancedb adapter not importable; run ./bootstrap-lancedb.sh",
+            file=sys.stderr,
+        )
         return 1
 
     print(f"embedding model: {args.model} (real, learned — not the hash stand-in)")
