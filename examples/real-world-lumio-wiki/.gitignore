@@ -9,3 +9,7 @@ lumio-smoke/
 .lumio.pid
 data/
 lumio.sqlite
+
+# Generated skill install (.agents/) and distillation scratch (.distill/).
+.agents/
+.distill/
