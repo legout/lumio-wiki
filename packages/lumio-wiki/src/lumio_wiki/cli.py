@@ -604,6 +604,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
 
     # semantic / hybrid — needs lumio-lancedb + an Embedder (ADR-0010, #75).
     import importlib
+
     from lumio_wiki import retrieval_eval
 
     if not retrieval_eval.lancedb_available():
@@ -1580,7 +1581,9 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print(f"lumio-wiki {lumio_wiki.__version__}")
     print(f"python:    {sys.version.split()[0]}")
     optionals = {
-        "documents": _detect_module("liteparse") and _detect_module("markitdown") and _detect_module("anydoc"),
+        "documents": all(
+            _detect_module(module) for module in ("liteparse", "markitdown", "anydoc")
+        ),
         "llm": _detect_module("openai"),
         "s3": _detect_module("obstore"),
         "lancedb": _detect_module("lancedb"),
