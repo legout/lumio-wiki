@@ -83,11 +83,6 @@ def resolve_skill_directory() -> Path:
     return Path(str(files(SKILL_MODULE)))
 
 
-def resolve_protocol_directory() -> Path:
-    """Return the skill directory, which also owns the detailed protocol."""
-    return resolve_skill_directory()
-
-
 def package_version() -> str:
     """Return the version of the canonical packaged contract."""
     from lumio_wiki import __version__
@@ -697,7 +692,6 @@ __all__ = [
     "install_skill",
     "package_version",
     "packaged_contract_hash",
-    "resolve_protocol_directory",
     "resolve_protocol_path",
     "resolve_skill_directory",
     "resolve_skill_path",

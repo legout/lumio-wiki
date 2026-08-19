@@ -718,17 +718,6 @@ class AnyDocSourceProcessor:
         )
 
 
-def is_document_source(filename: str | None, content_type: str | None) -> bool:
-    """Return whether a source requires a document converter (not text/markdown)."""
-    suffix = PurePath(filename or "").suffix.lower()
-    if suffix in _DOCUMENT_EXTENSIONS:
-        return True
-    ct = (content_type or "").split(";")[0].strip().lower()
-    if ct in _LITEPARSE_CONTENT_TYPES or ct.startswith(_IMAGE_CONTENT_TYPE_PREFIX):
-        return True
-    return False
-
-
 def select_document_processor(
     filename: str | None, content_type: str | None
 ) -> SourceProcessor | None:
@@ -795,7 +784,6 @@ __all__ = [
     "SourceProcessor",
     "SourceProcessorError",
     "TextMarkdownSourceProcessor",
-    "is_document_source",
     "run_conversion",
     "select_document_processor",
     "source_converter_name",

@@ -254,7 +254,6 @@ from lumio_wiki.source_processor import (
     SourceProcessor,
     SourceProcessorError,
     TextMarkdownSourceProcessor,
-    is_document_source,
     select_document_processor,
     source_converter_name,
 )
@@ -434,7 +433,6 @@ __all__ = [
     "import_page_category",
     "is_fresh",
     "is_reviewable_proposal",
-    "is_document_source",
     "load_control_file",
     "load_knowledge_base",
     "make_activity_log_entry",

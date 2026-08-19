@@ -29,11 +29,9 @@ import msgspec
 # sites below resolve to ``None`` only when the optional dependency is
 # unavailable; a real build/search then raises an actionable error.
 try:  # pragma: no cover - exercised indirectly via build/search tests
-    import lancedb
     import pyarrow as pa
     from lancedb.index import FTS
 except ImportError:  # pragma: no cover - optional dependency unavailable
-    lancedb = None
     pa = None
     FTS = None
 
@@ -165,12 +163,13 @@ def _indexed_page_paths(index: IndexLocation, query: str) -> set[str] | None:
         return None
     table = db.open_table(PAGE_TABLE_NAME)
     tokens = page_search._search_tokens(query)
-    if not tokens or table.count_rows() == 0:
+    row_count = table.count_rows()
+    if not tokens or row_count == 0:
         return set()
     rows = (
         table.search(" ".join(tokens), query_type="fts")
         .select(["page_path"])
-        .limit(table.count_rows())
+        .limit(row_count)
         .to_list()
     )
     return {row["page_path"] for row in rows}

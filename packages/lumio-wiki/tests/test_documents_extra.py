@@ -30,7 +30,6 @@ from lumio_wiki.source_processor import (
     NormalizedSource,
     PdfSourceProcessor,
     SourceProcessorError,
-    is_document_source,
     run_conversion,
     select_document_processor,
     source_converter_name,
@@ -164,16 +163,6 @@ class TestRouting:
 
     def test_unknown_suffix_returns_none(self):
         assert select_document_processor("file.xyz", None) is None
-
-    def test_is_document_source_matches_routing(self):
-        assert is_document_source("doc.pdf", None) is True
-        assert is_document_source("doc.docx", None) is True
-        assert is_document_source("image.png", None) is True
-        assert is_document_source(None, "application/pdf") is True
-        assert is_document_source(None, "image/jpeg") is True
-        assert is_document_source("note.md", None) is False
-        assert is_document_source("note.txt", None) is False
-        assert is_document_source(None, "text/plain") is False
 
     def test_source_converter_name_matches_routing(self):
         """The converter NAME from routing alone mirrors the processor routing

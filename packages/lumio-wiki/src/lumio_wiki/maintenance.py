@@ -159,12 +159,6 @@ def run_lint(
     )
 
 
-def run_cross_linker(kb_path: str | Path) -> list[LinkCandidate]:
-    """Surface deterministic missing-link candidates for a Knowledge Base."""
-    kb, _report = load_knowledge_base(kb_path)
-    return find_link_candidates(kb.pages)
-
-
 def find_link_candidates_for_kb(kb: KnowledgeBase) -> list[LinkCandidate]:
     """Find missing-link candidates for an already-loaded Knowledge Base."""
     return find_link_candidates(kb.pages)
@@ -174,12 +168,6 @@ def find_ranked_link_candidates(kb: KnowledgeBase) -> list[RankedLinkCandidate]:
     """Rank missing-link candidates for an already-loaded Knowledge Base."""
     candidates = find_link_candidates_for_kb(kb)
     return kb.rank_link_candidates_by_graph_impact(candidates)
-
-
-def run_cross_linker_ranked(kb_path: str | Path) -> list[RankedLinkCandidate]:
-    """Surface missing-link candidates ranked by Discovery Graph impact."""
-    kb, _report = load_knowledge_base(kb_path)
-    return find_ranked_link_candidates(kb)
 
 
 # ---------------------------------------------------------------------------
