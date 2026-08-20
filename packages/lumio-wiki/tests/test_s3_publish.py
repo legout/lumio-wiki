@@ -626,7 +626,6 @@ def test_lance_completion_fingerprint_mismatch_blocks_activation():
     store = _store()
     with pytest.raises(KnowledgeBaseError, match="fingerprint"):
         publish_s3_version(store, "kb", source_root=VALID, version="v1", index_builder=builder)
-    assert _read_pointer(store, "kb").version is None if False else True
     # Pointer was never created: nothing activated.
     assert "kb/current.json" not in _list_objects(store, "kb")
 
