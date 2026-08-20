@@ -110,6 +110,18 @@ Source. A new Source Version extends the same source lineage; it is not
 automatically a different Knowledge Source.
 _Avoid_: source revision, file version, upload.
 
+**Source Artifact**:
+The optional, private original bytes retained for one Source Version so an
+authorized user can inspect the underlying material. It is excluded from the
+Knowledge Base, public exports, retrieval, and canonical fingerprints.
+_Avoid_: attachment, published source, evidence file.
+
+**Source Inspection**:
+An authorized action that retrieves the exact Source Artifact bound to a
+Published Version. It supports provenance review but does not make the raw file
+Evidence or imply claim-level source-span lineage.
+_Avoid_: citation, source retrieval, document preview.
+
 **Source Retirement**:
 An explicit Maintainer action that makes a Knowledge Source's current Source
 Version ineligible to support future published knowledge. A missing or
