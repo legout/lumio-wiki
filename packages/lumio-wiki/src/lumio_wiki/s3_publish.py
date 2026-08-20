@@ -48,6 +48,7 @@ client config — never here and never in ``lumio.yaml``.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -654,10 +655,11 @@ def _load_complete_version(
     """Load and validate an already complete immutable version for rollback.
 
     Complete + validated (ADR-0019) means: a manifest exists, decodes, names
-    this version, every canonical and derived object it lists is present, and
-    the whole version still resolves through the Reader seam — every content
-    digest checks out and the Published Version fingerprint matches the
-    materialized content. Rollback never rebuilds or rewrites the target
+    this version, every canonical and derived object it lists is present, each
+    declared derived object matches its manifest size and digest, and the
+    whole version still resolves through the Reader seam — every canonical
+    content digest checks out and the Published Version fingerprint matches
+    the materialized content. Rollback never rebuilds or rewrites the target
     (issue #163); validation is read-only, so a corrupted version is rejected
     BEFORE the pointer advances instead of leaving Readers on a broken
     Snapshot after activation.
@@ -694,9 +696,28 @@ def _load_complete_version(
             f"from the store: {', '.join(missing[:5])}"
             + (" …" if len(missing) > 5 else "")
         )
-    # Full read-only validation through the Reader seam: every digest, the
-    # fingerprint, and canonical loading. A version Readers cannot resolve is
-    # not a rollback target.
+    # Declared derived objects (Discovery Graph, LanceDB completion metadata)
+    # are rebuildable state for Readers, so the Reader seam does not
+    # digest-check them — but rollback re-activates the version as the
+    # complete truth: verify each derived object's size and digest against
+    # the manifest before CAS (a tampered completion.json must not roll back).
+    for entry in manifest.derived_files:
+        key = _join(prefix, version, entry.path)
+        raw = bytes(obstore.get(store, key).bytes())
+        if len(raw) != entry.size:
+            raise KnowledgeBaseError(
+                f"cannot roll back to {version!r}: derived object {key!r} "
+                f"size {len(raw)} != manifest size {entry.size}"
+            )
+        actual = hashlib.sha256(raw).hexdigest()
+        if actual != entry.digest:
+            raise KnowledgeBaseError(
+                f"cannot roll back to {version!r}: derived object {key!r} "
+                f"digest {actual} != manifest digest {entry.digest}"
+            )
+    # Full read-only validation through the Reader seam: canonical digests,
+    # the fingerprint, and canonical loading. A version Readers cannot
+    # resolve is not a rollback target.
     try:
         S3Location(store, prefix, version=version).resolve()
     except KnowledgeBaseError as exc:

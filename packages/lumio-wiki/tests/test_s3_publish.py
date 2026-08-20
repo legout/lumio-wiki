@@ -880,3 +880,31 @@ def test_rollback_target_validation_is_read_only():
     )
     rollback_s3_version(store, "kb", version="v1", expected_pointer_version="v2")
     assert _list_objects(store, "kb/v1/") == v1_objects
+
+
+def test_rollback_rejects_a_tampered_derived_object():
+    """Presence alone is not validation: a declared derived object whose
+    bytes no longer match the manifest digest blocks rollback (issue #163
+    review finding — the pointer must never advance onto a corrupted
+    complete version, even though derived state is rebuildable for Readers).
+    """
+    store = _store()
+    builder, _ = _fake_builder()
+    publish_s3_version(
+        store, "kb", source_root=VALID, version="v1", index_builder=builder
+    )
+    publish_s3_version(
+        store, "kb", source_root=CATEGORIZED, version="v2", expected_pointer_version="v1"
+    )
+    # Tamper v1's LanceDB completion metadata in place: same size (so the
+    # digest branch must catch it, not the size branch), different content.
+    completion_key = f"kb/v1/{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}"
+    raw = bytes(obstore.get(store, completion_key).bytes())
+    tampered = raw[:-1] + bytes([raw[-1] ^ 0xFF])
+    assert len(tampered) == len(raw)
+    obstore.put(store, completion_key, tampered, mode="overwrite")
+
+    with pytest.raises(KnowledgeBaseError, match="!= manifest digest"):
+        rollback_s3_version(store, "kb", version="v1", expected_pointer_version="v2")
+    # The active version is unchanged: Readers stay on v2.
+    assert _read_pointer(store, "kb").version == "v2"
