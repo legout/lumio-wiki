@@ -48,6 +48,11 @@ from lumio_wiki.s3_publish import (
 )
 from lumio_wiki.records import EmbeddingModelInfo, SourceFingerprint
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from obstore.store import ObjectStore
+
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
 VALID = FIXTURES / "valid"
@@ -61,7 +66,7 @@ obstore = pytest.importorskip("obstore", reason="obstore required for the S3 pub
 # ---------------------------------------------------------------------------
 
 
-def _store() -> object:
+def _store() -> ObjectStore:
     return obstore.store.MemoryStore()
 
 
@@ -843,3 +848,35 @@ def test_active_and_complete_versions_are_not_cleanup_candidates():
 def test_cleanup_candidates_on_an_empty_store():
     store = _store()
     assert list_cleanup_candidates(store, "kb") == []
+
+
+def test_rollback_to_a_present_but_corrupt_version_is_rejected():
+    """A version whose objects exist but no longer digest-validate is NOT a
+    rollback target: Readers must never be pointed at it (review finding —
+    'already complete, validated immutable version', ADR-0019)."""
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    publish_s3_version(
+        store, "kb", source_root=CATEGORIZED, version="v2", expected_pointer_version="v1"
+    )
+    # Tamper with v1's canonical content without updating the manifest.
+    manifest = _read_manifest(store, "kb", "v1")
+    victim = manifest.files[0].path
+    original = bytes(obstore.get(store, f"kb/v1/{victim}").bytes())
+    obstore.put(store, f"kb/v1/{victim}", original + b"\n# TAMPERED\n", mode="overwrite")
+    with pytest.raises(KnowledgeBaseError, match="does not validate"):
+        rollback_s3_version(store, "kb", version="v1", expected_pointer_version="v2")
+    # The active version is unchanged.
+    assert _read_pointer(store, "kb").version == "v2"
+
+
+def test_rollback_target_validation_is_read_only():
+    """Validation never rewrites the target version (issue #163)."""
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    v1_objects = _list_objects(store, "kb/v1/")
+    publish_s3_version(
+        store, "kb", source_root=CATEGORIZED, version="v2", expected_pointer_version="v1"
+    )
+    rollback_s3_version(store, "kb", version="v1", expected_pointer_version="v2")
+    assert _list_objects(store, "kb/v1/") == v1_objects

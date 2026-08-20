@@ -70,6 +70,7 @@ from lumio_wiki.s3_location import (
     CURRENT_POINTER_OBJECT,
     DERIVED_DIR,
     MANIFEST_OBJECT,
+    S3Location,
     S3Manifest,
     S3Pointer,
     _join,
@@ -652,10 +653,14 @@ def _load_complete_version(
 ) -> S3Manifest:
     """Load and validate an already complete immutable version for rollback.
 
-    Complete means: a manifest exists, decodes, names this version, and every
-    canonical and derived object it lists is present. Rollback never rebuilds
-    or rewrites the target (issue #163); presence, not digests, is the gate —
-    digest re-validation is the Reader's job when it resolves the version.
+    Complete + validated (ADR-0019) means: a manifest exists, decodes, names
+    this version, every canonical and derived object it lists is present, and
+    the whole version still resolves through the Reader seam — every content
+    digest checks out and the Published Version fingerprint matches the
+    materialized content. Rollback never rebuilds or rewrites the target
+    (issue #163); validation is read-only, so a corrupted version is rejected
+    BEFORE the pointer advances instead of leaving Readers on a broken
+    Snapshot after activation.
     """
     manifest_key = _join(prefix, version, MANIFEST_OBJECT)
     try:
@@ -689,6 +694,16 @@ def _load_complete_version(
             f"from the store: {', '.join(missing[:5])}"
             + (" …" if len(missing) > 5 else "")
         )
+    # Full read-only validation through the Reader seam: every digest, the
+    # fingerprint, and canonical loading. A version Readers cannot resolve is
+    # not a rollback target.
+    try:
+        S3Location(store, prefix, version=version).resolve()
+    except KnowledgeBaseError as exc:
+        raise KnowledgeBaseError(
+            f"cannot roll back to {version!r}: the version does not validate "
+            f"({exc})"
+        ) from exc
     return manifest
 
 
