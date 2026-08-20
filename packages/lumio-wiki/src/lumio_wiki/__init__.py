@@ -225,8 +225,17 @@ from lumio_wiki.s3_location import (
     open_s3_knowledge_base,
 )
 from lumio_wiki.s3_publish import (
+    ActivationHook,
+    CleanupCandidate,
+    IndexBuilder,
+    PointerObservation,
+    PreparedVersion,
+    RemoteIndexCompletion,
     S3PublicationConflict,
+    list_cleanup_candidates,
+    observe_current_pointer,
     publish_s3_version,
+    rollback_s3_version,
 )
 from lumio_wiki.retrieval import (
     RetrievalAdapter,

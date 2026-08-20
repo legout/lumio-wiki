@@ -1451,6 +1451,66 @@ def _cmd_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def _lance_storage_options_from_env() -> dict[str, str]:
+    """Build LanceDB's own S3 ``storage_options`` from environment variables.
+
+    LanceDB connects to its own URI with its own options (ADR-0013): Lumio
+    never hands its obstore client to LanceDB. Mirrors the resolution order of
+    :func:`_s3_config_from_env` (LUMIO_S3_* first, AWS_* fallback).
+    """
+    options: dict[str, str] = {}
+    region = (
+        os.environ.get("LUMIO_S3_REGION")
+        or os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION")
+    )
+    if region:
+        options["region"] = region
+    endpoint = os.environ.get("LUMIO_S3_ENDPOINT") or os.environ.get("AWS_ENDPOINT_URL_S3")
+    if endpoint:
+        options["endpoint"] = endpoint
+        if endpoint.startswith("http://"):
+            options["allow_http"] = "true"
+    key = os.environ.get("LUMIO_S3_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID")
+    secret = os.environ.get("LUMIO_S3_SECRET_ACCESS_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY")
+    if key:
+        options["access_key_id"] = key
+    if secret:
+        options["secret_access_key"] = secret
+    return options
+
+
+def _publication_index_builder(destination: str):
+    """Build the remote-LanceDB publication index builder (issue #163).
+
+    The builder (``lumio_lancedb.remote_publication_builder``) builds the
+    lexical BM25 + page tables under the version's ``derived/lance/`` prefix
+    and health-checks them before the publisher may activate. Semantic vectors
+    are not built on this path (they need an embedder; wire one explicitly
+    when that journey lands).
+    """
+    import importlib
+    from urllib.parse import urlparse
+
+    from lumio_wiki import retrieval_eval
+
+    if not retrieval_eval.lancedb_available():
+        raise CliError(
+            "publish-s3 --retrieval lancedb needs lumio-lancedb; install with:  "
+            "pip install lumio-lancedb"
+        )
+    parsed = urlparse(destination)
+    if parsed.scheme != "s3":
+        raise CliError(
+            f"--retrieval lancedb requires an s3:// destination, got {destination!r}"
+        )
+    lumio_lancedb = importlib.import_module("lumio_lancedb")
+    return lumio_lancedb.remote_publication_builder(
+        store_uri=f"s3://{parsed.netloc}",
+        storage_options=_lance_storage_options_from_env() or None,
+    )
+
+
 def _cmd_publish_s3(args: argparse.Namespace) -> int:
     """Publish a local Knowledge Base as an immutable S3 Published Version.
 
@@ -1498,6 +1558,9 @@ def _cmd_publish_s3(args: argparse.Namespace) -> int:
                 "(written to .env as LUMIO_PUBLISH_TO)."
             )
     store, prefix = _build_publish_store(destination)
+    index_builder = None
+    if getattr(args, "retrieval", "zero-index") == "lancedb":
+        index_builder = _publication_index_builder(destination)
     try:
         manifest = publish_s3_version(
             store,
@@ -1505,6 +1568,7 @@ def _cmd_publish_s3(args: argparse.Namespace) -> int:
             source_root=root,
             version=args.version,
             expected_pointer_version=args.expected_pointer_version,
+            index_builder=index_builder,
         )
     except S3PublicationConflict as exc:
         raise CliError(f"publication conflict (pointer not advanced): {exc}") from exc
@@ -1512,11 +1576,67 @@ def _cmd_publish_s3(args: argparse.Namespace) -> int:
         raise CliError(f"publication failed: {exc}") from exc
     except Exception as exc:
         # Object-store transport/credential failures (unreachable endpoint,
-        # IMDS probe, etc.) surface as actionable errors, never a traceback.
+        # IMDS probe) and a requested-but-failed LanceDB build/health check
+        # (issue #163: publication was blocked before activation) both surface
+        # as actionable errors, never a traceback.
         raise CliError(f"publication failed: {exc}") from exc
     print(f"Published {manifest.version}: {len(manifest.files)} canonical file(s)")
     print(f"  fingerprint: {manifest.fingerprint}")
+    if index_builder is not None:
+        print("  lance:       built and health-checked under derived/lance/")
     print(f"  location:    {destination}@{manifest.version}")
+    return 0
+
+
+def _cmd_rollback_s3(args: argparse.Namespace) -> int:
+    """CAS-activate an already complete immutable S3 Published Version."""
+    from lumio_wiki.s3_publish import (
+        S3PublicationConflict,
+        list_cleanup_candidates,
+        rollback_s3_version,
+    )
+
+    store, prefix = _build_publish_store(args.destination)
+    try:
+        manifest = rollback_s3_version(
+            store,
+            prefix,
+            version=args.version,
+            expected_pointer_version=args.expected_pointer_version,
+        )
+    except S3PublicationConflict as exc:
+        raise CliError(f"rollback conflict (pointer not advanced): {exc}") from exc
+    except KnowledgeBaseError as exc:
+        candidates = list_cleanup_candidates(store, prefix)
+        hint = (
+            f" Inactive incomplete prefixes (cleanup candidates): "
+            f"{', '.join(c.version for c in candidates)}."
+            if candidates
+            else ""
+        )
+        raise CliError(f"rollback failed: {exc}{hint}") from exc
+    print(f"Rolled back to {manifest.version}: {len(manifest.files)} canonical file(s)")
+    print(f"  fingerprint: {manifest.fingerprint}")
+    print(f"  location:    {args.destination}@{manifest.version}")
+    return 0
+
+
+def _cmd_cleanup_s3(args: argparse.Namespace) -> int:
+    """Report inactive incomplete S3 version prefixes (report-only)."""
+    from lumio_wiki.s3_publish import list_cleanup_candidates
+
+    store, prefix = _build_publish_store(args.destination)
+    candidates = list_cleanup_candidates(store, prefix)
+    if not candidates:
+        print("No cleanup candidates: every inactive version prefix is complete.")
+        return 0
+    print(f"Cleanup candidates under {args.destination} (nothing is deleted):")
+    for candidate in candidates:
+        print(f"  {candidate.version}  ({candidate.object_count} object(s), no manifest)")
+    print(
+        "These prefixes are incomplete and can never be activated; remove them "
+        "with your object-store tooling when convenient."
+    )
     return 0
 
 
@@ -2781,7 +2901,70 @@ def build_parser() -> argparse.ArgumentParser:
             "Omit for the first publication."
         ),
     )
+    publish_s3_parser.add_argument(
+        "--retrieval",
+        choices=["zero-index", "lancedb"],
+        default="zero-index",
+        help=(
+            "Retrieval artifacts to publish (issue #163). zero-index (default) "
+            "publishes canonical content + Discovery Graph only; lancedb also "
+            "builds and health-checks a remote LanceDB index under the "
+            "version's derived/lance/ prefix BEFORE activation — an index "
+            "build or health failure blocks the pointer advance. Needs "
+            "lumio-lancedb."
+        ),
+    )
     publish_s3_parser.set_defaults(func=_cmd_publish_s3)
+
+    # rollback-s3 (issue #163, ADR-0019)
+    rollback_s3_parser = subparsers.add_parser(
+        "rollback-s3",
+        help="CAS-activate an already complete S3 Published Version.",
+        description=(
+            "Conditionally activate a prior complete immutable S3 Published "
+            "Version (compare-and-swap on the activation pointer). The target "
+            "version is validated complete and never rebuilt or overwritten; a "
+            "stale rollback fails closed. Requires lumio-wiki[s3]."
+        ),
+    )
+    rollback_s3_parser.add_argument(
+        "destination",
+        type=str,
+        help="Object-store Knowledge Base URI (e.g. s3://bucket/kb).",
+    )
+    rollback_s3_parser.add_argument(
+        "--version",
+        required=True,
+        type=str,
+        help="The complete immutable version to activate.",
+    )
+    rollback_s3_parser.add_argument(
+        "--expected-pointer-version",
+        default=None,
+        type=str,
+        help=(
+            "Active version expected before rolling back (compare-and-swap "
+            "guard); omit to CAS against the currently observed pointer."
+        ),
+    )
+    rollback_s3_parser.set_defaults(func=_cmd_rollback_s3)
+
+    # cleanup-s3 (issue #163, ADR-0019: report-only)
+    cleanup_s3_parser = subparsers.add_parser(
+        "cleanup-s3",
+        help="Report inactive incomplete S3 version prefixes (cleanup candidates).",
+        description=(
+            "List version prefixes without a manifest — the residue of "
+            "interrupted or failed publications that can never be activated. "
+            "Report-only: nothing is deleted (issue #163)."
+        ),
+    )
+    cleanup_s3_parser.add_argument(
+        "destination",
+        type=str,
+        help="Object-store Knowledge Base URI (e.g. s3://bucket/kb).",
+    )
+    cleanup_s3_parser.set_defaults(func=_cmd_cleanup_s3)
 
     # discard
     discard_parser = subparsers.add_parser(

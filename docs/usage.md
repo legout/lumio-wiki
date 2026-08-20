@@ -141,6 +141,14 @@ lumio-wiki cross-link <kb> [--stage]         # missing-link candidates (Extracte
 lumio-wiki source <kb> <list|retire|reactivate> --source-id <id>  # manage private Source lifecycle (ADR-0014)
 lumio-wiki publish-s3 <kb> [dest] --version <v>  # publish immutable S3 Published Version
               [--expected-pointer-version <v>]    # (compare-and-swap guard; dest defaults to LUMIO_PUBLISH_TO)
+              [--retrieval lancedb]               # build+health-check remote LanceDB under
+                                                  #   <version>/derived/lance/ BEFORE activation;
+                                                  #   a build/health failure blocks the pointer
+                                                  #   advance (issue #163). Needs lumio-lancedb.
+lumio-wiki rollback-s3 <dest> --version <v>      # CAS-activate a prior complete version (never
+              [--expected-pointer-version <v>]    # rebuilds it; stale rollback fails closed)
+lumio-wiki cleanup-s3 <dest>                     # report inactive incomplete version prefixes
+                                                  #   (interrupted builds); deletes nothing
 lumio-wiki health <kb> [--rebuild]           # page counts, validation, Discovery Graph health
 lumio-wiki eval <kb> [--gold-set <f>] [--semantic [--model <name>]] [--json]  # recall@k per retrieval stage (#138)
 lumio-wiki doctor                            # install shape: version, optionals, skill location

@@ -220,3 +220,163 @@ def _list(store, prefix):
         for obj in batch:
             paths.append(obj["path"])
     return sorted(paths)
+
+# ---------------------------------------------------------------------------
+# publish-s3 --retrieval lancedb / rollback-s3 / cleanup-s3 (issue #163).
+# ---------------------------------------------------------------------------
+
+
+def _fake_store(monkeypatch, prefix="kb"):
+    store = obstore.store.MemoryStore()
+    monkeypatch.setattr(
+        cli, "_build_publish_store", lambda uri: (store, prefix)
+    )
+    return store
+
+
+class _RecordingBuilder:
+    """A stub IndexBuilder: records the call, writes a marker sidecar."""
+
+    def __init__(self, exc=None):
+        self.exc = exc
+        self.calls = []
+
+    def __call__(self, *, store, sidecar_prefix, pages, fingerprint):
+        self.calls.append((sidecar_prefix, len(pages), fingerprint.digest))
+        if self.exc is not None:
+            raise self.exc
+        import msgspec
+
+        from lumio_wiki.s3_publish import RemoteIndexCompletion
+
+        return RemoteIndexCompletion(
+            fingerprint=fingerprint.digest, model=None, tables={"evidence": 3, "pages": 3}
+        )
+
+
+def test_cli_publish_s3_retrieval_lancedb_builds_before_activation(monkeypatch, capsys):
+    store = _fake_store(monkeypatch)
+    builder = _RecordingBuilder()
+    monkeypatch.setattr(cli, "_publication_index_builder", lambda dest: builder)
+
+    rc = cli.main(
+        [
+            "publish-s3",
+            str(FIXTURES / "valid"),
+            "s3://bucket/kb",
+            "--version",
+            "v1",
+            "--retrieval",
+            "lancedb",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Published v1" in out
+    assert "lance:" in out
+    # The builder ran against the version's lance prefix before activation.
+    assert builder.calls[0][0] == "kb/v1/derived/lance"
+    # Completion metadata landed under the version prefix.
+    assert "kb/v1/derived/lance/completion.json" in _list(store, "kb/")
+
+
+def test_cli_publish_s3_retrieval_lancedb_failure_blocks_activation(monkeypatch, capsys):
+    store = _fake_store(monkeypatch)
+    builder = _RecordingBuilder(exc=RuntimeError("lance unavailable"))
+    monkeypatch.setattr(cli, "_publication_index_builder", lambda dest: builder)
+
+    rc = cli.main(
+        [
+            "publish-s3",
+            str(FIXTURES / "valid"),
+            "s3://bucket/kb",
+            "--version",
+            "v1",
+            "--retrieval",
+            "lancedb",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert rc == 2
+    # The pointer was never created and no manifest was written.
+    assert "kb/current.json" not in _list(store, "kb/")
+    assert "kb/v1/manifest.json" not in _list(store, "kb/")
+
+
+def test_cli_rollback_s3_activates_a_prior_complete_version(monkeypatch, capsys):
+    store = _fake_store(monkeypatch)
+    cli.main(["publish-s3", str(FIXTURES / "valid"), "s3://bucket/kb", "--version", "v1"])
+    cli.main(
+        [
+            "publish-s3",
+            str(FIXTURES / "categorized_kb"),
+            "s3://bucket/kb",
+            "--version",
+            "v2",
+            "--expected-pointer-version",
+            "v1",
+        ]
+    )
+    rc = cli.main(
+        ["rollback-s3", "s3://bucket/kb", "--version", "v1", "--expected-pointer-version", "v2"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Rolled back to v1" in out
+    pointer = msgspec_pointer(store)
+    assert pointer == "v1"
+
+
+def test_cli_rollback_s3_reports_conflicts(monkeypatch, capsys):
+    _fake_store(monkeypatch)
+    cli.main(["publish-s3", str(FIXTURES / "valid"), "s3://bucket/kb", "--version", "v1"])
+    rc = cli.main(
+        ["rollback-s3", "s3://bucket/kb", "--version", "v1", "--expected-pointer-version", "nope"]
+    )
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "conflict" in captured.err.lower()
+
+
+def test_cli_rollback_s3_names_cleanup_candidates_on_incomplete_targets(monkeypatch, capsys):
+    store = _fake_store(monkeypatch)
+    cli.main(["publish-s3", str(FIXTURES / "valid"), "s3://bucket/kb", "--version", "v1"])
+    # Residue of an interrupted build under v2 (no manifest).
+    obstore.put(store, "kb/v2/overview.md", b"partial", mode="create")
+    rc = cli.main(["rollback-s3", "s3://bucket/kb", "--version", "v2"])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "v2" in captured.err
+    assert "cleanup candidate" in captured.err
+
+
+def test_cli_cleanup_s3_reports_candidates_without_deleting(monkeypatch, capsys):
+    store = _fake_store(monkeypatch)
+    cli.main(["publish-s3", str(FIXTURES / "valid"), "s3://bucket/kb", "--version", "v1"])
+    obstore.put(store, "kb/v2/overview.md", b"partial", mode="create")
+
+    rc = cli.main(["cleanup-s3", "s3://bucket/kb"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "v2" in out
+    assert "nothing is deleted" in out.lower()
+    # Report-only: the residue survives.
+    assert "kb/v2/overview.md" in _list(store, "kb")
+
+
+def test_cli_cleanup_s3_with_no_candidates(monkeypatch, capsys):
+    _fake_store(monkeypatch)
+    cli.main(["publish-s3", str(FIXTURES / "valid"), "s3://bucket/kb", "--version", "v1"])
+    rc = cli.main(["cleanup-s3", "s3://bucket/kb"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "No cleanup candidates" in out
+
+
+def msgspec_pointer(store) -> str:
+    import msgspec
+
+    from lumio_wiki.s3_location import CURRENT_POINTER_OBJECT, S3Pointer
+
+    raw = obstore.get(store, f"kb/{CURRENT_POINTER_OBJECT}")
+    return msgspec.json.decode(bytes(raw.bytes()), type=S3Pointer).version

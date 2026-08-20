@@ -32,6 +32,7 @@ from lumio_lancedb.location import (
     LocalIndexLocation,
     RemoteIndexLocation,
 )
+from lumio_lancedb.publish import remote_publication_builder
 
 __all__ = [
     "IndexLocation",
@@ -45,6 +46,7 @@ __all__ = [
     "build_lexical_index",
     "build_semantic_index",
     "has_semantic_index",
+    "remote_publication_builder",
     "search_hybrid_index",
     "search_lexical_index",
     "search_pages",

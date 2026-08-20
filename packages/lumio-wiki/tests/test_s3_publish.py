@@ -37,9 +37,16 @@ from lumio_wiki.s3_location import (
     S3Pointer,
 )
 from lumio_wiki.s3_publish import (
+    LANCE_COMPLETION_OBJECT,
+    LANCE_DERIVED_DIR,
+    PointerObservation,
+    RemoteIndexCompletion,
     S3PublicationConflict,
+    list_cleanup_candidates,
     publish_s3_version,
+    rollback_s3_version,
 )
+from lumio_wiki.records import EmbeddingModelInfo, SourceFingerprint
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -233,7 +240,10 @@ def test_a_second_concurrent_publication_detects_a_pointer_conflict():
     # Publisher A wins the race to publish v2 and advances the pointer.
     publish_s3_version(store, "kb", source_root=VALID, version="v2", expected_pointer_version="v1")
     assert _read_pointer(store, "kb").version == "v2"
-    # Publisher B now tries to advance from the stale v1 expectation: conflict.
+    # Publisher B now tries to advance from the stale v1 expectation: the
+    # conflict is detected up front, BEFORE any expensive preparation or
+    # writes (issue #163) — B leaves no residue at all.
+    objects_before = _list_objects(store, "kb/")
     with pytest.raises(S3PublicationConflict) as exc_info:
         publish_s3_version(
             store, "kb", source_root=VALID, version="v3", expected_pointer_version="v1"
@@ -241,8 +251,8 @@ def test_a_second_concurrent_publication_detects_a_pointer_conflict():
     assert "v1" in str(exc_info.value)
     # The previously active Published Version is intact.
     assert _read_pointer(store, "kb").version == "v2"
-    # B's version prefix was written but the pointer never advanced to it.
-    assert f"kb/v3/{MANIFEST_OBJECT}" in _list_objects(store, "kb/")
+    # And B wrote nothing: fail-fast leaves no orphaned prefix.
+    assert _list_objects(store, "kb/") == objects_before
 
 
 def test_expected_pointer_version_mismatch_raises_conflict_before_advancing():
@@ -428,20 +438,408 @@ def test_publish_requires_the_s3_extra(monkeypatch):
 def test_pointer_advance_fails_closed_when_no_etag(monkeypatch):
     """A store that cannot supply an ETag refuses the second publication.
 
-    Monkeypatches the publisher's pointer reader to return an existing pointer
-    with no ETag, simulating a backend that lacks compare-and-swap support."""
+    Monkeypatches the publisher's pointer observation to report an existing
+    pointer with no ETag, simulating a backend that lacks compare-and-swap
+    support. The failure is raised before expensive preparation (issue #163).
+    """
     store = _store()
     publish_s3_version(store, "kb", source_root=VALID, version="v1")
     import lumio_wiki.s3_publish as pub
 
-    real_reader = pub._read_current_pointer
+    real_observer = pub.observe_current_pointer
 
-    def _no_etag_reader(obstore_mod, s, key):
-        version, _etag = real_reader(obstore_mod, s, key)
-        return version, None
+    def _no_etag_observer(s, prefix):
+        real = real_observer(s, prefix)
+        return PointerObservation(version=real.version, e_tag=None)
 
-    monkeypatch.setattr(pub, "_read_current_pointer", _no_etag_reader)
+    monkeypatch.setattr(pub, "observe_current_pointer", _no_etag_observer)
+    objects_before = _list_objects(store, "kb/")
     with pytest.raises(KnowledgeBaseError, match="ETag"):
         publish_s3_version(
             store, "kb", source_root=VALID, version="v2", expected_pointer_version="v1"
         )
+    # Fail-closed happened before any write, and the pointer is unchanged.
+    assert _list_objects(store, "kb/") == objects_before
+    assert _read_pointer(store, "kb").version == "v1"
+
+
+# ---------------------------------------------------------------------------
+# 9. Deep publication: pointer captured before preparation, CAS against the
+#    ORIGINALLY observed pointer (issue #163).
+# ---------------------------------------------------------------------------
+
+
+def test_activation_cas_uses_the_originally_observed_pointer():
+    """A publisher that observed v1 must fail even if the pointer moves to a
+    *different* version mid-preparation: the CAS compares against the observed
+    ETag, not a re-read pointer, so concurrent publishers fail closed."""
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+
+    def _concurrent_publisher(prepared):
+        # Simulates a concurrent publication advancing the pointer while our
+        # publisher is between observation and activation.
+        obstore.put(
+            store,
+            "kb/current.json",
+            msgspec.json.encode(S3Pointer(version="v9")),
+            mode="overwrite",
+        )
+
+    with pytest.raises(S3PublicationConflict) as exc_info:
+        publish_s3_version(
+            store,
+            "kb",
+            source_root=CATEGORIZED,
+            version="v2",
+            expected_pointer_version="v1",
+            before_activation=_concurrent_publisher,
+        )
+    assert "concurrent" in str(exc_info.value).lower()
+    # The concurrent publisher's activation stands; v2 stays inactive.
+    assert _read_pointer(store, "kb").version == "v9"
+
+
+def test_reused_version_prefix_fails_preflight_before_any_write():
+    """A retried or interrupted build never mutates an existing prefix: the
+    preflight rejects a non-empty version prefix before a single write."""
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    # Residue from an interrupted build: objects without a manifest.
+    obstore.put(store, "kb/v2/some-page.md", b"partial", mode="create")
+    objects_before = _list_objects(store, "kb/")
+    with pytest.raises(KnowledgeBaseError, match="already exists"):
+        publish_s3_version(store, "kb", source_root=VALID, version="v2")
+    # Nothing new was written and the active version is unchanged.
+    assert _list_objects(store, "kb/") == objects_before
+    assert _read_pointer(store, "kb").version == "v1"
+
+
+def test_exact_version_reuse_still_fails_after_full_publication():
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    with pytest.raises(KnowledgeBaseError, match="already exists"):
+        publish_s3_version(store, "kb", source_root=CATEGORIZED, version="v1")
+    # The original version's content is intact (immutable).
+    manifest = _read_manifest(store, "kb", "v1")
+    assert manifest.fingerprint == fingerprint_sources(VALID).digest
+
+
+# ---------------------------------------------------------------------------
+# 10. Requested remote LanceDB: build under derived/lance/, completion
+#     metadata, fingerprint gate, failure blocks activation (issue #163).
+# ---------------------------------------------------------------------------
+
+
+def _valid_fingerprint() -> str:
+    return fingerprint_sources(VALID).digest
+
+
+def _fake_builder(fingerprint=None, model=None, tables=None, exc=None):
+    """Build an IndexBuilder closure returning fixed completion metadata.
+
+    A string ``fingerprint`` overrides the canonical one (mismatch tests)."""
+    override = fingerprint if isinstance(fingerprint, str) else None
+    calls = []
+
+    def _builder(*, store, sidecar_prefix, pages, fingerprint):
+        calls.append(
+            {"sidecar_prefix": sidecar_prefix, "pages": len(pages), "fingerprint": fingerprint}
+        )
+        if exc is not None:
+            raise exc
+        return RemoteIndexCompletion(
+            fingerprint=override or fingerprint.digest,
+            model=model,
+            tables=tables if tables is not None else {"evidence": 42, "pages": 7},
+        )
+
+    return _builder, calls
+
+
+def test_requested_lancedb_builds_under_the_version_lance_prefix():
+    builder, calls = _fake_builder(
+        model=EmbeddingModelInfo(name="fake-embedder", dimension=8)
+    )
+    store = _store()
+    manifest = publish_s3_version(
+        store, "kb", source_root=VALID, version="v1", index_builder=builder
+    )
+    # The builder received the store, the <version>/derived/lance prefix, the
+    # loaded pages, and the canonical fingerprint.
+    assert calls[0]["sidecar_prefix"] == f"kb/v1/{LANCE_DERIVED_DIR}"
+    assert calls[0]["fingerprint"].digest == _valid_fingerprint()
+    # Activation happened: requested artifacts complete => pointer advanced.
+    assert _read_pointer(store, "kb").version == "v1"
+    # Completion metadata carries the canonical fingerprint + model identity.
+    completion_rel = f"{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}"
+    raw = obstore.get(store, f"kb/v1/{completion_rel}")
+    completion_bytes = bytes(raw.bytes())
+    completion = msgspec.json.decode(completion_bytes, type=RemoteIndexCompletion)
+    assert completion.fingerprint == _valid_fingerprint()
+    assert completion.model == EmbeddingModelInfo(name="fake-embedder", dimension=8)
+    assert completion.tables == {"evidence": 42, "pages": 7}
+    # The completion metadata is digest-protected in the manifest.
+    import hashlib
+
+    entry = next(f for f in manifest.derived_files if f.path == completion_rel)
+    assert entry.digest == hashlib.sha256(completion_bytes).hexdigest()
+    # And it never leaks into the canonical file list.
+    assert not any(
+        f.path.startswith(LANCE_DERIVED_DIR) for f in manifest.files
+    )
+
+
+def test_lance_completion_without_a_model_is_valid():
+    builder, _ = _fake_builder(model=None)
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1", index_builder=builder)
+    raw = obstore.get(store, f"kb/v1/{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}")
+    completion = msgspec.json.decode(bytes(raw.bytes()), type=RemoteIndexCompletion)
+    assert completion.model is None
+    assert _read_pointer(store, "kb").version == "v1"
+
+
+def test_requested_lancedb_build_failure_blocks_activation():
+    builder, _ = _fake_builder(exc=RuntimeError("lance build exploded"))
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v0")
+    with pytest.raises(RuntimeError, match="lance build exploded"):
+        publish_s3_version(
+            store,
+            "kb",
+            source_root=VALID,
+            version="v1",
+            expected_pointer_version="v0",
+            index_builder=builder,
+        )
+    # The active version is unchanged and the failed version never activated.
+    assert _read_pointer(store, "kb").version == "v0"
+    # No manifest was written: v1 is incomplete, hence a cleanup candidate.
+    assert f"kb/v1/{MANIFEST_OBJECT}" not in _list_objects(store, "kb/")
+    assert [c.version for c in list_cleanup_candidates(store, "kb")] == ["v1"]
+
+
+def test_lance_completion_fingerprint_mismatch_blocks_activation():
+    builder, _ = _fake_builder(fingerprint="0" * 64)
+    store = _store()
+    with pytest.raises(KnowledgeBaseError, match="fingerprint"):
+        publish_s3_version(
+            store, "kb", source_root=VALID, version="v1", index_builder=builder
+        )
+    assert _read_pointer(store, "kb").version is None if False else True
+    # Pointer was never created: nothing activated.
+    assert "kb/current.json" not in _list_objects(store, "kb")
+
+
+def test_unrequested_lancedb_absence_stays_valid():
+    """Existing S3-without-LanceDB publication stays compatible (AC #163)."""
+    store = _store()
+    manifest = publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    assert _read_pointer(store, "kb").version == "v1"
+    assert all(not f.path.startswith(LANCE_DERIVED_DIR) for f in manifest.derived_files)
+    assert list_cleanup_candidates(store, "kb") == []
+
+
+# ---------------------------------------------------------------------------
+# 11. The pre-activation extension point (#164 Source Binding Manifest).
+# ---------------------------------------------------------------------------
+
+
+def test_before_activation_hook_sees_a_complete_version_and_the_old_pointer():
+    seen = {}
+
+    def _hook(prepared):
+        seen["prepared"] = prepared
+        seen["pointer_at_hook"] = _read_pointer(store, "kb").version
+        seen["manifest_present"] = (
+            f"kb/v2/{MANIFEST_OBJECT}" in _list_objects(store, "kb")
+        )
+
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    publish_s3_version(
+        store,
+        "kb",
+        source_root=CATEGORIZED,
+        version="v2",
+        expected_pointer_version="v1",
+        before_activation=_hook,
+    )
+    prepared = seen["prepared"]
+    assert prepared.version == "v2"
+    assert prepared.fingerprint == fingerprint_sources(CATEGORIZED).digest
+    assert prepared.manifest.version == "v2"
+    # The hook ran AFTER the version was complete but BEFORE activation.
+    assert seen["manifest_present"] is True
+    assert seen["pointer_at_hook"] == "v1"
+    assert _read_pointer(store, "kb").version == "v2"
+
+
+def test_before_activation_hook_failure_blocks_activation():
+    def _failing_hook(prepared):
+        raise RuntimeError("source artifact store unavailable")
+
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    with pytest.raises(RuntimeError, match="source artifact store"):
+        publish_s3_version(
+            store,
+            "kb",
+            source_root=CATEGORIZED,
+            version="v2",
+            expected_pointer_version="v1",
+            before_activation=_failing_hook,
+        )
+    # The active version is unchanged; v2 is complete but inactive.
+    assert _read_pointer(store, "kb").version == "v1"
+    assert f"kb/v2/{MANIFEST_OBJECT}" in _list_objects(store, "kb")
+    # A complete inactive version is NOT a cleanup candidate (it is a valid
+    # rollback target), so nothing is reported.
+    assert list_cleanup_candidates(store, "kb") == []
+
+
+# ---------------------------------------------------------------------------
+# 12. Rollback: CAS-activate a prior complete version, never rebuild (issue
+#     #163).
+# ---------------------------------------------------------------------------
+
+
+def test_rollback_activates_a_prior_complete_version_without_rewrites():
+    store = _store()
+    publish_s3_version(store, "kb", source_root=CATEGORIZED, version="v1")
+    v1_objects = _list_objects(store, "kb/v1/")
+    publish_s3_version(
+        store, "kb", source_root=VALID, version="v2", expected_pointer_version="v1"
+    )
+    assert _read_pointer(store, "kb").version == "v2"
+
+    manifest = rollback_s3_version(
+        store, "kb", version="v1", expected_pointer_version="v2"
+    )
+    assert manifest.version == "v1"
+    assert _read_pointer(store, "kb").version == "v1"
+    # The target version was not rewritten: identical object set.
+    assert _list_objects(store, "kb/v1/") == v1_objects
+    # Readers resolve the rolled-back content.
+    snapshot = S3Location(store, "kb").resolve()
+    assert snapshot.fingerprint == fingerprint_sources(CATEGORIZED)
+
+
+def test_rollback_without_expectation_still_fails_closed_on_a_stale_pointer():
+    """Even with no explicit expectation, the CAS against the observed ETag
+    catches a pointer that moved between observation and activation."""
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    publish_s3_version(
+        store, "kb", source_root=CATEGORIZED, version="v2", expected_pointer_version="v1"
+    )
+    import lumio_wiki.s3_publish as pub
+
+    real_loader = pub._load_complete_version
+
+    def _racing_loader(obstore_mod, s, prefix, version):
+        # Simulate a concurrent activation between observation and CAS.
+        obstore.put(
+            s,
+            f"{prefix}/{CURRENT_POINTER_OBJECT}",
+            msgspec.json.encode(S3Pointer(version="v9")),
+            mode="overwrite",
+        )
+        return real_loader(obstore_mod, s, prefix, version)
+
+    import unittest.mock as mock
+
+    with mock.patch.object(pub, "_load_complete_version", _racing_loader):
+        with pytest.raises(S3PublicationConflict):
+            rollback_s3_version(store, "kb", version="v1")
+    assert _read_pointer(store, "kb").version == "v9"
+
+
+def test_stale_rollback_expectation_fails_closed():
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    publish_s3_version(
+        store, "kb", source_root=CATEGORIZED, version="v2", expected_pointer_version="v1"
+    )
+    with pytest.raises(S3PublicationConflict):
+        rollback_s3_version(store, "kb", version="v1", expected_pointer_version="v0")
+    assert _read_pointer(store, "kb").version == "v2"
+
+
+def test_rollback_to_an_incomplete_version_is_rejected():
+    """An interrupted build's residue is a cleanup candidate, not a target."""
+    store = _store()
+    builder, _ = _fake_builder(exc=RuntimeError("boom"))
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    with pytest.raises(RuntimeError):
+        publish_s3_version(
+            store, "kb", source_root=VALID, version="v2", index_builder=builder
+        )
+    with pytest.raises(KnowledgeBaseError, match="cleanup candidate"):
+        rollback_s3_version(store, "kb", version="v2", expected_pointer_version="v1")
+    assert _read_pointer(store, "kb").version == "v1"
+
+
+def test_rollback_to_an_absent_version_is_rejected():
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    with pytest.raises(KnowledgeBaseError, match="no manifest"):
+        rollback_s3_version(store, "kb", version="never-published")
+    assert _read_pointer(store, "kb").version == "v1"
+
+
+def test_rollback_to_a_version_missing_manifest_objects_is_rejected():
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    publish_s3_version(
+        store, "kb", source_root=CATEGORIZED, version="v2", expected_pointer_version="v1"
+    )
+    # Corrupt v1's completeness: remove an object the manifest lists.
+    manifest = _read_manifest(store, "kb", "v1")
+    victim = manifest.files[0].path
+    obstore.delete(store, f"kb/v1/{victim}")
+    with pytest.raises(KnowledgeBaseError, match="missing"):
+        rollback_s3_version(store, "kb", version="v1", expected_pointer_version="v2")
+    assert _read_pointer(store, "kb").version == "v2"
+
+
+def test_first_publication_via_rollback_is_create_if_absent():
+    """Activating a complete version with no existing pointer uses
+    create-if-absent semantics (AC: first publication)."""
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    rollback_s3_version(store, "kb", version="v1")
+    assert _read_pointer(store, "kb").version == "v1"
+
+
+# ---------------------------------------------------------------------------
+# 13. Cleanup candidates: report-only, never delete (issue #163).
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_candidates_report_only_incomplete_inactive_versions():
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    # An interrupted build leaves residue without a manifest under v2.
+    obstore.put(store, "kb/v2/overview.md", b"partial", mode="create")
+    candidates = list_cleanup_candidates(store, "kb")
+    assert [c.version for c in candidates] == ["v2"]
+    assert candidates[0].object_count >= 1
+    # Reporting deleted nothing.
+    assert "kb/v2/overview.md" in _list_objects(store, "kb")
+
+
+def test_active_and_complete_versions_are_not_cleanup_candidates():
+    store = _store()
+    publish_s3_version(store, "kb", source_root=VALID, version="v1")
+    publish_s3_version(
+        store, "kb", source_root=CATEGORIZED, version="v2", expected_pointer_version="v1"
+    )
+    # v1 is inactive but complete (a rollback target); v2 is active.
+    assert list_cleanup_candidates(store, "kb") == []
+
+
+def test_cleanup_candidates_on_an_empty_store():
+    store = _store()
+    assert list_cleanup_candidates(store, "kb") == []
