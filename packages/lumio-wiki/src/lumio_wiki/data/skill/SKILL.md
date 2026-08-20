@@ -38,7 +38,12 @@ the concise workflow below is insufficient.
 3. For a project's first run, use `lumio-wiki setup <path>`. It creates or
    detects the Knowledge Base and writes project `.env` plus `AGENTS.md` for
    restarted and cross-client sessions. `lumio-wiki init <path>` is the
-   lower-level KB-only operation.
+   lower-level KB-only operation. S3 projects configure through the same
+   command: `lumio-wiki setup <kb> --publish-to <s3-uri>` records the
+   publication destination (`LUMIO_PUBLISH_TO`), the retrieval backend
+   (`LUMIO_RETRIEVAL_BACKEND`), and the private source artifact store
+   (`LUMIO_SOURCE_STORE`) in `.env`; `lumio-wiki setup --from <s3-uri>`
+   configures a read-only project. Setup writes no credentials.
 4. Skill installation is explicit. Prefer `lumio-wiki skill install --scope
    user` for a shared cross-client copy; use project scope only for a trusted
    repository. Check drift with `skill status` and refresh with `skill update`.
@@ -70,7 +75,7 @@ root directory in every command below.
 
 | Command | What it does |
 |---|---|
-| `lumio-wiki setup <path> [--skill-scope user\|project\|--agent <name>]` | Canonical first run: create/detect the KB and write project `.env` plus `AGENTS.md`; skill installation remains explicit. |
+| `lumio-wiki setup <path> \| --from <s3-uri> [--publish-to <s3-uri>] [--retrieval zero-index\|lancedb] [--source-store <s3-uri>] [--skill-scope user\|project\|--agent <name>]` | Canonical first run: create/detect the KB (or bind a read-only S3 Location) and write project `.env` plus `AGENTS.md`; S3 configuration keys are recorded in `.env`; skill installation remains explicit. |
 | `lumio-wiki init <path>` | Lower-level KB-only operation: create a categorized root with a seeded Control File. |
 | `lumio-wiki validate <kb>` | Load and validate every page, Control File, link, and reserved artifact. Exit 1 on errors. |
 | `lumio-wiki hot <kb>` | Render the Maintainer-pinned Hot Index (ladder 0). Curated entry pages. |
@@ -248,4 +253,6 @@ Restart the agent or start a new session after install/update.
   (+ an embedder) is installed. Install `lumio-lancedb` (or
   `lumio-lancedb[embeddings]`) to enable BM25, semantic, or hybrid ranking.
 - This skill does not bypass validation. Proposal-first is the default write
+  mode; validation always runs before publish.
+te
   mode; validation always runs before publish.

@@ -28,6 +28,7 @@ import argparse
 import json
 import mimetypes
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -59,7 +60,11 @@ from lumio_wiki import (
 )
 from lumio_wiki.env_loader import (
     KB_PATH_ENV_VAR,
+    PUBLISH_TO_ENV_VAR,
+    RETRIEVAL_BACKEND_ENV_VAR,
+    SOURCE_STORE_ENV_VAR,
     discover_kb_path_from_project_env,
+    load_project_config,
 )
 from lumio_wiki.knowledge_base import (
     DEFAULT_GRAPH_MAX_DEPTH,
@@ -152,17 +157,30 @@ def _is_object_store_uri(value: object) -> bool:
 
 
 def _s3_config_from_env() -> tuple[dict[str, str], dict[str, object]]:
-    """Build obstore ``config``/``client_options`` from environment variables."""
+    """Build obstore ``config``/``client_options`` from environment variables.
+
+    ``LUMIO_S3_REGION`` / ``LUMIO_S3_ENDPOINT`` may also be recorded in the
+    project ``.env`` allowlist (issue #161, ADR-0019): exported process values
+    retain precedence, and the Lumio-specific key beats the generic ``AWS_*``
+    fallback. Credentials are never read from ``.env`` — standard AWS
+    credential resolution stays authoritative.
+    """
+    project = load_project_config()
     config: dict[str, str] = {}
     client_options: dict[str, object] = {}
     region = (
         os.environ.get("LUMIO_S3_REGION")
+        or project.get("LUMIO_S3_REGION")
         or os.environ.get("AWS_REGION")
         or os.environ.get("AWS_DEFAULT_REGION")
     )
     if region:
         config["aws_region"] = region
-    endpoint = os.environ.get("LUMIO_S3_ENDPOINT") or os.environ.get("AWS_ENDPOINT_URL_S3")
+    endpoint = (
+        os.environ.get("LUMIO_S3_ENDPOINT")
+        or project.get("LUMIO_S3_ENDPOINT")
+        or os.environ.get("AWS_ENDPOINT_URL_S3")
+    )
     if endpoint:
         config["aws_endpoint"] = endpoint
         if endpoint.startswith("http://"):
@@ -255,42 +273,288 @@ def _format_graph_trace(*, scope: str, direction: str, outcome_fields: list[str]
 # ---------------------------------------------------------------------------
 
 
+def _validate_object_store_uri(flag: str, value: str) -> None:
+    """Reject non-object-store URIs for the setup location flags (issue #161)."""
+    if not _is_object_store_uri(value):
+        raise CliError(
+            f"{flag} requires an object-store URI (e.g. s3://bucket/path), got {value!r}"
+        )
+
+
+def _require_extra(module: str, install_command: str, reason: str) -> None:
+    """Fail with one exact install command when an optional capability is missing.
+
+    Setup never mutates the active Python environment (ADR-0019); it detects a
+    missing optional distribution and prints the exact command to run.
+    """
+    if not _detect_module(module):
+        raise CliError(
+            f"{reason} requires an optional capability that is not installed.\n"
+            f"Install it with this exact command:\n"
+            f"  {install_command}\n"
+            f"setup never modifies your Python environment."
+        )
+
+
+def _env_is_tracked_by_git(project_dir: Path) -> bool:
+    """Return whether the project's ``.env`` is tracked by git (issue #161).
+
+    Used as the privacy guard for private Source Artifact Store URIs
+    (ADR-0020): a tracked ``.env`` would leak the private URI through normal
+    commits. Missing git binary or a non-repo directory means there is no VCS
+    leak surface, so they are allowed. Only an actually-tracked ``.env``
+    (``git ls-files --error-unmatch .env`` succeeds) refuses.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_dir), "ls-files", "--error-unmatch", ".env"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+def _wizard_ask(
+    prompt: str,
+    *,
+    default: str | None = None,
+    optional: bool = False,
+    validate=None,
+    choices: dict[str, str | None] | None = None,
+) -> str | None:
+    """Ask one setup-wizard question with bounded retries."""
+    for _ in range(3):
+        try:
+            raw = input(prompt).strip()
+        except EOFError:
+            raise CliError(
+                "setup wizard needs interactive input; pass <local-kb> or "
+                "--from <s3-uri> explicitly"
+            ) from None
+        if not raw:
+            if default is not None or optional:
+                return default
+            print("  A value is required.")
+            continue
+        if choices is not None:
+            if raw.lower() not in choices:
+                print(f"  Answer one of: {', '.join(sorted(choices))}")
+                continue
+            return choices[raw.lower()]
+        if validate is not None:
+            error = validate(raw)
+            if error:
+                print(f"  {error}")
+                continue
+        return raw
+    raise CliError("setup wizard: aborted after repeated invalid answers")
+
+
+def _run_setup_wizard() -> dict[str, Any]:
+    """Interactive fallback when no location was passed (ADR-0019).
+
+    Asks the same questions the flags answer, so the wizard and flag flows
+    produce equivalent configuration.
+    """
+    print("Lumio Knowledge Base setup wizard (Ctrl+C aborts; Enter accepts [bracketed] defaults)")
+
+    def require_s3_uri(flag: str):
+        def check(value: str) -> str | None:
+            if not _is_object_store_uri(value):
+                return f"{flag} requires an object-store URI (e.g. s3://bucket/path)."
+            return None
+
+        return check
+
+    role = _wizard_ask(
+        "Configure as [m]aintainer (local KB, optional S3 publish) or [r]eader (read-only S3 KB)? ",
+        default="maintainer",
+        choices={
+            "m": "maintainer",
+            "maintainer": "maintainer",
+            "r": "reader",
+            "reader": "reader",
+        },
+    )
+    if role == "maintainer":
+        kb_raw = (
+            _wizard_ask(
+                "Local Knowledge Base directory (created if absent) [./knowledge-base]: ",
+                default="./knowledge-base",
+            )
+            or "./knowledge-base"
+        )
+        kb_path: Path | None = Path(kb_raw)
+        from_uri = None
+        publish_to = _wizard_ask(
+            "Publish destination object-store URI, e.g. s3://bucket/kb (Enter to skip): ",
+            optional=True,
+            validate=require_s3_uri("--publish-to"),
+        )
+    else:
+        from_uri = _wizard_ask(
+            "Existing S3 Knowledge Base URI, e.g. s3://bucket/kb: ",
+            validate=require_s3_uri("--from"),
+        )
+        kb_path = None
+        publish_to = None
+    retrieval = _wizard_ask(
+        "Retrieval backend [z]ero-index (always available) or [l]anceDB? ",
+        default="zero-index",
+        choices={
+            "z": "zero-index",
+            "zero-index": "zero-index",
+            "l": "lancedb",
+            "lancedb": "lancedb",
+        },
+    )
+    source_store = _wizard_ask(
+        "Private source artifact store URI (Enter to skip): ",
+        optional=True,
+        validate=require_s3_uri("--source-store"),
+    )
+    skill_scope = _wizard_ask(
+        "Install the Agent Skill at [u]ser scope, [p]roject scope, or [n]one? ",
+        optional=True,
+        choices={"u": "user", "user": "user", "p": "project", "project": "project", "n": None},
+    )
+    return {
+        "kb_path": kb_path,
+        "from_uri": from_uri,
+        "publish_to": publish_to,
+        "retrieval": retrieval,
+        "source_store": source_store,
+        "skill_scope": skill_scope,
+    }
+
+
 def _cmd_setup(args: argparse.Namespace) -> int:
     """One-command project setup: KB + .env + AGENTS.md + optional skill install.
 
-    Creates the Knowledge Base if it does not exist, writes a ``.env`` file
-    recording the absolute KB path as ``LUMIO_KB_PATH``, writes/appends an
-    AGENTS.md section with the retrieval ladder, and optionally installs the
-    Agent Skill for a coding agent. After setup, the agent harness can run
-    ``lumio-wiki search "query"`` with no path argument.
+    Maintainer form: ``setup <local-kb> [--publish-to <s3-uri>]`` creates the
+    Knowledge Base if it does not exist and records optional S3 publication,
+    retrieval-backend, and private source-store configuration in ``.env``.
+    Reader form: ``setup --from <s3-uri>`` configures a read-only project
+    against an existing S3 Knowledge Base Location (issue #161, ADR-0019).
+    With no location in an interactive terminal a short wizard asks the same
+    questions; non-interactively it fails with the required flags. Both forms
+    write/update ``AGENTS.md`` and optionally install the Agent Skill
+    explicitly, so a fresh agent harness session can run pathless commands.
     """
-    kb_path = Path(args.kb_path).resolve()
     project_dir = Path.cwd()
+    kb_path: Path | None = getattr(args, "kb_path", None)
+    from_uri: str | None = getattr(args, "from_uri", None)
+    publish_to: str | None = getattr(args, "publish_to", None)
+    source_store: str | None = getattr(args, "source_store", None)
+    retrieval: str | None = getattr(args, "retrieval", None)
     created = False
 
-    # 1. Create the KB if it does not exist.
-    if (kb_path / "lumio.yaml").exists() or any(kb_path.glob("*.md")):
-        print(f"Knowledge Base already exists at {kb_path}")
-    else:
-        kb_path.mkdir(parents=True, exist_ok=True)
-        write_control_file(kb_path, seeded_control_file())
-        default_ingest_dir(kb_path).mkdir(parents=True, exist_ok=True)
-        default_index_dir(kb_path).mkdir(parents=True, exist_ok=True)
-        print(f"Created Knowledge Base at {kb_path}")
-        created = True
+    # 1. Resolve the location: a local Maintainer worktree or a read-only S3
+    # Knowledge Base Location. Never both.
+    if kb_path is not None and from_uri is not None:
+        raise CliError(
+            "choose one Knowledge Base location: a local <kb> path or --from <s3-uri>, not both"
+        )
+    if kb_path is None and from_uri is None:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            raise CliError(
+                "setup requires a Knowledge Base location. Either:\n"
+                "  lumio-wiki setup <local-kb> [--publish-to <s3-uri>]  (Maintainer)\n"
+                "  lumio-wiki setup --from <s3-uri>                     (read-only)\n"
+                "In an interactive terminal, plain 'lumio-wiki setup' runs a short wizard."
+            )
+        try:
+            answers = _run_setup_wizard()
+        except KeyboardInterrupt:
+            print("\nsetup wizard aborted; nothing was written", file=sys.stderr)
+            return 1
+        kb_path = answers["kb_path"]
+        from_uri = answers["from_uri"]
+        publish_to = publish_to or answers["publish_to"]
+        source_store = source_store or answers["source_store"]
+        retrieval = retrieval or answers["retrieval"]
+        if getattr(args, "skill_scope", None) is None and getattr(args, "agent", None) is None:
+            args.skill_scope = answers["skill_scope"]
+    if publish_to is not None and from_uri is not None:
+        raise CliError(
+            "--publish-to records an S3 publication destination for a local "
+            "Maintainer worktree; it cannot be combined with --from"
+        )
+    for flag, value in (
+        ("--from", from_uri),
+        ("--publish-to", publish_to),
+        ("--source-store", source_store),
+    ):
+        if value is not None:
+            _validate_object_store_uri(flag, value)
 
-    # 2. Write .env (create or update the LUMIO_KB_PATH line).
+    # 2. Optional capabilities: detect BEFORE any write; print one exact
+    # install command. Never mutate the active Python environment (ADR-0019).
+    if from_uri is not None or publish_to is not None or source_store is not None:
+        _require_extra("obstore", "pip install 'lumio-wiki[s3]'", "S3 configuration")
+    if retrieval == "lancedb":
+        _require_extra("lancedb", "pip install 'lumio-lancedb[s3]'", "LanceDB retrieval")
+
+    # 3. Privacy guard: never record a private Source Artifact Store URI in a
+    # .env git tracks (ADR-0020).
+    if source_store is not None and _env_is_tracked_by_git(project_dir):
+        raise CliError(
+            "refusing to record the private Source Artifact Store URI: this "
+            "project's .env is tracked by git. Add '.env' to .gitignore, run "
+            "'git rm --cached .env', commit, then re-run setup — or keep the "
+            "source store out of this project."
+        )
+
     env_path = project_dir / ".env"
-    _upsert_env_var(env_path, "LUMIO_KB_PATH", str(kb_path))
-    print(f"  .env:           {env_path} (LUMIO_KB_PATH={kb_path})")
+    if from_uri is not None:
+        # Read-only project: no local KB is created; pathless reads resolve
+        # the immutable S3 Published Version from .env.
+        print(f"Read-only Knowledge Base location: {from_uri}")
+        kb_display = from_uri
+    else:
+        if kb_path is None:
+            # Unreachable: the location resolution above guarantees one form.
+            raise CliError("no Knowledge Base location resolved")
+        kb_path = kb_path.resolve()
+        if (kb_path / "lumio.yaml").exists() or any(kb_path.glob("*.md")):
+            print(f"Knowledge Base already exists at {kb_path}")
+        else:
+            kb_path.mkdir(parents=True, exist_ok=True)
+            write_control_file(kb_path, seeded_control_file())
+            default_ingest_dir(kb_path).mkdir(parents=True, exist_ok=True)
+            default_index_dir(kb_path).mkdir(parents=True, exist_ok=True)
+            print(f"Created Knowledge Base at {kb_path}")
+            created = True
+        kb_display = kb_path
 
-    # 3. Write/append AGENTS.md unless --no-agents-md.
+    # 4. Write .env (create or update each line only when configured this run).
+    _upsert_env_var(env_path, KB_PATH_ENV_VAR, str(kb_display))
+    print(f"  .env:           {env_path} ({KB_PATH_ENV_VAR}={kb_display})")
+    if publish_to is not None:
+        _upsert_env_var(env_path, PUBLISH_TO_ENV_VAR, publish_to)
+        print(f"  .env:           {env_path} ({PUBLISH_TO_ENV_VAR}={publish_to})")
+    if retrieval is not None:
+        _upsert_env_var(env_path, RETRIEVAL_BACKEND_ENV_VAR, retrieval)
+        print(f"  .env:           {env_path} ({RETRIEVAL_BACKEND_ENV_VAR}={retrieval})")
+    if source_store is not None:
+        _upsert_env_var(env_path, SOURCE_STORE_ENV_VAR, source_store)
+        print(f"  .env:           {env_path} ({SOURCE_STORE_ENV_VAR}={source_store})")
+
+    # 5. Write/append AGENTS.md unless --no-agents-md.
     if not getattr(args, "no_agents_md", False):
         agents_md = project_dir / "AGENTS.md"
-        _write_agents_md_section(agents_md, kb_path)
+        _write_agents_md_section(
+            agents_md,
+            kb_display,
+            publish_to=publish_to,
+            retrieval=retrieval,
+            source_store=source_store,
+        )
         print(f"  AGENTS.md:      {agents_md}")
 
-    # 4. Optional, explicit skill install. Project bootstrap never writes into
+    # 6. Optional, explicit skill install. Project bootstrap never writes into
     # an agent trust surface unless one target was requested (ADR-0017).
     agent = getattr(args, "agent", None)
     scope = getattr(args, "skill_scope", None)
@@ -324,6 +588,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     if created:
         print(f"  1. Add Compiled Pages (.md) under {kb_path}")
         print("  2. Run: lumio-wiki validate")
+    elif from_uri is not None:
+        print('  1. Run: lumio-wiki search "query" (pathless; reads the S3 Published Version)')
     else:
         print("  1. Run: lumio-wiki validate")
     print("  2. Start your agent harness in this directory.")
@@ -338,7 +604,7 @@ This project uses a Lumio Knowledge Base for domain knowledge. The host coding
 agent IS the default Distiller (no model provider needed for base ingestion).
 
 **KB path:** `{kb_path}` (also in `.env` as `LUMIO_KB_PATH`; the CLI reads it
-automatically when no `<kb>` argument is given).
+automatically when no `<kb>` argument is given).{s3_config}
 
 ### Retrieval ladder (cheapest-first, stop when you have Evidence)
 
@@ -397,13 +663,63 @@ automatically when no `<kb>` argument is given).
 _AGENTS_MD_MARKER = "<!-- lumio-wiki-kb -->"
 
 
-def _write_agents_md_section(agents_md: Path, kb_path: Path) -> None:
+def _agents_md_s3_config(
+    publish_to: str | None,
+    retrieval: str | None,
+    source_store: str | None,
+) -> str:
+    """Render the optional project S3 configuration block (issue #161).
+
+    Empty when no S3 setting is configured, so plain local setup writes the
+    exact section it wrote before this feature.
+    """
+    lines: list[str] = []
+    if publish_to is not None:
+        lines.append(
+            f"- Publication destination: `{publish_to}` (`LUMIO_PUBLISH_TO`); "
+            "publish with `lumio-wiki publish-s3 --version <v>` (destination "
+            "is read from `.env` when omitted)."
+        )
+    if retrieval is not None:
+        lines.append(
+            f"- Retrieval backend: `{retrieval}` (`LUMIO_RETRIEVAL_BACKEND`); "
+            "the retrieval *mode* (lexical/semantic/hybrid) is a separate "
+            "setting."
+        )
+    if source_store is not None:
+        lines.append(
+            f"- Private source artifact store: `{source_store}` "
+            "(`LUMIO_SOURCE_STORE`) — private; never commit `.env`."
+        )
+    if not lines:
+        return ""
+    return (
+        "\n\n**Project S3 configuration** (recorded in `.env`; setup never "
+        "writes credentials there):\n" + "\n".join(lines)
+    )
+
+
+def _write_agents_md_section(
+    agents_md: Path,
+    kb_path: Path | str,
+    *,
+    publish_to: str | None = None,
+    retrieval: str | None = None,
+    source_store: str | None = None,
+) -> None:
     """Write or update the Lumio KB section in an AGENTS.md file.
 
     If the file already contains the marker comment, the existing section is
     replaced in place. Otherwise the section is appended.
     """
-    section = _AGENTS_MD_MARKER + "\n" + _AGENTS_MD_SECTION.format(kb_path=kb_path)
+    section = (
+        _AGENTS_MD_MARKER
+        + "\n"
+        + _AGENTS_MD_SECTION.format(
+            kb_path=kb_path,
+            s3_config=_agents_md_s3_config(publish_to, retrieval, source_store),
+        )
+    )
 
     if agents_md.exists():
         content = agents_md.read_text(encoding="utf-8")
@@ -1139,6 +1455,23 @@ def _cmd_publish_s3(args: argparse.Namespace) -> int:
     from lumio_wiki.s3_location import _require_obstore
     from lumio_wiki.s3_publish import S3PublicationConflict, publish_s3_version
 
+    # A single object-store argument is the destination: the publication
+    # source is always a local directory, so shift a URI out of the path slot
+    # and resolve the source from the default KB path (issue #161).
+    if _is_object_store_uri(args.path):
+        if args.destination is not None:
+            raise CliError(
+                "publish-s3 needs a local Knowledge Base source directory; "
+                "two object-store URIs were given"
+            )
+        args.destination = args.path
+        args.path = _resolve_default_kb_path()
+        if args.path is None:
+            raise CliError(
+                "no Knowledge Base path provided. Pass <kb>, export "
+                "LUMIO_KB_PATH, or run 'lumio-wiki setup <kb>' to write .env."
+            )
+
     root = Path(args.path)
     if not root.is_dir():
         raise CliError(f"Knowledge Base source is not a directory: {root}")
@@ -1146,7 +1479,18 @@ def _cmd_publish_s3(args: argparse.Namespace) -> int:
         _require_obstore()
     except KnowledgeBaseError as exc:
         raise CliError(str(exc)) from exc
-    store, prefix = _build_publish_store(args.destination)
+    destination = args.destination
+    if destination is None:
+        # The destination default comes from the bounded .env allowlist with
+        # exported-process precedence (issue #161, ADR-0019).
+        destination = load_project_config().get(PUBLISH_TO_ENV_VAR)
+        if destination is None:
+            raise CliError(
+                "no publish destination given. Pass <destination>, or record "
+                "one with 'lumio-wiki setup <kb> --publish-to <s3-uri>' "
+                "(written to .env as LUMIO_PUBLISH_TO)."
+            )
+    store, prefix = _build_publish_store(destination)
     try:
         manifest = publish_s3_version(
             store,
@@ -1159,9 +1503,13 @@ def _cmd_publish_s3(args: argparse.Namespace) -> int:
         raise CliError(f"publication conflict (pointer not advanced): {exc}") from exc
     except KnowledgeBaseError as exc:
         raise CliError(f"publication failed: {exc}") from exc
+    except Exception as exc:
+        # Object-store transport/credential failures (unreachable endpoint,
+        # IMDS probe, etc.) surface as actionable errors, never a traceback.
+        raise CliError(f"publication failed: {exc}") from exc
     print(f"Published {manifest.version}: {len(manifest.files)} canonical file(s)")
     print(f"  fingerprint: {manifest.fingerprint}")
-    print(f"  location:    {args.destination}@{manifest.version}")
+    print(f"  location:    {destination}@{manifest.version}")
     return 0
 
 
@@ -1592,7 +1940,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         "documents": "pip install 'lumio-wiki[documents]'",
         "llm": "pip install 'lumio-wiki[llm]'",
         "s3": "pip install 'lumio-wiki[s3]'",
-        "lancedb": "pip install lumio-lancedb",
+        "lancedb": "pip install 'lumio-lancedb[s3]'",
     }
     for name, present in optionals.items():
         if present:
@@ -2017,18 +2365,72 @@ def build_parser() -> argparse.ArgumentParser:
         "setup",
         help="One-command project setup: KB + .env + AGENTS.md + optional skill.",
         description=(
-            "Create a Knowledge Base (or use an existing one), write .env with "
-            "LUMIO_KB_PATH, write/update AGENTS.md with the retrieval-ladder "
-            "protocol, and optionally install the Agent Skill. After setup, "
-            "subsequent lumio-wiki commands load LUMIO_KB_PATH from .env "
-            "automatically, so no <kb> argument is needed (issue #152; "
-            "ADR-0017)."
+            "Canonical project bootstrap (issue #161; ADR-0017/0019). "
+            "Maintainer form: 'setup <local-kb> [--publish-to <s3-uri>]' "
+            "creates or adopts a local Knowledge Base and records optional "
+            "S3 publication, retrieval backend, and private source-store "
+            "settings in .env. Reader form: 'setup --from <s3-uri>' "
+            "configures a read-only project against an existing S3 Knowledge "
+            "Base Location. After setup, subsequent lumio-wiki commands load "
+            "LUMIO_KB_PATH from .env automatically, so no <kb> argument is "
+            "needed. Setup never installs optional capabilities for you: it "
+            "prints the exact command (pip install 'lumio-wiki[s3]' / "
+            "pip install 'lumio-lancedb[s3]') and writes no credentials."
         ),
     )
     setup_parser.add_argument(
         "kb_path",
         type=Path,
-        help="Knowledge Base root directory (created if it does not exist).",
+        nargs="?",
+        default=None,
+        help=(
+            "Local Knowledge Base root directory (created if it does not "
+            "exist) — the Maintainer form. Mutually exclusive with --from."
+        ),
+    )
+    setup_parser.add_argument(
+        "--from",
+        dest="from_uri",
+        default=None,
+        metavar="S3-URI",
+        help=(
+            "Existing S3 Knowledge Base Location URI (e.g. s3://bucket/kb) — "
+            "configures a read-only project; pathless reads resolve the "
+            "active Published Version. Requires lumio-wiki[s3]."
+        ),
+    )
+    setup_parser.add_argument(
+        "--publish-to",
+        dest="publish_to",
+        default=None,
+        metavar="S3-URI",
+        help=(
+            "S3 publication destination URI recorded as LUMIO_PUBLISH_TO "
+            "(Maintainer form only; requires lumio-wiki[s3]). 'publish-s3' "
+            "reads it when no destination argument is given."
+        ),
+    )
+    setup_parser.add_argument(
+        "--retrieval",
+        choices=["zero-index", "lancedb"],
+        default=None,
+        help=(
+            "Retrieval backend recorded as LUMIO_RETRIEVAL_BACKEND "
+            "(zero-index is always available; lancedb requires "
+            "lumio-lancedb[s3]). The retrieval mode (lexical/semantic/"
+            "hybrid) stays a separate setting."
+        ),
+    )
+    setup_parser.add_argument(
+        "--source-store",
+        dest="source_store",
+        default=None,
+        metavar="S3-URI",
+        help=(
+            "Private Source Artifact Store URI recorded as "
+            "LUMIO_SOURCE_STORE (ADR-0020). Refused when the project's .env "
+            "is tracked by git. Requires lumio-wiki[s3]."
+        ),
     )
     setup_skill_target = setup_parser.add_mutually_exclusive_group()
     setup_skill_target.add_argument(
@@ -2349,7 +2751,13 @@ def build_parser() -> argparse.ArgumentParser:
     publish_s3_parser.add_argument(
         "destination",
         type=str,
-        help="Object-store destination URI (e.g. s3://bucket/kb).",
+        nargs="?",
+        default=None,
+        help=(
+            "Object-store destination URI (e.g. s3://bucket/kb). When "
+            "omitted, LUMIO_PUBLISH_TO from the environment or project .env "
+            "(written by 'setup --publish-to') is used (issue #161)."
+        ),
     )
     publish_s3_parser.add_argument(
         "--version",

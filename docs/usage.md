@@ -71,7 +71,48 @@ lumio-wiki search "technology stack"
 lumio-wiki page "Technology Stack"
 ```
 
-### lumio-wiki — portable Knowledge Base CLI
+### S3 coding-agent projects
+
+The same `setup` command configures a project against object storage
+(issue #161, ADR-0019) — there is no second configuration file; every setting
+below is recorded in the project `.env` allowlist.
+
+```bash
+# Maintainer: local worktree + S3 publication destination + retrieval backend
+# (+ optional private source artifact store), one command:
+lumio-wiki setup ./knowledge-base \
+  --publish-to s3://public-kb-bucket/team-kb \
+  --retrieval lancedb \
+  --source-store s3://private-source-bucket/team-kb \
+  --skill-scope user
+
+# Reader: read-only project against an existing S3 Knowledge Base Location:
+lumio-wiki setup --from s3://public-kb-bucket/team-kb --retrieval lancedb
+```
+
+What setup records (and never more — `.env` loading is a bounded allowlist):
+
+| `.env` key | Written by | Meaning |
+|---|---|---|
+| `LUMIO_KB_PATH` | both forms | Local KB path, or the read-only S3 Location URI for `--from`. |
+| `LUMIO_PUBLISH_TO` | `--publish-to` | S3 publication destination; `publish-s3` reads it when no destination is passed. |
+| `LUMIO_RETRIEVAL_BACKEND` | `--retrieval` | Retrieval *backend*: `zero-index` or `lancedb`. The retrieval *mode* (lexical/semantic/hybrid) stays a separate setting. |
+| `LUMIO_SOURCE_STORE` | `--source-store` | Private Source Artifact Store (ADR-0020). Setup refuses to record it when `.env` is tracked by git. |
+| `LUMIO_S3_REGION` / `LUMIO_S3_ENDPOINT` | never written by setup | Deployment connection settings; may live in `.env`, exported values win. Credentials are never written — standard AWS resolution applies. |
+
+Notes:
+
+- Optional capabilities are never installed for you. Missing `lumio-wiki[s3]`
+  or `lumio-lancedb[s3]` fails setup with one exact command, e.g.
+  `pip install 'lumio-wiki[s3]'` / `pip install 'lumio-lancedb[s3]'`.
+- With no location in an interactive terminal, `lumio-wiki setup` runs a short
+  wizard asking the same questions as the flags. Non-interactively it fails
+  with the required flags instead of prompting.
+- After reader setup, pathless commands read the active Published Version:
+  `lumio-wiki search "query"` (no path, no local copy).
+
+```bash
+lumio-wiki search <kb> "<query>" [--limit N] # lexical search over titles, aliases, tags, summaries, bodies
 
 Works from any environment with no model provider and no LanceDB. `<kb>` is
 the Knowledge Base root directory (or an `s3://` URI with `[s3]` installed).
@@ -99,8 +140,8 @@ lumio-wiki discard <kb> <id>                 # discard a proposal
 lumio-wiki relationship stage <kb> <src> <tgt> --type T  # stage a typed canonical Relationship proposal
 lumio-wiki cross-link <kb> [--stage]         # missing-link candidates (Extracted References); --stage repairs as links
 lumio-wiki source <kb> <list|retire|reactivate> --source-id <id>  # manage private Source lifecycle (ADR-0014)
-lumio-wiki publish-s3 <kb> <dest> --version <v>  # publish immutable S3 Published Version
-              [--expected-pointer-version <v>]    # (compare-and-swap guard)
+lumio-wiki publish-s3 <kb> [dest] --version <v>  # publish immutable S3 Published Version
+              [--expected-pointer-version <v>]    # (compare-and-swap guard; dest defaults to LUMIO_PUBLISH_TO)
 lumio-wiki health <kb> [--rebuild]           # page counts, validation, Discovery Graph health
 lumio-wiki eval <kb> [--gold-set <f>] [--semantic [--model <name>]] [--json]  # recall@k per retrieval stage (#138)
 lumio-wiki doctor                            # install shape: version, optionals, skill location
@@ -675,4 +716,6 @@ lumio serve --port 8000
 
 Then open `http://localhost:8000/setup` to create the Owner account
 (first-run only). See the [README](../README.md) for Docker deployment,
+storage modes, and the full HTTP surface.
+ See the [README](../README.md) for Docker deployment,
 storage modes, and the full HTTP surface.

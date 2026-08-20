@@ -20,7 +20,7 @@ import io
 import re
 from pathlib import Path
 
-import msgspec
+import msgspec  # type: ignore[import-not-found]
 from lumio_wiki import __version__
 from lumio_wiki.cli import _AGENTS_MD_SECTION, main
 from lumio_wiki.skill import resolve_protocol_path, resolve_skill_path
@@ -53,9 +53,11 @@ def _generated_agents_md() -> str:
     ADR-0017 names the generated ``AGENTS.md`` as a parity surface alongside
     ``SKILL.md``, the detailed protocol, CLI help, and the usage docs, so the
     drift guard renders its template from the live CLI module (not a stale
-    source-tree copy) and asserts against the formatted result.
+    source-tree copy) and asserts against the formatted result. The plain
+    local-setup render passes an empty S3 block (issue #161); the configured
+    variant is asserted separately.
     """
-    return _AGENTS_MD_SECTION.format(kb_path="/example/knowledge-base")
+    return _AGENTS_MD_SECTION.format(kb_path="/example/knowledge-base", s3_config="")
 
 
 def _cli_help(cmd: str) -> str:
@@ -282,3 +284,45 @@ def test_command_coverage_parity_for_relationship_and_source_lifecycle():
         assert "lumio-wiki source" in text.lower(), (
             f"{name}: must document the source lifecycle commands"
         )
+
+
+def test_s3_setup_forms_parity_across_public_surfaces():
+    """Issue #161: the S3 setup forms are documented on every parity surface.
+
+    ADR-0017 names SKILL.md, PROTOCOL.md, the generated AGENTS.md, CLI help,
+    and the usage docs as drift-guarded surfaces; issue #161 extends ``setup``
+    with the Maintainer ``--publish-to`` and reader ``--from`` forms plus the
+    bounded ``.env`` allowlist, so each surface must document them with the
+    same facts (env keys, backend/mode separation, no credentials, exact
+    install guidance).
+    """
+    root = Path(__file__).parents[3]
+    surfaces = {
+        "SKILL.md": resolve_skill_path().read_text(encoding="utf-8"),
+        "PROTOCOL.md": resolve_protocol_path().read_text(encoding="utf-8"),
+        "docs/usage.md": (root / "docs" / "usage.md").read_text(encoding="utf-8"),
+    }
+    for name, text in surfaces.items():
+        assert "--publish-to" in text, f"{name}: must document the Maintainer publish form"
+        assert "--from" in text, f"{name}: must document the reader --from form"
+        assert "LUMIO_PUBLISH_TO" in text, f"{name}: must name the publication .env key"
+        assert "LUMIO_RETRIEVAL_BACKEND" in text, (
+            f"{name}: must name the retrieval-backend .env key"
+        )
+        assert "LUMIO_SOURCE_STORE" in text, f"{name}: must name the source-store .env key"
+    # Backend and mode separation is stated, not just implied (ADR-0019).
+    for name, text in surfaces.items():
+        assert "mode" in text.lower(), f"{name}: must distinguish mode from backend"
+    # The generated AGENTS.md records the configured S3 settings.
+    from lumio_wiki.cli import _agents_md_s3_config
+
+    configured = _agents_md_s3_config(
+        "s3://public-bucket/team-kb", "lancedb", "s3://private-bucket/team-kb"
+    )
+    for key in ("LUMIO_PUBLISH_TO", "LUMIO_RETRIEVAL_BACKEND", "LUMIO_SOURCE_STORE"):
+        assert key in configured, f"generated AGENTS.md must record {key}"
+    # CLI help: the setup surface itself names both forms and the exact
+    # install guidance for the optional distributions.
+    setup_help = _cli_help("setup")
+    assert "--publish-to" in setup_help and "--from" in setup_help
+    assert "lumio-wiki[s3]" in setup_help and "lumio-lancedb[s3]" in setup_help

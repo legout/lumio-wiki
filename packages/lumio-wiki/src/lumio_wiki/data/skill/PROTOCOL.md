@@ -59,11 +59,21 @@ bounds, outcome, and graph artifact freshness actually used.
 
 ```
 lumio-wiki setup <path>
+lumio-wiki setup <path> --publish-to <s3-uri> [--retrieval zero-index|lancedb] [--source-store <s3-uri>]
+lumio-wiki setup --from <s3-uri> [--retrieval zero-index|lancedb] [--source-store <s3-uri>]
 ```
 
 This is the canonical first-run workflow. It creates or detects the categorized
 Knowledge Base, writes project `.env` with `LUMIO_KB_PATH`, and writes/updates
-`AGENTS.md` with the portable retrieval and maintenance guardrails. Use
+`AGENTS.md` with the portable retrieval and maintenance guardrails. S3 projects
+configure through the same command: `--publish-to` records the publication
+destination as `LUMIO_PUBLISH_TO` (Maintainer form only), `--retrieval` records
+the retrieval backend as `LUMIO_RETRIEVAL_BACKEND` (backend and retrieval mode
+are separate settings), and `--source-store` records the private Source
+Artifact Store as `LUMIO_SOURCE_STORE`. `--from` configures a read-only
+project whose pathless reads resolve the active S3 Published Version. Setup
+writes no credentials and never installs optional capabilities; missing
+`lumio-wiki[s3]` / `lumio-lancedb[s3]` yield one exact install command. Use
 `lumio-wiki init <path>` only when the caller explicitly wants the lower-level
 KB directory and seeded Control File without project bootstrap.
 
