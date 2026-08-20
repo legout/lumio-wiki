@@ -563,9 +563,7 @@ def _fake_builder(fingerprint=None, model=None, tables=None, exc=None):
 
 
 def test_requested_lancedb_builds_under_the_version_lance_prefix():
-    builder, calls = _fake_builder(
-        model=EmbeddingModelInfo(name="fake-embedder", dimension=8)
-    )
+    builder, calls = _fake_builder(model=EmbeddingModelInfo(name="fake-embedder", dimension=8))
     store = _store()
     manifest = publish_s3_version(
         store, "kb", source_root=VALID, version="v1", index_builder=builder
@@ -590,9 +588,7 @@ def test_requested_lancedb_builds_under_the_version_lance_prefix():
     entry = next(f for f in manifest.derived_files if f.path == completion_rel)
     assert entry.digest == hashlib.sha256(completion_bytes).hexdigest()
     # And it never leaks into the canonical file list.
-    assert not any(
-        f.path.startswith(LANCE_DERIVED_DIR) for f in manifest.files
-    )
+    assert not any(f.path.startswith(LANCE_DERIVED_DIR) for f in manifest.files)
 
 
 def test_lance_completion_without_a_model_is_valid():
@@ -629,9 +625,7 @@ def test_lance_completion_fingerprint_mismatch_blocks_activation():
     builder, _ = _fake_builder(fingerprint="0" * 64)
     store = _store()
     with pytest.raises(KnowledgeBaseError, match="fingerprint"):
-        publish_s3_version(
-            store, "kb", source_root=VALID, version="v1", index_builder=builder
-        )
+        publish_s3_version(store, "kb", source_root=VALID, version="v1", index_builder=builder)
     assert _read_pointer(store, "kb").version is None if False else True
     # Pointer was never created: nothing activated.
     assert "kb/current.json" not in _list_objects(store, "kb")
@@ -657,9 +651,7 @@ def test_before_activation_hook_sees_a_complete_version_and_the_old_pointer():
     def _hook(prepared):
         seen["prepared"] = prepared
         seen["pointer_at_hook"] = _read_pointer(store, "kb").version
-        seen["manifest_present"] = (
-            f"kb/v2/{MANIFEST_OBJECT}" in _list_objects(store, "kb")
-        )
+        seen["manifest_present"] = f"kb/v2/{MANIFEST_OBJECT}" in _list_objects(store, "kb")
 
     store = _store()
     publish_s3_version(store, "kb", source_root=VALID, version="v1")
@@ -714,14 +706,10 @@ def test_rollback_activates_a_prior_complete_version_without_rewrites():
     store = _store()
     publish_s3_version(store, "kb", source_root=CATEGORIZED, version="v1")
     v1_objects = _list_objects(store, "kb/v1/")
-    publish_s3_version(
-        store, "kb", source_root=VALID, version="v2", expected_pointer_version="v1"
-    )
+    publish_s3_version(store, "kb", source_root=VALID, version="v2", expected_pointer_version="v1")
     assert _read_pointer(store, "kb").version == "v2"
 
-    manifest = rollback_s3_version(
-        store, "kb", version="v1", expected_pointer_version="v2"
-    )
+    manifest = rollback_s3_version(store, "kb", version="v1", expected_pointer_version="v2")
     assert manifest.version == "v1"
     assert _read_pointer(store, "kb").version == "v1"
     # The target version was not rewritten: identical object set.
@@ -778,9 +766,7 @@ def test_rollback_to_an_incomplete_version_is_rejected():
     builder, _ = _fake_builder(exc=RuntimeError("boom"))
     publish_s3_version(store, "kb", source_root=VALID, version="v1")
     with pytest.raises(RuntimeError):
-        publish_s3_version(
-            store, "kb", source_root=VALID, version="v2", index_builder=builder
-        )
+        publish_s3_version(store, "kb", source_root=VALID, version="v2", index_builder=builder)
     with pytest.raises(KnowledgeBaseError, match="cleanup candidate"):
         rollback_s3_version(store, "kb", version="v2", expected_pointer_version="v1")
     assert _read_pointer(store, "kb").version == "v1"
@@ -890,9 +876,7 @@ def test_rollback_rejects_a_tampered_derived_object():
     """
     store = _store()
     builder, _ = _fake_builder()
-    publish_s3_version(
-        store, "kb", source_root=VALID, version="v1", index_builder=builder
-    )
+    publish_s3_version(store, "kb", source_root=VALID, version="v1", index_builder=builder)
     publish_s3_version(
         store, "kb", source_root=CATEGORIZED, version="v2", expected_pointer_version="v1"
     )

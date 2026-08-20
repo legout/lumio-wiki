@@ -394,9 +394,7 @@ def rollback_s3_version(
     return manifest
 
 
-def list_cleanup_candidates(
-    store: ObjectStore, prefix: str
-) -> list[CleanupCandidate]:
+def list_cleanup_candidates(store: ObjectStore, prefix: str) -> list[CleanupCandidate]:
     """Report inactive, incomplete version prefixes as cleanup candidates.
 
     A version prefix is incomplete when it has no manifest (the manifest is
@@ -451,17 +449,13 @@ def observe_current_pointer(store: ObjectStore, prefix: str) -> PointerObservati
     except FileNotFoundError:
         return PointerObservation(version=None, e_tag=None)
     except Exception as exc:  # pragma: no cover - defensive: unexpected store error
-        raise KnowledgeBaseError(
-            f"could not read activation pointer {key!r}: {exc}"
-        ) from exc
+        raise KnowledgeBaseError(f"could not read activation pointer {key!r}: {exc}") from exc
     etag = meta["e_tag"] if isinstance(meta, dict) else getattr(meta, "e_tag", None)
     raw = _get_pointer_bytes(obstore, store, key)
     try:
         pointer = msgspec.json.decode(raw, type=S3Pointer)
     except msgspec.DecodeError as exc:
-        raise KnowledgeBaseError(
-            f"activation pointer {key!r} is malformed: {exc}"
-        ) from exc
+        raise KnowledgeBaseError(f"activation pointer {key!r} is malformed: {exc}") from exc
     return PointerObservation(version=pointer.version, e_tag=etag)
 
 
@@ -470,9 +464,7 @@ def observe_current_pointer(store: ObjectStore, prefix: str) -> PointerObservati
 # ---------------------------------------------------------------------------
 
 
-def _check_expectation(
-    observed: PointerObservation, expected: str | None, version: str
-) -> None:
+def _check_expectation(observed: PointerObservation, expected: str | None, version: str) -> None:
     """Fail fast when activation can never succeed against this observation.
 
     An explicit expectation that already mismatches the live pointer is a
@@ -541,9 +533,7 @@ def _serialize_graph_bytes(kb: Any, fingerprint: SourceFingerprint) -> bytes:
     )
 
 
-def _validate_graph_state(
-    graph_bytes: bytes, fingerprint: SourceFingerprint, version: str
-) -> None:
+def _validate_graph_state(graph_bytes: bytes, fingerprint: SourceFingerprint, version: str) -> None:
     """Validate the serialized Discovery Graph state before publishing it.
 
     The graph is derived state; it must decode, match the Knowledge Base
@@ -554,8 +544,7 @@ def _validate_graph_state(
     state = deserialize_graph(graph_bytes)
     if state is None:
         raise KnowledgeBaseError(
-            f"cannot publish {version!r}: the derived Discovery Graph artifact "
-            f"failed to validate"
+            f"cannot publish {version!r}: the derived Discovery Graph artifact failed to validate"
         )
     if state.fingerprint_digest != fingerprint.digest:
         raise KnowledgeBaseError(
@@ -576,9 +565,7 @@ def _validate_graph_state(
 # ---------------------------------------------------------------------------
 
 
-def _put_create_only(
-    obstore: Any, store: ObjectStore, key: str, raw: bytes, version: str
-) -> None:
+def _put_create_only(obstore: Any, store: ObjectStore, key: str, raw: bytes, version: str) -> None:
     """Create-only put: a reused version label fails, never mutates."""
     from obstore.exceptions import AlreadyExistsError  # type: ignore[import-not-found]
 
@@ -608,9 +595,7 @@ def _write_canonical_and_graph(
     for rel, raw in content.items():
         _put_create_only(obstore, store, _join(prefix, version, rel), raw, version)
     # Derived Discovery Graph artifact: rebuildable state, never canonical.
-    _put_create_only(
-        obstore, store, _join(prefix, version, _GRAPH_REL), graph_bytes, version
-    )
+    _put_create_only(obstore, store, _join(prefix, version, _GRAPH_REL), graph_bytes, version)
 
 
 def _write_manifest(
@@ -677,8 +662,7 @@ def _load_complete_version(
         manifest = msgspec.json.decode(raw, type=S3Manifest)
     except msgspec.DecodeError as exc:
         raise KnowledgeBaseError(
-            f"cannot roll back to {version!r}: manifest {manifest_key!r} is "
-            f"malformed: {exc}"
+            f"cannot roll back to {version!r}: manifest {manifest_key!r} is malformed: {exc}"
         ) from exc
     if manifest.version != version:
         raise KnowledgeBaseError(
@@ -693,8 +677,7 @@ def _load_complete_version(
     if missing:
         raise KnowledgeBaseError(
             f"cannot roll back to {version!r}: manifest lists objects missing "
-            f"from the store: {', '.join(missing[:5])}"
-            + (" …" if len(missing) > 5 else "")
+            f"from the store: {', '.join(missing[:5])}" + (" …" if len(missing) > 5 else "")
         )
     # Declared derived objects (Discovery Graph, LanceDB completion metadata)
     # are rebuildable state for Readers, so the Reader seam does not
@@ -722,8 +705,7 @@ def _load_complete_version(
         S3Location(store, prefix, version=version).resolve()
     except KnowledgeBaseError as exc:
         raise KnowledgeBaseError(
-            f"cannot roll back to {version!r}: the version does not validate "
-            f"({exc})"
+            f"cannot roll back to {version!r}: the version does not validate ({exc})"
         ) from exc
     return manifest
 
@@ -747,9 +729,7 @@ def _get_pointer_bytes(obstore: Any, store: ObjectStore, key: str) -> bytes:
     try:
         result = obstore.get(store, key)
     except Exception as exc:  # pragma: no cover - head proved existence
-        raise KnowledgeBaseError(
-            f"could not read activation pointer {key!r}: {exc}"
-        ) from exc
+        raise KnowledgeBaseError(f"could not read activation pointer {key!r}: {exc}") from exc
     return bytes(result.bytes())
 
 
