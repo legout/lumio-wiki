@@ -495,7 +495,9 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     if from_uri is not None or publish_to is not None or source_store is not None:
         _require_extra("obstore", "pip install 'lumio-wiki[s3]'", "S3 configuration")
     if retrieval == "lancedb":
-        _require_extra("lancedb", "pip install 'lumio-lancedb[s3]'", "LanceDB retrieval")
+        # Detect the Lumio adapter package, not any importable `lancedb`:
+        # the install command names the distribution that owns the capability.
+        _require_extra("lumio_lancedb", "pip install 'lumio-lancedb[s3]'", "LanceDB retrieval")
 
     # 3. Privacy guard: never record a private Source Artifact Store URI in a
     # .env git tracks (ADR-0020).
@@ -687,9 +689,14 @@ def _agents_md_s3_config(
             "setting."
         )
     if source_store is not None:
+        # ADR-0020: AGENTS.md is a shared, typically tracked project file, so
+        # the private Source Artifact Store URI itself never appears here —
+        # only the fact that `.env` holds it (guarded by the setup privacy
+        # check).
         lines.append(
-            f"- Private source artifact store: `{source_store}` "
-            "(`LUMIO_SOURCE_STORE`) — private; never commit `.env`."
+            "- Private source artifact store configured in `.env` "
+            "(`LUMIO_SOURCE_STORE`) — private; never commit `.env` or copy "
+            "its value into tracked files."
         )
     if not lines:
         return ""

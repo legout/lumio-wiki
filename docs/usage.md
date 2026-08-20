@@ -111,8 +111,7 @@ Notes:
 - After reader setup, pathless commands read the active Published Version:
   `lumio-wiki search "query"` (no path, no local copy).
 
-```bash
-lumio-wiki search <kb> "<query>" [--limit N] # lexical search over titles, aliases, tags, summaries, bodies
+### lumio-wiki — portable Knowledge Base CLI
 
 Works from any environment with no model provider and no LanceDB. `<kb>` is
 the Knowledge Base root directory (or an `s3://` URI with `[s3]` installed).

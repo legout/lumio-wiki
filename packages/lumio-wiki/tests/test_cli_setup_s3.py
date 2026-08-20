@@ -133,9 +133,12 @@ def test_maintainer_setup_records_s3_configuration(tmp_path, monkeypatch, capsys
 
     agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
     assert "LUMIO_PUBLISH_TO" in agents_md
+    assert "s3://public-bucket/team-kb" in agents_md
     assert "LUMIO_RETRIEVAL_BACKEND" in agents_md
     assert "LUMIO_SOURCE_STORE" in agents_md
-    assert "s3://private-bucket/team-kb" in agents_md
+    # ADR-0020: the private Source Artifact Store URI itself never appears in
+    # the (typically tracked) AGENTS.md; only the .env key name does.
+    assert "s3://private-bucket/team-kb" not in agents_md
 
 
 def test_maintainer_setup_is_idempotent_with_s3_flags(tmp_path, monkeypatch):
@@ -411,7 +414,7 @@ def test_setup_names_exact_command_when_s3_extra_is_missing(tmp_path, monkeypatc
 def test_setup_names_exact_command_when_lancedb_is_missing(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     _clean_env(monkeypatch)
-    monkeypatch.setattr(cli, "_detect_module", lambda name: name != "lancedb")
+    monkeypatch.setattr(cli, "_detect_module", lambda name: name != "lumio_lancedb")
 
     rc = cli.main(["setup", "kb", "--retrieval", "lancedb"])
     assert rc == 2
@@ -733,6 +736,7 @@ def test_generated_agents_md_documents_configured_s3_settings(tmp_path):
     assert "LUMIO_RETRIEVAL_BACKEND" in text
     assert "LUMIO_SOURCE_STORE" in text
     assert "lumio-wiki publish-s3" in text
+    assert "s3://private-bucket/team-kb" not in text  # ADR-0020: no private URI
     # Retrieval backend and mode are presented as separate settings.
     assert "retrieval *mode*" in text
 
