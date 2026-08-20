@@ -380,3 +380,39 @@ def msgspec_pointer(store) -> str:
 
     raw = obstore.get(store, f"kb/{CURRENT_POINTER_OBJECT}")
     return msgspec.json.decode(bytes(raw.bytes()), type=S3Pointer).version
+
+
+# ---------------------------------------------------------------------------
+# --retrieval lancedb resolves its S3 endpoint/region like the obstore path
+# (#161 setup wrote them to .env; #163's builder must read them there too).
+# ---------------------------------------------------------------------------
+
+
+def test_lance_storage_options_read_project_env_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for key in (
+        "LUMIO_S3_REGION",
+        "LUMIO_S3_ENDPOINT",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_ENDPOINT_URL_S3",
+        "AWS_ACCESS_KEY_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    (tmp_path / ".env").write_text(
+        "LUMIO_S3_REGION=us-east-1\n"
+        "LUMIO_S3_ENDPOINT=http://localhost:9000\n"
+        "AWS_ACCESS_KEY_ID=file-never-wins\n",
+        encoding="utf-8",
+    )
+
+    options = cli._lance_storage_options_from_env()
+
+    assert options["region"] == "us-east-1"
+    assert options["endpoint"] == "http://localhost:9000"
+    assert options["allow_http"] == "true"
+    # Setup never writes credentials to .env and they never load from there.
+    assert "access_key_id" not in options
+
+    monkeypatch.setenv("LUMIO_S3_ENDPOINT", "https://exported.example")
+    assert cli._lance_storage_options_from_env()["endpoint"] == "https://exported.example"

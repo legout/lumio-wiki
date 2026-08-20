@@ -202,7 +202,7 @@ def _resolve_object_store_location(uri: str) -> Any:
     return S3Location.from_url(uri, config=config or None, client_options=client_options or None)
 
 
-def _build_publish_store(uri: str) -> tuple[object, str]:
+def _build_publish_store(uri: str) -> tuple[Any, str]:
     """Build an ``(obstore ObjectStore, prefix)`` from a destination URI + env.
 
     Mirrors :meth:`S3Location.from_url` store construction but returns the raw
@@ -1456,17 +1456,25 @@ def _lance_storage_options_from_env() -> dict[str, str]:
 
     LanceDB connects to its own URI with its own options (ADR-0013): Lumio
     never hands its obstore client to LanceDB. Mirrors the resolution order of
-    :func:`_s3_config_from_env` (LUMIO_S3_* first, AWS_* fallback).
+    :func:`_s3_config_from_env` (LUMIO_S3_* first — exported process value,
+    then the project ``.env`` allowlist written by setup (issue #161) — then
+    the generic ``AWS_*`` fallback). Credentials are never read from ``.env``.
     """
+    project = load_project_config()
     options: dict[str, str] = {}
     region = (
         os.environ.get("LUMIO_S3_REGION")
+        or project.get("LUMIO_S3_REGION")
         or os.environ.get("AWS_REGION")
         or os.environ.get("AWS_DEFAULT_REGION")
     )
     if region:
         options["region"] = region
-    endpoint = os.environ.get("LUMIO_S3_ENDPOINT") or os.environ.get("AWS_ENDPOINT_URL_S3")
+    endpoint = (
+        os.environ.get("LUMIO_S3_ENDPOINT")
+        or project.get("LUMIO_S3_ENDPOINT")
+        or os.environ.get("AWS_ENDPOINT_URL_S3")
+    )
     if endpoint:
         options["endpoint"] = endpoint
         if endpoint.startswith("http://"):
