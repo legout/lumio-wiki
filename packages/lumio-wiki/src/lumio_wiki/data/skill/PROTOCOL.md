@@ -260,6 +260,44 @@ and ordinary `setup` never install a skill implicitly. When installation is
 requested through setup, use `--skill-scope user|project` or `--agent`. Restart
 the agent or start a new session after install/update so discovery runs again.
 
+## 12. Source Artifact inspection (authorized, not Evidence)
+
+```
+lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]
+lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>
+lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]
+```
+
+Resolution is identity-oriented (ADR-0020): a local worktree resolves the
+registry's current Source Version; an S3 Knowledge Base resolves the active
+Published Version once (or the explicit `--published-version`) through its
+private Source Binding Manifest. There is no fetch-by-hash and no object-key
+interface, and an absent binding NEVER substitutes the latest Source Version.
+
+`inspect` reports secret-free metadata (safe filename, media type, size,
+digest abbreviation, publication binding, verified availability,
+authorization outcome). `fetch` writes the byte-exact original — digest and
+size re-verified — to an explicit destination; a directory destination
+receives the safe filename. `link` explicitly issues a short-lived signed GET
+URL for one exact artifact when the store supports signing (5 min default,
+1 h maximum); treat it as a bearer secret and never persist or log it.
+
+Agent rules after a fetch: prefer verified `fetch` over `link` (signed URLs
+leak through conversation history). Read bounded text directly from
+text/CSV/JSON/XML artifacts or use sandboxed document tooling for
+PDF/Office/image content. Quote exact original text only with source/version
+and stable coordinates; decoded, OCR, or converted output must be labelled
+DERIVED. Never execute active content (macros, scripts, active HTML) and
+never dump a large private artifact wholesale into model context without an
+explicit user request. Inspection supports provenance review; it is not
+Evidence and does not promise claim-level passage highlighting.
+
+Access denied, absent binding, unavailable artifact, corruption, and
+historical-version mismatch are distinct actionable outcomes. Ordinary output
+and errors never disclose credentials, private object keys, or secret-bearing
+URLs; KB Reader-only credentials cannot inspect, fetch, or link Source
+Artifacts.
+
 ## Guardrails
 
 - **Cite paths and passages.** Every domain claim must cite the Canonical

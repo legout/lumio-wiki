@@ -30,6 +30,28 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
 
 
 class ArtifactStoreError(Exception):
+    """Base error for private Source Artifact Store operations (#164).
+
+    Messages never disclose object keys, credentials, or secret-bearing
+    URLs (ADR-0020 ordinary-output rule).
+    """
+
+
+class ArtifactAccessDenied(ArtifactStoreError):
+    """The configured credentials cannot read the private store (#165).
+
+    Raised for object-store permission/authentication denials and local
+    filesystem permission errors so inspection can report access denial as
+    a distinct actionable outcome (issue #165, ADR-0020).
+    """
+
+
+class ArtifactUnavailable(ArtifactStoreError):
+    """No artifact is retained for the requested identity (#165)."""
+
+
+class ArtifactCorruption(ArtifactStoreError):
+    """Stored bytes failed digest or size verification (#165)."""
     """A Source Artifact Store operation failed (never reports success)."""
 
 
@@ -93,6 +115,10 @@ class SourceArtifactStore(Protocol):
     def get_binding_manifest(self, version: str) -> bytes:
         """Fetch the private binding manifest bytes for one version."""
 
+    def list_binding_versions(self) -> list[str]:
+        """List Published Versions that have a stored binding manifest."""
+        ...
+
 
 class InMemoryArtifactStore:
     """Deterministic in-memory adapter: tests and no-storage local runs.
@@ -123,15 +149,19 @@ class InMemoryArtifactStore:
     def get_artifact(self, *, source_id: str, content_hash: str) -> bytes:
         entry = self._artifacts.get((source_id, content_hash))
         if entry is None:
-            raise ArtifactStoreError("artifact not retained")
+            raise ArtifactUnavailable("artifact not retained")
         raw = entry[0]
         if artifact_content_hash(raw) != content_hash:
-            raise ArtifactStoreError("stored artifact failed digest verification")
+            raise ArtifactCorruption("stored artifact failed digest verification")
         return raw
 
     def artifact_exists(self, *, source_id: str, content_hash: str) -> bool:
         try:
             self.get_artifact(source_id=source_id, content_hash=content_hash)
+        except ArtifactAccessDenied:
+            # Denial is unknown-presence, not absence (#165): fail closed so
+            # gates and inspection never misreport denied reads as missing.
+            raise
         except ArtifactStoreError:
             return False
         return True
@@ -155,7 +185,7 @@ class InMemoryArtifactStore:
     def get_binding_manifest(self, version: str) -> bytes:
         raw = self._manifests.get(version)
         if raw is None:
-            raise ArtifactStoreError(f"no Source Binding Manifest for version {version!r}")
+            raise ArtifactUnavailable(f"no Source Binding Manifest for version {version!r}")
         return raw
 
     def list_binding_versions(self) -> list[str]:
@@ -222,16 +252,27 @@ class LocalDirectoryArtifactStore:
 
     def get_artifact(self, *, source_id: str, content_hash: str) -> bytes:
         path = self._artifact_path(source_id, content_hash)
-        if not path.exists():
-            raise ArtifactStoreError("artifact not retained")
-        raw = path.read_bytes()
+        # Read-first (not ``exists``-first): a permission failure must surface
+        # as access denial, never masquerade as a missing artifact (#165).
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            raise ArtifactUnavailable("artifact not retained") from None
+        except PermissionError as exc:
+            raise ArtifactAccessDenied(
+                "access denied: cannot read the private Source Artifact Store"
+            ) from exc
         if artifact_content_hash(raw) != content_hash:
-            raise ArtifactStoreError("stored artifact failed digest verification")
+            raise ArtifactCorruption("stored artifact failed digest verification")
         return raw
 
     def artifact_exists(self, *, source_id: str, content_hash: str) -> bool:
         try:
             self.get_artifact(source_id=source_id, content_hash=content_hash)
+        except ArtifactAccessDenied:
+            # Denial is unknown-presence, not absence (#165): fail closed so
+            # gates and inspection never misreport denied reads as missing.
+            raise
         except ArtifactStoreError:
             return False
         return True
@@ -258,9 +299,18 @@ class LocalDirectoryArtifactStore:
 
     def get_binding_manifest(self, version: str) -> bytes:
         path = self.root / "bindings" / f"{version}.json"
-        if not path.exists():
-            raise ArtifactStoreError(f"no Source Binding Manifest for version {version!r}")
-        return path.read_bytes()
+        # Read-first: a permission failure is access denial, not a missing
+        # manifest (#165).
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            raise ArtifactUnavailable(
+                f"no Source Binding Manifest for version {version!r}"
+            ) from None
+        except PermissionError as exc:
+            raise ArtifactAccessDenied(
+                "access denied: cannot read the private Source Artifact Store"
+            ) from exc
 
     def list_binding_versions(self) -> list[str]:
         return sorted(p.name.removesuffix(".json") for p in (self.root / "bindings").glob("*.json"))
@@ -326,18 +376,32 @@ class S3ArtifactStore:
             raise ArtifactStoreError("stored artifact failed digest verification")
 
     def get_artifact(self, *, source_id: str, content_hash: str) -> bytes:
+        from obstore.exceptions import (  # type: ignore[import-not-found]
+            PermissionDeniedError,
+            UnauthenticatedError,
+        )
+
         key = self._key("artifacts", source_id, content_hash)
         try:
             raw = bytes(self._obstore.get(self._store, key).bytes())
-        except FileNotFoundError as exc:
-            raise ArtifactStoreError("artifact not retained") from exc
+        except FileNotFoundError:
+            raise ArtifactUnavailable("artifact not retained") from None
+        except (PermissionDeniedError, UnauthenticatedError) as exc:
+            raise ArtifactAccessDenied(
+                "access denied: credentials cannot read the private Source "
+                "Artifact Store"
+            ) from exc
         if artifact_content_hash(raw) != content_hash:
-            raise ArtifactStoreError("stored artifact failed digest verification")
+            raise ArtifactCorruption("stored artifact failed digest verification")
         return raw
 
     def artifact_exists(self, *, source_id: str, content_hash: str) -> bool:
         try:
             self.get_artifact(source_id=source_id, content_hash=content_hash)
+        except ArtifactAccessDenied:
+            # Denial is unknown-presence, not absence (#165): fail closed so
+            # gates and inspection never misreport denied reads as missing.
+            raise
         except ArtifactStoreError:
             return False
         return True
@@ -357,11 +421,22 @@ class S3ArtifactStore:
         return True
 
     def signed_get_url(self, *, source_id: str, content_hash: str, expires_in: timedelta) -> str:
+        from obstore.exceptions import (  # type: ignore[import-not-found]
+            PermissionDeniedError,
+            UnauthenticatedError,
+        )
+
         key = self._key("artifacts", source_id, content_hash)
         try:
             return str(self._obstore.sign(self._store, "GET", key, expires_in=expires_in))
         except SigningUnavailable:
             raise
+        except (PermissionDeniedError, UnauthenticatedError) as exc:
+            # A signing credential without object-read authority is access
+            # denial, not a signing-capability gap (#165).
+            raise ArtifactAccessDenied(
+                "access denied: credentials cannot sign for this artifact"
+            ) from exc
         except Exception as exc:  # transport/signer failure — never leak keys
             raise SigningUnavailable(
                 "could not issue a signed URL for this exact artifact"
@@ -372,11 +447,23 @@ class S3ArtifactStore:
         self._obstore.put(self._store, key, manifest)
 
     def get_binding_manifest(self, version: str) -> bytes:
+        from obstore.exceptions import (  # type: ignore[import-not-found]
+            PermissionDeniedError,
+            UnauthenticatedError,
+        )
+
         key = self._key("bindings", f"{version}.json")
         try:
             raw = bytes(self._obstore.get(self._store, key).bytes())
-        except FileNotFoundError as exc:
-            raise ArtifactStoreError(f"no Source Binding Manifest for version {version!r}") from exc
+        except FileNotFoundError:
+            raise ArtifactUnavailable(
+                f"no Source Binding Manifest for version {version!r}"
+            ) from None
+        except (PermissionDeniedError, UnauthenticatedError) as exc:
+            raise ArtifactAccessDenied(
+                "access denied: credentials cannot read the private Source "
+                "Artifact Store"
+            ) from exc
         return raw
 
     def list_binding_versions(self) -> list[str]:

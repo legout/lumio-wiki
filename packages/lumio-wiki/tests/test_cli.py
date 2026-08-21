@@ -2384,3 +2384,371 @@ def test_source_register_rejects_invalid_source_id_safely(
     assert invalid_id not in combined
     store = lw.IngestStore(source_kb / ".lumio" / "ingest")
     assert all(s.source_id != invalid_id for s in store.source_registry.list())
+
+
+# ---------------------------------------------------------------------------
+# Authorized Source Artifact inspection: inspect / fetch / link (issue #165).
+# ---------------------------------------------------------------------------
+
+INSPECTION_RAW = b"%PDF-1.4 the exact original policy artifact (#165)"
+
+
+def _retained_policy_source(
+    kb: Path, store_root: Path, *, filename: str | None = "policy.pdf"
+) -> lw.LocalDirectoryArtifactStore:
+    """Register + retain the ``policy`` source through the public seams."""
+    ingest = lw.IngestStore(kb / ".lumio" / "ingest")
+    ingest.source_registry.register_source(
+        "policy",
+        INSPECTION_RAW,
+        filename=filename,
+        content_type="application/pdf",
+    )
+    store = lw.LocalDirectoryArtifactStore(store_root)
+    lw.retain_artifact(
+        store,
+        ingest.source_registry,
+        source_id="policy",
+        raw_bytes=INSPECTION_RAW,
+        content_type="application/pdf",
+        filename=filename,
+    )
+    return store
+
+
+def test_source_inspect_registry_mode_reports_verified_artifact(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store_root = tmp_path / "artifact-store"
+    _retained_policy_source(source_kb, store_root)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+
+    assert main(["source", "inspect", str(source_kb), "--source-id", "policy"]) == 0
+    out = capsys.readouterr().out
+    assert "source_id:       policy" in out
+    assert f"content_hash:    {lw.artifact_content_hash(INSPECTION_RAW)[:12]}" in out
+    assert "filename:        policy.pdf" in out
+    assert "media_type:      application/pdf" in out
+    assert f"size:            {len(INSPECTION_RAW)}" in out
+    assert "bound_to:        current registry version (local worktree)" in out
+    assert "availability:    retained (digest and size verified)" in out
+    assert "authorization:   granted (private Source Artifact Store read verified)" in out
+    # Private store layout and raw bytes never appear in ordinary output.
+    assert str(store_root) not in out
+    assert "artifacts" not in out
+
+
+def test_source_inspect_without_store_reports_not_retained(
+    source_kb: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    ingest.source_registry.register_source("policy", INSPECTION_RAW, filename="p.pdf")
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    assert main(["source", "inspect", str(source_kb), "--source-id", "policy"]) == 0
+    out = capsys.readouterr().out
+    assert "availability:    not retained (no Source Artifact Store configured)" in out
+    assert "authorization:   granted (private registry view)" in out
+
+
+def test_source_inspect_unknown_source_is_absent_binding(
+    source_kb: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    assert main(["source", "inspect", str(source_kb), "--source-id", "ghost"]) == 1
+    assert "unknown Knowledge Source" in capsys.readouterr().err
+
+
+def test_source_inspect_published_version_resolves_manifest_binding(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store_root = tmp_path / "artifact-store"
+    store = _retained_policy_source(source_kb, store_root)
+    lw.write_binding_manifest(
+        store,
+        lw.SourceBindingManifest(
+            published_version="v2026",
+            fingerprint="fp",
+            created_at="2026-08-21T00:00:00Z",
+            entries=[
+                lw.SourceBindingEntry(
+                    page_title="CLI Page",
+                    source_id="policy",
+                    content_hash=lw.artifact_content_hash(INSPECTION_RAW),
+                    content_type="application/pdf",
+                    filename="policy.pdf",
+                    size=len(INSPECTION_RAW),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+
+    assert (
+        main(
+            ["source", "inspect", str(source_kb), "--source-id", "policy",
+             "--published-version", "v2026"]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "bound_to:        published version v2026 (Source Binding Manifest)" in out
+
+
+def test_source_inspect_published_version_without_store_fails_closed(
+    source_kb: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    rc = main(
+        ["source", "inspect", str(source_kb), "--source-id", "policy",
+         "--published-version", "v2026"]
+    )
+    assert rc == 1
+    assert "no private Source Artifact Store is configured" in capsys.readouterr().err
+
+
+def test_source_inspect_missing_manifest_is_historical_mismatch(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store_root = tmp_path / "artifact-store"
+    _retained_policy_source(source_kb, store_root)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+
+    rc = main(
+        ["source", "inspect", str(source_kb), "--source-id", "policy",
+         "--published-version", "v-does-not-exist"]
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "no Source Binding Manifest" in err
+    # Never substitutes the registry's current version silently.
+    assert "refusing to substitute" in err
+
+
+def test_source_fetch_writes_byte_exact_original(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store_root = tmp_path / "artifact-store"
+    _retained_policy_source(source_kb, store_root)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+    out_dir = tmp_path / "fetched"
+    out_dir.mkdir()
+    out_file = out_dir / "exact.pdf"
+
+    assert (
+        main(
+            ["source", "fetch", str(source_kb), "--source-id", "policy",
+             "--output", str(out_file)]
+        )
+        == 0
+    )
+    assert out_file.read_bytes() == INSPECTION_RAW
+    assert "digest and size verified" in capsys.readouterr().out
+
+
+def test_source_fetch_directory_output_receives_safe_filename(
+    source_kb: Path, tmp_path: Path, monkeypatch
+) -> None:
+    store_root = tmp_path / "artifact-store"
+    _retained_policy_source(source_kb, store_root, filename="../../policy.pdf")
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+    out_dir = tmp_path / "downloads"
+    out_dir.mkdir()
+
+    assert (
+        main(["source", "fetch", str(source_kb), "--source-id", "policy",
+              "--output", str(out_dir)])
+        == 0
+    )
+    fetched = out_dir / "policy.pdf"
+    assert fetched.read_bytes() == INSPECTION_RAW
+
+
+def test_source_fetch_rejects_corruption(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store_root = tmp_path / "artifact-store"
+    _retained_policy_source(source_kb, store_root)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+    # Tamper with the retained bytes behind the store's back.
+    digest = lw.artifact_content_hash(INSPECTION_RAW)
+    victim = store_root / "artifacts" / "policy" / digest
+    victim.write_bytes(INSPECTION_RAW + b"tampered")
+    out_file = tmp_path / "out.pdf"
+
+    rc = main(
+        ["source", "fetch", str(source_kb), "--source-id", "policy",
+         "--output", str(out_file)]
+    )
+    assert rc == 1
+    assert "failed digest verification" in capsys.readouterr().err
+    assert not out_file.exists()
+
+
+def test_source_fetch_without_store_fails_closed(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    ingest.source_registry.register_source("policy", INSPECTION_RAW, filename="policy.pdf")
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    rc = main(
+        ["source", "fetch", str(source_kb), "--source-id", "policy",
+         "--output", str(tmp_path / "out.pdf")]
+    )
+    assert rc == 1
+    assert "no private Source Artifact Store is configured" in capsys.readouterr().err
+
+
+def test_source_fetch_unavailable_artifact_is_distinct_outcome(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store_root = tmp_path / "artifact-store"
+    store = _retained_policy_source(source_kb, store_root)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+    store.delete_artifact(
+        source_id="policy", content_hash=lw.artifact_content_hash(INSPECTION_RAW)
+    )
+    rc = main(
+        ["source", "fetch", str(source_kb), "--source-id", "policy",
+         "--output", str(tmp_path / "out.pdf")]
+    )
+    assert rc == 1
+    assert "artifact not retained" in capsys.readouterr().err
+
+
+def test_source_link_local_store_reports_signing_unsupported(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store_root = tmp_path / "artifact-store"
+    _retained_policy_source(source_kb, store_root)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+
+    rc = main(["source", "link", str(source_kb), "--source-id", "policy"])
+    assert rc == 1
+    assert "does not support signed URLs" in capsys.readouterr().err
+
+
+def test_source_link_rejects_expires_over_one_hour(
+    source_kb: Path, tmp_path: Path, monkeypatch
+) -> None:
+    store_root = tmp_path / "artifact-store"
+    _retained_policy_source(source_kb, store_root)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+
+    # A malformed/out-of-range --expires is a user-facing usage error: the
+    # CliError default exit code 2 (like argparse), never a traceback.
+    assert (
+        main(
+            ["source", "link", str(source_kb), "--source-id", "policy",
+             "--expires", "2h"]
+        )
+        == 2
+    )
+
+
+class _SigningInMemoryStore(lw.InMemoryArtifactStore):
+    """A signing-capable stand-in so the CLI link path is testable offline."""
+
+    def supports_signing(self) -> bool:  # pragma: no cover - trivial
+        return True
+
+    def signed_get_url(self, *, source_id: str, content_hash: str, expires_in) -> str:
+        seconds = int(expires_in.total_seconds())
+        return (
+            f"https://objects.example/artifacts/{source_id}/{content_hash}"
+            f"?method=GET&expires={seconds}"
+        )
+
+
+def test_source_link_signing_store_prints_url_with_secret_handling_note(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from lumio_wiki import cli
+
+    store = _SigningInMemoryStore()
+    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    ingest.source_registry.register_source(
+        "policy", INSPECTION_RAW, filename="policy.pdf", content_type="application/pdf"
+    )
+    lw.retain_artifact(
+        store,
+        ingest.source_registry,
+        source_id="policy",
+        raw_bytes=INSPECTION_RAW,
+        content_type="application/pdf",
+        filename="policy.pdf",
+    )
+    monkeypatch.setattr(cli, "_artifact_store_from_env", lambda: store)
+
+    assert (
+        main(["source", "link", str(source_kb), "--source-id", "policy",
+              "--expires", "1h"])
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "https://objects.example/artifacts/policy/" in out
+    assert "expires:         1h (3600s)" in out
+    assert "bearer secret" in out
+
+
+def test_source_inspect_rejects_secret_bearing_source_id_without_echo(
+    source_kb: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    secret_id = "sk-live-abc123"
+    rc = main(["source", "inspect", str(source_kb), "--source-id", secret_id])
+    assert rc == 1
+    combined = capsys.readouterr()
+    assert secret_id not in combined.out + combined.err
+
+
+def test_source_s3_uri_resolves_active_published_version_once(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from lumio_wiki import cli
+    from lumio_wiki.s3_publish import PointerObservation
+
+    store_root = tmp_path / "artifact-store"
+    store = _retained_policy_source(source_kb, store_root)
+    lw.write_binding_manifest(
+        store,
+        lw.SourceBindingManifest(
+            published_version="v-active",
+            fingerprint="fp",
+            created_at="2026-08-21T00:00:00Z",
+            entries=[
+                lw.SourceBindingEntry(
+                    page_title="CLI Page",
+                    source_id="policy",
+                    content_hash=lw.artifact_content_hash(INSPECTION_RAW),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+    monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (object(), "kb-prefix"))
+    monkeypatch.setattr(
+        "lumio_wiki.s3_publish.observe_current_pointer",
+        lambda store_arg, prefix: PointerObservation(version="v-active", e_tag="e"),
+    )
+
+    assert main(["source", "inspect", "s3://bucket/kb", "--source-id", "policy"]) == 0
+    out = capsys.readouterr().out
+    assert "bound_to:        published version v-active (Source Binding Manifest)" in out
+
+
+def test_source_s3_uri_without_active_version_fails(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from lumio_wiki import cli
+    from lumio_wiki.s3_publish import PointerObservation
+
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (object(), "kb-prefix"))
+    monkeypatch.setattr(
+        "lumio_wiki.s3_publish.observe_current_pointer",
+        lambda store_arg, prefix: PointerObservation(version=None, e_tag=None),
+    )
+
+    assert main(["source", "inspect", "s3://bucket/kb", "--source-id", "policy"]) == 1
+    assert "no active Published Version" in capsys.readouterr().err

@@ -29,6 +29,7 @@ import msgspec
 import pytest
 from lumio_wiki.artifact_store import (
     S3ArtifactStore,
+    SourceBindingEntry,
     SourceBindingManifest,
     activation_binding_hook,
     artifact_content_hash,
@@ -403,3 +404,115 @@ def test_minio_cross_role_denial(prefixes):
                 _mc("admin", "policy", "remove", alias, f"lumio-art-it-{role}-{run}")
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Issue #165: authorized inspect/fetch/link through the CLI over a real S3
+# Source Artifact Store, and the distinct access-denied outcome for
+# unauthorized (KB Reader-only style) credentials.
+# ---------------------------------------------------------------------------
+
+
+def _seed_v165_binding(store, artifact_prefix: str) -> str:
+    """Retain the artifact and write the v165 Source Binding Manifest."""
+    artifacts = _artifact_store(store, artifact_prefix)
+    digest = artifact_content_hash(RAW)
+    artifacts.put_artifact(
+        source_id="minio-report",
+        content_hash=digest,
+        raw_bytes=RAW,
+        content_type="application/pdf",
+        filename="report.pdf",
+    )
+    manifest = SourceBindingManifest(
+        published_version="v165",
+        fingerprint="fp",
+        created_at="2026-08-21T00:00:00Z",
+        entries=[
+            SourceBindingEntry(
+                page_title="MinIO Artifact Page",
+                source_id="minio-report",
+                content_hash=digest,
+                content_type="application/pdf",
+                filename="report.pdf",
+                size=len(RAW),
+            )
+        ],
+    )
+    artifacts.put_binding_manifest("v165", msgspec.json.encode(manifest))
+    return digest
+
+
+def test_minio_cli_source_link_downloads_same_digest_and_fetch_is_byte_exact(
+    tmp_path, prefixes, monkeypatch, capsys
+):
+    from lumio_wiki.cli import main
+
+    store, _, artifact_prefix = prefixes
+    digest = _seed_v165_binding(store, artifact_prefix)
+    kb = tmp_path / "kb"
+    shutil.copytree(FIXTURES, kb)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", f"s3://{_bucket()}/{artifact_prefix}")
+
+    rc = main(
+        [
+            "source", "link", str(kb),
+            "--source-id", "minio-report",
+            "--published-version", "v165",
+            "--expires", "30s",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    url = out.splitlines()[0]
+    assert url.startswith("http")
+    assert f"{artifact_prefix}/artifacts/minio-report/{digest}" in url
+    assert "bearer secret" in out
+    # The signed link downloads the same digest as the retained artifact.
+    assert urllib.request.urlopen(url, timeout=10).read() == RAW
+    # The signature authorizes exactly this object, not a neighbor.
+    with pytest.raises(urllib.error.HTTPError):
+        urllib.request.urlopen(url.replace(digest, "0" * 64), timeout=10)
+
+    out_file = tmp_path / "fetched.pdf"
+    rc = main(
+        [
+            "source", "fetch", str(kb),
+            "--source-id", "minio-report",
+            "--published-version", "v165",
+            "--output", str(out_file),
+        ]
+    )
+    assert rc == 0
+    assert out_file.read_bytes() == RAW
+
+
+def test_minio_cli_unauthorized_credentials_get_distinct_access_denied(
+    tmp_path, prefixes, monkeypatch, capsys
+):
+    from lumio_wiki.cli import main
+
+    store, _, artifact_prefix = prefixes
+    _seed_v165_binding(store, artifact_prefix)
+    kb = tmp_path / "kb"
+    shutil.copytree(FIXTURES, kb)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", f"s3://{_bucket()}/{artifact_prefix}")
+    # A credential that may not read the private artifact prefix (the KB
+    # Reader situation) surfaces as the distinct access-denied outcome —
+    # never absence, never a traceback, never a leaked object key.
+    monkeypatch.setenv("LUMIO_S3_ACCESS_KEY_ID", _os.environ["LUMIO_S3_ACCESS_KEY_ID"])
+    monkeypatch.setenv("LUMIO_S3_SECRET_ACCESS_KEY", "wrong-secret-on-purpose")
+
+    for command in ("inspect", "fetch", "link"):
+        argv = [
+            "source", command, str(kb),
+            "--source-id", "minio-report",
+            "--published-version", "v165",
+        ]
+        if command == "fetch":
+            argv += ["--output", str(tmp_path / "out.pdf")]
+        rc = main(argv)
+        assert rc == 1, command
+        err = capsys.readouterr().err
+        assert "access denied" in err, command
+        assert artifact_prefix not in err

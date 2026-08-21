@@ -30,6 +30,7 @@ import mimetypes
 import os
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,17 @@ from lumio_wiki.knowledge_base import (
     DEFAULT_GRAPH_MAX_EDGES,
     DEFAULT_GRAPH_MAX_RESULTS,
     NAV_INDEX_BASENAME,
+)
+from lumio_wiki.source_inspection import (
+    DEFAULT_LINK_EXPIRES,
+    OUTCOME_ACCESS_DENIED,
+    OUTCOME_CORRUPTION,
+    SourceInspectionError,
+    fetch_verified_artifact,
+    parse_expires,
+    resolve_manifest_binding,
+    resolve_registry_binding,
+    safe_fetch_destination,
 )
 
 # Derived-state directory name inside a Knowledge Base root. Holds the
@@ -888,6 +900,29 @@ automatically when no `<kb>` argument is given).{s3_config}
   health + structure + ranked candidates). Add `--stage [--limit N]` to stage
   the top repairs as ordinary Ingest Proposals for review. Add opt-in `--semantic`
   with the `[llm]` extra for semantic findings; it remains proposal-first.
+
+### Source Artifact inspection (authorized, not Evidence)
+
+1. `lumio-wiki source inspect [<kb>] --source-id <id> [--published-version <v>]`
+   — secret-free metadata for the ONE exact Source Version bound to the id
+   (the registry's current version locally; the private Source Binding
+   Manifest for S3 KBs or explicit history). Never falls back to the latest
+   version when a binding is absent.
+2. `lumio-wiki source fetch [<kb>] --source-id <id> [--published-version <v>]
+   --output <path>` — byte-exact original, digest and size re-verified, to an
+   explicit destination. Prefer verified `fetch` over `link` (signed URLs can
+   leak through conversation history).
+3. `lumio-wiki source link [<kb>] --source-id <id> [--expires 5m]` — an
+   explicit short-lived signed GET URL for the exact artifact (5 min default,
+   1 h max) when the store supports signing. Treat the URL as a bearer
+   secret: never persist, log, or paste it.
+4. After fetch, read bounded text directly (text/CSV/JSON/XML) or use a
+   sandboxed document tool for PDF/Office/image content. Quote exact original
+   text with source/version and stable coordinates; label decoded/OCR/
+   converted output as DERIVED. Never execute active content, never dump a
+   large private artifact wholesale into context without an explicit user
+   request. Inspection supports provenance review but is NOT Evidence and
+   does not promise claim-level passage highlighting.
 
 ### Guardrails
 
@@ -2774,6 +2809,197 @@ def _cmd_source_reactivate(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Authorized Source Artifact inspection (issue #165, ADR-0020).
+#
+# `source inspect|fetch|link` resolve ONE exact Source Version for a source
+# id — the local registry's current version for a worktree, or the exact
+# (source_id, content_hash) bound by a private Source Binding Manifest for an
+# S3 Knowledge Base / an explicit --published-version — and operate on it
+# through the public Source Artifact Store seam. There is no fetch-by-hash and
+# no object-key interface; a missing binding NEVER substitutes the latest
+# Source Version. Distinct actionable outcomes (access denied / absent
+# binding / unavailable / corruption / historical-version mismatch / signing
+# unsupported) surface as exit-1 errors whose messages never disclose
+# credentials, private object keys, or secret-bearing URLs.
+# ---------------------------------------------------------------------------
+
+
+def _active_published_version(uri: str) -> str:
+    """Resolve the active Published Version of an S3 Knowledge Base once.
+
+    Reads only the activation pointer — not the whole Published Version —
+    because inspect/fetch/link need the version identity, not page content.
+    The pointer only ever advances after a complete upload (#163), so an
+    observed version is complete by construction.
+    """
+    from lumio_wiki.s3_publish import observe_current_pointer
+
+    store, prefix = _build_publish_store(uri)
+    observation = observe_current_pointer(store, prefix)
+    if observation.version is None:
+        raise CliError(
+            "this S3 Knowledge Base has no active Published Version yet",
+            exit_code=1,
+        )
+    return observation.version
+
+
+def _resolve_source_binding(args: argparse.Namespace):
+    """Resolve ONE exact Source Version for inspect/fetch/link.
+
+    Returns ``(binding, artifact_store)`` where ``artifact_store`` may be
+    ``None`` (retention not configured). Raises :class:`CliError` with the
+    distinct #165 outcomes via :class:`SourceInspectionError`.
+    """
+    version = getattr(args, "published_version", None)
+    if version is None and _is_object_store_uri(str(args.path)):
+        version = _active_published_version(str(args.path))
+    artifact_store = _artifact_store_from_env()
+    try:
+        if version is not None:
+            # An S3 Knowledge Base (active or --published-version history)
+            # resolves through the private Source Binding Manifest.
+            if artifact_store is None:
+                raise CliError(
+                    "no private Source Artifact Store is configured "
+                    "(LUMIO_SOURCE_STORE); publication bindings are stored "
+                    "there — record one with 'lumio-wiki setup "
+                    "--source-store <s3-uri|path>'",
+                    exit_code=1,
+                )
+            return resolve_manifest_binding(artifact_store, version, args.source_id), artifact_store
+        # Local worktree behavior: resolve through private registry state.
+        kb, _report = _load_kb(args.path)
+        ingest_dir = _resolve_ingest_dir(args, kb.root)
+        registry = IngestStore(ingest_dir).source_registry
+        return resolve_registry_binding(registry, args.source_id), artifact_store
+    except SourceInspectionError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+
+
+def _binding_availability(artifact_store, binding) -> str:
+    """Live, digest-verified availability label for ``source inspect``.
+
+    Reads the exact artifact through the store seam so the report reflects
+    what an authorized fetch would return, not a stale registry flag. Access
+    denial is a distinct outcome and fails the command rather than being
+    reported as absence.
+    """
+    if artifact_store is None:
+        return "not retained (no Source Artifact Store configured)"
+    try:
+        fetch_verified_artifact(artifact_store, binding)
+    except SourceInspectionError as exc:
+        if exc.outcome == OUTCOME_ACCESS_DENIED:
+            raise CliError(str(exc), exit_code=1) from exc
+        if exc.outcome == OUTCOME_CORRUPTION:
+            return "corrupt (stored bytes failed verification)"
+        return "not retained"
+    return "retained (digest and size verified)"
+
+
+def _cmd_source_inspect(args: argparse.Namespace) -> int:
+    binding, artifact_store = _resolve_source_binding(args)
+    availability = _binding_availability(artifact_store, binding)
+    bound_to = (
+        f"published version {binding.published_version} (Source Binding Manifest)"
+        if binding.published_version is not None
+        else "current registry version (local worktree)"
+    )
+    authorization = (
+        "granted (private Source Artifact Store read verified)"
+        if artifact_store is not None
+        else "granted (private registry view)"
+    )
+    digest = binding.content_hash
+    print(f"source_id:       {binding.source_id}")
+    print(f"content_hash:    {digest[:12]} (sha256, abbreviated)")
+    print(f"filename:        {binding.filename or '(none recorded)'}")
+    print(f"media_type:      {binding.content_type or '(none recorded)'}")
+    print(f"size:            {binding.size if binding.size is not None else '(unknown)'}")
+    print(f"bound_to:        {bound_to}")
+    print(f"availability:    {availability}")
+    print(f"authorization:   {authorization}")
+    return 0
+
+
+def _cmd_source_fetch(args: argparse.Namespace) -> int:
+    binding, artifact_store = _resolve_source_binding(args)
+    if artifact_store is None:
+        raise CliError(
+            "no private Source Artifact Store is configured (LUMIO_SOURCE_STORE); "
+            "fetch retrieves retained Source Artifacts only — record one with "
+            "'lumio-wiki setup --source-store <s3-uri|path>'",
+            exit_code=1,
+        )
+    try:
+        raw = fetch_verified_artifact(artifact_store, binding)
+    except SourceInspectionError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    destination = safe_fetch_destination(Path(args.output), binding)
+    try:
+        destination.write_bytes(raw)
+    except OSError as exc:
+        raise CliError(
+            f"could not write the fetched artifact to --output: {exc}",
+            exit_code=1,
+        ) from exc
+    print(f"fetched: {destination} ({len(raw)} bytes, digest and size verified)")
+    return 0
+
+
+def _cmd_source_link(args: argparse.Namespace) -> int:
+    from lumio_wiki.artifact_store import ArtifactAccessDenied, SigningUnavailable
+
+    binding, artifact_store = _resolve_source_binding(args)
+    if artifact_store is None:
+        raise CliError(
+            "no private Source Artifact Store is configured (LUMIO_SOURCE_STORE); "
+            "signed links are issued by the S3 adapter — record a store with "
+            "'lumio-wiki setup --source-store <s3-uri>'",
+            exit_code=1,
+        )
+    try:
+        duration = parse_expires(args.expires)
+    except ValueError as exc:
+        raise CliError(str(exc)) from None
+    if not artifact_store.supports_signing():
+        raise CliError(
+            "the configured Source Artifact Store does not support signed URLs "
+            "(only the S3 adapter signs); use 'source fetch' for verified "
+            "byte-exact retrieval",
+            exit_code=1,
+        )
+    # Verify the exact bound artifact is present and digest-correct first, so
+    # an issued link downloads the same digest (issue #165 AC) and an
+    # unavailable/corrupt artifact is a distinct outcome, not a dead URL.
+    try:
+        fetch_verified_artifact(artifact_store, binding)
+    except SourceInspectionError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    try:
+        url = artifact_store.signed_get_url(
+            source_id=binding.source_id,
+            content_hash=binding.content_hash,
+            expires_in=duration,
+        )
+    except SigningUnavailable as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    except ArtifactAccessDenied as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    seconds = duration // timedelta(seconds=1)
+    expiry_note = f"{args.expires or DEFAULT_LINK_EXPIRES} ({seconds}s)"
+    print(url)
+    print(f"expires:         {expiry_note}")
+    print(
+        "handling:        treat this URL as a bearer secret — never persist, "
+        "log, or paste it into tracked files; it authorizes exactly this "
+        "object and the GET method"
+    )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Argument parser construction
 # ---------------------------------------------------------------------------
 
@@ -3857,6 +4083,102 @@ def build_parser() -> argparse.ArgumentParser:
         "--file", type=Path, required=True, help="Replacement source bytes."
     )
     source_reactivate.set_defaults(func=_cmd_source_reactivate)
+
+    # Authorized Source Artifact inspection (issue #165, ADR-0020): the three
+    # read-only operations resolve ONE exact Source Version behind a source
+    # id — never fetch-by-hash, never an object key, never a silent fallback
+    # to the latest version when a binding is requested but absent.
+    source_inspect = source_sub.add_parser(
+        "inspect",
+        help="Inspect the exact Source Version bound to a source id.",
+        description=(
+            "Report secret-free inspection metadata for ONE exact Source "
+            "Version: safe filename, media type, size, digest abbreviation, "
+            "publication binding, verified artifact availability, and the "
+            "authorization outcome. A local worktree resolves the registry's "
+            "current version; an S3 Knowledge Base (or --published-version) "
+            "resolves the private Source Binding Manifest of exactly one "
+            "Published Version."
+        ),
+    )
+    _add_kb_argument(source_inspect)
+    _add_ingest_dir_argument(source_inspect)
+    source_inspect.add_argument(
+        "--source-id", required=True, help="Knowledge Source identity to inspect."
+    )
+    source_inspect.add_argument(
+        "--published-version",
+        default=None,
+        metavar="VERSION",
+        help=(
+            "Resolve the exact binding of this Published Version instead of "
+            "the local registry's current version (required semantics for "
+            "historical inspection; never falls back to the latest version)."
+        ),
+    )
+    source_inspect.set_defaults(func=_cmd_source_inspect)
+
+    source_fetch = source_sub.add_parser(
+        "fetch",
+        help="Fetch the byte-exact Source Artifact bound to a source id.",
+        description=(
+            "Retrieve the exact original bytes for the resolved Source "
+            "Version, re-verify digest and size, and write them to an "
+            "explicit --output destination (a directory receives the safe "
+            "filename). Raw artifacts stay private: they never become public "
+            "Evidence, and content is not rendered or converted here — open "
+            "the fetched file with an appropriate sandboxed tool."
+        ),
+    )
+    _add_kb_argument(source_fetch)
+    _add_ingest_dir_argument(source_fetch)
+    source_fetch.add_argument(
+        "--source-id", required=True, help="Knowledge Source identity to fetch."
+    )
+    source_fetch.add_argument(
+        "--published-version",
+        default=None,
+        metavar="VERSION",
+        help="Resolve the exact binding of this Published Version.",
+    )
+    source_fetch.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Explicit destination file path (an existing directory receives the safe filename).",
+    )
+    source_fetch.set_defaults(func=_cmd_source_fetch)
+
+    source_link = source_sub.add_parser(
+        "link",
+        help="Issue a short-lived signed GET URL for the exact bound artifact.",
+        description=(
+            "Explicitly issue a signed GET URL for ONE exact artifact when "
+            "the Source Artifact Store supports signing (the S3 adapter "
+            "does). Default expiry five minutes, maximum one hour. The URL "
+            "is a temporary bearer secret: never persist or log it. Prefer "
+            "verified 'source fetch' — a signed URL can leak through "
+            "conversation history."
+        ),
+    )
+    _add_kb_argument(source_link)
+    _add_ingest_dir_argument(source_link)
+    source_link.add_argument(
+        "--source-id", required=True, help="Knowledge Source identity to link."
+    )
+    source_link.add_argument(
+        "--published-version",
+        default=None,
+        metavar="VERSION",
+        help="Resolve the exact binding of this Published Version.",
+    )
+    source_link.add_argument(
+        "--expires",
+        default=DEFAULT_LINK_EXPIRES,
+        metavar="DURATION",
+        help="Signed URL lifetime like 30s, 5m (default), or 1h; maximum one hour.",
+    )
+    source_link.set_defaults(func=_cmd_source_link)
 
     return parser
 
