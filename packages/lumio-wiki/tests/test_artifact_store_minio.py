@@ -32,6 +32,7 @@ from lumio_wiki.artifact_store import (
     SourceBindingManifest,
     activation_binding_hook,
     artifact_content_hash,
+    retain_artifact,
 )
 from lumio_wiki.ingest import IngestStore
 from lumio_wiki.proposal_pipeline import ProposalPipeline
@@ -70,9 +71,7 @@ def _bucket() -> str:
 
 def _root_store():
     config, client_options = _s3_config()
-    return obstore.store.from_url(
-        f"s3://{_bucket()}", config=config, client_options=client_options
-    )
+    return obstore.store.from_url(f"s3://{_bucket()}", config=config, client_options=client_options)
 
 
 @pytest.fixture()
@@ -191,6 +190,24 @@ def test_minio_publication_binds_artifacts_outside_public_prefix(tmp_path, prefi
     kb, report = lw.load_knowledge_base(root)
     assert report.is_valid, report
     artifacts = _artifact_store(store, artifact_prefix)
+    # Required retention evaluates EVERY referenced non-synthetic source
+    # (#164): backfill the fixture pages' source ids too.
+    for page in kb.pages:
+        for source in page.sources:
+            if not source.id:
+                continue
+            fixture_bytes = f"fixture artifact for {source.id}".encode()
+            ingest.source_registry.register_or_reuse(
+                source.id, fixture_bytes, filename=None, content_type=None
+            )
+            retain_artifact(
+                artifacts,
+                ingest.source_registry,
+                source_id=source.id,
+                raw_bytes=fixture_bytes,
+                content_type="text/plain",
+                filename=f"{source.id}.txt",
+            )
     pipeline = ProposalPipeline(kb, store=ingest, artifact_store=artifacts)
     proposal = pipeline.managed_ingest(
         RAW, "application/pdf", "report.pdf", "minio-report", _authored_page("minio-report")
@@ -210,11 +227,10 @@ def test_minio_publication_binds_artifacts_outside_public_prefix(tmp_path, prefi
 
     # The private binding manifest binds the exact Source Version, and lives
     # ONLY under the artifact prefix.
-    binding = msgspec.json.decode(
-        artifacts.get_binding_manifest("v1"), type=SourceBindingManifest
-    )
-    assert binding.entries[0].source_id == "minio-report"
-    assert binding.entries[0].content_hash == artifact_content_hash(RAW)
+    binding = msgspec.json.decode(artifacts.get_binding_manifest("v1"), type=SourceBindingManifest)
+    entry = next(e for e in binding.entries if e.source_id == "minio-report")
+    assert entry.content_hash == artifact_content_hash(RAW)
+    assert entry.filename == "report.pdf"
     assert artifacts.list_binding_versions() == ["v1"]
 
     public_keys = sorted(
@@ -225,6 +241,42 @@ def test_minio_publication_binds_artifacts_outside_public_prefix(tmp_path, prefi
     for key in public_keys:
         blob = bytes(obstore.get(store, key).bytes())
         assert RAW not in blob
+
+    # Stored response metadata (ADR-0020): the safe filename and content
+    # type ride the artifact as object user metadata so delivery tooling can
+    # force an attachment download without guessing. Verified through the
+    # admin client when available.
+    mc = _mc_command()
+    if mc is not None:
+        alias = f"lumio-meta-{uuid.uuid4().hex[:8]}"
+        _mc(
+            "alias",
+            "set",
+            alias,
+            _os.environ["LUMIO_S3_ENDPOINT"],
+            _os.environ["LUMIO_S3_ACCESS_KEY_ID"],
+            _os.environ["LUMIO_S3_SECRET_ACCESS_KEY"],
+        )
+        try:
+            stat_key = (
+                f"{alias}/{_bucket()}/{artifact_prefix}/artifacts/"
+                f"minio-report/{artifact_content_hash(RAW)}"
+            )
+            stat = subprocess.run(
+                [*mc, "stat", "--json", stat_key],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            ).stdout
+            assert "X-Amz-Meta-Filename" in stat
+            assert "report.pdf" in stat
+            # S3 normalizes the attribute key's underscores ("content_type"
+            # -> "Content_type"); the VALUE proves the safe media type rides
+            # the object.
+            assert "application/pdf" in stat
+        finally:
+            subprocess.run([*mc, "alias", "rm", alias], capture_output=True, timeout=30)
 
 
 # ---------------------------------------------------------------------------
@@ -245,9 +297,7 @@ def _mc_command() -> list[str] | None:
 def _mc(*args: str) -> None:
     command = _mc_command()
     assert command is not None
-    subprocess.run(
-        [*command, *args], check=True, capture_output=True, text=True, timeout=60
-    )
+    subprocess.run([*command, *args], check=True, capture_output=True, text=True, timeout=60)
 
 
 def _policy_document(bucket: str, actions: list[str], prefix: str) -> dict:

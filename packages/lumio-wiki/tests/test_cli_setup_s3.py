@@ -381,7 +381,7 @@ def test_setup_rejects_publish_to_combined_with_from(tmp_path, monkeypatch, caps
     assert "cannot be combined with --from" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("flag", ["--from", "--publish-to", "--source-store"])
+@pytest.mark.parametrize("flag", ["--from", "--publish-to"])
 def test_setup_rejects_non_object_store_uris(flag, tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     _clean_env(monkeypatch)
@@ -389,7 +389,23 @@ def test_setup_rejects_non_object_store_uris(flag, tmp_path, monkeypatch, capsys
     rc = cli.main([*argv, flag, "./not-a-uri"])
     assert rc == 2
     assert flag in capsys.readouterr().err
-    assert "object-store URI" in capsys.readouterr().err or True
+
+
+def test_setup_accepts_local_path_source_store_but_rejects_schemes(
+    tmp_path, monkeypatch, capsys
+):
+    """#164: --source-store is a URI OR a local directory (CONTEXT.md); only
+    an unsupported scheme is refused."""
+    monkeypatch.chdir(tmp_path)
+    _clean_env(monkeypatch)
+    # A plain local path is valid for --source-store.
+    rc = cli.main(["setup", "kb", "--source-store", "./local-source-store"])
+    assert rc == 0
+    # A schemed non-object-store URI is refused.
+    capsys.readouterr()
+    rc = cli.main(["setup", "another-kb", "--source-store", "ftp://example.com/src"])
+    assert rc == 2
+    assert "not a supported scheme" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

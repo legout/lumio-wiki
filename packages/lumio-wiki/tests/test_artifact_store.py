@@ -29,6 +29,7 @@ from lumio_wiki.artifact_store import (
     delete_artifact_with_disclosure,
     retain_artifact,
     sweep_orphaned_uploads,
+    write_binding_manifest,
 )
 from lumio_wiki.ingest import IngestStore, ManagedIngestError
 from lumio_wiki.knowledge_base import fingerprint_sources
@@ -105,9 +106,7 @@ def test_put_get_roundtrip_verifies_digest(store):
         content_type="application/pdf",
         filename="report.pdf",
     )
-    assert store.get_artifact(
-        source_id="report", content_hash=artifact_content_hash(RAW)
-    ) == RAW
+    assert store.get_artifact(source_id="report", content_hash=artifact_content_hash(RAW)) == RAW
     assert store.artifact_exists(source_id="report", content_hash=artifact_content_hash(RAW))
 
 
@@ -246,9 +245,10 @@ def test_saga_identical_retry_is_idempotent(store, tmp_path):
         )
     source = registry.get("annual-report")
     assert len(source.versions) == 1  # one immutable version, no duplicates
-    assert store.get_artifact(
-        source_id="annual-report", content_hash=source.versions[0].content_hash
-    ) == RAW
+    assert (
+        store.get_artifact(source_id="annual-report", content_hash=source.versions[0].content_hash)
+        == RAW
+    )
 
 
 def test_saga_changed_bytes_rejected_without_store_mutation(store, tmp_path):
@@ -267,9 +267,10 @@ def test_saga_changed_bytes_rejected_without_store_mutation(store, tmp_path):
             "annual-report", b"DIFFERENT bytes", filename="r.pdf", content_type=None
         )
     # The store still holds exactly the original bytes.
-    assert store.get_artifact(
-        source_id="annual-report", content_hash=artifact_content_hash(RAW)
-    ) == RAW
+    assert (
+        store.get_artifact(source_id="annual-report", content_hash=artifact_content_hash(RAW))
+        == RAW
+    )
 
 
 def test_saga_failed_upload_is_never_reported_as_retained(tmp_path):
@@ -341,9 +342,7 @@ def test_managed_ingest_retains_artifacts_through_the_pipeline(tmp_path):
     )
     version = ingest.source_registry.get("annual-report").versions[-1]
     assert version.artifact_available is True
-    assert store.get_artifact(
-        source_id="annual-report", content_hash=version.content_hash
-    ) == RAW
+    assert store.get_artifact(source_id="annual-report", content_hash=version.content_hash) == RAW
 
 
 def test_managed_ingest_wraps_store_failure_actionably(tmp_path):
@@ -371,11 +370,32 @@ def test_managed_ingest_wraps_store_failure_actionably(tmp_path):
 
 
 def _published_kb_with_source(tmp_path, *, retain: bool, synthetic: bool = False):
+    """Publish a fixture KB plus one managed source under a configured store.
+
+    Every source id the FIXTURE pages reference is registered and backfilled
+    with a verified artifact (required retention evaluates every referenced
+    non-synthetic source, #164 — fixture sources are scenery and always
+    covered). ``annual-report`` (the managed source) is retained ONLY when
+    ``retain``: the tests that assert blocking exercise exactly that hole.
+    """
     kb = _kb(tmp_path)
     artifact_store = InMemoryArtifactStore()
-    pipeline, ingest = _pipeline(
-        kb, tmp_path, artifact_store=artifact_store if retain else None
-    )
+    pipeline, ingest = _pipeline(kb, tmp_path, artifact_store=artifact_store if retain else None)
+    registry = ingest.source_registry
+    for page in kb.pages:
+        for source in page.sources:
+            if not source.id:
+                continue
+            fixture_bytes = f"fixture artifact for {source.id}".encode()
+            registry.register_or_reuse(source.id, fixture_bytes, filename=None, content_type=None)
+            retain_artifact(
+                artifact_store,
+                registry,
+                source_id=source.id,
+                raw_bytes=fixture_bytes,
+                content_type="text/plain",
+                filename=f"{source.id}.txt",
+            )
     proposal = pipeline.managed_ingest(
         RAW,
         "application/pdf",
@@ -384,7 +404,7 @@ def _published_kb_with_source(tmp_path, *, retain: bool, synthetic: bool = False
         _authored_page("annual-report", synthetic=synthetic),
     )
     assert pipeline.publish(proposal.id).status == "published"
-    return kb, ingest.source_registry, artifact_store
+    return kb, registry, artifact_store
 
 
 def _publish(store, kb, *, version: str, hook=None):
@@ -418,8 +438,7 @@ def test_publication_writes_private_binding_manifest_before_activation(tmp_path)
     binding = msgspec.json.decode(raw, type=SourceBindingManifest)
     assert binding.published_version == "v1"
     assert binding.fingerprint == manifest.fingerprint
-    entry = binding.entries[0]
-    assert entry.source_id == "annual-report"
+    entry = next(e for e in binding.entries if e.source_id == "annual-report")
     assert entry.page_title == "Artifact Page"
     assert entry.content_hash == registry.get("annual-report").versions[-1].content_hash
     assert entry.filename == "report.pdf"
@@ -466,9 +485,7 @@ def test_required_retention_blocks_activation_until_artifact_exists(tmp_path):
 
 
 def test_required_retention_ignores_synthetic_pages(tmp_path):
-    kb, registry, artifact_store = _published_kb_with_source(
-        tmp_path, retain=False, synthetic=True
-    )
+    kb, registry, artifact_store = _published_kb_with_source(tmp_path, retain=False, synthetic=True)
     store = obstore.store.MemoryStore()
     hook = activation_binding_hook(
         artifact_store=artifact_store, registry=registry, source_root=kb.root, required=True
@@ -477,7 +494,8 @@ def test_required_retention_ignores_synthetic_pages(tmp_path):
     binding = msgspec.json.decode(
         artifact_store.get_binding_manifest("v1"), type=SourceBindingManifest
     )
-    assert binding.entries[0].synthetic_page is True
+    entry = next(e for e in binding.entries if e.source_id == "annual-report")
+    assert entry.synthetic_page is True
 
 
 def test_disabled_retention_preserves_hash_only_publication(tmp_path):
@@ -487,9 +505,7 @@ def test_disabled_retention_preserves_hash_only_publication(tmp_path):
     # No artifact store configured at all: publication is byte-for-byte the
     # pre-#164 behavior (no hook, no gate).
     _publish(store, kb, version="v1")
-    pointer = msgspec.json.decode(
-        bytes(obstore.get(store, f"kb/{CURRENT_POINTER_OBJECT}").bytes())
-    )
+    pointer = msgspec.json.decode(bytes(obstore.get(store, f"kb/{CURRENT_POINTER_OBJECT}").bytes()))
     assert pointer["version"] == "v1"
 
 
@@ -503,7 +519,9 @@ def test_historical_manifest_survives_new_source_version(tmp_path):
     v1_binding = msgspec.json.decode(
         artifact_store.get_binding_manifest("v1"), type=SourceBindingManifest
     )
-    old_hash = v1_binding.entries[0].content_hash
+    old_hash = next(
+        e.content_hash for e in v1_binding.entries if e.source_id == "annual-report"
+    )
 
     # A later reviewed retirement + reactivation registers a NEW Source
     # Version; the historical manifest still identifies the historical
@@ -520,7 +538,10 @@ def test_historical_manifest_survives_new_source_version(tmp_path):
     v1_again = msgspec.json.decode(
         artifact_store.get_binding_manifest("v1"), type=SourceBindingManifest
     )
-    assert v1_again.entries[0].content_hash == old_hash
+    assert (
+        next(e.content_hash for e in v1_again.entries if e.source_id == "annual-report")
+        == old_hash
+    )
     # The historical artifact bytes are still fetchable by exact identity.
     assert artifact_store.get_artifact(source_id="annual-report", content_hash=old_hash) == RAW
 
@@ -549,7 +570,11 @@ def test_retirement_preserves_historical_artifacts(store, tmp_path):
     registry = _registry(tmp_path)
     registry.register_or_reuse("annual-report", RAW, filename="r.pdf", content_type=None)
     retain_artifact(
-        store, registry, source_id="annual-report", raw_bytes=RAW, content_type=None,
+        store,
+        registry,
+        source_id="annual-report",
+        raw_bytes=RAW,
+        content_type=None,
         filename="r.pdf",
     )
     digest = registry.get("annual-report").versions[-1].content_hash
@@ -568,7 +593,11 @@ def test_explicit_deletion_reports_affected_published_versions(store, tmp_path):
     registry = _registry(tmp_path)
     registry.register_or_reuse("annual-report", RAW, filename="r.pdf", content_type=None)
     retain_artifact(
-        store, registry, source_id="annual-report", raw_bytes=RAW, content_type=None,
+        store,
+        registry,
+        source_id="annual-report",
+        raw_bytes=RAW,
+        content_type=None,
         filename="r.pdf",
     )
     digest = registry.get("annual-report").versions[-1].content_hash
@@ -584,9 +613,10 @@ def test_explicit_deletion_reports_affected_published_versions(store, tmp_path):
         )
         store.put_binding_manifest(version, msgspec.json.encode(manifest))
 
-    assert affected_published_versions(
-        store, source_id="annual-report", content_hash=digest
-    ) == ["v1", "v2"]
+    assert affected_published_versions(store, source_id="annual-report", content_hash=digest) == [
+        "v1",
+        "v2",
+    ]
 
     affected = delete_artifact_with_disclosure(
         store, registry, source_id="annual-report", content_hash=digest
@@ -646,3 +676,237 @@ def test_cli_managed_ingest_retains_artifacts_from_env(tmp_path, monkeypatch, ca
     # Private state never lands inside the Knowledge Base root.
     assert not (kb_root / "artifacts").exists()
     assert not (kb_root / "bindings").exists()
+
+
+# ---------------------------------------------------------------------------
+# Review findings (#164): coverage semantics, fail-closed config, rollback
+# gate, size limit, local store setup.
+# ---------------------------------------------------------------------------
+
+
+def test_required_retention_blocks_unregistered_source_references(tmp_path):
+    """A referenced source the registry does not know can never have a
+    verified artifact: under required retention it BLOCKS activation (the
+    manifest binding only registered identities is not a coverage pass)."""
+    kb = _kb(tmp_path)
+    artifact_store = InMemoryArtifactStore()
+    pipeline, ingest = _pipeline(kb, tmp_path, artifact_store=artifact_store)
+    # Only the fixture sources are registered/retained; the managed page
+    # cites an id that was never registered.
+    registry = ingest.source_registry
+    for page in kb.pages:
+        for source in page.sources:
+            if not source.id:
+                continue
+            fixture_bytes = f"fixture artifact for {source.id}".encode()
+            registry.register_or_reuse(source.id, fixture_bytes, filename=None, content_type=None)
+            retain_artifact(
+                artifact_store,
+                registry,
+                source_id=source.id,
+                raw_bytes=fixture_bytes,
+                content_type="text/plain",
+                filename=f"{source.id}.txt",
+            )
+    # The authored page cites the registered annual-report AND a second
+    # source id that was never privately registered.
+    authored = _authored_page("annual-report").replace(
+        '  - id: "annual-report"\n'
+        '    title: "annual-report source"\n',
+        '  - id: "annual-report"\n'
+        '    title: "annual-report source"\n'
+        '  - id: "ghost-reference"\n'
+        '    title: "Never registered"\n',
+    )
+    assert "ghost-reference" in authored
+    proposal = pipeline.managed_ingest(
+        RAW, "application/pdf", "report.pdf", "annual-report", authored
+    )
+    assert pipeline.publish(proposal.id).status == "published"
+
+    store = obstore.store.MemoryStore()
+    hook = activation_binding_hook(
+        artifact_store=artifact_store,
+        registry=registry,
+        source_root=kb.root,
+        required=True,
+    )
+    with pytest.raises(RetentionRequiredError, match="unregistered source"):
+        _publish(store, kb, version="v1", hook=hook)
+
+
+def test_publish_s3_required_without_store_fails_closed(tmp_path, monkeypatch, capsys):
+    """LUMIO_ARTIFACT_RETENTION=required with no configured store refuses to
+    publish rather than silently publishing ungated."""
+    from lumio_wiki import cli
+
+    kb_root = tmp_path / "kb"
+    shutil.copytree(FIXTURES, kb_root)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    monkeypatch.setenv("LUMIO_ARTIFACT_RETENTION", "required")
+    rc = cli.main(
+        ["publish-s3", str(kb_root), "s3://bucket/kb", "--version", "v1"]
+    )
+    assert rc == 1
+    assert "no Source Artifact Store is configured" in capsys.readouterr().err
+
+
+def test_verify_rollback_coverage_gates_historical_activation(tmp_path):
+    artifact_store = InMemoryArtifactStore()
+    registry = _registry(tmp_path)
+    registry.register_or_reuse("annual-report", RAW, filename="r.pdf", content_type=None)
+    retain_artifact(
+        artifact_store,
+        registry,
+        source_id="annual-report",
+        raw_bytes=RAW,
+        content_type=None,
+        filename="r.pdf",
+    )
+    digest = registry.get("annual-report").versions[-1].content_hash
+    manifest = build_binding_manifest(
+        published_version="v1",
+        fingerprint="digest",
+        registry=registry,
+        pages=_pages_citing("annual-report"),
+        now="2026-01-01T00:00:00+00:00",
+    )
+    write_binding_manifest(artifact_store, manifest)
+
+    from lumio_wiki.artifact_store import verify_rollback_coverage
+
+    # Not required: no-op even with no manifest at all.
+    verify_rollback_coverage(artifact_store, "unknown-version", required=False)
+    # Required + no manifest for the version: fail closed.
+    with pytest.raises(RetentionRequiredError, match="no private Source Binding Manifest"):
+        verify_rollback_coverage(artifact_store, "unknown-version", required=True)
+    # Required + manifest + verified artifact: passes.
+    verify_rollback_coverage(artifact_store, "v1", required=True)
+    # Required + manifest but the artifact was explicitly deleted: blocked.
+    artifact_store.delete_artifact(source_id="annual-report", content_hash=digest)
+    with pytest.raises(RetentionRequiredError, match="lack a verified artifact"):
+        verify_rollback_coverage(artifact_store, "v1", required=True)
+
+
+def test_rollback_cli_blocked_after_artifact_deletion(tmp_path, monkeypatch, capsys):
+    """The rollback CLI is an activation: under required retention it refuses
+    to reactivate a version whose bound artifact was explicitly deleted."""
+    from lumio_wiki import cli
+
+    kb_root = tmp_path / "kb"
+    shutil.copytree(FIXTURES, kb_root)
+    store_root = tmp_path / "src-store"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+    monkeypatch.setenv("LUMIO_ARTIFACT_RETENTION", "required")
+
+    import lumio_wiki as lw
+
+    kb, report = lw.load_knowledge_base(kb_root)
+    assert report.is_valid, report
+    from lumio_wiki.artifact_store import LocalDirectoryArtifactStore
+
+    artifact_store = LocalDirectoryArtifactStore(store_root)
+    ingest = IngestStore(tmp_path / "ingest")
+    registry = ingest.source_registry
+    for page in kb.pages:
+        for source in page.sources:
+            if not source.id:
+                continue
+            fixture_bytes = f"fixture artifact for {source.id}".encode()
+            registry.register_or_reuse(source.id, fixture_bytes, filename=None, content_type=None)
+            retain_artifact(
+                artifact_store,
+                registry,
+                source_id=source.id,
+                raw_bytes=fixture_bytes,
+                content_type="text/plain",
+                filename=f"{source.id}.txt",
+            )
+
+    memory_store = obstore.store.MemoryStore()
+    publish_s3_version(
+        memory_store,
+        "kb",
+        source_root=kb_root,
+        version="v1",
+        before_activation=activation_binding_hook(
+            artifact_store=artifact_store,
+            registry=registry,
+            source_root=kb_root,
+            required=True,
+        ),
+    )
+
+    monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (memory_store, "kb"))
+    # Rollback with the artifact still retained: allowed.
+    rc = cli.main(["rollback-s3", "s3://bucket/kb", "--version", "v1"])
+    assert rc == 0
+
+    # Delete the bound artifact; the same rollback now refuses.
+    digest = registry.get("architecture-doc").versions[-1].content_hash
+    delete_artifact_with_disclosure(
+        artifact_store, registry, source_id="architecture-doc", content_hash=digest
+    )
+    capsys.readouterr()
+    rc = cli.main(["rollback-s3", "s3://bucket/kb", "--version", "v1"])
+    assert rc == 1
+    assert "rollback blocked" in capsys.readouterr().err
+
+
+def test_retain_artifact_enforces_size_limit(tmp_path, monkeypatch):
+    from lumio_wiki import artifact_store as module
+
+    store = InMemoryArtifactStore()
+    registry = _registry(tmp_path)
+    registry.register_or_reuse("big-report", b"0123456789", filename=None, content_type=None)
+    monkeypatch.setattr(module, "MAX_ARTIFACT_BYTES", 8)
+    with pytest.raises(ArtifactStoreError, match="maximum retained artifact size"):
+        retain_artifact(
+            store,
+            registry,
+            source_id="big-report",
+            raw_bytes=b"0123456789",
+            content_type=None,
+            filename=None,
+        )
+    # A failed retention is never reported as retained.
+    assert registry.get("big-report").versions[-1].artifact_available is False
+
+
+def test_setup_accepts_local_source_store_path(tmp_path, monkeypatch, capsys):
+    """setup records a local-directory Source Artifact Store without the S3
+    extra (object storage OR a local directory — CONTEXT.md, ADR-0020)."""
+    from lumio_wiki import cli
+    from lumio_wiki.env_loader import SOURCE_STORE_ENV_VAR
+
+    monkeypatch.chdir(tmp_path)
+    for key in ("LUMIO_SOURCE_STORE", "LUMIO_ARTIFACT_RETENTION"):
+        monkeypatch.delenv(key, raising=False)
+    local_store = tmp_path / "private-source-store"
+    rc = cli.main(["setup", "kb", "--source-store", str(local_store)])
+    assert rc == 0
+    assert _env_value_text(tmp_path, SOURCE_STORE_ENV_VAR) == str(local_store)
+    assert "Created Knowledge Base" in capsys.readouterr().out
+
+
+def test_setup_rejects_unsupported_source_store_scheme(tmp_path, monkeypatch, capsys):
+    from lumio_wiki import cli
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    rc = cli.main(["setup", "kb", "--source-store", "ftp://example.com/src"])
+    assert rc == 2
+    assert "not a supported scheme" in capsys.readouterr().err
+
+
+def _env_value_text(project: Path, key: str) -> str | None:
+    env = project / ".env"
+    if not env.exists():
+        return None
+    prefix = f"{key}="
+    for raw in env.read_text(encoding="utf-8").splitlines():
+        if raw.startswith(prefix):
+            return raw[len(prefix) :].strip() or None
+    return None

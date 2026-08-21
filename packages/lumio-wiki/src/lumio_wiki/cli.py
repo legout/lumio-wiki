@@ -622,10 +622,22 @@ def _run_setup_wizard() -> dict[str, Any]:
             "lancedb": "lancedb",
         },
     )
+    def require_source_store(flag: str):
+        def check(value: str) -> str | None:
+            if _is_object_store_uri(value) or "://" not in value:
+                return None
+            scheme = value.split("://", 1)[0]
+            return (
+                f"{flag} must be an object-store URI (e.g. s3://bucket/path) "
+                f"or a local directory path; {scheme!r} is not supported."
+            )
+
+        return check
+
     source_store = _wizard_ask(
-        "Private source artifact store URI (Enter to skip): ",
+        "Private source artifact store (s3:// URI or local path; Enter to skip): ",
         optional=True,
-        validate=require_s3_uri("--source-store"),
+        validate=require_source_store("--source-store"),
     )
     skill_scope = _wizard_ask(
         "Install the Agent Skill at [u]ser scope, [p]roject scope, or [n]one? ",
@@ -695,13 +707,19 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             "--publish-to records an S3 publication destination for a local "
             "Maintainer worktree; it cannot be combined with --from"
         )
-    for flag, value in (
-        ("--from", from_uri),
-        ("--publish-to", publish_to),
-        ("--source-store", source_store),
-    ):
+    for flag, value in (("--from", from_uri), ("--publish-to", publish_to)):
         if value is not None:
             _validate_object_store_uri(flag, value)
+    if source_store is not None:
+        # A Source Artifact Store is object storage OR a local directory
+        # (CONTEXT.md / ADR-0020): accept either; only the URI form needs
+        # the obstore extra.
+        if not _is_object_store_uri(source_store) and "://" in source_store:
+            scheme = source_store.split("://", 1)[0]
+            raise CliError(
+                f"--source-store must be an object-store URI (s3://...) or a "
+                f"local directory path; {scheme!r} is not a supported scheme"
+            )
     if artifact_retention == "required" and source_store is None:
         raise CliError(
             "--artifact-retention required needs --source-store: required "
@@ -711,7 +729,11 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
     # 2. Optional capabilities: detect BEFORE any write; print one exact
     # install command. Never mutate the active Python environment (ADR-0019).
-    if from_uri is not None or publish_to is not None or source_store is not None:
+    if (
+        from_uri is not None
+        or publish_to is not None
+        or (source_store is not None and _is_object_store_uri(source_store))
+    ):
         _require_extra("obstore", "pip install 'lumio-wiki[s3]'", "S3 configuration")
     if retrieval == "lancedb":
         # Detect the Lumio adapter package, not any importable `lancedb`:
@@ -1106,9 +1128,7 @@ def _resolve_embedder(model: str | None):
     base_url = os.environ.get("LUMIO_PROVIDER_BASE_URL")
     api_key = os.environ.get("LUMIO_PROVIDER_API_KEY")
     provider_model = (
-        model
-        or os.environ.get("LUMIO_EMBEDDING_MODEL")
-        or os.environ.get("LUMIO_PROVIDER_MODEL")
+        model or os.environ.get("LUMIO_EMBEDDING_MODEL") or os.environ.get("LUMIO_PROVIDER_MODEL")
     )
     if base_url and api_key and provider_model:
         return _ProviderEmbedder(base_url=base_url, api_key=api_key, model=provider_model)
@@ -1398,9 +1418,7 @@ def _artifact_store_from_env():
     """
     from lumio_wiki.artifact_store import LocalDirectoryArtifactStore, S3ArtifactStore
 
-    uri = os.environ.get(SOURCE_STORE_ENV_VAR) or load_project_config().get(
-        SOURCE_STORE_ENV_VAR
-    )
+    uri = os.environ.get(SOURCE_STORE_ENV_VAR) or load_project_config().get(SOURCE_STORE_ENV_VAR)
     if not uri:
         return None
     if _is_object_store_uri(uri):
@@ -1432,8 +1450,7 @@ def _artifact_retention_required() -> bool:
     normalized = value.strip().lower()
     if normalized not in {"required", "disabled"}:
         raise CliError(
-            f"{ARTIFACT_RETENTION_ENV_VAR} must be 'required' or 'disabled', "
-            f"got {value!r}"
+            f"{ARTIFACT_RETENTION_ENV_VAR} must be 'required' or 'disabled', got {value!r}"
         )
     return normalized == "required"
 
@@ -1835,9 +1852,7 @@ def _publication_index_builder(destination: str):
         )
     parsed = urlparse(destination)
     if parsed.scheme != "s3":
-        raise CliError(
-            f"--retrieval lancedb requires an s3:// destination, got {destination!r}"
-        )
+        raise CliError(f"--retrieval lancedb requires an s3:// destination, got {destination!r}")
     lumio_lancedb = importlib.import_module("lumio_lancedb")
     return lumio_lancedb.remote_publication_builder(
         store_uri=f"s3://{parsed.netloc}",
@@ -1902,8 +1917,20 @@ def _cmd_publish_s3(args: argparse.Namespace) -> int:
     # verified artifact. Without a store, publication is unchanged.
     from lumio_wiki.artifact_store import RetentionRequiredError, activation_binding_hook
 
+    retention_required = _artifact_retention_required()
     before_activation = None
     artifact_store = _artifact_store_from_env()
+    if retention_required and artifact_store is None:
+        # Fail closed (#164 review): required retention with no configured
+        # store can never verify coverage, so publication is refused rather
+        # than silently publishing ungated.
+        raise CliError(
+            "artifact retention is required (LUMIO_ARTIFACT_RETENTION=required) "
+            "but no Source Artifact Store is configured (LUMIO_SOURCE_STORE); "
+            "refusing to publish ungated — configure the store or set "
+            "retention to disabled",
+            exit_code=1,
+        )
     if artifact_store is not None:
         from lumio_wiki.ingest import IngestStore
 
@@ -1912,7 +1939,7 @@ def _cmd_publish_s3(args: argparse.Namespace) -> int:
             artifact_store=artifact_store,
             registry=registry,
             source_root=root,
-            required=_artifact_retention_required(),
+            required=retention_required,
         )
     try:
         manifest = publish_s3_version(
@@ -1950,6 +1977,10 @@ def _cmd_publish_s3(args: argparse.Namespace) -> int:
 
 def _cmd_rollback_s3(args: argparse.Namespace) -> int:
     """CAS-activate an already complete immutable S3 Published Version."""
+    from lumio_wiki.artifact_store import (
+        RetentionRequiredError,
+        verify_rollback_coverage,
+    )
     from lumio_wiki.s3_publish import (
         S3PublicationConflict,
         list_cleanup_candidates,
@@ -1957,6 +1988,26 @@ def _cmd_rollback_s3(args: argparse.Namespace) -> int:
     )
 
     store, prefix = _build_publish_store(args.destination)
+    # Rollback IS an activation (#164 review): under required retention the
+    # historical version's private binding manifest must still prove every
+    # referenced non-synthetic source has a verified artifact.
+    if _artifact_retention_required():
+        artifact_store = _artifact_store_from_env()
+        if artifact_store is None:
+            raise CliError(
+                "artifact retention is required (LUMIO_ARTIFACT_RETENTION="
+                "required) but no Source Artifact Store is configured "
+                "(LUMIO_SOURCE_STORE); refusing to activate ungated",
+                exit_code=1,
+            )
+        try:
+            verify_rollback_coverage(
+                artifact_store, args.version, required=True
+            )
+        except RetentionRequiredError as exc:
+            raise CliError(
+                f"rollback blocked (artifact retention required): {exc}", exit_code=1
+            ) from exc
     try:
         manifest = rollback_s3_version(
             store,
@@ -2113,8 +2164,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         # either, keep the hermetic DeterministicHashEmbedder so the default
         # ``--semantic`` run stays offline and CI-stable.
         provider_configured = bool(
-            os.environ.get("LUMIO_PROVIDER_BASE_URL")
-            or os.environ.get("LUMIO_PROVIDER_API_KEY")
+            os.environ.get("LUMIO_PROVIDER_BASE_URL") or os.environ.get("LUMIO_PROVIDER_API_KEY")
         )
         if args.model or provider_configured:
             embedder = _resolve_embedder(args.model)
@@ -2912,11 +2962,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--source-store",
         dest="source_store",
         default=None,
-        metavar="S3-URI",
+        metavar="URI-OR-PATH",
         help=(
-            "Private Source Artifact Store URI recorded as "
-            "LUMIO_SOURCE_STORE (ADR-0020). Refused when the project's .env "
-            "is tracked by git. Requires lumio-wiki[s3]."
+            "Private Source Artifact Store recorded as LUMIO_SOURCE_STORE "
+            "(ADR-0020): an object-store URI (s3://bucket/prefix; requires "
+            "lumio-wiki[s3]) or a local directory path (development). "
+            "Refused when the project's .env is tracked by git."
         ),
     )
     setup_parser.add_argument(

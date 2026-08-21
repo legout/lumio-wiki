@@ -43,6 +43,14 @@ def artifact_content_hash(raw_bytes: bytes) -> str:
     return hashlib.sha256(raw_bytes).hexdigest()
 
 
+#: Maximum retained Source Artifact size at the trust boundary (ADR-0020:
+#: "size limits ... apply at the trust boundary"). Larger sources stay
+#: ordinary hash-only Source Versions; retention refuses them with an
+#: actionable error rather than silently streaming gigabytes into the
+#: private store. Module-level so deployments/tests can tighten it.
+MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
+
+
 class SourceArtifactStore(Protocol):
     """Identity-oriented seam for private Source Artifact retention (#164).
 
@@ -76,9 +84,7 @@ class SourceArtifactStore(Protocol):
     def supports_signing(self) -> bool:
         """Whether :meth:`signed_get_url` can issue exact-object URLs here."""
 
-    def signed_get_url(
-        self, *, source_id: str, content_hash: str, expires_in: timedelta
-    ) -> str:
+    def signed_get_url(self, *, source_id: str, content_hash: str, expires_in: timedelta) -> str:
         """Short-lived signed GET URL for ONE exact artifact (or raise)."""
 
     def put_binding_manifest(self, version: str, manifest: bytes) -> None:
@@ -111,9 +117,7 @@ class InMemoryArtifactStore:
         filename: str | None,
     ) -> None:
         if artifact_content_hash(raw_bytes) != content_hash:
-            raise ArtifactStoreError(
-                "artifact bytes do not hash to the declared content hash"
-            )
+            raise ArtifactStoreError("artifact bytes do not hash to the declared content hash")
         self._artifacts[(source_id, content_hash)] = (raw_bytes, content_type, filename)
 
     def get_artifact(self, *, source_id: str, content_hash: str) -> bytes:
@@ -142,12 +146,8 @@ class InMemoryArtifactStore:
     def supports_signing(self) -> bool:
         return False
 
-    def signed_get_url(
-        self, *, source_id: str, content_hash: str, expires_in: timedelta
-    ) -> str:
-        raise SigningUnavailable(
-            "this Source Artifact Store adapter cannot issue signed URLs"
-        )
+    def signed_get_url(self, *, source_id: str, content_hash: str, expires_in: timedelta) -> str:
+        raise SigningUnavailable("this Source Artifact Store adapter cannot issue signed URLs")
 
     def put_binding_manifest(self, version: str, manifest: bytes) -> None:
         self._manifests[version] = manifest
@@ -248,12 +248,8 @@ class LocalDirectoryArtifactStore:
     def supports_signing(self) -> bool:
         return False
 
-    def signed_get_url(
-        self, *, source_id: str, content_hash: str, expires_in: timedelta
-    ) -> str:
-        raise SigningUnavailable(
-            "this Source Artifact Store adapter cannot issue signed URLs"
-        )
+    def signed_get_url(self, *, source_id: str, content_hash: str, expires_in: timedelta) -> str:
+        raise SigningUnavailable("this Source Artifact Store adapter cannot issue signed URLs")
 
     def put_binding_manifest(self, version: str, manifest: bytes) -> None:
         if "/" in version or version in {"", ".", ".."}:
@@ -311,8 +307,17 @@ class S3ArtifactStore:
         from obstore.exceptions import AlreadyExistsError  # type: ignore[import-not-found]
 
         key = self._key("artifacts", source_id, content_hash)
+        # Stored response metadata for authorized inspection (ADR-0020): the
+        # safe filename and content type ride the object as user metadata so
+        # delivery tooling can force an attachment download without guessing.
+        attributes = {
+            "filename": filename or f"{source_id}.bin",
+            "content_type": content_type or "application/octet-stream",
+        }
         try:
-            self._obstore.put(self._store, key, raw_bytes, mode="create")
+            self._obstore.put(
+                self._store, key, raw_bytes, mode="create", attributes=attributes
+            )
         except AlreadyExistsError:
             # Create-only for a fresh identity; an identical retry must
             # verify what is already there, never overwrite it.
@@ -351,14 +356,10 @@ class S3ArtifactStore:
     def supports_signing(self) -> bool:
         return True
 
-    def signed_get_url(
-        self, *, source_id: str, content_hash: str, expires_in: timedelta
-    ) -> str:
+    def signed_get_url(self, *, source_id: str, content_hash: str, expires_in: timedelta) -> str:
         key = self._key("artifacts", source_id, content_hash)
         try:
-            return str(
-                self._obstore.sign(self._store, "GET", key, expires_in=expires_in)
-            )
+            return str(self._obstore.sign(self._store, "GET", key, expires_in=expires_in))
         except SigningUnavailable:
             raise
         except Exception as exc:  # transport/signer failure — never leak keys
@@ -388,9 +389,7 @@ class S3ArtifactStore:
         return sorted(versions)
 
 
-def sweep_orphaned_uploads(
-    store: SourceArtifactStore, registry: Any
-) -> list[tuple[str, str]]:
+def sweep_orphaned_uploads(store: SourceArtifactStore, registry: Any) -> list[tuple[str, str]]:
     """Report uploaded artifacts the registry has no binding for (#164).
 
     An upload that succeeded but whose registry binding failed is a
@@ -405,9 +404,7 @@ def sweep_orphaned_uploads(
     orphans: list[tuple[str, str]] = []
     for source in registry.list():
         available = {
-            version.content_hash
-            for version in source.versions
-            if version.artifact_available
+            version.content_hash for version in source.versions if version.artifact_available
         }
         # Candidates: the store holds an artifact the registry never bound —
         # exactly the recoverable saga failure (upload succeeded, binding
@@ -416,9 +413,7 @@ def sweep_orphaned_uploads(
         for version in source.versions:
             if version.content_hash in available:
                 continue
-            if store.artifact_exists(
-                source_id=source.source_id, content_hash=version.content_hash
-            ):
+            if store.artifact_exists(source_id=source.source_id, content_hash=version.content_hash):
                 orphans.append((source.source_id, version.content_hash))
     return orphans
 
@@ -509,35 +504,46 @@ def build_binding_manifest(
     )
 
 
-def write_binding_manifest(
-    store: SourceArtifactStore, manifest: SourceBindingManifest
-) -> bytes:
+def write_binding_manifest(store: SourceArtifactStore, manifest: SourceBindingManifest) -> bytes:
     """Serialize and store the manifest in the private store (pre-activation)."""
     raw = msgspec.json.encode(manifest)
     store.put_binding_manifest(manifest.published_version, raw)
     return raw
 
 
-def _artifact_coverage(
-    store: SourceArtifactStore | None,
-    manifest: SourceBindingManifest,
+def required_coverage_missing(
+    store: SourceArtifactStore,
     registry: Any,
+    pages: list[Any],
 ) -> list[str]:
-    """Return unmet artifact requirements (empty = coverage complete).
+    """Unmet artifact requirements under REQUIRED retention (#164, ADR-0020).
 
-    A referenced non-synthetic entry needs an artifact the store can verify
-    RIGHT NOW (the registry flag alone is not trust: the store is re-checked).
+    "Publication blocks if a referenced non-synthetic source lacks a verified
+    artifact" — evaluated against the pages being activated, not just the
+    manifest: a source id the private registry does not know can never have a
+    verified artifact, so it blocks (the manifest only binds registered
+    identities; an unregistered reference is a coverage hole, not a pass).
+    The registry availability flag alone is not trust either: the store is
+    re-verified live for every referenced identity.
     """
-    if store is None:
-        return []
+    from lumio_wiki.source_registry import SourceRegistryError
+
     missing: list[str] = []
-    for entry in manifest.entries:
-        if entry.synthetic_page:
+    seen: set[tuple[str, str]] = set()
+    for page in pages:
+        if bool(getattr(page, "synthetic", False)):
             continue
-        if not store.artifact_exists(
-            source_id=entry.source_id, content_hash=entry.content_hash
-        ):
-            missing.append(f"{entry.page_title}:{entry.source_id}")
+        for source in page.sources:
+            if not source.id or (page.title, source.id) in seen:
+                continue
+            seen.add((page.title, source.id))
+            try:
+                current = registry.get(source.id).versions[-1]
+            except SourceRegistryError:
+                missing.append(f"{page.title}:{source.id} (unregistered source)")
+                continue
+            if not store.artifact_exists(source_id=source.id, content_hash=current.content_hash):
+                missing.append(f"{page.title}:{source.id}")
     return missing
 
 
@@ -567,6 +573,12 @@ def retain_artifact(
     Returns the content hash. The registry must already hold the Source
     Version (managed ingest registers identity first, then retains).
     """
+    if len(raw_bytes) > MAX_ARTIFACT_BYTES:
+        raise ArtifactStoreError(
+            f"source exceeds the maximum retained artifact size "
+            f"({len(raw_bytes)} > {MAX_ARTIFACT_BYTES} bytes); the Source "
+            "Version is registered hash-only — retention refused"
+        )
     content_hash = artifact_content_hash(raw_bytes)
     store.put_artifact(
         source_id=source_id,
@@ -622,12 +634,13 @@ def activation_binding_hook(
             pages=list(kb.pages),
             now=_utc_now_iso(),
         )
-        missing = _artifact_coverage(artifact_store, manifest, registry) if required else []
-        if missing:
-            raise RetentionRequiredError(
-                "artifact retention is required but these referenced sources "
-                "lack a verified artifact: " + ", ".join(missing)
-            )
+        if required:
+            missing = required_coverage_missing(artifact_store, registry, list(kb.pages))
+            if missing:
+                raise RetentionRequiredError(
+                    "artifact retention is required but these referenced sources "
+                    "lack a verified artifact: " + ", ".join(missing)
+                )
         write_binding_manifest(artifact_store, manifest)
 
     return hook
@@ -637,6 +650,43 @@ def _utc_now_iso() -> str:
     from datetime import UTC, datetime
 
     return datetime.now(UTC).isoformat()
+
+
+def verify_rollback_coverage(
+    artifact_store: SourceArtifactStore, version: str, *, required: bool
+) -> None:
+    """Gate ROLLBACK activation under required retention (#164, ADR-0020).
+
+    Activation blocks until every referenced non-synthetic source has a
+    verified artifact — rollback is an activation of an already complete
+    Published Version, so its PRIVATE binding manifest (not the current
+    registry state) defines coverage for that historical version. A version
+    with no stored manifest cannot prove coverage and fails closed.
+    No-op when retention is not required.
+    """
+    if not required:
+        return
+    try:
+        raw = artifact_store.get_binding_manifest(version)
+    except ArtifactStoreError as exc:
+        raise RetentionRequiredError(
+            f"artifact retention is required but Published Version {version!r} "
+            "has no private Source Binding Manifest to verify coverage"
+        ) from exc
+    manifest = msgspec.json.decode(raw, type=SourceBindingManifest)
+    missing = [
+        f"{entry.page_title}:{entry.source_id}"
+        for entry in manifest.entries
+        if not entry.synthetic_page
+        and not artifact_store.artifact_exists(
+            source_id=entry.source_id, content_hash=entry.content_hash
+        )
+    ]
+    if missing:
+        raise RetentionRequiredError(
+            "artifact retention is required but these sources bound by "
+            f"{version!r} lack a verified artifact: " + ", ".join(missing)
+        )
 
 
 # ---------------------------------------------------------------------------
