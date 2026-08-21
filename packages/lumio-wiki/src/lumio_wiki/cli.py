@@ -976,8 +976,8 @@ def _agents_md_s3_config(
         # check).
         lines.append(
             "- Private source artifact store configured in `.env` "
-            "(`LUMIO_SOURCE_STORE`) — private; never commit `.env` or copy "
-            "its value into tracked files."
+            "(`LUMIO_SOURCE_STORE`) — optional and private; never commit `.env` "
+            "or copy its value into tracked files."
         )
     if not lines:
         return ""

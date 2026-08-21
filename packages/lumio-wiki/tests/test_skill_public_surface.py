@@ -243,8 +243,7 @@ def test_surfaces_distinguish_extracted_references_from_typed_relationships():
         # cross-link is described in terms of Extracted References (body-link
         # topology), not as creating a typed canonical Relationship.
         assert re.search(r"cross-link.{0,180}extracted", flat), (
-            f"{name}: cross-link must be tied to Extracted References, "
-            "not to typed Relationships"
+            f"{name}: cross-link must be tied to Extracted References, not to typed Relationships"
         )
         assert "relationship stage" in flat, (
             f"{name}: must document relationship stage as the typed-edge command"
@@ -258,9 +257,7 @@ def test_real_world_readme_names_exact_setup_and_restart_check():
     session so the Knowledge Base and an optional installed skill are both
     discovered."""
     root = Path(__file__).parents[3]
-    readme = (root / "examples" / "real-world-lumio-wiki" / "README.md").read_text(
-        encoding="utf-8"
-    )
+    readme = (root / "examples" / "real-world-lumio-wiki" / "README.md").read_text(encoding="utf-8")
     assert "lumio-wiki setup" in readme, "README must name the exact setup command"
     assert "restart" in readme.lower() or "new session" in readme.lower(), (
         "README must include a restart/new-session check"
@@ -278,9 +275,7 @@ def test_command_coverage_parity_for_relationship_and_source_lifecycle():
     skill = resolve_skill_path().read_text(encoding="utf-8")
     usage = (root / "docs" / "usage.md").read_text(encoding="utf-8")
     for name, text in (("SKILL.md", skill), ("docs/usage.md", usage)):
-        assert "relationship stage" in text.lower(), (
-            f"{name}: must document relationship stage"
-        )
+        assert "relationship stage" in text.lower(), f"{name}: must document relationship stage"
         assert "lumio-wiki source" in text.lower(), (
             f"{name}: must document the source lifecycle commands"
         )
@@ -326,3 +321,117 @@ def test_s3_setup_forms_parity_across_public_surfaces():
     setup_help = _cli_help("setup")
     assert "--publish-to" in setup_help and "--from" in setup_help
     assert "lumio-wiki[s3]" in setup_help and "lumio-lancedb[s3]" in setup_help
+
+
+# --- Issue #166: certify the S3 coding-agent journey documentation parity ----
+
+
+def _journey_surfaces() -> dict[str, str]:
+    """The parity surfaces for the S3 journey contract (#166): the packaged
+    skill + protocol, the usage docs, the generated AGENTS.md section, and the
+    real-world trial README that documents the exact journey sequence."""
+    root = Path(__file__).parents[3]
+    return {
+        **dict(_skill_and_protocol()),
+        "docs/usage.md": (root / "docs" / "usage.md").read_text(encoding="utf-8"),
+        "AGENTS.md": _generated_agents_md(),
+        "examples/real-world-lumio-wiki/README.md": (
+            root / "examples" / "real-world-lumio-wiki" / "README.md"
+        ).read_text(encoding="utf-8"),
+    }
+
+
+def test_s3_journey_is_documented_across_public_surfaces():
+    """Issue #166 AC1: one documented command sequence covers the journey from
+    an empty project (journey install, maintainer setup, mixed-format managed
+    ingest, immutable publication with remote LanceDB) through a separate
+    read-only project (fresh-harness retrieval, exact Source Artifact
+    inspection, historical versions) to conflict/rollback/orphan/zero-index
+    behavior. The surfaces cannot silently drop a journey leg again."""
+    surfaces = _journey_surfaces()
+    readme = surfaces["examples/real-world-lumio-wiki/README.md"]
+    # The exact certified sequence (mirrors test_s3_agent_journey_minio.py).
+    for fragment in (
+        "lumio-wiki[s3]",
+        "lumio-lancedb[s3]",
+        "lumio-wiki setup ./knowledge-base",
+        "--publish-to s3://",
+        "--retrieval lancedb",
+        "--source-store s3://",
+        "--artifact-retention required",
+        "--skill-scope project",
+        "lumio-wiki validate",
+        "--compiled-page staging/overview-page.md --source-id overview-src",
+        "proposal validate",
+        "lumio-wiki publish-s3 --version v1 --retrieval lancedb",
+        "lumio-wiki setup --from s3://public-kb-bucket/team-kb",
+        'lumio-wiki search "coating process"',
+        "lumio-wiki source inspect --source-id overview-src",
+        "lumio-wiki source fetch --source-id overview-src --output",
+        "lumio-wiki source link --source-id overview-src --expires 5m",
+        "lumio-wiki source retire knowledge-base --source-id overview-src",
+        "lumio-wiki source reactivate knowledge-base --source-id overview-src",
+        "lumio-wiki publish-s3 --version v2 --retrieval lancedb",
+        "--published-version v1",
+        "lumio-wiki cleanup-s3",
+        "lumio-wiki rollback-s3",
+        "LUMIO_RETRIEVAL_BACKEND=zero-index",
+    ):
+        assert fragment in readme, f"journey README must document {fragment!r}"
+    # The restart/new-session discovery check stays part of the journey docs.
+    assert "Restart the harness" in readme or "restart" in readme.lower()
+    # The install isolation and MinIO certification are named as the guards.
+    assert "test_s3_agent_journey_minio.py" in readme
+    assert "test_wheel_isolation.py" in readme
+    # The usage docs keep the publish/reader/inspection legs (ADR-0017 set).
+    usage = surfaces["docs/usage.md"]
+    for fragment in (
+        "publish-s3 <kb> [dest] --version <v>",
+        "--retrieval lancedb",
+        "setup --from s3://public-kb-bucket/team-kb",
+        "source inspect",
+        "source fetch",
+        "source link",
+        "rollback-s3",
+        "cleanup-s3",
+    ):
+        assert fragment in usage, f"docs/usage.md must document {fragment!r}"
+
+
+def test_source_artifacts_documented_optional_private_and_not_evidence():
+    """Issue #166: every public instruction surface documents that raw Source
+    Artifacts are optional (retention disabled by default) and private, and
+    that source inspection is authorized provenance review — not Evidence and
+    not claim-level lineage."""
+    from lumio_wiki.cli import _agents_md_s3_config
+
+    surfaces = _journey_surfaces()
+    # The generated AGENTS.md carries the contract in its configured S3 block.
+    surfaces["AGENTS.md"] += _agents_md_s3_config(
+        "s3://public-bucket/team-kb", "lancedb", "s3://private-bucket/team-kb"
+    )
+    for name, text in surfaces.items():
+        flat = re.sub(r"\s+", " ", text.lower())
+        assert "optional" in flat and "source artifact" in flat.replace("artifacts", "artifact"), (
+            f"{name}: must document that raw Source Artifacts are optional"
+        )
+        assert "private" in flat, f"{name}: must document that raw Source Artifacts are private"
+        assert (
+            ("not evidence" in flat) or ("not claim-level" in flat) or ("not claim level" in flat)
+        ), f"{name}: must document that source inspection is not Evidence / claim-level lineage"
+
+
+def test_doctor_guides_the_s3_journey_install(monkeypatch, capsys):
+    """Issue #166: doctor guidance is a parity surface — when the S3
+    capabilities are absent it names the exact journey install commands
+    (lumio-wiki[s3], lumio-lancedb[s3]) through the public CLI."""
+    import lumio_wiki.cli as cli_module
+
+    monkeypatch.setattr(cli_module, "_detect_module", lambda name: False)
+    rc = main(["doctor"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "extra[s3]: not installed" in out
+    assert "pip install 'lumio-wiki[s3]'" in out
+    assert "extra[lancedb]: not installed" in out
+    assert "pip install 'lumio-lancedb[s3]'" in out

@@ -899,3 +899,102 @@ def test_isolated_retrieval_ladder(isolated_wheel_env: dict, tmp_path: Path):
     # AC6 invariant re-checked from the same isolated install: none of the
     # heavyweight deps sneaked in while exercising the whole ladder.
     _assert_heavyweight_not_importable(python)
+
+
+# --- Issue #166: the S3 coding-agent journey install shape --------------------
+
+
+def _build_lumio_lancedb_wheel(wheel_dir: Path) -> Path:
+    """Build the lumio-lancedb wheel into ``wheel_dir`` and return its path."""
+    wheel_dir.mkdir(parents=True, exist_ok=True)
+    workspace_root = Path(__file__).parents[3]
+    if _has_uv():
+        cmd = [
+            "uv",
+            "build",
+            "--package",
+            "lumio-lancedb",
+            "--wheel",
+            "--out-dir",
+            str(wheel_dir),
+        ]
+    else:
+        pkg = workspace_root / "packages" / "lumio-lancedb"
+        cmd = [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", str(wheel_dir), str(pkg)]
+    subprocess.run(cmd, cwd=str(workspace_root), check=True, capture_output=True)
+    wheels = list(wheel_dir.glob("lumio_lancedb-*.whl"))
+    assert len(wheels) == 1, f"expected exactly one lumio-lancedb wheel, got {wheels}"
+    return wheels[0]
+
+
+@pytest.fixture(scope="module")
+def s3_journey_wheel_env(tmp_path_factory: pytest.TempPathFactory) -> dict:
+    """The exact install shape of the S3 journey (issue #166 AC2).
+
+    ``uv tool install 'lumio-wiki[s3]' --with 'lumio-lancedb[s3]'`` is the
+    documented journey install; this fixture reproduces its resolution
+    deterministically from the workspace wheels: lumio-wiki + the [s3] extra,
+    lumio-lancedb + the [s3] extra, their declared dependencies, and nothing
+    else — never the full ``lumio`` application and never unrelated extras.
+    """
+    wheel_dir = tmp_path_factory.mktemp("wheels-s3")
+    venv_dir = tmp_path_factory.mktemp("venv-s3")
+    wiki_wheel = _build_wheel(wheel_dir)
+    lance_wheel = _build_lumio_lancedb_wheel(wheel_dir)
+    python = _create_isolated_venv(venv_dir)[0]
+    # One resolver run over both wheels (extras included) so lumio-lancedb's
+    # lumio-wiki requirement is satisfied by the local wheel, not PyPI.
+    targets = [f"{wiki_wheel}[s3]", str(lance_wheel)]
+    if _has_uv():
+        cmd = ["uv", "pip", "install", "--python", str(python), *targets]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", *targets]
+    subprocess.run(cmd, check=True, capture_output=True, cwd=str(venv_dir))
+    return {"python": python, "venv": venv_dir}
+
+
+def test_s3_journey_installs_only_wiki_lancedb_and_skill(
+    s3_journey_wheel_env: dict, tmp_path: Path
+):
+    """Issue #166 AC2: from the journey install, doctor reports exactly the
+    S3 capabilities present and the unrelated extras absent; the full
+    ``lumio`` application is not importable; and the packaged Agent Skill
+    installs into a project without any heavyweight dependency."""
+    python = s3_journey_wheel_env["python"]
+    script = python.parent / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
+
+    # The journey's imports resolve...
+    result = subprocess.run(
+        [str(python), "-c", "import lumio_wiki, lumio_lancedb, obstore"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    # ...and nothing beyond the journey's packages does: no full lumio app,
+    # no unrelated lumio-wiki extras ([documents], [llm]).
+    for forbidden in ("lumio", "openai", "liteparse", "markitdown", "anydoc"):
+        probe = subprocess.run(
+            [str(python), "-c", f"import {forbidden}"], capture_output=True, text=True
+        )
+        assert probe.returncode != 0, f"{forbidden!r} must not be part of the journey install"
+
+    doctor = subprocess.run([str(script), "doctor"], capture_output=True, text=True)
+    assert doctor.returncode == 0, doctor.stderr
+    assert "extra[s3]: installed" in doctor.stdout
+    assert "extra[lancedb]: installed" in doctor.stdout
+    assert "extra[documents]: not installed" in doctor.stdout
+    assert "extra[llm]: not installed" in doctor.stdout
+
+    # The Agent Skill is the fourth journey deliverable: a project-scope
+    # install works from the same isolated environment.
+    project = tmp_path / "coding-agent-project"
+    project.mkdir()
+    skill = subprocess.run(
+        [str(script), "skill", "install", "--scope", "project"],
+        capture_output=True,
+        text=True,
+        cwd=str(project),
+    )
+    assert skill.returncode == 0, skill.stderr
+    assert (project / ".agents" / "skills" / "lumio-wiki" / "SKILL.md").is_file()
+    assert (project / ".agents" / "skills" / "lumio-wiki" / "PROTOCOL.md").is_file()

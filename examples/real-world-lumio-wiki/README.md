@@ -490,6 +490,85 @@ deployed rather than the issue's literal endpoint names:
   inspection" above); a headless capture via the external `agent-browser` is a
   manual step against that session, not part of the hermetic smoke;
 
+## The S3 coding-agent journey (#166)
+
+The complete `lumio-wiki` + `lumio-lancedb` S3 journey — from an empty
+project to fresh-harness retrieval and source inspection — is certified by
+`packages/lumio-wiki/tests/test_s3_agent_journey_minio.py` (runs against a
+real MinIO boundary when `LUMIO_S3_ENDPOINT` is set; every CLI phase is a
+fresh subprocess, so nothing relies on in-process state). The documented
+command sequence:
+
+```bash
+# 1. Install ONLY the journey packages (never the full lumio app):
+#    uv tool install 'lumio-wiki[s3]' --with 'lumio-lancedb[s3]'
+#    (install shape certified by test_wheel_isolation.py::test_s3_journey_*)
+
+# 2. Maintainer: one setup command — local worktree, S3 publication,
+#    remote LanceDB retrieval, private Source Artifact Store, project skill.
+lumio-wiki setup ./knowledge-base \
+  --publish-to s3://public-kb-bucket/team-kb \
+  --retrieval lancedb \
+  --source-store s3://private-source-bucket/team-kb \
+  --artifact-retention required \
+  --skill-scope project
+
+# 3. Restart the harness (fresh session): pathless commands discover the KB
+#    and configuration from .env alone.
+lumio-wiki validate
+
+# 4. Managed-ingest a mixed-format raw source and review the proposal.
+lumio-wiki ingest knowledge-base sources/company-overview.md \
+  --compiled-page staging/overview-page.md --source-id overview-src
+lumio-wiki proposal list knowledge-base
+lumio-wiki proposal validate knowledge-base <proposal-id>
+lumio-wiki publish knowledge-base <proposal-id>
+
+# 5. Publish one complete immutable S3 version (remote LanceDB index built
+#    and health-checked BEFORE activation) and activate it.
+lumio-wiki publish-s3 --version v1 --retrieval lancedb
+
+# 6. Separate read-only coding-agent project against the S3 Location.
+lumio-wiki setup --from s3://public-kb-bucket/team-kb \
+  --retrieval lancedb \
+  --source-store s3://private-source-bucket/team-kb \
+  --skill-scope project
+
+# 7. Fresh harness session retrieves citation-ready Evidence through remote
+#    LanceDB (pathless).
+lumio-wiki search "coating process"
+
+# 8-9. Fetch the exact underlying Source Artifact and quote bounded original
+#    text (label binary/converted extraction as DERIVED); the signed link is
+#    a five-minute exact-object bearer grant.
+lumio-wiki source inspect --source-id overview-src
+lumio-wiki source fetch --source-id overview-src --output ./overview-original.md
+lumio-wiki source link --source-id overview-src --expires 5m
+
+# 10. Publish a replacement Source Version (retire -> reactivate -> managed
+#     ingest), publish v2; the historical v1 still fetches historical bytes.
+lumio-wiki source retire knowledge-base --source-id overview-src
+lumio-wiki publish knowledge-base <retire-proposal-id>
+lumio-wiki source reactivate knowledge-base --source-id overview-src \
+  --file sources/company-overview-v2.md
+lumio-wiki publish knowledge-base <reactivate-proposal-id>
+lumio-wiki ingest knowledge-base sources/company-overview-v2.md \
+  --compiled-page staging/overview-page-v2.md --source-id overview-src
+lumio-wiki publish knowledge-base <revision-proposal-id>
+lumio-wiki publish-s3 --version v2 --retrieval lancedb
+lumio-wiki source fetch --source-id overview-src --published-version v1 \
+  --output ./overview-v1-original.md
+
+# 11. Conflict, rollback, orphan reporting, zero-index fallback.
+lumio-wiki cleanup-s3 s3://public-kb-bucket/team-kb   # reports interrupted builds
+lumio-wiki rollback-s3 s3://public-kb-bucket/team-kb --version v1
+LUMIO_RETRIEVAL_BACKEND=zero-index lumio-wiki search "coating process"
+```
+
+Raw Source Artifacts are optional (retention is disabled by default) and
+private; source inspection is authorized provenance review, not Evidence and
+not claim-level lineage.
+
 ## Trial boundaries
 
 - Do not ingest `README.md`, `evaluation/`, or `tools/`; only `sources/` contains Knowledge Sources.

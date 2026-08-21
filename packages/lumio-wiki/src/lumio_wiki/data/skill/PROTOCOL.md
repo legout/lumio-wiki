@@ -273,6 +273,8 @@ registry's current Source Version; an S3 Knowledge Base resolves the active
 Published Version once (or the explicit `--published-version`) through its
 private Source Binding Manifest. There is no fetch-by-hash and no object-key
 interface, and an absent binding NEVER substitutes the latest Source Version.
+Raw Source Artifacts are optional (retention is disabled by default) and
+private — they never appear in the published Knowledge Base.
 
 `inspect` reports secret-free metadata (safe filename, media type, size,
 digest abbreviation, publication binding, verified availability,

@@ -110,6 +110,10 @@ Notes:
   with the required flags instead of prompting.
 - After reader setup, pathless commands read the active Published Version:
   `lumio-wiki search "query"` (no path, no local copy).
+- Raw Source Artifacts are optional (retention is disabled by default) and
+  private: the store never appears in the published Knowledge Base, and
+  `source inspect`/`fetch`/`link` are authorized provenance review — not
+  Evidence and not claim-level lineage.
 
 ### lumio-wiki — portable Knowledge Base CLI
 
@@ -139,6 +143,9 @@ lumio-wiki discard <kb> <id>                 # discard a proposal
 lumio-wiki relationship stage <kb> <src> <tgt> --type T  # stage a typed canonical Relationship proposal
 lumio-wiki cross-link <kb> [--stage]         # missing-link candidates (Extracted References); --stage repairs as links
 lumio-wiki source <kb> <list|retire|reactivate> --source-id <id>  # manage private Source lifecycle (ADR-0014)
+lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]  # secret-free metadata for the exact bound Source Version (ADR-0020)
+lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>  # byte-exact original, digest/size re-verified (private, optional)
+lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]  # short-lived exact-object signed GET URL (bearer secret; 1 h max)
 lumio-wiki publish-s3 <kb> [dest] --version <v>  # publish immutable S3 Published Version
               [--expected-pointer-version <v>]    # (compare-and-swap guard; dest defaults to LUMIO_PUBLISH_TO)
               [--retrieval lancedb]               # build+health-check remote LanceDB under
