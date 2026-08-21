@@ -519,9 +519,7 @@ def test_historical_manifest_survives_new_source_version(tmp_path):
     v1_binding = msgspec.json.decode(
         artifact_store.get_binding_manifest("v1"), type=SourceBindingManifest
     )
-    old_hash = next(
-        e.content_hash for e in v1_binding.entries if e.source_id == "annual-report"
-    )
+    old_hash = next(e.content_hash for e in v1_binding.entries if e.source_id == "annual-report")
 
     # A later reviewed retirement + reactivation registers a NEW Source
     # Version; the historical manifest still identifies the historical
@@ -539,8 +537,7 @@ def test_historical_manifest_survives_new_source_version(tmp_path):
         artifact_store.get_binding_manifest("v1"), type=SourceBindingManifest
     )
     assert (
-        next(e.content_hash for e in v1_again.entries if e.source_id == "annual-report")
-        == old_hash
+        next(e.content_hash for e in v1_again.entries if e.source_id == "annual-report") == old_hash
     )
     # The historical artifact bytes are still fetchable by exact identity.
     assert artifact_store.get_artifact(source_id="annual-report", content_hash=old_hash) == RAW
@@ -711,8 +708,7 @@ def test_required_retention_blocks_unregistered_source_references(tmp_path):
     # The authored page cites the registered annual-report AND a second
     # source id that was never privately registered.
     authored = _authored_page("annual-report").replace(
-        '  - id: "annual-report"\n'
-        '    title: "annual-report source"\n',
+        '  - id: "annual-report"\n    title: "annual-report source"\n',
         '  - id: "annual-report"\n'
         '    title: "annual-report source"\n'
         '  - id: "ghost-reference"\n'
@@ -745,9 +741,7 @@ def test_publish_s3_required_without_store_fails_closed(tmp_path, monkeypatch, c
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
     monkeypatch.setenv("LUMIO_ARTIFACT_RETENTION", "required")
-    rc = cli.main(
-        ["publish-s3", str(kb_root), "s3://bucket/kb", "--version", "v1"]
-    )
+    rc = cli.main(["publish-s3", str(kb_root), "s3://bucket/kb", "--version", "v1"])
     assert rc == 1
     assert "no Source Artifact Store is configured" in capsys.readouterr().err
 
@@ -910,3 +904,39 @@ def _env_value_text(project: Path, key: str) -> str | None:
         if raw.startswith(prefix):
             return raw[len(prefix) :].strip() or None
     return None
+
+
+def test_required_retention_never_echoes_secret_bearing_source_ids(tmp_path):
+    """An invalid source id (e.g. a pasted credential declared on a page) is
+    reported with a generic label under required retention — never echoed
+    into the blocking error (registry boundary convention, ADR-0020)."""
+    kb = _kb(tmp_path)
+    artifact_store = InMemoryArtifactStore()
+    pipeline, ingest = _pipeline(kb, tmp_path, artifact_store=artifact_store)
+    registry = ingest.source_registry
+    secret_id = "sk-live-example-secret"
+    authored = _authored_page("annual-report").replace(
+        '  - id: "annual-report"\n'
+        '    title: "annual-report source"\n',
+        '  - id: "annual-report"\n'
+        '    title: "annual-report source"\n'
+        f'  - id: "{secret_id}"\n'
+        '    title: "Pasted credential"\n',
+    )
+    assert secret_id in authored
+    proposal = pipeline.managed_ingest(
+        RAW, "application/pdf", "report.pdf", "annual-report", authored
+    )
+    assert pipeline.publish(proposal.id).status == "published"
+
+    store = obstore.store.MemoryStore()
+    hook = activation_binding_hook(
+        artifact_store=artifact_store,
+        registry=registry,
+        source_root=kb.root,
+        required=True,
+    )
+    with pytest.raises(RetentionRequiredError) as excinfo:
+        _publish(store, kb, version="v1", hook=hook)
+    assert secret_id not in str(excinfo.value)
+    assert "<invalid source id>" in str(excinfo.value)

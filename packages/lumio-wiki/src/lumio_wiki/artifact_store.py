@@ -526,7 +526,7 @@ def required_coverage_missing(
     The registry availability flag alone is not trust either: the store is
     re-verified live for every referenced identity.
     """
-    from lumio_wiki.source_registry import SourceRegistryError
+    from lumio_wiki.source_registry import SourceRegistryError, _validate_source_id
 
     missing: list[str] = []
     seen: set[tuple[str, str]] = set()
@@ -537,9 +537,18 @@ def required_coverage_missing(
             if not source.id or (page.title, source.id) in seen:
                 continue
             seen.add((page.title, source.id))
+            # Never echo an invalid, possibly secret-bearing source id (the
+            # registry's own boundary convention): validate the shape first
+            # and report a generic label for anything malformed.
+            try:
+                _validate_source_id(source.id)
+            except SourceRegistryError:
+                missing.append(f"{page.title}:<invalid source id> (unregistered source)")
+                continue
             try:
                 current = registry.get(source.id).versions[-1]
             except SourceRegistryError:
+                # A validated-but-unknown id is a safe label and may be echoed.
                 missing.append(f"{page.title}:{source.id} (unregistered source)")
                 continue
             if not store.artifact_exists(source_id=source.id, content_hash=current.content_hash):
