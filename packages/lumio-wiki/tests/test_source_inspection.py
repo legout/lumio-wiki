@@ -203,6 +203,21 @@ def test_resolve_manifest_binding_rejects_secret_bearing_id_without_echo():
     assert "password=hunter2" not in str(excinfo.value)
 
 
+def test_resolve_manifest_binding_identity_mismatch_is_corruption():
+    # A manifest stored under one version key but naming another version is
+    # misplaced/tampered state: never a usable binding (#165 review).
+    store = _store_with_manifest(
+        "v-wrong-identity",
+        [SourceBindingEntry(page_title="P", source_id="report", content_hash="ef" * 32)],
+    )
+    # Re-store it under a DIFFERENT version label than it declares.
+    raw = store.get_binding_manifest("v-wrong-identity")
+    store.put_binding_manifest("v-requested", raw)
+    with pytest.raises(SourceInspectionError) as excinfo:
+        resolve_manifest_binding(store, "v-requested", "report")
+    assert excinfo.value.outcome == OUTCOME_CORRUPTION
+
+
 # ---------------------------------------------------------------------------
 # Fetch: byte-exact retrieval with digest and size re-verification.
 # ---------------------------------------------------------------------------

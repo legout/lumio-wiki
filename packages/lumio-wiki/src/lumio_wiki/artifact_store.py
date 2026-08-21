@@ -238,7 +238,15 @@ class LocalDirectoryArtifactStore:
                 return
             raise ArtifactStoreError("an artifact already exists at this identity")
         meta = msgspec.json.encode(
-            {"content_type": content_type, "filename": filename, "size": len(raw_bytes)}
+            {
+                "content_type": content_type,
+                "filename": filename,
+                "size": len(raw_bytes),
+                # Attachment-preferring disposition for delivery tooling
+                # (ADR-0020 #165): same stored metadata contract as the S3
+                # adapter's user metadata.
+                "content_disposition": f'attachment; filename="{filename or f"{source_id}.bin"}"',
+            }
         )
         path.write_bytes(raw_bytes)
         path.with_suffix(".meta").write_bytes(meta)
@@ -298,6 +306,10 @@ class LocalDirectoryArtifactStore:
         (self.root / "bindings" / f"{version}.json").write_bytes(manifest)
 
     def get_binding_manifest(self, version: str) -> bytes:
+        # Same label constraint as put_binding_manifest (defense in depth):
+        # a read request can never traverse the private bindings directory.
+        if "/" in version or "\\" in version or version in {"", ".", ".."}:
+            raise ArtifactStoreError("invalid version label")
         path = self.root / "bindings" / f"{version}.json"
         # Read-first: a permission failure is access denial, not a missing
         # manifest (#165).
@@ -358,11 +370,17 @@ class S3ArtifactStore:
 
         key = self._key("artifacts", source_id, content_hash)
         # Stored response metadata for authorized inspection (ADR-0020): the
-        # safe filename and content type ride the object as user metadata so
-        # delivery tooling can force an attachment download without guessing.
+        # safe filename, content type, and an attachment-preferring content
+        # disposition ride the object as user metadata so delivery tooling
+        # can force a download with a safe name instead of inline rendering.
+        # ponytail: obstore 0.11 cannot set the real Content-Disposition
+        # response header on GET/sign — add a response-content-disposition
+        # override to signed_get_url when obstore exposes one.
+        safe_name = filename or f"{source_id}.bin"
         attributes = {
-            "filename": filename or f"{source_id}.bin",
+            "filename": safe_name,
             "content_type": content_type or "application/octet-stream",
+            "content_disposition": f'attachment; filename="{safe_name}"',
         }
         try:
             self._obstore.put(

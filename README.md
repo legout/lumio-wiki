@@ -240,8 +240,8 @@ lumio-wiki ingest <kb-path> <source> [--distiller passthrough|llm]   # stage a K
 lumio-wiki proposal list|inspect|validate <kb-path> [id]      # review staged proposals
 lumio-wiki publish <kb-path> <id>                # publish a reviewed proposal
 lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]  # secret-free metadata for the exact bound Source Version
-lumio-wiki source fetch <kb> --source-id <id> --output <path>  # byte-exact original Source Artifact, digest re-verified
-lumio-wiki source link <kb> --source-id <id> [--expires 5m]   # short-lived signed GET URL (max 1h; bearer secret)
+lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>  # byte-exact original, digest re-verified
+lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]   # short-lived signed GET URL (max 1h; bearer secret)
 lumio-wiki health <kb-path>                      # Knowledge Base health and diagnostics
 lumio-wiki doctor                                # install shape: version, optionals, packaged skill location
 lumio-wiki skill [--install|--path]              # locate or install the packaged Agent Skill

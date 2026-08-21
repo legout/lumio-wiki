@@ -466,13 +466,16 @@ def test_minio_cli_source_link_downloads_same_digest_and_fetch_is_byte_exact(
     out = capsys.readouterr().out
     url = out.splitlines()[0]
     assert url.startswith("http")
-    assert f"{artifact_prefix}/artifacts/minio-report/{digest}" in url
     assert "bearer secret" in out
+    # No credential material rides the URL (temporary bearer grant only).
+    assert _os.environ["LUMIO_S3_SECRET_ACCESS_KEY"] not in url
     # The signed link downloads the same digest as the retained artifact.
     assert urllib.request.urlopen(url, timeout=10).read() == RAW
-    # The signature authorizes exactly this object, not a neighbor.
+    # The signature authorizes exactly this object: a URL pointing at any
+    # other object under the same prefix is refused.
     with pytest.raises(urllib.error.HTTPError):
         urllib.request.urlopen(url.replace(digest, "0" * 64), timeout=10)
+
 
     out_file = tmp_path / "fetched.pdf"
     rc = main(

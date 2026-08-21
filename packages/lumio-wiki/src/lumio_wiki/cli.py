@@ -85,6 +85,7 @@ from lumio_wiki.source_inspection import (
     resolve_manifest_binding,
     resolve_registry_binding,
     safe_fetch_destination,
+    validate_published_version,
 )
 
 # Derived-state directory name inside a Knowledge Base root. Holds the
@@ -912,7 +913,8 @@ automatically when no `<kb>` argument is given).{s3_config}
    --output <path>` — byte-exact original, digest and size re-verified, to an
    explicit destination. Prefer verified `fetch` over `link` (signed URLs can
    leak through conversation history).
-3. `lumio-wiki source link [<kb>] --source-id <id> [--expires 5m]` — an
+3. `lumio-wiki source link [<kb>] --source-id <id> [--published-version <v>]
+   [--expires 5m]` — an
    explicit short-lived signed GET URL for the exact artifact (5 min default,
    1 h max) when the store supports signing. Treat the URL as a bearer
    secret: never persist, log, or paste it.
@@ -2854,6 +2856,14 @@ def _resolve_source_binding(args: argparse.Namespace):
     version = getattr(args, "published_version", None)
     if version is None and _is_object_store_uri(str(args.path)):
         version = _active_published_version(str(args.path))
+    if version is not None:
+        # Validate BEFORE any binding lookup or error echo: an unsafe label
+        # (traversal, secret-bearing text) is a usage error reported without
+        # echoing the value (#165 review).
+        try:
+            validate_published_version(version)
+        except ValueError as exc:
+            raise CliError(str(exc)) from None
     artifact_store = _artifact_store_from_env()
     try:
         if version is not None:

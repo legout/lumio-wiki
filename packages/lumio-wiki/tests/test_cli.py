@@ -2702,6 +2702,22 @@ def test_source_inspect_rejects_secret_bearing_source_id_without_echo(
     assert secret_id not in combined.out + combined.err
 
 
+def test_source_inspect_rejects_unsafe_published_version_without_echo(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store_root = tmp_path / "artifact-store"
+    _retained_policy_source(source_kb, store_root)
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+    for unsafe in ("../secret", "v1/../../etc", "token=abc", "a b"):
+        rc = main(
+            ["source", "inspect", str(source_kb), "--source-id", "policy",
+             "--published-version", unsafe]
+        )
+        assert rc == 2, unsafe
+        combined = capsys.readouterr()
+        assert unsafe not in combined.out + combined.err
+
+
 def test_source_s3_uri_resolves_active_published_version_once(
     source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -146,6 +146,15 @@ def resolve_manifest_binding(
             OUTCOME_CORRUPTION,
             "the stored Source Binding Manifest is malformed",
         ) from exc
+    # ADR-0020: the manifest binds the Published Version identity. A stored
+    # manifest that names a different version than the one requested is
+    # corruption (misplaced or tampered), never a usable binding.
+    if manifest.published_version != version:
+        raise SourceInspectionError(
+            OUTCOME_CORRUPTION,
+            "the stored Source Binding Manifest does not match the requested "
+            "published version",
+        )
     for entry in manifest.entries:
         if entry.source_id == source_id:
             return ResolvedSourceBinding(
@@ -168,6 +177,22 @@ DEFAULT_LINK_EXPIRES = "5m"
 MAX_LINK_EXPIRES = timedelta(hours=1)
 
 _EXPIRES_PATTERN = re.compile(r"^(\d+)([smh]?)$")
+
+#: A Published Version label: ASCII slug shapes only (the publisher's own
+#: version strings), never a path, traversal, or secret-bearing free text.
+_PUBLISHED_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def validate_published_version(version: str) -> str:
+    """Return ``version`` if it is a safe Published Version label.
+
+    Raises a generic :class:`ValueError` (never echoing the value) for a
+    label that could traverse a filesystem key, carry a secret, or smuggle
+    a control character — the same boundary convention as source ids.
+    """
+    if not isinstance(version, str) or not _PUBLISHED_VERSION_PATTERN.match(version):
+        raise ValueError("published version must be a simple label like 2026-08-21 or a uuid")
+    return version
 
 
 def parse_expires(value: str | None) -> timedelta:
