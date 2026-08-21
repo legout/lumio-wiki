@@ -49,6 +49,12 @@ PUBLISH_TO_ENV_VAR: Final[str] = "LUMIO_PUBLISH_TO"
 #: --source-store`` (issue #161, ADR-0020). Private; never commit it.
 SOURCE_STORE_ENV_VAR: Final[str] = "LUMIO_SOURCE_STORE"
 
+#: Source Artifact retention policy (issue #164, ADR-0020): ``required``
+#: blocks publication activation while a referenced non-synthetic source
+#: lacks a verified artifact; the default (unset/``disabled``) preserves the
+#: hash-only behavior. Recorded by ``setup --artifact-retention``.
+ARTIFACT_RETENTION_ENV_VAR: Final[str] = "LUMIO_ARTIFACT_RETENTION"
+
 #: Retrieval *backend* choice (``zero-index`` or ``lancedb``). Deliberately a
 #: separate key from the retrieval *mode* below: the backend selects the
 #: adapter, the mode selects lexical/semantic/hybrid behavior (issue #161,
@@ -74,6 +80,7 @@ ENV_ALLOWLIST: Final[frozenset[str]] = frozenset(
         KB_PATH_ENV_VAR,
         PUBLISH_TO_ENV_VAR,
         SOURCE_STORE_ENV_VAR,
+        ARTIFACT_RETENTION_ENV_VAR,
         RETRIEVAL_BACKEND_ENV_VAR,
         RETRIEVAL_MODE_ENV_VAR,
         S3_REGION_ENV_VAR,

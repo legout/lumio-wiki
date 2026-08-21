@@ -116,6 +116,22 @@ authorized user can inspect the underlying material. It is excluded from the
 Knowledge Base, public exports, retrieval, and canonical fingerprints.
 _Avoid_: attachment, published source, evidence file.
 
+**Source Artifact Store**:
+The configurable private store (object storage or a local directory) that
+retains Source Artifacts addressed by `(source_id, content_hash)`. Separate
+from the Knowledge Base Location; a separate production bucket and KMS key
+are recommended. Signing a short-lived GET URL for one exact artifact is an
+optional adapter capability.
+_Avoid_: attachment bucket, evidence store.
+
+**Source Binding Manifest**:
+The private record written to the Source Artifact Store before public
+activation, binding one Published Version and each referenced
+`(page, source_id)` pair to the exact Source Version content hash used for
+that version. Historical manifests keep older Published Versions inspectable
+after later Source Versions are registered.
+_Avoid_: source index, lineage manifest.
+
 **Source Inspection**:
 An authorized action that retrieves the exact Source Artifact bound to a
 Published Version. It supports provenance review but does not make the raw file

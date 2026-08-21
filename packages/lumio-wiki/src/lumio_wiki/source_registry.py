@@ -30,6 +30,31 @@ SourceStatus = Literal["active", "retired"]
 #: Controlled status vocabulary for a Retirement Candidate review decision.
 RetirementCandidateStatus = Literal["pending", "confirmed", "dismissed"]
 
+#: Maximum length of the sanitized filename persisted on a Source Version
+#: (#164, ADR-0020). Long enough for real document names, short enough that a
+#: pathological name cannot bloat private registry state.
+SAFE_FILENAME_MAX_LENGTH = 128
+
+
+def safe_artifact_filename(filename: str | None) -> str | None:
+    """Return a safe, portable basename for private Source Version metadata.
+
+    ADR-0020 (#164): a Source Version records a *safe filename* — the basename
+    only, with control characters stripped and the length capped — so a local
+    source path (or a crafted ``../../`` traversal) is never persisted in the
+    private registry and never reaches inspection output. ``None`` and empty
+    names stay ``None``; a name that sanitizes to nothing (``".."``) becomes
+    ``None`` rather than an empty string.
+    """
+    if not filename:
+        return None
+    base = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    base = "".join(ch for ch in base if ch.isprintable() and ch not in "\r\n\t")
+    base = base.strip()
+    if base in {"", ".", ".."}:
+        return None
+    return base[:SAFE_FILENAME_MAX_LENGTH]
+
 
 class SourceRegistryError(ValueError):
     """A requested private Knowledge Source state transition is invalid."""
@@ -163,11 +188,25 @@ def _validate_candidate_id(candidate_id: str) -> str:
 
 
 class SourceVersion(msgspec.Struct, frozen=True):
-    """An immutable content-hashed version recorded under one source identity."""
+    """An immutable content-hashed version recorded under one source identity.
+
+    The optional private inspection metadata (``filename``, ``content_type``,
+    ``size``) is recorded at registration from the ingest boundary (#164,
+    ADR-0020): the filename is sanitized to a basename by
+    :func:`safe_artifact_filename`, so local source paths are never persisted.
+    ``artifact_available`` records that a verified artifact binding was
+    recorded for this version (a failed upload is NEVER reported as retained);
+    activation-time gates re-verify live against the Source Artifact Store
+    rather than trusting this flag alone.
+    """
 
     source_id: str
     content_hash: str
     created_at: str
+    filename: str | None = None
+    content_type: str | None = None
+    size: int | None = None
+    artifact_available: bool = False
 
 
 class KnowledgeSource(msgspec.Struct, frozen=True):
@@ -207,11 +246,20 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _source_version(source_id: str, raw_bytes: bytes) -> SourceVersion:
+def _source_version(
+    source_id: str,
+    raw_bytes: bytes,
+    *,
+    filename: str | None = None,
+    content_type: str | None = None,
+) -> SourceVersion:
     return SourceVersion(
         source_id=source_id,
         content_hash=hashlib.sha256(raw_bytes).hexdigest(),
         created_at=_now(),
+        filename=safe_artifact_filename(filename),
+        content_type=content_type,
+        size=len(raw_bytes),
     )
 
 
@@ -265,7 +313,14 @@ class SourceRegistry:
     def list(self) -> list[KnowledgeSource]:
         return list(self._state.sources)
 
-    def register_source(self, source_id: str, raw_bytes: bytes) -> SourceVersion:
+    def register_source(
+        self,
+        source_id: str,
+        raw_bytes: bytes,
+        *,
+        filename: str | None = None,
+        content_type: str | None = None,
+    ) -> SourceVersion:
         """Create a NEW Knowledge Source identity under an explicit stable id.
 
         Register establishes a new identity only: it NEVER appends a version to
@@ -288,14 +343,21 @@ class SourceRegistry:
                 "available through register — retire and reactivate to add a "
                 "reviewed new version"
             )
-        version = _source_version(source_id, raw_bytes)
+        version = _source_version(
+            source_id, raw_bytes, filename=filename, content_type=content_type
+        )
         sources = list(self._state.sources)
         sources.append(KnowledgeSource(source_id=source_id, status="active", versions=[version]))
         self._commit(msgspec.structs.replace(self._state, sources=sources))
         return version
 
     def register_or_reuse(
-        self, source_id: str, raw_bytes: bytes
+        self,
+        source_id: str,
+        raw_bytes: bytes,
+        *,
+        filename: str | None = None,
+        content_type: str | None = None,
     ) -> tuple[SourceVersion, SourceRegistrationAction]:
         """Resolve a managed host-Distiller source identity (issue #149).
 
@@ -329,7 +391,9 @@ class SourceRegistry:
             None,
         )
         if existing is None:
-            version = _source_version(source_id, raw_bytes)
+            version = _source_version(
+                source_id, raw_bytes, filename=filename, content_type=content_type
+            )
             sources = list(self._state.sources)
             sources.append(
                 KnowledgeSource(source_id=source_id, status="active", versions=[version])
@@ -347,6 +411,63 @@ class SourceRegistry:
             "Knowledge Source is active with different bytes; replacement is "
             "not available through managed ingest — retire and reactivate to "
             "add a reviewed new version"
+        )
+
+    def record_artifact_binding(self, source_id: str, content_hash: str) -> None:
+        """Mark one exact Source Version as having a verified artifact (#164).
+
+        The second half of the idempotent ingest saga (ADR-0020): the bytes
+        were uploaded to the Source Artifact Store and verified there, and now
+        the registry records availability for exactly ``(source_id,
+        content_hash)``. Idempotent — recording an already-available binding is
+        a no-op — and it raises (never fabricates) when the identity or hash is
+        unknown, so a failed upload can never be reported as retained.
+        """
+        source = self.get(source_id)
+        versions = list(source.versions)
+        for index, version in enumerate(versions):
+            if version.content_hash != content_hash:
+                continue
+            if not version.artifact_available:
+                versions[index] = msgspec.structs.replace(version, artifact_available=True)
+                sources = list(self._state.sources)
+                source_index = next(
+                    i for i, item in enumerate(sources) if item.source_id == source_id
+                )
+                sources[source_index] = msgspec.structs.replace(
+                    sources[source_index], versions=versions
+                )
+                self._commit(msgspec.structs.replace(self._state, sources=sources))
+            return
+        raise SourceRegistryError(
+            f"Knowledge Source {source_id!r} has no Source Version {content_hash!r}"
+        )
+
+    def clear_artifact_binding(self, source_id: str, content_hash: str) -> None:
+        """Mark a version's artifact unavailable after explicit deletion (#164).
+
+        Only the explicit deletion path calls this (retirement preserves
+        historical artifacts); the binding is cleared so inspection metadata
+        never claims an artifact the store no longer holds.
+        """
+        source = self.get(source_id)
+        versions = list(source.versions)
+        for index, version in enumerate(versions):
+            if version.content_hash != content_hash:
+                continue
+            if version.artifact_available:
+                versions[index] = msgspec.structs.replace(version, artifact_available=False)
+                sources = list(self._state.sources)
+                source_index = next(
+                    i for i, item in enumerate(sources) if item.source_id == source_id
+                )
+                sources[source_index] = msgspec.structs.replace(
+                    sources[source_index], versions=versions
+                )
+                self._commit(msgspec.structs.replace(self._state, sources=sources))
+            return
+        raise SourceRegistryError(
+            f"Knowledge Source {source_id!r} has no Source Version {content_hash!r}"
         )
 
     def stage_retirement(self, source_id: str) -> PendingSourceTransition:

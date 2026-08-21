@@ -146,9 +146,14 @@ class ProposalPipeline:
     provider.
     """
 
-    def __init__(self, kb, store: IngestStore | None = None) -> None:
+    def __init__(self, kb, store: IngestStore | None = None, artifact_store=None) -> None:
         self._kb = kb
         self._store = store
+        # Optional private Source Artifact Store (issue #164, ADR-0020):
+        # when configured, managed ingest retains the ORIGINAL bytes as an
+        # immutable artifact bound to the exact Source Version. ``None`` keeps
+        # today's hash-only behavior.
+        self._artifact_store = artifact_store
 
     def _require_store(self) -> IngestStore:
         if self._store is None:
@@ -191,13 +196,44 @@ class ProposalPipeline:
         Version without duplication and a changed-bytes retry is rejected
         without registry or proposal mutation.
         """
-        from lumio_wiki.ingest import _authored_page_declares_source, _managed_provenance
+        from lumio_wiki.ingest import (
+            ManagedIngestError,
+            _authored_page_declares_source,
+            _managed_provenance,
+        )
 
         # 1. Provenance over the ORIGINAL bytes; no converter runs.
         provenance = _managed_provenance(raw_bytes, content_type, filename, source_id)
         # 2. Resolve the explicit source identity in PRIVATE registry state
-        #    (register new / reuse identical / reject changed / reject retired).
-        self._require_store().source_registry.register_or_reuse(source_id, raw_bytes)
+        #    (register new / reuse identical / reject changed / reject retired)
+        #    and — when a Source Artifact Store is configured — retain the
+        #    original bytes as a private artifact through the idempotent
+        #    upload+binding saga (issue #164, ADR-0020: create-only upload,
+        #    verify size/digest, then record the binding; a failed upload
+        #    never reports retention and a retry recovers). Without a store
+        #    the hash-only behavior of #149 is unchanged.
+        registry = self._require_store().source_registry
+        registry.register_or_reuse(
+            source_id, raw_bytes, filename=filename, content_type=content_type
+        )
+        if self._artifact_store is not None:
+            from lumio_wiki.artifact_store import ArtifactStoreError, retain_artifact
+
+            try:
+                retain_artifact(
+                    self._artifact_store,
+                    registry,
+                    source_id=source_id,
+                    raw_bytes=raw_bytes,
+                    content_type=content_type,
+                    filename=filename,
+                )
+            except ArtifactStoreError as exc:
+                raise ManagedIngestError(
+                    f"Source Artifact retention failed for {source_id!r}: {exc} "
+                    "— retry the ingest to recover; the Source Version is "
+                    "registered but not reported as retained"
+                ) from exc
         # 3. The authored page must cite this source_id; a missing/mismatched
         #    id blocks staging with an actionable diagnostic.
         _authored_page_declares_source(authored_markdown, source_id)

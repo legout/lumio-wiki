@@ -59,6 +59,7 @@ from lumio_wiki import (
     write_control_file,
 )
 from lumio_wiki.env_loader import (
+    ARTIFACT_RETENTION_ENV_VAR,
     KB_PATH_ENV_VAR,
     PUBLISH_TO_ENV_VAR,
     RETRIEVAL_BACKEND_ENV_VAR,
@@ -659,6 +660,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     from_uri: str | None = getattr(args, "from_uri", None)
     publish_to: str | None = getattr(args, "publish_to", None)
     source_store: str | None = getattr(args, "source_store", None)
+    artifact_retention: str | None = getattr(args, "artifact_retention", None)
     retrieval: str | None = getattr(args, "retrieval", None)
     created = False
 
@@ -700,6 +702,12 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     ):
         if value is not None:
             _validate_object_store_uri(flag, value)
+    if artifact_retention == "required" and source_store is None:
+        raise CliError(
+            "--artifact-retention required needs --source-store: required "
+            "retention blocks publication while a referenced source lacks a "
+            "verified artifact (issue #164, ADR-0020)"
+        )
 
     # 2. Optional capabilities: detect BEFORE any write; print one exact
     # install command. Never mutate the active Python environment (ADR-0019).
@@ -754,6 +762,9 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     if source_store is not None:
         _upsert_env_var(env_path, SOURCE_STORE_ENV_VAR, source_store)
         print(f"  .env:           {env_path} ({SOURCE_STORE_ENV_VAR}={source_store})")
+    if artifact_retention is not None:
+        _upsert_env_var(env_path, ARTIFACT_RETENTION_ENV_VAR, artifact_retention)
+        print(f"  .env:           {env_path} ({ARTIFACT_RETENTION_ENV_VAR}={artifact_retention})")
 
     # 5. Write/append AGENTS.md unless --no-agents-md.
     if not getattr(args, "no_agents_md", False):
@@ -1374,6 +1385,59 @@ def _cmd_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def _artifact_store_from_env():
+    """Resolve the optional private Source Artifact Store (issue #164).
+
+    ``LUMIO_SOURCE_STORE`` (exported process value, then the project
+    ``.env`` allowlist written by ``setup --source-store``) selects the
+    adapter: an object-store URI builds the S3 adapter over an obstore client
+    with the standard LUMIO_S3_*/AWS_* credential resolution (a private
+    prefix in the same bucket works for development; production should use a
+    separate bucket and KMS key — ADR-0020), and a filesystem path builds the
+    local-directory adapter. ``None`` keeps the hash-only behavior.
+    """
+    from lumio_wiki.artifact_store import LocalDirectoryArtifactStore, S3ArtifactStore
+
+    uri = os.environ.get(SOURCE_STORE_ENV_VAR) or load_project_config().get(
+        SOURCE_STORE_ENV_VAR
+    )
+    if not uri:
+        return None
+    if _is_object_store_uri(uri):
+        store, prefix = _build_publish_store(uri)
+        return S3ArtifactStore(store, prefix)
+    path = Path(uri).expanduser()
+    if not path.is_absolute():
+        project = discover_kb_path_from_project_env()
+        base = Path(project).parent if project else Path.cwd()
+        path = (base / path).resolve()
+    try:
+        return LocalDirectoryArtifactStore(path)
+    except OSError as exc:
+        raise CliError(f"cannot open Source Artifact Store at {uri!r}: {exc}") from exc
+
+
+def _artifact_retention_required() -> bool:
+    """Whether artifact retention is configured as required (issue #164).
+
+    ``LUMIO_ARTIFACT_RETENTION=required`` blocks publication activation
+    while a referenced non-synthetic source lacks a verified artifact;
+    unset/``disabled`` preserves the hash-only behavior (ADR-0020).
+    """
+    value = os.environ.get(ARTIFACT_RETENTION_ENV_VAR) or load_project_config().get(
+        ARTIFACT_RETENTION_ENV_VAR
+    )
+    if value is None:
+        return False
+    normalized = value.strip().lower()
+    if normalized not in {"required", "disabled"}:
+        raise CliError(
+            f"{ARTIFACT_RETENTION_ENV_VAR} must be 'required' or 'disabled', "
+            f"got {value!r}"
+        )
+    return normalized == "required"
+
+
 def _cmd_ingest(args: argparse.Namespace) -> int:
     kb, _report = _load_kb(args.path)
     compiled_page = getattr(args, "compiled_page", None)
@@ -1402,9 +1466,14 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         # explicit source identity. The converter name is derived from routing
         # without invoking it, so PDF/DOCX/HTML sources do NOT require the
         # [documents] extra here — the host agent already authored the page.
+        # When a private Source Artifact Store is configured (issue #164,
+        # ADR-0020), the ORIGINAL bytes are additionally retained as an
+        # immutable Source Artifact bound to the exact Source Version.
         if not compiled_page.is_file():
             raise CliError(f"compiled-page file not found: {compiled_page}")
         authored_markdown = compiled_page.read_text(encoding="utf-8")
+        artifact_store = _artifact_store_from_env()
+        pipeline = ProposalPipeline(kb, store=store, artifact_store=artifact_store)
         try:
             proposal = pipeline.managed_ingest(
                 raw_bytes, content_type, source_path.name, source_id, authored_markdown
@@ -1826,6 +1895,25 @@ def _cmd_publish_s3(args: argparse.Namespace) -> int:
     index_builder = None
     if getattr(args, "retrieval", "zero-index") == "lancedb":
         index_builder = _publication_index_builder(destination)
+    # Private Source Artifact retention (issue #164, ADR-0020): when a store
+    # is configured, the pre-activation hook writes the private Source
+    # Binding Manifest BEFORE the pointer advances; with retention REQUIRED
+    # it blocks activation while a referenced non-synthetic source lacks a
+    # verified artifact. Without a store, publication is unchanged.
+    from lumio_wiki.artifact_store import RetentionRequiredError, activation_binding_hook
+
+    before_activation = None
+    artifact_store = _artifact_store_from_env()
+    if artifact_store is not None:
+        from lumio_wiki.ingest import IngestStore
+
+        registry = IngestStore(default_ingest_dir(root)).source_registry
+        before_activation = activation_binding_hook(
+            artifact_store=artifact_store,
+            registry=registry,
+            source_root=root,
+            required=_artifact_retention_required(),
+        )
     try:
         manifest = publish_s3_version(
             store,
@@ -1834,7 +1922,12 @@ def _cmd_publish_s3(args: argparse.Namespace) -> int:
             version=args.version,
             expected_pointer_version=args.expected_pointer_version,
             index_builder=index_builder,
+            before_activation=before_activation,
         )
+    except RetentionRequiredError as exc:
+        raise CliError(
+            f"publication blocked (artifact retention required): {exc}", exit_code=1
+        ) from exc
     except S3PublicationConflict as exc:
         raise CliError(f"publication conflict (pointer not advanced): {exc}") from exc
     except KnowledgeBaseError as exc:
@@ -1849,6 +1942,8 @@ def _cmd_publish_s3(args: argparse.Namespace) -> int:
     print(f"  fingerprint: {manifest.fingerprint}")
     if index_builder is not None:
         print("  lance:       built and health-checked under derived/lance/")
+    if artifact_store is not None:
+        print("  artifacts:   private Source Binding Manifest stored pre-activation")
     print(f"  location:    {destination}@{manifest.version}")
     return 0
 
@@ -2822,6 +2917,19 @@ def build_parser() -> argparse.ArgumentParser:
             "Private Source Artifact Store URI recorded as "
             "LUMIO_SOURCE_STORE (ADR-0020). Refused when the project's .env "
             "is tracked by git. Requires lumio-wiki[s3]."
+        ),
+    )
+    setup_parser.add_argument(
+        "--artifact-retention",
+        dest="artifact_retention",
+        default=None,
+        choices=["required", "disabled"],
+        help=(
+            "Source Artifact retention policy recorded as "
+            "LUMIO_ARTIFACT_RETENTION (issue #164, ADR-0020): 'required' "
+            "blocks publication activation while a referenced non-synthetic "
+            "source lacks a verified artifact; 'disabled' (the default) "
+            "keeps hash-only behavior. 'required' needs --source-store."
         ),
     )
     setup_skill_target = setup_parser.add_mutually_exclusive_group()

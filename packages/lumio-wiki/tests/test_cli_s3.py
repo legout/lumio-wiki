@@ -245,7 +245,6 @@ class _RecordingBuilder:
         self.calls.append((sidecar_prefix, len(pages), fingerprint.digest))
         if self.exc is not None:
             raise self.exc
-        import msgspec
 
         from lumio_wiki.s3_publish import RemoteIndexCompletion
 
@@ -296,7 +295,7 @@ def test_cli_publish_s3_retrieval_lancedb_failure_blocks_activation(monkeypatch,
             "lancedb",
         ]
     )
-    captured = capsys.readouterr()
+    capsys.readouterr()
     assert rc == 2
     # The pointer was never created and no manifest was written.
     assert "kb/current.json" not in _list(store, "kb/")
@@ -375,7 +374,6 @@ def test_cli_cleanup_s3_with_no_candidates(monkeypatch, capsys):
 
 def msgspec_pointer(store) -> str:
     import msgspec
-
     from lumio_wiki.s3_location import CURRENT_POINTER_OBJECT, S3Pointer
 
     raw = obstore.get(store, f"kb/{CURRENT_POINTER_OBJECT}")

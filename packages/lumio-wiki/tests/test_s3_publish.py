@@ -15,6 +15,7 @@ with no infrastructure.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import msgpack
 import msgspec
@@ -28,6 +29,7 @@ from lumio_wiki.knowledge_base import (
     fingerprint_sources,
 )
 from lumio_wiki.location import FilesystemLocation
+from lumio_wiki.records import EmbeddingModelInfo
 from lumio_wiki.s3_location import (
     CURRENT_POINTER_OBJECT,
     DERIVED_DIR,
@@ -46,9 +48,6 @@ from lumio_wiki.s3_publish import (
     publish_s3_version,
     rollback_s3_version,
 )
-from lumio_wiki.records import EmbeddingModelInfo, SourceFingerprint
-
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from obstore.store import ObjectStore
