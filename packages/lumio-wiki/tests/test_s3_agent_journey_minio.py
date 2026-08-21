@@ -156,7 +156,6 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     reader = tmp_path / "reader-project"
     maintainer.mkdir()
     reader.mkdir()
-    kb_dir = maintainer / "knowledge-base"
     staging = maintainer / "staging"
     staging.mkdir()
 
@@ -232,6 +231,10 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     listed = _run("proposal", "list", "knowledge-base", cwd=maintainer).stdout
     for proposal_id in proposal_ids:
         assert proposal_id in listed
+        out = _run(
+            "proposal", "inspect", "knowledge-base", proposal_id, cwd=maintainer
+        ).stdout
+        assert proposal_id in out and "source_id" in out
         assert "Knowledge base is valid" in _run(
             "proposal", "validate", "knowledge-base", proposal_id, cwd=maintainer
         ).stdout
@@ -302,7 +305,9 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     assert _os.environ["LUMIO_S3_SECRET_ACCESS_KEY"] not in url
     assert urllib.request.urlopen(url, timeout=10).read() == report_v1_bytes
     match = re.search(r"/([0-9a-f]{64})(?:\?|$)", url)
-    assert match, f"signed URL has no digest path segment: {url!r}"
+    # ADR-0020: the URL is a bearer secret — the failure message must not
+    # embed it (redacted diagnostics), so assert on shape, not the URL.
+    assert match, "signed URL has no digest path segment (URL redacted)"
     digest = match.group(1)
     with pytest.raises(urllib.error.HTTPError):
         urllib.request.urlopen(url.replace(digest, "0" * 64), timeout=10)
@@ -363,8 +368,16 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     out = _run("cleanup-s3", destination, cwd=maintainer).stdout
     assert "No cleanup candidates" in out
     # An interrupted publication leaves an incomplete version prefix: the
-    # report-only cleanup surface names it and deletes nothing.
-    orphan_key = f"{kb_prefix}/v9-interrupted/pages/stray.md"
+    # report-only cleanup surface names it and deletes nothing. The stray
+    # object's nested path is copied from the OBSERVED listing of a real
+    # published version, so the test never assumes private object-key layout
+    # beyond what the public listing surface returns.
+    published_keys = [
+        obj["path"] for batch in obstore.list(_root_store, prefix=kb_prefix) for obj in batch
+    ]
+    assert published_keys
+    nested = min(published_keys, key=len)[len(kb_prefix) + 1 :].split("/", 1)[1]
+    orphan_key = f"{kb_prefix}/v9-interrupted/{nested}"
     obstore.put(_root_store, orphan_key, b"orphaned bytes from an interrupted build")
     try:
         out = _run("cleanup-s3", destination, cwd=maintainer).stdout

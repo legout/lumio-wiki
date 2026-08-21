@@ -362,6 +362,7 @@ def test_s3_journey_is_documented_across_public_surfaces():
         "--skill-scope project",
         "lumio-wiki validate",
         "--compiled-page staging/overview-page.md --source-id overview-src",
+        "proposal inspect",
         "proposal validate",
         "lumio-wiki publish-s3 --version v1 --retrieval lancedb",
         "lumio-wiki setup --from s3://public-kb-bucket/team-kb",

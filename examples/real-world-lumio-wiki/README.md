@@ -521,6 +521,7 @@ lumio-wiki validate
 lumio-wiki ingest knowledge-base sources/company-overview.md \
   --compiled-page staging/overview-page.md --source-id overview-src
 lumio-wiki proposal list knowledge-base
+lumio-wiki proposal inspect knowledge-base <proposal-id>
 lumio-wiki proposal validate knowledge-base <proposal-id>
 lumio-wiki publish knowledge-base <proposal-id>
 

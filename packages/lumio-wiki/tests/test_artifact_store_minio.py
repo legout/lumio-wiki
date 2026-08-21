@@ -314,6 +314,28 @@ def _policy_document(bucket: str, actions: list[str], prefix: str) -> dict:
     }
 
 
+def _publisher_policy_document(bucket: str, kb_prefix: str, artifact_prefix: str) -> dict:
+    """The Maintainer/publisher role (issue #166): write the public KB
+    (immutable versions + CAS pointer) and the private Source Binding
+    Manifests written during publication — but never READ private Source
+    Artifacts (that is the source inspector's distinct role)."""
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": ["s3:GetObject", "s3:PutObject"],
+                "Resource": [f"arn:aws:s3:::{bucket}/{kb_prefix}/*"],
+            },
+            {
+                "Effect": "Allow",
+                "Action": ["s3:PutObject"],
+                "Resource": [f"arn:aws:s3:::{bucket}/{artifact_prefix}/*"],
+            },
+        ],
+    }
+
+
 def test_minio_cross_role_denial(prefixes):
     mc = _mc_command()
     if mc is None:  # pragma: no cover - environment-dependent skip
@@ -328,11 +350,13 @@ def test_minio_cross_role_denial(prefixes):
 
     users: dict[str, tuple[str, str]] = {
         "kb-reader": (f"kb-reader-{run}", uuid.uuid4().hex),
+        "publisher": (f"publisher-{run}", uuid.uuid4().hex),
         "src-writer": (f"src-writer-{run}", uuid.uuid4().hex),
         "src-inspector": (f"src-inspector-{run}", uuid.uuid4().hex),
     }
     policies = {
         "kb-reader": _policy_document(bucket, ["s3:GetObject"], kb_prefix),
+        "publisher": _publisher_policy_document(bucket, kb_prefix, artifact_prefix),
         "src-writer": _policy_document(bucket, ["s3:PutObject"], artifact_prefix),
         "src-inspector": _policy_document(bucket, ["s3:GetObject"], artifact_prefix),
     }
@@ -397,6 +421,17 @@ def test_minio_cross_role_denial(prefixes):
             obstore.put(inspector, f"{artifact_prefix}/artifacts/evil", b"x")
         with pytest.raises(obstore.exceptions.PermissionDeniedError):
             obstore.get(inspector, f"{kb_prefix}/page.md")
+
+        # Publisher (issue #166): writes new immutable versions and the CAS
+        # pointer under the public prefix plus the private binding manifests
+        # written during publication, and reads the public KB — but is DENIED
+        # reading private Source Artifacts (inspection is a distinct role).
+        publisher = _client("publisher")
+        assert bytes(obstore.get(publisher, f"{kb_prefix}/page.md").bytes()) == b"published page"
+        obstore.put(publisher, f"{kb_prefix}/v2/pages/new-page.md", b"published v2 page")
+        obstore.put(publisher, f"{artifact_prefix}/bindings/v2.json", b"{}")
+        with pytest.raises(obstore.exceptions.PermissionDeniedError):
+            obstore.get(publisher, artifact_key)
     finally:
         try:  # pragma: no cover - cleanup is best-effort
             for role, (user, _secret) in users.items():

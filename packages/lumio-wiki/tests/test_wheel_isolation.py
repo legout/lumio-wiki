@@ -45,17 +45,23 @@ def _has_uv() -> bool:
 
 def _build_wheel(wheel_dir: Path) -> Path:
     """Build the lumio-wiki wheel into ``wheel_dir`` and return its path."""
+    return _build_workspace_wheel(wheel_dir, "lumio-wiki", "lumio_wiki-*.whl")
+
+
+def _build_workspace_wheel(wheel_dir: Path, package: str, wheel_glob: str) -> Path:
+    """Build one workspace package's wheel and return its path (shared
+    build/fallback shape for lumio-wiki and lumio-lancedb)."""
     wheel_dir.mkdir(parents=True, exist_ok=True)
     # Build from the workspace root so uv resolves the workspace member.
     workspace_root = Path(__file__).parents[3]
     if _has_uv():
-        cmd = ["uv", "build", "--package", "lumio-wiki", "--wheel", "--out-dir", str(wheel_dir)]
+        cmd = ["uv", "build", "--package", package, "--wheel", "--out-dir", str(wheel_dir)]
     else:
         # Fallback: build directly from the package directory.
-        pkg = workspace_root / "packages" / "lumio-wiki"
+        pkg = workspace_root / "packages" / package
         cmd = [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", str(wheel_dir), str(pkg)]
     subprocess.run(cmd, cwd=str(workspace_root), check=True, capture_output=True)
-    wheels = list(wheel_dir.glob("lumio_wiki-*.whl"))
+    wheels = list(wheel_dir.glob(wheel_glob))
     assert len(wheels) == 1, f"expected exactly one wheel, got {wheels}"
     return wheels[0]
 
@@ -906,25 +912,7 @@ def test_isolated_retrieval_ladder(isolated_wheel_env: dict, tmp_path: Path):
 
 def _build_lumio_lancedb_wheel(wheel_dir: Path) -> Path:
     """Build the lumio-lancedb wheel into ``wheel_dir`` and return its path."""
-    wheel_dir.mkdir(parents=True, exist_ok=True)
-    workspace_root = Path(__file__).parents[3]
-    if _has_uv():
-        cmd = [
-            "uv",
-            "build",
-            "--package",
-            "lumio-lancedb",
-            "--wheel",
-            "--out-dir",
-            str(wheel_dir),
-        ]
-    else:
-        pkg = workspace_root / "packages" / "lumio-lancedb"
-        cmd = [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", str(wheel_dir), str(pkg)]
-    subprocess.run(cmd, cwd=str(workspace_root), check=True, capture_output=True)
-    wheels = list(wheel_dir.glob("lumio_lancedb-*.whl"))
-    assert len(wheels) == 1, f"expected exactly one lumio-lancedb wheel, got {wheels}"
-    return wheels[0]
+    return _build_workspace_wheel(wheel_dir, "lumio-lancedb", "lumio_lancedb-*.whl")
 
 
 @pytest.fixture(scope="module")
@@ -943,12 +931,14 @@ def s3_journey_wheel_env(tmp_path_factory: pytest.TempPathFactory) -> dict:
     lance_wheel = _build_lumio_lancedb_wheel(wheel_dir)
     python = _create_isolated_venv(venv_dir)[0]
     # One resolver run over both wheels (extras included) so lumio-lancedb's
-    # lumio-wiki requirement is satisfied by the local wheel, not PyPI.
-    targets = [f"{wiki_wheel}[s3]", str(lance_wheel)]
+    # lumio-wiki requirement is satisfied by the local wheel, not PyPI. The
+    # pip fallback MUST run through the venv's own python — never the test
+    # runner's — or the install lands in the wrong environment.
+    targets = [f"{wiki_wheel}[s3]", f"{lance_wheel}[s3]"]
     if _has_uv():
         cmd = ["uv", "pip", "install", "--python", str(python), *targets]
     else:
-        cmd = [sys.executable, "-m", "pip", "install", *targets]
+        cmd = [str(python), "-m", "pip", "install", *targets]
     subprocess.run(cmd, check=True, capture_output=True, cwd=str(venv_dir))
     return {"python": python, "venv": venv_dir}
 
