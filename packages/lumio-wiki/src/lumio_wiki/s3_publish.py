@@ -49,8 +49,9 @@ client config — never here and never in ``lumio.yaml``.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import msgspec
 
@@ -70,6 +71,7 @@ from lumio_wiki.records import EXTRACTOR_VERSION, EmbeddingModelInfo, SourceFing
 from lumio_wiki.s3_location import (
     CURRENT_POINTER_OBJECT,
     DERIVED_DIR,
+    LANCE_DERIVED_DIR,
     MANIFEST_OBJECT,
     S3Location,
     S3Manifest,
@@ -81,8 +83,6 @@ from lumio_wiki.s3_location import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
     from obstore.store import ObjectStore
-
-    from lumio_wiki.records import CompiledPage, EmbeddingModelInfo
 
 __all__ = [
     "ActivationHook",
@@ -100,10 +100,6 @@ __all__ = [
 
 # The relative path of the Discovery Graph artifact under a version prefix.
 _GRAPH_REL = f"{DERIVED_DIR}/{GRAPH_ARTIFACT_FILENAME}"
-
-# The remote LanceDB index lives directly under the version's derived area
-# (ADR-0019: "build requested LanceDB directly under <version>/derived/lance/").
-LANCE_DERIVED_DIR = f"{DERIVED_DIR}/lance"
 
 # The completion metadata the publisher records beside the built index: the
 # canonical fingerprint, the optional embedding-model identity, and the table

@@ -18,6 +18,7 @@ Trace (ADR-0013).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import msgspec
@@ -119,6 +120,7 @@ def _zero_index_fallback(
     *,
     exc: BaseException | None = None,
     missing: bool = False,
+    fallback_callback: Callable[[str], None] | None = None,
 ) -> list[RetrievalResult]:
     """Fall back to always-available zero-index retrieval and record it.
 
@@ -128,6 +130,14 @@ def _zero_index_fallback(
     in every result's trace so the degradation is observable (ADR-0013).
     """
     reason = "missing" if missing else "unavailable"
+    detail = (
+        f"LanceDB index {reason} at {index.describe}; "
+        f"fell back to zero-index retrieval over the same snapshot"
+    )
+    if exc is not None:
+        detail += f" ({type(exc).__name__}: {exc})"
+    if fallback_callback is not None:
+        fallback_callback(detail)
     results = ZeroIndexRetrieval().retrieve(
         list(pages),
         query,
@@ -138,20 +148,14 @@ def _zero_index_fallback(
     )
     if not results:
         return []
-    detail = (
-        f"LanceDB index {reason} at {index.describe}; "
-        f"fell back to zero-index retrieval over the same snapshot"
-    )
-    if exc is not None:
-        detail += f" ({type(exc).__name__}: {exc})"
     # Zero-index retrieval builds one shared RetrievalTrace for every result;
     # prepend the fallback explanation once so each result records it.
     results[0].trace.stages.insert(0, TraceStage("index-fallback", detail))
     return results
 
 
-def _indexed_page_paths(index: IndexLocation, query: str) -> set[str] | None:
-    """Return paths matched by the published page-oriented lexical index.
+def _indexed_page_scores(index: IndexLocation, query: str) -> dict[str, float] | None:
+    """Return BM25 scores by page path from the published page index.
 
     ``None`` means the index predates page search or is unavailable; callers
     can safely use the loaded page set as a compatibility fallback.
@@ -165,14 +169,14 @@ def _indexed_page_paths(index: IndexLocation, query: str) -> set[str] | None:
     tokens = page_search._search_tokens(query)
     row_count = table.count_rows()
     if not tokens or row_count == 0:
-        return set()
+        return {}
     rows = (
         table.search(" ".join(tokens), query_type="fts")
-        .select(["page_path"])
+        .select(["page_path", "_score"])
         .limit(row_count)
         .to_list()
     )
-    return {row["page_path"] for row in rows}
+    return {row["page_path"]: float(row["_score"]) for row in rows}
 
 
 def search_pages(
@@ -190,13 +194,24 @@ def search_pages(
     """
     normalized = page_search.normalize_search_query(query)
     index = as_location(index_dir)
-    indexed_paths = _indexed_page_paths(index, normalized) if index is not None else None
-    candidates = (
-        [page for page in pages if page.path in indexed_paths]
-        if indexed_paths is not None
-        else pages
+    indexed_scores = _indexed_page_scores(index, normalized) if index is not None else None
+    if indexed_scores is None:
+        return page_search.search_pages(pages, query, limit=limit)
+    candidates = [page for page in pages if page.path in indexed_scores]
+    results = page_search.search_pages(candidates, query, limit=len(candidates))
+    results.sort(
+        key=lambda result: (
+            -indexed_scores[result.page.path],
+            result.page.path.casefold(),
+        )
     )
-    return page_search.search_pages(candidates, query, limit=limit)
+    return [
+        msgspec.structs.replace(
+            result,
+            score=round(indexed_scores[result.page.path], 4),
+        )
+        for result in results[:limit]
+    ]
 
 
 def _evidence_rows(page: CompiledPage) -> list[dict]:
@@ -643,6 +658,7 @@ class LanceDBRetrievalAdapter:
         # explicit per-call ``index_dir`` always wins over the bound location.
         self._index_location = index_location
         self._expected_fingerprint = expected_fingerprint
+        self._last_fallback_detail: str | None = None
 
     @property
     def index_location(self) -> IndexLocation | None:
@@ -653,6 +669,11 @@ class LanceDBRetrievalAdapter:
     def expected_fingerprint(self):
         """The construction-bound source fingerprint gate, if any."""
         return self._expected_fingerprint
+
+    @property
+    def last_fallback_detail(self) -> str | None:
+        """The latest fallback explanation, including empty-result fallbacks."""
+        return self._last_fallback_detail
 
     @property
     def name(self) -> str:
@@ -686,6 +707,7 @@ class LanceDBRetrievalAdapter:
         eligible_pages=None,
         expected_fingerprint=None,
     ):
+        self._last_fallback_detail = None
         # The LanceDB index is built over every Compiled Page; when the caller
         # supplies graph-selected eligible pages (#112), we restrict ranked
         # Evidence to them via a LanceDB prefilter so ``limit`` binds over
@@ -726,7 +748,13 @@ class LanceDBRetrievalAdapter:
         try:
             if not index.has_index():
                 return _zero_index_fallback(
-                    pages, query, limit, eligible_pages, index, missing=True
+                    pages,
+                    query,
+                    limit,
+                    eligible_pages,
+                    index,
+                    missing=True,
+                    fallback_callback=self._record_fallback,
                 )
             # Verify the stored fingerprint matches the current Knowledge Base
             # so a stale remote index (built from a different Published Version)
@@ -740,6 +768,7 @@ class LanceDBRetrievalAdapter:
                             f"remote LanceDB fingerprint mismatch: "
                             f"{stored_fp.digest[:12]}… != {effective_fingerprint.digest[:12]}…"
                         ),
+                        fallback_callback=self._record_fallback,
                     )
             if mode == "lexical":
                 return search_lexical_index(
@@ -777,8 +806,17 @@ class LanceDBRetrievalAdapter:
             raise
         except Exception as exc:
             return _zero_index_fallback(
-                pages, query, limit, eligible_pages, index, exc=exc
+                pages,
+                query,
+                limit,
+                eligible_pages,
+                index,
+                exc=exc,
+                fallback_callback=self._record_fallback,
             )
+
+    def _record_fallback(self, detail: str) -> None:
+        self._last_fallback_detail = detail
 
 
 def build_lancedb_index(kb, index_dir, *, embedder: Embedder | None = None):

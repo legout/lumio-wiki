@@ -62,6 +62,7 @@ from lumio_wiki.env_loader import (
     KB_PATH_ENV_VAR,
     PUBLISH_TO_ENV_VAR,
     RETRIEVAL_BACKEND_ENV_VAR,
+    RETRIEVAL_MODE_ENV_VAR,
     SOURCE_STORE_ENV_VAR,
     discover_kb_path_from_project_env,
     load_project_config,
@@ -252,6 +253,216 @@ def _validate_location(path: str | Path):
             raise CliError(f"could not resolve S3 Knowledge Base at {value}: {exc}") from exc
         return snapshot.validation_report
     return validate(path)
+
+
+# ---------------------------------------------------------------------------
+# Remote LanceDB binding for S3 Published Versions (issue #162, ADR-0019).
+#
+# A read command resolves the active S3 pointer exactly once and retains the
+# selected Published Version identity and canonical fingerprint. When the
+# configured retrieval backend is ``lancedb``, the CLI dynamically binds
+# ``lumio-lancedb`` to that exact version's remote index through the Snapshot's
+# dependency-neutral descriptor — object keys are never reconstructed in the
+# caller, the URI is never coerced through ``Path``, and no managed local
+# index/cache is materialized. Backend and mode stay separate choices so
+# LanceDB BM25 can serve lexical mode.
+# ---------------------------------------------------------------------------
+
+#: The retrieval backends a read command accepts (ADR-0019).
+_RETRIEVAL_BACKENDS = ("zero-index", "lancedb")
+
+#: The retrieval modes ``search`` accepts (ADR-0019).
+_RETRIEVAL_MODES = ("lexical", "semantic", "hybrid")
+
+
+def _retrieval_backend() -> str:
+    """Resolve the retrieval backend: ``zero-index`` (default) or ``lancedb``.
+
+    Read from ``LUMIO_RETRIEVAL_BACKEND`` with exported-process precedence
+    over the project ``.env`` allowlist (written by ``setup --retrieval``).
+    An unknown value is an actionable configuration error, never a silent
+    default (issue #162).
+    """
+    configured = load_project_config().get(RETRIEVAL_BACKEND_ENV_VAR)
+    if configured is None:
+        return "zero-index"
+    if configured not in _RETRIEVAL_BACKENDS:
+        raise CliError(
+            f"LUMIO_RETRIEVAL_BACKEND must be one of "
+            f"{', '.join(_RETRIEVAL_BACKENDS)}; got {configured!r}"
+        )
+    return configured
+
+
+def _resolve_search_mode(args: argparse.Namespace) -> str:
+    """Resolve the retrieval mode: ``--mode``, else ``LUMIO_RETRIEVAL_MODE``, else lexical."""
+    if args.mode is not None:
+        return args.mode
+    configured = load_project_config().get(RETRIEVAL_MODE_ENV_VAR)
+    if configured is None:
+        return "lexical"
+    if configured not in _RETRIEVAL_MODES:
+        raise CliError(
+            f"LUMIO_RETRIEVAL_MODE must be one of {', '.join(_RETRIEVAL_MODES)}; got {configured!r}"
+        )
+    return configured
+
+
+def _bind_remote_lancedb(snapshot) -> tuple[Any, Any]:
+    """Dynamically bind ``lumio-lancedb`` to a resolved Snapshot's remote index.
+
+    The adapter is imported only when the configured backend is ``lancedb``
+    (``lumio-wiki`` never imports it statically; the base wheel stays
+    LanceDB-free, ADR-0010). The remote index location is constructed from the
+    Snapshot's dependency-neutral descriptor — the CLI never reconstructs S3
+    keys or coerces the URI through ``Path`` — and LanceDB receives the same
+    credentials/region/endpoint configuration as canonical S3 reads through
+    its own ``storage_options`` (issue #162, ADR-0013).
+
+    Returns ``(lumio_lancedb_module, RemoteIndexLocation)``.
+    """
+    import importlib
+
+    from lumio_wiki import retrieval_eval
+
+    if not retrieval_eval.lancedb_available():
+        raise CliError(
+            "LUMIO_RETRIEVAL_BACKEND=lancedb needs lumio-lancedb; install with:  "
+            "pip install 'lumio-lancedb[s3]'"
+        )
+    descriptor = snapshot.remote_derived_index
+    if descriptor is None:
+        raise CliError(
+            "the resolved Snapshot has no remote derived index; publish the "
+            "Published Version with 'publish-s3 --retrieval lancedb' so this "
+            "version carries one, or use the zero-index backend"
+        )
+    module = importlib.import_module("lumio_lancedb")
+    location = module.RemoteIndexLocation(
+        descriptor.uri,
+        storage_options=_lance_storage_options_from_env() or None,
+        store=descriptor.store,
+        sidecar_prefix=descriptor.sidecar_prefix,
+    )
+    return module, location
+
+
+def _remote_lance_page_search(
+    module: Any,
+    location: Any,
+    snapshot: Any,
+    query: str,
+    limit: int,
+) -> tuple[list, str | None]:
+    """Serve lexical search from the published remote index via LanceDB BM25.
+
+    Returns ``(results, note)``; ``note`` is ``None`` on the healthy path. A
+    missing, corrupt, stale (fingerprint-mismatched), or unavailable remote
+    index degrades truthfully: zero-index page search over the same Published
+    Version with a disclosed note (issue #162, ADR-0013). Embedding errors
+    propagate — they are configuration errors, not degradations.
+    """
+    from lumio_wiki.embeddings import EmbeddingError
+    from lumio_wiki.fingerprint_store import FINGERPRINT_FILE
+
+    def _fallback(note: str) -> tuple[list, str]:
+        return snapshot.knowledge_base.search_pages(query, limit=limit), note
+
+    describe = location.describe
+    try:
+        if not location.has_index():
+            return _fallback(
+                f"LanceDB index missing at {describe}; "
+                f"zero-index page search over the same Published Version"
+            )
+        raw = location.read_sidecar(FINGERPRINT_FILE)
+        stored = None
+        if raw is not None:
+            import msgspec
+
+            from lumio_wiki.records import SourceFingerprint
+
+            stored = msgspec.json.decode(raw, type=SourceFingerprint)
+        if stored is not None and stored.digest != snapshot.fingerprint.digest:
+            return _fallback(
+                f"LanceDB index stale at {describe} (fingerprint mismatch); "
+                f"zero-index page search over the same Published Version"
+            )
+        if hasattr(location, "connect") and hasattr(module, "PAGE_TABLE_NAME"):
+            present = set(location.connect().list_tables().tables)
+            required = {
+                getattr(module, "TABLE_NAME", "evidence"),
+                module.PAGE_TABLE_NAME,
+            }
+            missing = required - present
+            if missing:
+                return _fallback(
+                    f"LanceDB index incomplete at {describe} (missing table(s): "
+                    f"{', '.join(sorted(missing))}); "
+                    f"zero-index page search over the same Published Version"
+                )
+        results = module.search_pages(list(snapshot.pages), query, limit=limit, index_dir=location)
+        return results, None
+    except EmbeddingError:
+        raise
+    except Exception as exc:  # transport/auth/corruption — degrade truthfully
+        return _fallback(
+            f"LanceDB index unavailable at {describe} "
+            f"({type(exc).__name__}: {exc}); "
+            f"zero-index page search over the same Published Version"
+        )
+
+
+def _index_fallback_note(results: list) -> str | None:
+    """Return the disclosed fallback detail recorded in the results' traces."""
+    for result in results:
+        for stage in getattr(result.trace, "stages", ()):
+            if stage.name == "index-fallback":
+                return stage.detail
+    return None
+
+
+def _print_page_search_results(results: list) -> None:
+    """Print page-oriented lexical search results (the ``search`` output contract)."""
+    if not results:
+        print("No pages matched the query.")
+        return
+    for result in results:
+        page = result.page
+        print(f"## {page.title}")
+        if page.summary:
+            print(f"summary: {page.summary}")
+        print(f"path:    {page.path}")
+        print(f"score:   {result.score}")
+        if result.matched_fields:
+            print(f"matched: {', '.join(result.matched_fields)}")
+        if result.snippet:
+            print(f"snippet: {result.snippet}")
+        print()
+
+
+def _print_evidence_results(results: list) -> None:
+    """Print citation-ready Evidence retrieval results (semantic/hybrid contract)."""
+    if not results:
+        print("No Evidence matched the query.")
+        return
+    for result in results:
+        cite = result.citation
+        print(f"## {cite.page_title}")
+        print(f"path:   {cite.relative_path}")
+        source = getattr(cite, "source", None)
+        if source:
+            print(f"source: {source}")
+        line_start = getattr(cite, "line_start", None)
+        if line_start is not None:
+            line_end = getattr(cite, "line_end", line_start)
+            print(f"lines:  {line_start}-{line_end}")
+        print(f"score:  {result.score}")
+        if getattr(result, "reason", None):
+            print(f"reason: {result.reason}")
+        if getattr(result, "snippet", None):
+            print(f"\n{result.snippet}\n")
+        print()
 
 
 def _format_graph_trace(*, scope: str, direction: str, outcome_fields: list[str]) -> str:
@@ -902,27 +1113,23 @@ def _resolve_embedder(model: str | None):
 
 
 def _cmd_search(args: argparse.Namespace) -> int:
+    value = str(args.path)
+    if _is_object_store_uri(value):
+        try:
+            # Resolve the active S3 pointer exactly once and retain the
+            # selected Published Version identity and fingerprint (issue #162).
+            snapshot = _resolve_object_store_location(value).resolve()
+        except KnowledgeBaseError as exc:
+            raise CliError(f"could not resolve S3 Knowledge Base at {value}: {exc}") from exc
+        return _search_object_store(args, snapshot)
+
     kb = _open_read_kb(args.path)
+    mode = _resolve_search_mode(args)
 
     # Default lexical path: zero-index, model-free, no derived index. Preserves
     # the original ``search`` behaviour and the offline invariant (PRD-0002:22).
-    if args.mode == "lexical":
-        results = kb.search_pages(args.query, limit=args.limit)
-        if not results:
-            print("No pages matched the query.")
-            return 0
-        for result in results:
-            page = result.page
-            print(f"## {page.title}")
-            if page.summary:
-                print(f"summary: {page.summary}")
-            print(f"path:    {page.path}")
-            print(f"score:   {result.score}")
-            if result.matched_fields:
-                print(f"matched: {', '.join(result.matched_fields)}")
-            if result.snippet:
-                print(f"snippet: {result.snippet}")
-            print()
+    if mode == "lexical":
+        _print_page_search_results(kb.search_pages(args.query, limit=args.limit))
         return 0
 
     # semantic / hybrid — needs lumio-lancedb + an Embedder (ADR-0010, #75).
@@ -932,7 +1139,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
 
     if not retrieval_eval.lancedb_available():
         raise CliError(
-            f"--mode {args.mode} needs lumio-lancedb; install with:  "
+            f"--mode {mode} needs lumio-lancedb; install with:  "
             "pip install lumio-lancedb  (or lumio-lancedb[embeddings] for local "
             "sentence-transformers)."
         )
@@ -947,29 +1154,79 @@ def _cmd_search(args: argparse.Namespace) -> int:
         args.query,
         limit=args.limit,
         index_dir=index_dir,
-        mode=args.mode,
+        mode=mode,
         embedder=embedder,
     )
-    if not results:
-        print("No Evidence matched the query.")
+    _print_evidence_results(results)
+    return 0
+
+
+def _search_object_store(args: argparse.Namespace, snapshot: Any) -> int:
+    """Search an S3 Published Version: zero-index, or bound remote LanceDB (#162).
+
+    Backend and mode are separate choices: LanceDB BM25 may serve lexical
+    mode, while semantic/hybrid additionally use the configured embedder and
+    the exact remote index model identity. Every degradable failure falls back
+    to truthful zero-index retrieval over the same Snapshot with a disclosed
+    note; configuration and model errors remain actionable errors.
+    """
+    from lumio_wiki.embeddings import EmbeddingError
+
+    backend = _retrieval_backend()
+    mode = _resolve_search_mode(args)
+
+    if mode == "lexical" and backend == "zero-index":
+        _print_page_search_results(
+            snapshot.knowledge_base.search_pages(args.query, limit=args.limit)
+        )
         return 0
-    for result in results:
-        cite = result.citation
-        print(f"## {cite.page_title}")
-        print(f"path:   {cite.relative_path}")
-        source = getattr(cite, "source", None)
-        if source:
-            print(f"source: {source}")
-        line_start = getattr(cite, "line_start", None)
-        if line_start is not None:
-            line_end = getattr(cite, "line_end", line_start)
-            print(f"lines:  {line_start}-{line_end}")
-        print(f"score:  {result.score}")
-        if getattr(result, "reason", None):
-            print(f"reason: {result.reason}")
-        if getattr(result, "snippet", None):
-            print(f"\n{result.snippet}\n")
-        print()
+
+    if backend != "lancedb":
+        raise CliError(
+            f"--mode {mode} over an S3 Knowledge Base needs the LanceDB "
+            "backend. Record it with 'lumio-wiki setup --retrieval lancedb' "
+            "(.env: LUMIO_RETRIEVAL_BACKEND=lancedb) or search --mode lexical."
+        )
+    if args.index_dir is not None:
+        raise CliError(
+            "--index-dir selects a local derived index; an S3 Knowledge Base "
+            "reads its published remote index instead (never a managed local "
+            "copy). Remove --index-dir to use the Published Version's index."
+        )
+
+    module, location = _bind_remote_lancedb(snapshot)
+
+    if mode == "lexical":
+        results, note = _remote_lance_page_search(
+            module, location, snapshot, args.query, args.limit
+        )
+        if note:
+            print(f"note: {note}")
+        _print_page_search_results(results)
+        return 0
+
+    # semantic / hybrid through the adapter bound to the exact remote index.
+    embedder = _resolve_embedder(args.model)
+    adapter = module.LanceDBRetrievalAdapter(
+        index_location=location,
+        expected_fingerprint=snapshot.remote_derived_index.fingerprint,
+    )
+    try:
+        results = adapter.retrieve(
+            list(snapshot.pages),
+            args.query,
+            limit=args.limit,
+            mode=mode,
+            embedder=embedder,
+        )
+    except EmbeddingError as exc:
+        # Model identity / index configuration errors are actionable, never
+        # silently degraded (issue #162).
+        raise CliError(str(exc)) from exc
+    note = _index_fallback_note(results) or adapter.last_fallback_detail
+    if note:
+        print(f"note: {note}")
+    _print_evidence_results(results)
     return 0
 
 
@@ -2631,8 +2888,11 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument(
         "--mode",
         choices=("lexical", "semantic", "hybrid"),
-        default="lexical",
-        help="Retrieval mode (default: lexical). semantic/hybrid need lumio-lancedb + an embedder.",
+        default=None,
+        help=(
+            "Retrieval mode (default: lexical, or LUMIO_RETRIEVAL_MODE from env/.env). "
+            "semantic/hybrid need lumio-lancedb + an embedder."
+        ),
     )
     search_parser.add_argument(
         "--model",

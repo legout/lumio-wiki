@@ -75,6 +75,12 @@ MANIFEST_OBJECT = "manifest.json"
 # tables. Never part of the manifest's canonical file list (ADR-0013).
 DERIVED_DIR = "derived"
 
+# The remote LanceDB index subdirectory under an immutable version prefix
+# (``{prefix}/{version}/derived/lance/``, ADR-0019). Single source of truth for
+# the publisher (which builds there) and the Snapshot's dependency-neutral
+# remote derived-index descriptor (which points consumers there, issue #162).
+LANCE_DERIVED_DIR = f"{DERIVED_DIR}/lance"
+
 # Bounded in-memory cache defaults (the no-managed-disk-cache policy, ADR-0013).
 # A single resolved version is cached by default; the cap keeps the resident
 # byte footprint bounded. The cache is process-local and never touches disk.
@@ -86,6 +92,7 @@ __all__ = [
     "DEFAULT_MAX_CACHE_BYTES",
     "DEFAULT_MAX_CACHED_VERSIONS",
     "DERIVED_DIR",
+    "LANCE_DERIVED_DIR",
     "MANIFEST_OBJECT",
     "S3_LOCATION_KIND",
     "S3Location",
@@ -309,6 +316,7 @@ class S3Location:
         version: str | None = None,
         max_cached_versions: int = DEFAULT_MAX_CACHED_VERSIONS,
         max_cache_bytes: int = DEFAULT_MAX_CACHE_BYTES,
+        store_uri: str | None = None,
     ) -> None:
         self._store = store
         self._prefix = prefix.strip("/")
@@ -319,6 +327,12 @@ class S3Location:
         self._max_cache_bytes = max(0, max_cache_bytes)
         # Bounded in-memory cache of materialized versions: {version: {rel: bytes}}.
         self._cache: dict[str, dict[str, bytes]] = {}
+        # The object-store container URI (``s3://bucket``) the store is rooted
+        # at, when known. A resolved Snapshot uses it to expose its Published
+        # Version's remote derived-index descriptor (issue #162, ADR-0019):
+        # the descriptor's connect URI is container + key prefix, never
+        # reconstructed per caller and never coerced through ``Path``.
+        self._store_uri = store_uri.rstrip("/") if store_uri else None
 
     # -- Location protocol --------------------------------------------------
 
@@ -401,7 +415,7 @@ class S3Location:
         )
         url_path = parsed.path.lstrip("/")
         chosen_prefix = prefix if prefix is not None else url_path
-        return cls(store, chosen_prefix, version=version)
+        return cls(store, chosen_prefix, version=version, store_uri=authority_url)
 
     # -- read internals -----------------------------------------------------
 
@@ -413,8 +427,7 @@ class S3Location:
         data = _get_json(self._store, key)
         if not isinstance(data, dict) or not isinstance(data.get("version"), str):
             raise KnowledgeBaseError(
-                f"S3 pointer {key!r} is malformed: expected a JSON object with a "
-                f"'version' string"
+                f"S3 pointer {key!r} is malformed: expected a JSON object with a 'version' string"
             )
         return data["version"]
 
@@ -424,11 +437,8 @@ class S3Location:
         try:
             manifest = msgspec.json.decode(msgspec.json.encode(data), type=S3Manifest)
         except msgspec.DecodeError as exc:
-            raise KnowledgeBaseError(
-                f"S3 manifest {key!r} is malformed: {exc}"
-            ) from exc
+            raise KnowledgeBaseError(f"S3 manifest {key!r} is malformed: {exc}") from exc
         return manifest
-
 
     def _materialize(self, version: str, manifest: S3Manifest) -> dict[str, bytes]:
         """Read and digest-validate every canonical file of ``version``.
@@ -442,8 +452,7 @@ class S3Location:
 
         if manifest.version != version:
             raise KnowledgeBaseError(
-                f"S3 manifest version {manifest.version!r} does not match its "
-                f"prefix {version!r}"
+                f"S3 manifest version {manifest.version!r} does not match its prefix {version!r}"
             )
 
         content: dict[str, bytes] = {}
@@ -463,14 +472,12 @@ class S3Location:
             raw = _get_bytes(self._store, key)
             if len(raw) != entry.size:
                 raise KnowledgeBaseError(
-                    f"S3 corruption: {key!r} size {len(raw)} != manifest size "
-                    f"{entry.size}"
+                    f"S3 corruption: {key!r} size {len(raw)} != manifest size {entry.size}"
                 )
             actual = hashlib.sha256(raw).hexdigest()
             if actual != entry.digest:
                 raise KnowledgeBaseError(
-                    f"S3 corruption: {key!r} digest {actual} != manifest digest "
-                    f"{entry.digest}"
+                    f"S3 corruption: {key!r} digest {actual} != manifest digest {entry.digest}"
                 )
             content[entry.path] = raw
 
@@ -522,6 +529,32 @@ class S3Location:
             validation_report=report,
             fingerprint=actual_fp,
             location=self,
+            remote_derived_index=self._remote_derived_index_descriptor(version, actual_fp),
+        )
+
+    def _remote_derived_index_descriptor(self, version: str, fingerprint: Any) -> Any | None:
+        """Describe this Published Version's remote derived index, when known.
+
+        Dependency-neutral (issue #162, ADR-0019): the descriptor carries the
+        connect URI, sidecar prefix, immutable version, Published Version
+        fingerprint, and this Location's authenticated store. Returned as
+        ``None`` when the container URI is unknown (a directly constructed
+        Location) so the Snapshot type stays free of any optional-import
+        failure; callers fall back to zero-index retrieval.
+        """
+        if self._store_uri is None:
+            return None
+        from lumio_wiki.location import RemoteDerivedIndex
+
+        sidecar_prefix = "/".join(
+            part for part in (self._prefix, version, LANCE_DERIVED_DIR) if part
+        )
+        return RemoteDerivedIndex(
+            uri=f"{self._store_uri}/{sidecar_prefix}",
+            sidecar_prefix=sidecar_prefix,
+            version=version,
+            fingerprint=fingerprint,
+            store=self._store,
         )
 
     # -- derived graph -----------------------------------------------------

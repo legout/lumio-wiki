@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import msgspec
 
@@ -64,9 +64,34 @@ __all__ = [
     "FilesystemLocation",
     "KnowledgeBaseLocation",
     "KnowledgeBaseSnapshot",
+    "RemoteDerivedIndex",
     "open_filesystem_knowledge_base",
     "open_knowledge_base",
 ]
+
+
+class RemoteDerivedIndex(msgspec.Struct, frozen=True):
+    """A dependency-neutral descriptor of a Snapshot's remote derived index.
+
+    The record is in-memory binding data, never portable Knowledge Base
+    content: ``store`` is the already-authenticated object store the Location
+    reads through (opaque here), and no field ever carries a credential.
+    """
+
+    uri: str
+    """The object-store URI a retrieval backend connects to (e.g. ``s3://bucket/kb/v1/derived/lance``)."""
+
+    sidecar_prefix: str
+    """Object-store key prefix of the index's freshness/model sidecars."""
+
+    version: str
+    """The immutable Published Version label the index belongs to."""
+
+    fingerprint: SourceFingerprint
+    """The Published Version fingerprint the index must match, else it is stale."""
+
+    store: Any = None
+    """The Location's object store for sidecar reads (an obstore ObjectStore)."""
 
 
 @runtime_checkable
@@ -128,6 +153,16 @@ class KnowledgeBaseSnapshot(msgspec.Struct, frozen=True):
     validation_report: ValidationReport
     fingerprint: SourceFingerprint
     location: KnowledgeBaseLocation
+    remote_derived_index: RemoteDerivedIndex | None = None
+    """This Published Version's remote derived index, when the Location knows one.
+
+    A resolved S3 Snapshot exposes a dependency-neutral descriptor for its
+    exact version's ``derived/lance/`` index (issue #162, ADR-0019) so a
+    consumer binds the remote index without reconstructing object keys.
+    ``None`` for filesystem Snapshots (and S3 Locations constructed without a
+    container URI); retrieval then stays on the always-available zero-index
+    path.
+    """
 
     # ------------------------------------------------------------------
     # Immutable Published Version identity and provenance.

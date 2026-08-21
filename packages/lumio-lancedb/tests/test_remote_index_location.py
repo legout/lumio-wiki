@@ -26,6 +26,7 @@ from lumio_lancedb import (
     has_semantic_index,
     search_hybrid_index,
     search_lexical_index,
+    search_pages,
     search_semantic_index,
 )
 from lumio_lancedb.index import _load_fingerprint, _save_fingerprint
@@ -131,6 +132,24 @@ def test_local_index_location_builds_and_searches(tmp_path):
     assert [r.evidence.id for r in via_path] == [r.evidence.id for r in via_location]
     assert via_location[0].trace.stages
     assert via_location[0].citation.page_title
+
+
+def test_page_search_uses_bm25_scores_from_typed_location(tmp_path):
+    from lumio_lancedb.index import _indexed_page_scores
+
+    index_dir = tmp_path / "idx"
+    build_lexical_index(_pages(), index_dir)
+    location = LocalIndexLocation(index_dir)
+    scores = _indexed_page_scores(location, "LanceDB")
+    results = search_pages(_pages(), "LanceDB", limit=5, index_dir=location)
+
+    assert scores
+    assert results
+    assert results[0].score == pytest.approx(scores[results[0].page.path], abs=1e-4)
+    assert [result.page.path for result in results] == [
+        path
+        for path, _score in sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    ]
 
 
 def test_local_semantic_and_hybrid_through_location(tmp_path):
