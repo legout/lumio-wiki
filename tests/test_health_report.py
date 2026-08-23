@@ -45,13 +45,14 @@ def _write_page(
     aliases: list[str] | None = None,
     relationships: list[dict[str, str]] | None = None,
     body: str = "# Page\n\nContent.\n",
+    entity: bool = False,
 ) -> None:
-    if relationships:
+    if relationships or entity:
         if not (root / "lumio.yaml").exists():
             (root / "lumio.yaml").write_text(_CONTROL_V2)
     lines = ["---"]
     lines.append(f'title: "{title}"')
-    if relationships:
+    if relationships or entity:
         lines.append(f'id: "entity:{_slug(title)}"')
         lines.append("entity_types:")
         lines.append('  - "concept"')
@@ -180,9 +181,7 @@ def test_stale_index_reported(tmp_path: Path) -> None:
     page.write_text(page.read_text() + "\n<!-- changed -->\n")
 
     reloaded, _ = load_knowledge_base(tmp_root)
-    stale_kb = KnowledgeBase(
-        root=reloaded.root, pages=reloaded.pages, index_dir=index_dir
-    )
+    stale_kb = KnowledgeBase(root=reloaded.root, pages=reloaded.pages, index_dir=index_dir)
     report = stale_kb.health_report()
 
     assert report.stale_index is True
@@ -307,6 +306,7 @@ def test_health_report_is_deterministic_and_zero_llm(tmp_path: Path) -> None:
         lifecycle="approved",
         visibility="public",
         sources=[{"id": "b-source", "title": "B Source"}],
+        entity=True,
     )
 
     kb, _ = load_knowledge_base(root)

@@ -138,7 +138,6 @@ def _compute_removal_diff(
     return "\n".join(lines)
 
 
-
 class ProposalPipeline:
     """Stage, validate, review, publish, and discard Ingest Proposals.
 
@@ -468,9 +467,7 @@ class ProposalPipeline:
                 target_page = page
                 break
         if target_page is None or not target_page.path:
-            raise ProposalPipelineError(
-                f"no Compiled Page found for Canonical Title {title!r}"
-            )
+            raise ProposalPipelineError(f"no Compiled Page found for Canonical Title {title!r}")
         removed_entity_id = target_page.id
 
         # Claim repair (AC5, ADR-0021): every OTHER page with a canonical
@@ -518,9 +515,7 @@ class ProposalPipeline:
         # pin atomically via a proposed Control File.
         control_file: KnowledgeBaseControlFile | None = None
         kb_control = getattr(self._kb, "control", None)
-        if kb_control is not None and any(
-            pin.title == title for pin in kb_control.hot_index
-        ):
+        if kb_control is not None and any(pin.title == title for pin in kb_control.hot_index):
             kept_pins = [
                 HotIndexPin(title=pin.title, note=pin.note)
                 for pin in kb_control.hot_index

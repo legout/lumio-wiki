@@ -136,9 +136,9 @@ def test_unknown_predicate_is_blocked(tmp_path: Path):
     report = validate(root)
 
     errors = [issue.message for issue in report.issues if issue.severity == "error"]
-    assert any(
-        "unknown predicate" in message and "depends-on" in message for message in errors
-    ), errors
+    assert any("unknown predicate" in message and "depends-on" in message for message in errors), (
+        errors
+    )
     assert not report.is_valid
 
 

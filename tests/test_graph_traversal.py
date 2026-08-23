@@ -66,9 +66,7 @@ def _graph_pages() -> list[CompiledPage]:
 
 
 def _kb(pages: list[CompiledPage] | None = None, tmp: str | Path = ".") -> KnowledgeBase:
-    return KnowledgeBase(
-        root=Path(tmp), pages=pages if pages is not None else _graph_pages()
-    )
+    return KnowledgeBase(root=Path(tmp), pages=pages if pages is not None else _graph_pages())
 
 
 def _write_kb_to_disk(pages: list[CompiledPage], kb_dir: Path) -> None:
@@ -130,13 +128,8 @@ def test_relationship_type_filter_applies_in_all_directions():
         "Delta",
         "Gamma",
     ]
-    assert (
-        kb.related_pages("Beta", direction="outgoing", relationship_type="implements")
-        == []
-    )
-    assert kb.related_pages(
-        "Beta", direction="incoming", relationship_type="uses"
-    ) == ["Alpha"]
+    assert kb.related_pages("Beta", direction="outgoing", relationship_type="implements") == []
+    assert kb.related_pages("Beta", direction="incoming", relationship_type="uses") == ["Alpha"]
 
 
 # ---------------------------------------------------------------------------
@@ -155,9 +148,7 @@ def test_unauthorized_page_is_never_traversed_through():
     # With only {Alpha, Gamma} authorized, the outgoing bridge Beta is withheld;
     # only the direct Gamma->Alpha incoming edge can connect them.
     authorized = {"Alpha", "Gamma"}
-    assert kb.related_pages("Alpha", direction="both", candidate_titles=authorized) == [
-        "Gamma"
-    ]
+    assert kb.related_pages("Alpha", direction="both", candidate_titles=authorized) == ["Gamma"]
 
 
 def test_shortest_path_never_returns_unauthorized_endpoint():

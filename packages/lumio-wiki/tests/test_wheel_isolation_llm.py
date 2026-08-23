@@ -76,7 +76,10 @@ def _pip(python: Path, *args: str) -> subprocess.CompletedProcess:
 # fields a provider-distilled page is expected to declare.
 _FAKE_PROVIDER_MARKDOWN = (
     "---\n"
+    'id: "entity:llm-wheel-page"\n'
     'title: "LLM Wheel Page"\n'
+    "entity_types:\n"
+    "  - page\n"
     "aliases: []\n"
     "tags:\n"
     '  - "llm"\n'
@@ -98,7 +101,7 @@ _FAKE_PROVIDER_MARKDOWN = (
 # client and then drives ``ingest --distiller llm`` through the CLI. Written
 # to a temp file and run by the isolated interpreter so the in-process fake
 # never touches the network.
-_FAKE_DISTILLER_DRIVER = '''
+_FAKE_DISTILLER_DRIVER = """
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -128,7 +131,8 @@ cli._build_distiller = _fake_build
 
 rc = cli.main(["ingest", KB_ROOT, SOURCE_FILE, "--distiller", "llm"])
 sys.exit(rc)
-'''
+"""
+
 
 @pytest.fixture(scope="module")
 def llm_wheel_env(tmp_path_factory: pytest.TempPathFactory) -> dict:
@@ -205,6 +209,17 @@ def test_base_wheel_llm_distiller_fails_actionably(llm_wheel_env: dict, tmp_path
     script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
     kb_root = tmp_path / "kb"
     subprocess.run([str(script), "init", str(kb_root)], check=True, capture_output=True)
+    # A version-2 Knowledge Base requires the Entity contract (ADR-0021): the
+    # Maintainer declares the ``page`` Entity Type in the control file's
+    # ontology, and the distilled page declares a stable ``entity:<slug>`` id.
+    control_file = kb_root / "lumio.yaml"
+    control_file.write_text(
+        control_file.read_text(encoding="utf-8").replace(
+            "  entity_types:\n  predicates:",
+            "  entity_types:\n    page: {}\n  predicates:",
+        ),
+        encoding="utf-8",
+    )
     source = tmp_path / "source.txt"
     source.write_text("some source text", encoding="utf-8")
 
@@ -237,6 +252,17 @@ def test_llm_extra_smoke_ingest_with_fake_provider(llm_wheel_env: dict, tmp_path
     script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
     kb_root = tmp_path / "kb"
     subprocess.run([str(script), "init", str(kb_root)], check=True, capture_output=True)
+    # A version-2 Knowledge Base requires the Entity contract (ADR-0021): the
+    # Maintainer declares the ``page`` Entity Type in the control file's
+    # ontology, and the distilled page declares a stable ``entity:<slug>`` id.
+    control_file = kb_root / "lumio.yaml"
+    control_file.write_text(
+        control_file.read_text(encoding="utf-8").replace(
+            "  entity_types:\n  predicates:",
+            "  entity_types:\n    page: {}\n  predicates:",
+        ),
+        encoding="utf-8",
+    )
     source = tmp_path / "source.txt"
     source.write_text("some source text for the fake provider", encoding="utf-8")
 

@@ -53,9 +53,7 @@ def _slug(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
-def _claims_from(
-    source_title: str, relationships: list[Relationship] | None
-) -> list[Claim]:
+def _claims_from(source_title: str, relationships: list[Relationship] | None) -> list[Claim]:
     """Convert title-level test edges to accepted entity-to-entity Claims."""
     return [
         Claim(
@@ -218,9 +216,10 @@ def test_load_rejects_stale_fingerprint(tmp_path):
     # Stale artifact ignored: the returned state is a fresh in-memory derivation
     # carrying the NEW fingerprint, not the persisted one.
     assert state.fingerprint_digest == fingerprint_sources(root).digest
-    assert state.fingerprint_digest != deserialize_graph(
-        (index_dir / GRAPH_ARTIFACT_FILENAME).read_bytes()
-    ).fingerprint_digest
+    assert (
+        state.fingerprint_digest
+        != deserialize_graph((index_dir / GRAPH_ARTIFACT_FILENAME).read_bytes()).fingerprint_digest
+    )
 
 
 def test_load_rejects_wrong_extractor_version(tmp_path):
@@ -606,11 +605,11 @@ def _linked_disk_kb(root: Path) -> KnowledgeBase:
         'title: "Alpha"\n'
         "entity_types:\n"
         "  - concept\n"
-        "tags: [\"test\"]\n"
+        'tags: ["test"]\n'
         'summary: "Alpha summary."\n'
         'lifecycle: "approved"\n'
         'visibility: "public"\n'
-        "sources:\n  - id: \"src-alpha\"\n"
+        'sources:\n  - id: "src-alpha"\n'
         "claims:\n"
         "  - id: claim:alpha-beta\n"
         "    predicate: uses\n"
@@ -628,11 +627,11 @@ def _linked_disk_kb(root: Path) -> KnowledgeBase:
         'title: "Beta"\n'
         "entity_types:\n"
         "  - concept\n"
-        "tags: [\"test\"]\n"
+        'tags: ["test"]\n'
         'summary: "Beta summary."\n'
         'lifecycle: "approved"\n'
         'visibility: "public"\n'
-        "sources:\n  - id: \"src-beta\"\n"
+        'sources:\n  - id: "src-beta"\n'
         "---\n"
         "# Beta\n",
         encoding="utf-8",
@@ -643,11 +642,11 @@ def _linked_disk_kb(root: Path) -> KnowledgeBase:
         'title: "Gamma"\n'
         "entity_types:\n"
         "  - concept\n"
-        "tags: [\"test\"]\n"
+        'tags: ["test"]\n'
         'summary: "Gamma summary."\n'
         'lifecycle: "approved"\n'
         'visibility: "public"\n'
-        "sources:\n  - id: \"src-gamma\"\n"
+        'sources:\n  - id: "src-gamma"\n'
         "---\n"
         "# Gamma\n\nBack to [b](beta.md).\n",
         encoding="utf-8",

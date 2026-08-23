@@ -915,8 +915,7 @@ def test_required_retention_never_echoes_secret_bearing_source_ids(tmp_path):
     registry = ingest.source_registry
     secret_id = "sk-live-example-secret"
     authored = _authored_page("annual-report").replace(
-        '  - id: "annual-report"\n'
-        '    title: "annual-report source"\n',
+        '  - id: "annual-report"\n    title: "annual-report source"\n',
         '  - id: "annual-report"\n'
         '    title: "annual-report source"\n'
         f'  - id: "{secret_id}"\n'

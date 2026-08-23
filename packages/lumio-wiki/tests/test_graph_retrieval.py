@@ -49,9 +49,7 @@ def _slug(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
-def _claims_from(
-    source_title: str, relationships: list[Relationship] | None
-) -> list[Claim]:
+def _claims_from(source_title: str, relationships: list[Relationship] | None) -> list[Claim]:
     """Convert title-level test edges to accepted entity-to-entity Claims."""
     return [
         Claim(
@@ -294,9 +292,7 @@ def test_trace_graph_stage_reports_seed_and_page_counts():
         graph_max_depth=1,
     )
     assert results
-    stage = next(
-        s for r in results for s in r.trace.stages if s.name == "graph-expansion"
-    )
+    stage = next(s for r in results for s in r.trace.stages if s.name == "graph-expansion")
     # Two seeds; A->B plus C yields eligible pages {A, B, C} = 3.
     assert "2" in stage.detail  # seed count
     assert "3" in stage.detail  # eligible page count

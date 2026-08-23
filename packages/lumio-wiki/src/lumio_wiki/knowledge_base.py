@@ -8,7 +8,7 @@ import tempfile
 import uuid
 from collections import deque
 from collections.abc import Iterable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date as _date_cls, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple, Protocol
 from urllib.parse import quote
@@ -35,6 +35,9 @@ from lumio_wiki.records import (
     CLAIM_ORIGINS,
     EXTRACTOR_VERSION,
     LITERAL_KINDS,
+    LITERAL_KIND_BOOLEAN,
+    LITERAL_KIND_NUMBER,
+    LITERAL_KIND_STRING,
     LINK_IMPACT_KIND_COMPONENT_JOIN,
     LINK_IMPACT_KIND_FRAGILE_STRENGTHENING,
     LINK_IMPACT_KIND_ORPHAN_REPAIR,
@@ -45,6 +48,7 @@ from lumio_wiki.records import (
     ClaimEvidence,
     CompiledPage,
     ContentCategory,
+    Entity,
     EntityRedirect,
     EntityTypeDefinition,
     ExtractedReference,
@@ -438,6 +442,24 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         """
         candidates = self.pages if pages is None else list(pages)
         return search_pages_over(candidates, query, limit)
+
+    def entities(self) -> list[Entity]:
+        """Return the Entity identity/type projection of every page (ADR-0021).
+
+        One Entity per Compiled Page, in page order; pages without an Entity
+        contract (Legacy Flat Mode) are skipped.
+        """
+        return [
+            Entity(
+                id=page.id,
+                entity_types=list(page.entity_types),
+                title=page.title,
+                aliases=list(page.aliases),
+                path=page.path,
+            )
+            for page in self.pages
+            if page.id
+        ]
 
     def related_from(self, title: str, relationship_type: str | None = None) -> list[Relationship]:
         """Return canonical edges whose source page has the given Canonical Title.
@@ -1415,9 +1437,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             message = issue.message
             if ": dangling object entity: " in message:
                 broken_relationships.add(issue.file)
-            elif ": unknown predicate: " in message or message.startswith(
-                "unknown entity type: "
-            ):
+            elif ": unknown predicate: " in message or message.startswith("unknown entity type: "):
                 unknown_relationship_types.add(issue.file)
             elif issue.severity == "error":
                 if not (
@@ -1916,12 +1936,8 @@ class _KnowledgeIndex:
                 target = self.by_entity_id.get(claim.object)
                 if target is None:
                     continue
-                self.adjacency.setdefault(page.title, []).append(
-                    (target.title, claim.predicate)
-                )
-                self.incoming.setdefault(target.title, []).append(
-                    (page.title, claim.predicate)
-                )
+                self.adjacency.setdefault(page.title, []).append((target.title, claim.predicate))
+                self.incoming.setdefault(target.title, []).append((page.title, claim.predicate))
         # Canonical adjacency is stored pre-sorted by ``(endpoint, type)`` so
         # graph traversal iterates canonical edges deterministically without
         # per-node materialization/sorting (ADR-0011, issue #106).
@@ -2047,9 +2063,7 @@ def _as_claims(value: Any, relative: str) -> tuple[list[Claim], list[ValidationI
     if value is None:
         return [], []
     if not isinstance(value, list):
-        return [], [
-            ValidationIssue(file=relative, field="claims", message="claims must be a list")
-        ]
+        return [], [ValidationIssue(file=relative, field="claims", message="claims must be a list")]
     claims: list[Claim] = []
     issues: list[ValidationIssue] = []
     for item in value:
@@ -2125,6 +2139,8 @@ def _as_claims(value: Any, relative: str) -> tuple[list[Claim], list[ValidationI
                         line_end=line_end,
                     )
                 )
+        valid_from = item.get("valid_from")
+        valid_to = item.get("valid_to")
         claims.append(
             Claim(
                 id=claim_id,
@@ -2135,6 +2151,8 @@ def _as_claims(value: Any, relative: str) -> tuple[list[Claim], list[ValidationI
                 value_type=value_type,
                 confidence=float(confidence) if confidence is not None else None,
                 origin=origin,
+                valid_from=str(valid_from) if valid_from is not None else None,
+                valid_to=str(valid_to) if valid_to is not None else None,
                 evidence=evidence,
             )
         )
@@ -2380,9 +2398,7 @@ def _entity_claim_page_issues(
     if has_entity_contract:
         if not page.id:
             issues.append(
-                ValidationIssue(
-                    file=relative, field="id", message="missing required field: id"
-                )
+                ValidationIssue(file=relative, field="id", message="missing required field: id")
             )
         else:
             id_issue = _entity_id_issue(page.id)
@@ -2433,15 +2449,21 @@ def _entity_claim_page_issues(
                     )
                 )
         has_object = claim.object is not None
-        has_value = claim.value is not None or claim.value_type is not None
+        has_value = claim.value is not None
+        if claim.value is None and claim.value_type is not None:
+            issues.append(
+                ValidationIssue(
+                    file=relative,
+                    field="claims",
+                    message=f"claim {claim.id}: value_type without a value",
+                )
+            )
         if has_object and has_value:
             issues.append(
                 ValidationIssue(
                     file=relative,
                     field="claims",
-                    message=(
-                        f"claim {claim.id}: exactly one of object or value is allowed"
-                    ),
+                    message=(f"claim {claim.id}: exactly one of object or value is allowed"),
                 )
             )
         elif not has_object and not has_value:
@@ -2449,9 +2471,7 @@ def _entity_claim_page_issues(
                 ValidationIssue(
                     file=relative,
                     field="claims",
-                    message=(
-                        f"claim {claim.id}: exactly one of object or value is required"
-                    ),
+                    message=(f"claim {claim.id}: exactly one of object or value is required"),
                 )
             )
         elif has_value and claim.value is not None and claim.value_type is None:
@@ -2470,6 +2490,24 @@ def _entity_claim_page_issues(
                     message=f"claim {claim.id}: unknown origin {claim.origin!r}",
                 )
             )
+        for field_name, raw_time in (
+            ("valid_from", claim.valid_from),
+            ("valid_to", claim.valid_to),
+        ):
+            if raw_time is None:
+                continue
+            try:
+                _date_cls.fromisoformat(str(raw_time))
+            except ValueError:
+                issues.append(
+                    ValidationIssue(
+                        file=relative,
+                        field="claims",
+                        message=(
+                            f"claim {claim.id}: {field_name} {raw_time!r} is not an ISO 8601 date"
+                        ),
+                    )
+                )
         if not claim.evidence:
             issues.append(
                 ValidationIssue(
@@ -2500,9 +2538,18 @@ def _body_sections(page: CompiledPage) -> set[str]:
     }
 
 
-def _ontology_issues(
-    pages: list[CompiledPage], ontology: Ontology | None
-) -> list[ValidationIssue]:
+def _literal_value_kind(value: object) -> str | None:
+    """Classify a raw literal value's YAML type against LITERAL_KINDS."""
+    if isinstance(value, bool):
+        return LITERAL_KIND_BOOLEAN
+    if isinstance(value, (int, float)):
+        return LITERAL_KIND_NUMBER
+    if isinstance(value, str):
+        return LITERAL_KIND_STRING
+    return None
+
+
+def _ontology_issues(pages: list[CompiledPage], ontology: Ontology | None) -> list[ValidationIssue]:
     """Validate Entity identity, Claims, and redirects against the ontology.
 
     Aggregates every blocking finding: duplicate/dangling Entity and Claim
@@ -2515,6 +2562,32 @@ def _ontology_issues(
     issues: list[ValidationIssue] = []
     entity_types = ontology.entity_types if ontology is not None else {}
     predicates = ontology.predicates if ontology is not None else {}
+
+    # ADR-0021: in a Knowledge Base with a Control File (ontology present),
+    # EVERY page declares exactly one stable Entity ID and at least one
+    # controlled Entity Type. In Legacy Flat Mode (no Control File) the entity
+    # contract is optional — there is no ontology to control it against.
+    if ontology is not None:
+        for page in pages:
+            if not page.id:
+                issues.append(
+                    ValidationIssue(
+                        file=page.path,
+                        field="id",
+                        message=(
+                            "missing required field: id (every page in a "
+                            "version-2 Knowledge Base declares one stable Entity ID)"
+                        ),
+                    )
+                )
+            if not page.entity_types:
+                issues.append(
+                    ValidationIssue(
+                        file=page.path,
+                        field="entity_types",
+                        message=("an Entity page must declare at least one entity type"),
+                    )
+                )
 
     seen_entity_ids: dict[str, str] = {}
     seen_claim_ids: dict[str, str] = {}
@@ -2670,15 +2743,38 @@ def _ontology_issues(
                             ),
                         )
                     )
+                value_kind = _literal_value_kind(claim.value)
+                expected = definition.literal_kind if definition is not None else claim.value_type
+                if value_kind is not None and value_kind != expected:
+                    issues.append(
+                        ValidationIssue(
+                            file=page.path,
+                            field="claims",
+                            message=(
+                                f"claim {claim.id}: literal value kind mismatch: value "
+                                f"is {value_kind}, {claim.predicate} expects {expected}"
+                            ),
+                        )
+                    )
             for anchor in claim.evidence:
+                if anchor.section is None and anchor.line_start is None:
+                    issues.append(
+                        ValidationIssue(
+                            file=page.path,
+                            field="claims",
+                            message=(
+                                f"claim {claim.id}: evidence anchor must identify a "
+                                f"section or a bounded line range"
+                            ),
+                        )
+                    )
                 if anchor.section is not None and anchor.section not in sections:
                     issues.append(
                         ValidationIssue(
                             file=page.path,
                             field="claims",
                             message=(
-                                f"claim {claim.id}: unknown evidence section: "
-                                f"{anchor.section!r}"
+                                f"claim {claim.id}: unknown evidence section: {anchor.section!r}"
                             ),
                         )
                     )
@@ -2811,9 +2907,7 @@ def _as_ontology(value: Any) -> tuple[Ontology, list[ValidationIssue]]:
             )
         else:
             for predicate_id, raw_def in raw_predicates.items():
-                if not isinstance(predicate_id, str) or not IDENTIFIER_SLUG_RE.match(
-                    predicate_id
-                ):
+                if not isinstance(predicate_id, str) or not IDENTIFIER_SLUG_RE.match(predicate_id):
                     issues.append(
                         ValidationIssue(
                             file=CONTROL_FILE_BASENAME,
@@ -2874,9 +2968,7 @@ def _as_ontology(value: Any) -> tuple[Ontology, list[ValidationIssue]]:
             )
         else:
             for from_id, to_id in raw_redirects.items():
-                redirects.append(
-                    EntityRedirect(from_id=str(from_id), to_id=str(to_id))
-                )
+                redirects.append(EntityRedirect(from_id=str(from_id), to_id=str(to_id)))
 
     # Internal reference resolution inside the ontology itself.
     for predicate_id, definition in predicates.items():
@@ -3779,9 +3871,7 @@ def _append_ontology_lines(lines: list[str], control: KnowledgeBaseControlFile) 
         definition = ontology.entity_types[type_id]
         if definition.description is not None:
             lines.append(f"    {type_id}:")
-            lines.append(
-                f"      description: {_control_yaml_scalar(definition.description)}"
-            )
+            lines.append(f"      description: {_control_yaml_scalar(definition.description)}")
         else:
             lines.append(f"    {type_id}: {{}}")
     lines.append("  predicates:")
@@ -3790,9 +3880,7 @@ def _append_ontology_lines(lines: list[str], control: KnowledgeBaseControlFile) 
         lines.append(f"    {predicate_id}:")
         if definition.subject_types:
             lines.append("      subject_types:")
-            lines.extend(
-                f"        - {t}" for t in definition.subject_types
-            )
+            lines.extend(f"        - {t}" for t in definition.subject_types)
         if definition.object_types:
             lines.append("      object_types:")
             lines.extend(f"        - {t}" for t in definition.object_types)

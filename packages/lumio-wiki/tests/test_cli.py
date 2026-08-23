@@ -959,7 +959,7 @@ def _graph_page(title: str, *, body: str, claims_yaml: str = "") -> str:
         f'summary: "{title} summary."\n'
         'lifecycle: "approved"\n'
         'visibility: "public"\n'
-        'sources:\n'
+        "sources:\n"
         f'  - id: "src-{slug}"\n'
         f'    title: "{title} Source"\n'
         f"{claims}"
@@ -2569,8 +2569,15 @@ def test_source_inspect_published_version_resolves_manifest_binding(
 
     assert (
         main(
-            ["source", "inspect", str(source_kb), "--source-id", "policy",
-             "--published-version", "v2026"]
+            [
+                "source",
+                "inspect",
+                str(source_kb),
+                "--source-id",
+                "policy",
+                "--published-version",
+                "v2026",
+            ]
         )
         == 0
     )
@@ -2583,8 +2590,15 @@ def test_source_inspect_published_version_without_store_fails_closed(
 ) -> None:
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
     rc = main(
-        ["source", "inspect", str(source_kb), "--source-id", "policy",
-         "--published-version", "v2026"]
+        [
+            "source",
+            "inspect",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--published-version",
+            "v2026",
+        ]
     )
     assert rc == 1
     assert "no private Source Artifact Store is configured" in capsys.readouterr().err
@@ -2598,8 +2612,15 @@ def test_source_inspect_missing_manifest_is_historical_mismatch(
     monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
 
     rc = main(
-        ["source", "inspect", str(source_kb), "--source-id", "policy",
-         "--published-version", "v-does-not-exist"]
+        [
+            "source",
+            "inspect",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--published-version",
+            "v-does-not-exist",
+        ]
     )
     assert rc == 1
     err = capsys.readouterr().err
@@ -2620,8 +2641,7 @@ def test_source_fetch_writes_byte_exact_original(
 
     assert (
         main(
-            ["source", "fetch", str(source_kb), "--source-id", "policy",
-             "--output", str(out_file)]
+            ["source", "fetch", str(source_kb), "--source-id", "policy", "--output", str(out_file)]
         )
         == 0
     )
@@ -2639,8 +2659,7 @@ def test_source_fetch_directory_output_receives_safe_filename(
     out_dir.mkdir()
 
     assert (
-        main(["source", "fetch", str(source_kb), "--source-id", "policy",
-              "--output", str(out_dir)])
+        main(["source", "fetch", str(source_kb), "--source-id", "policy", "--output", str(out_dir)])
         == 0
     )
     fetched = out_dir / "policy.pdf"
@@ -2660,8 +2679,7 @@ def test_source_fetch_rejects_corruption(
     out_file = tmp_path / "out.pdf"
 
     rc = main(
-        ["source", "fetch", str(source_kb), "--source-id", "policy",
-         "--output", str(out_file)]
+        ["source", "fetch", str(source_kb), "--source-id", "policy", "--output", str(out_file)]
     )
     assert rc == 1
     assert "failed digest verification" in capsys.readouterr().err
@@ -2675,8 +2693,15 @@ def test_source_fetch_without_store_fails_closed(
     ingest.source_registry.register_source("policy", INSPECTION_RAW, filename="policy.pdf")
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
     rc = main(
-        ["source", "fetch", str(source_kb), "--source-id", "policy",
-         "--output", str(tmp_path / "out.pdf")]
+        [
+            "source",
+            "fetch",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--output",
+            str(tmp_path / "out.pdf"),
+        ]
     )
     assert rc == 1
     assert "no private Source Artifact Store is configured" in capsys.readouterr().err
@@ -2688,12 +2713,17 @@ def test_source_fetch_unavailable_artifact_is_distinct_outcome(
     store_root = tmp_path / "artifact-store"
     store = _retained_policy_source(source_kb, store_root)
     monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
-    store.delete_artifact(
-        source_id="policy", content_hash=lw.artifact_content_hash(INSPECTION_RAW)
-    )
+    store.delete_artifact(source_id="policy", content_hash=lw.artifact_content_hash(INSPECTION_RAW))
     rc = main(
-        ["source", "fetch", str(source_kb), "--source-id", "policy",
-         "--output", str(tmp_path / "out.pdf")]
+        [
+            "source",
+            "fetch",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--output",
+            str(tmp_path / "out.pdf"),
+        ]
     )
     assert rc == 1
     assert "artifact not retained" in capsys.readouterr().err
@@ -2720,13 +2750,7 @@ def test_source_link_rejects_expires_over_one_hour(
 
     # A malformed/out-of-range --expires is a user-facing usage error: the
     # CliError default exit code 2 (like argparse), never a traceback.
-    assert (
-        main(
-            ["source", "link", str(source_kb), "--source-id", "policy",
-             "--expires", "2h"]
-        )
-        == 2
-    )
+    assert main(["source", "link", str(source_kb), "--source-id", "policy", "--expires", "2h"]) == 2
 
 
 class _SigningInMemoryStore(lw.InMemoryArtifactStore):
@@ -2763,11 +2787,7 @@ def test_source_link_signing_store_prints_url_with_secret_handling_note(
     )
     monkeypatch.setattr(cli, "_artifact_store_from_env", lambda: store)
 
-    assert (
-        main(["source", "link", str(source_kb), "--source-id", "policy",
-              "--expires", "1h"])
-        == 0
-    )
+    assert main(["source", "link", str(source_kb), "--source-id", "policy", "--expires", "1h"]) == 0
     out = capsys.readouterr().out
     assert "https://objects.example/artifacts/policy/" in out
     assert "expires:         1h (3600s)" in out
@@ -2793,8 +2813,15 @@ def test_source_inspect_rejects_unsafe_published_version_without_echo(
     monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
     for unsafe in ("../secret", "v1/../../etc", "token=abc", "a b"):
         rc = main(
-            ["source", "inspect", str(source_kb), "--source-id", "policy",
-             "--published-version", unsafe]
+            [
+                "source",
+                "inspect",
+                str(source_kb),
+                "--source-id",
+                "policy",
+                "--published-version",
+                unsafe,
+            ]
         )
         assert rc == 2, unsafe
         combined = capsys.readouterr()

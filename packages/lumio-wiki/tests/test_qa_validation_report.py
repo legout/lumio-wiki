@@ -62,9 +62,7 @@ def _slug(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
-def _claims_from(
-    source_title: str, relationships: list[Relationship] | None
-) -> list[Claim]:
+def _claims_from(source_title: str, relationships: list[Relationship] | None) -> list[Claim]:
     """Convert title-level test edges to accepted entity-to-entity Claims."""
     return [
         Claim(
@@ -100,9 +98,9 @@ def _page(
         summary=f"{title} summary",
         lifecycle=lifecycle,
         visibility=visibility,
-        sources=sources if sources is not None else [
-            Source(id=f"src-{title.lower()}", title=title)
-        ],
+        sources=sources
+        if sources is not None
+        else [Source(id=f"src-{title.lower()}", title=title)],
         claims=_claims_from(title, relationships),
         synthetic=synthetic,
         body=body,
@@ -241,7 +239,8 @@ def test_orphan_discovery_scope_has_no_inbound_topology_at_all():
     issues = _qa_issues([gamma, alpha])
 
     gamma_orphan = [
-        i for i in issues
+        i
+        for i in issues
         if i.file == gamma.path and i.field == "topology" and "orphan" in i.message
     ]
     assert gamma_orphan, [i.message for i in issues if i.file == gamma.path]
@@ -260,8 +259,7 @@ def test_orphan_canonical_scope_has_body_links_but_no_reviewed_relationships():
     issues = _qa_issues([alpha, beta])
 
     beta_orphan = [
-        i for i in issues
-        if i.file == beta.path and i.field == "topology" and "orphan" in i.message
+        i for i in issues if i.file == beta.path and i.field == "topology" and "orphan" in i.message
     ]
     assert beta_orphan, [i.message for i in issues if i.file == beta.path]
     msg = beta_orphan[0].message.lower()
@@ -279,8 +277,7 @@ def test_page_with_inbound_relationship_is_not_an_orphan():
     issues = _qa_issues([alpha, beta])
 
     beta_orphan = [
-        i for i in issues
-        if i.file == beta.path and i.field == "topology" and "orphan" in i.message
+        i for i in issues if i.file == beta.path and i.field == "topology" and "orphan" in i.message
     ]
     assert not beta_orphan, [i.message for i in issues if i.file == beta.path]
 
@@ -299,11 +296,14 @@ def test_self_relationship_does_not_mask_orphan():
 def test_orphan_scope_disclosure_through_public_validate_seam(tmp_path):
     # Integration: a KB with an isolated page and a body-linked page both
     # surface orphan findings through validate(), with correct scope disclosure.
-    root = _write_kb(tmp_path, {
-        "alpha.md": _page_md("Alpha", body="See [Beta](beta.md).\n"),
-        "beta.md": _page_md("Beta"),
-        "gamma.md": _page_md("Gamma", body="Standalone.\n"),
-    })
+    root = _write_kb(
+        tmp_path,
+        {
+            "alpha.md": _page_md("Alpha", body="See [Beta](beta.md).\n"),
+            "beta.md": _page_md("Beta"),
+            "gamma.md": _page_md("Gamma", body="Standalone.\n"),
+        },
+    )
     report = validate(root)
     topology = [i for i in report.issues if i.field == "topology"]
     # Gamma is a discovery-scope orphan; Beta is a canonical-scope orphan
@@ -341,10 +341,7 @@ def test_ambiguous_internal_link_reported_from_resolver_diagnostic():
     b2 = _page("Beta", path="beta-other.md")
     issues = _qa_issues([alpha, b1, b2])
 
-    ambiguous = [
-        i for i in _by_field(issues, "internal-links")
-        if "ambiguous" in i.message.lower()
-    ]
+    ambiguous = [i for i in _by_field(issues, "internal-links") if "ambiguous" in i.message.lower()]
     assert ambiguous, [i.message for i in issues]
     assert ambiguous[0].file == alpha.path
     assert ambiguous[0].severity == "warning"
@@ -352,10 +349,13 @@ def test_ambiguous_internal_link_reported_from_resolver_diagnostic():
 
 def test_broken_internal_link_forwarded_through_public_validate_seam(tmp_path):
     # Integration: a broken body link surfaces as a warning through validate().
-    root = _write_kb(tmp_path, {
-        "alpha.md": _page_md("Alpha", body="See [Missing](nope.md).\n"),
-        "beta.md": _page_md("Beta"),
-    })
+    root = _write_kb(
+        tmp_path,
+        {
+            "alpha.md": _page_md("Alpha", body="See [Missing](nope.md).\n"),
+            "beta.md": _page_md("Beta"),
+        },
+    )
     report = validate(root)
     broken = [i for i in report.issues if i.field == "internal-links"]
     assert broken, [i.message for i in report.issues]
@@ -434,7 +434,8 @@ def test_deprecated_lifecycle_surfaced_as_stale():
     issues = _qa_issues([gamma])
 
     stale = [
-        i for i in issues
+        i
+        for i in issues
         if i.file == gamma.path and i.field == "lifecycle" and "stale" in i.message.lower()
     ]
     assert stale, [i.message for i in issues]
@@ -453,9 +454,12 @@ def test_approved_lifecycle_not_flagged_stale():
 
 
 def test_stale_surfaced_through_public_validate_seam(tmp_path):
-    root = _write_kb(tmp_path, {
-        "old.md": _page_md("Old Page", lifecycle="deprecated"),
-    })
+    root = _write_kb(
+        tmp_path,
+        {
+            "old.md": _page_md("Old Page", lifecycle="deprecated"),
+        },
+    )
     report = validate(root)
     stale = [i for i in report.issues if i.field == "lifecycle" and "stale" in i.message.lower()]
     assert stale, [i.message for i in report.issues]
@@ -475,10 +479,9 @@ def test_contradiction_relationship_surfaced():
     issues = _qa_issues([alpha, beta])
 
     contradiction = [
-        i for i in issues
-        if i.file == alpha.path
-        and i.field == "claims"
-        and "contradiction" in i.message.lower()
+        i
+        for i in issues
+        if i.file == alpha.path and i.field == "claims" and "contradiction" in i.message.lower()
     ]
     assert contradiction, [i.message for i in issues]
     assert "entity:beta" in contradiction[0].message
@@ -500,37 +503,35 @@ def test_non_contradiction_relationship_not_flagged():
 def test_contradiction_surfaced_through_public_validate_seam(tmp_path):
     # ADR-0021: the contradiction is an accepted Claim (predicate
     # ``contradicts``) validated against the Control File ontology.
-    root = _write_kb(tmp_path, {
-        "lumio.yaml": (
-            "version: 2\n"
-            'mode: "categorized"\n'
-            "categories:\n"
-            "  - name: concepts\n"
-            "ontology:\n"
-            "  entity_types:\n"
-            "    concept: {}\n"
-            "  predicates:\n"
-            "    contradicts:\n"
-            "      subject_types:\n"
-            "        - concept\n"
-            "      object_types:\n"
-            "        - concept\n"
-        ),
-        "alpha.md": _page_md(
-            "Alpha",
-            entity_id="entity:alpha",
-            claims=[("claim:alpha-contradicts-beta", "contradicts", "entity:beta")],
-        ),
-        "beta.md": _page_md(
-            "Beta", entity_id="entity:beta", body="# Beta\n"
-        ),
-    })
+    root = _write_kb(
+        tmp_path,
+        {
+            "lumio.yaml": (
+                "version: 2\n"
+                'mode: "categorized"\n'
+                "categories:\n"
+                "  - name: concepts\n"
+                "ontology:\n"
+                "  entity_types:\n"
+                "    concept: {}\n"
+                "  predicates:\n"
+                "    contradicts:\n"
+                "      subject_types:\n"
+                "        - concept\n"
+                "      object_types:\n"
+                "        - concept\n"
+            ),
+            "alpha.md": _page_md(
+                "Alpha",
+                entity_id="entity:alpha",
+                claims=[("claim:alpha-contradicts-beta", "contradicts", "entity:beta")],
+            ),
+            "beta.md": _page_md("Beta", entity_id="entity:beta", body="# Beta\n"),
+        },
+    )
     report = validate(root)
     assert report.is_valid, [i.message for i in report.issues]
-    contradiction = [
-        i for i in report.issues
-        if "contradiction" in i.message.lower()
-    ]
+    contradiction = [i for i in report.issues if "contradiction" in i.message.lower()]
     assert contradiction, [i.message for i in report.issues]
 
 
@@ -542,12 +543,7 @@ def test_contradiction_surfaced_through_public_validate_seam(tmp_path):
 
 def test_missing_required_frontmatter_appears_in_report(tmp_path):
     page = tmp_path / "incomplete.md"
-    page.write_text(
-        "---\n"
-        'title: "Incomplete"\n'
-        'summary: "Missing fields."\n'
-        "---\n\nBody.\n"
-    )
+    page.write_text('---\ntitle: "Incomplete"\nsummary: "Missing fields."\n---\n\nBody.\n')
     report = validate(tmp_path)
 
     fields = {i.field for i in report.issues}
@@ -619,9 +615,7 @@ def test_existing_cross_page_checks_still_fire():
     issues = _qa_issues([a1, a2, b1, b2])
 
     dup = [i for i in issues if i.field == "title" and "duplicate" in i.message.lower()]
-    dup_alias = [
-        i for i in issues if i.field == "aliases" and "duplicate" in i.message.lower()
-    ]
+    dup_alias = [i for i in issues if i.field == "aliases" and "duplicate" in i.message.lower()]
     assert dup, [i.message for i in issues]
     assert dup_alias, [i.message for i in issues]
     # The old "unresolved relationship target" cross-page check moved to

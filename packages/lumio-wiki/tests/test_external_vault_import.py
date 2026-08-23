@@ -38,9 +38,7 @@ def test_external_adapter_accepts_any_compiled_markdown_directory(tmp_path):
 
     parsed = import_external_compiled_markdown(vault)
 
-    assert [page.relative_path for page in parsed.proposed_pages] == [
-        "concepts/Widget.md"
-    ]
+    assert [page.relative_path for page in parsed.proposed_pages] == ["concepts/Widget.md"]
     assert parsed.proposed_pages[0].title == "Widget"
     assert "Imported body." in parsed.proposed_pages[0].markdown
     assert "obsidian" not in parsed.proposed_pages[0].markdown.lower()
@@ -49,14 +47,7 @@ def test_external_adapter_accepts_any_compiled_markdown_directory(tmp_path):
 def test_external_adapter_is_deterministic_for_same_tree(tmp_path):
     vault = _write_vault(
         tmp_path / "vault",
-        {
-            "page.md": (
-                "---\n"
-                'title: "Page"\n'
-                "tags: [x]\n"
-                "---\n\n# Page\n\nBody.\n"
-            )
-        },
+        {"page.md": ('---\ntitle: "Page"\ntags: [x]\n---\n\n# Page\n\nBody.\n')},
     )
 
     first = import_external_compiled_markdown(vault)
@@ -81,18 +72,13 @@ def test_external_canonical_frontmatter_preserves_synthetic_and_defaults(tmp_pat
                 "---\n\n# Synthesis\n\nDerived body.\n"
             ),
             "ordinary.md": (
-                "---\n"
-                'title: "Ordinary"\n'
-                "tags: [note]\n"
-                "---\n\n# Ordinary\n\nOrdinary body.\n"
+                '---\ntitle: "Ordinary"\ntags: [note]\n---\n\n# Ordinary\n\nOrdinary body.\n'
             ),
         },
     )
 
     parsed = import_external_compiled_markdown(vault)
-    by_title = {
-        page.title: _frontmatter(page.markdown) for page in parsed.proposed_pages
-    }
+    by_title = {page.title: _frontmatter(page.markdown) for page in parsed.proposed_pages}
 
     assert by_title["Synthesis"]["summary"] == "A derived conclusion."
     assert by_title["Synthesis"]["synthetic"] is True
@@ -198,9 +184,7 @@ def test_external_adapter_preserves_metadata_after_imported_provenance(tmp_path)
     )
 
     parsed = import_external_compiled_markdown(vault)
-    by_title = {
-        page.title: _frontmatter(page.markdown) for page in parsed.proposed_pages
-    }
+    by_title = {page.title: _frontmatter(page.markdown) for page in parsed.proposed_pages}
 
     external = by_title["External"]
     assert external["summary"] == "External summary."
@@ -220,9 +204,7 @@ def test_external_adapter_preserves_metadata_after_imported_provenance(tmp_path)
         },
     ]
     assert "relationships" not in external
-    assert by_title["Synthesis"]["sources"] == [
-        {"id": "declared-input", "title": "Declared Input"}
-    ]
+    assert by_title["Synthesis"]["sources"] == [{"id": "declared-input", "title": "Declared Input"}]
     # Title-based relationship frontmatter has no canonical equivalent since
     # ADR-0021: it is dropped at canonicalization with an explicit disclosure
     # diagnostic (canonical edges are evidence-bearing Claims).

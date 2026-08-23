@@ -150,7 +150,6 @@ def test_cli_doctor_reports_the_s3_extra(capsys):
     assert "lumio-wiki[s3]" in captured.out or "extra[s3]: installed" in captured.out
 
 
-
 # ---------------------------------------------------------------------------
 # publish-s3: publish a local Knowledge Base to an object store (issue #121).
 # ---------------------------------------------------------------------------
@@ -158,9 +157,7 @@ def test_cli_doctor_reports_the_s3_extra(capsys):
 obstore = pytest.importorskip("obstore", reason="obstore required for publish-s3 CLI")
 
 
-def test_cli_publish_s3_writes_an_immutable_version_and_advances_the_pointer(
-    monkeypatch, capsys
-):
+def test_cli_publish_s3_writes_an_immutable_version_and_advances_the_pointer(monkeypatch, capsys):
     """The publish-s3 command validates, writes the version prefix, and advances
     the pointer — routed through a real in-memory object store."""
     store = obstore.store.MemoryStore()
@@ -223,6 +220,7 @@ def _list(store, prefix):
             paths.append(obj["path"])
     return sorted(paths)
 
+
 # ---------------------------------------------------------------------------
 # publish-s3 --retrieval lancedb / rollback-s3 / cleanup-s3 (issue #163).
 # ---------------------------------------------------------------------------
@@ -230,9 +228,7 @@ def _list(store, prefix):
 
 def _fake_store(monkeypatch, prefix="kb"):
     store = obstore.store.MemoryStore()
-    monkeypatch.setattr(
-        cli, "_build_publish_store", lambda uri: (store, prefix)
-    )
+    monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (store, prefix))
     return store
 
 

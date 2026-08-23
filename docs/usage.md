@@ -380,6 +380,12 @@ uv run python experiments/mykg/convert_mykg.py \
 The output contains candidate pages plus private
 `relationship-candidates.jsonl` and `conversion-report.json` sidecars. The
 converter never writes extracted edges into page `claims:` frontmatter.
+
+Deterministic serialization: all Entity/Claim/Ontology records are frozen
+`msgspec.Struct`s whose fields serialize in stable declaration order, and
+`lumio.yaml` (including its `ontology:` section) is written with sorted keys
+and a stable section order — identical canonical content always produces
+byte-identical files and therefore stable fingerprints.
 Stage the candidate pages through the ordinary external-import proposal path:
 
 ```python

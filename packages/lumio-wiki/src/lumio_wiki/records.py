@@ -1,4 +1,13 @@
-"""Domain records for the Lumio Core SDK."""
+"""Domain records for the Lumio Core SDK.
+
+Deterministic serialization: every record in this module is a frozen
+``msgspec.Struct`` whose fields serialize in stable declaration order, so
+identical record content always produces identical bytes. The Control File
+renderer (:func:`lumio_wiki.knowledge_base.write_control_file`) emits the
+ontology with sorted keys and stable section order for the same guarantee at
+the YAML boundary; unchanged canonical content therefore yields byte-identical
+artifacts and stable fingerprints.
+"""
 
 import msgspec
 
@@ -73,6 +82,21 @@ CLAIM_ORIGIN_MIGRATED = "migrated"
 CLAIM_ORIGINS = frozenset({CLAIM_ORIGIN_AUTHORED, CLAIM_ORIGIN_MIGRATED})
 
 
+class Entity(msgspec.Struct, frozen=True):
+    """The identity/type metadata of the Entity one Compiled Page represents.
+
+    A projection of a page's Entity contract (ADR-0021): the stable Entity
+    ID, its controlled Entity Types, and the label/path surface. One Entity
+    per page; titles and paths are labels, not identity.
+    """
+
+    id: str
+    entity_types: list[str] = msgspec.field(default_factory=list)
+    title: str = ""
+    aliases: list[str] = msgspec.field(default_factory=list)
+    path: str = ""
+
+
 class EntityTypeDefinition(msgspec.Struct, frozen=True):
     """A controlled Entity Type declared by the Control File ontology."""
 
@@ -116,7 +140,8 @@ class Claim(msgspec.Struct, frozen=True):
     Exactly one object is carried: ``object`` (another Entity ID) or
     ``value`` plus ``value_type`` (a typed literal). ``status`` is the
     published lifecycle; proposed/rejected assertions live only inside
-    Ingest Proposals.
+    Ingest Proposals. ``valid_from``/``valid_to`` are optional ISO 8601
+    valid-time bounds.
     """
 
     id: str
@@ -127,6 +152,8 @@ class Claim(msgspec.Struct, frozen=True):
     value_type: str | None = None
     confidence: float | None = None
     origin: str = CLAIM_ORIGIN_AUTHORED
+    valid_from: str | None = None
+    valid_to: str | None = None
     evidence: list[ClaimEvidence] = msgspec.field(default_factory=list)
 
 
@@ -243,8 +270,6 @@ class ValidationReport(msgspec.Struct, frozen=True):
         return "\n".join(lines)
 
 
-
-
 class SourceFileDigest(msgspec.Struct, frozen=True):
     """A single source file path and its deterministic digest."""
 
@@ -270,7 +295,6 @@ class RetrievalTrace(msgspec.Struct, frozen=True):
     """Structured explanation of the retrieval stages that produced a result."""
 
     stages: list[TraceStage] = msgspec.field(default_factory=list)
-
 
 
 class EmbeddingModelInfo(msgspec.Struct, frozen=True):
@@ -386,7 +410,6 @@ class HealthReport(msgspec.Struct, frozen=True):
     is_healthy: bool = True
 
 
-
 # ---------------------------------------------------------------------------
 # Materialized Discovery Graph (issue #108, ADR-0011).
 #
@@ -434,6 +457,7 @@ class GraphHealthReport(msgspec.Struct, frozen=True):
     startup_ms: int = 0
     traversal_latency_ms: int | None = None
     fingerprint_digest: str = ""
+
 
 # ---------------------------------------------------------------------------
 # Structural graph diagnostics (issue #126, ADR-0011).
@@ -528,6 +552,7 @@ class StructuralGraphReport(msgspec.Struct, frozen=True):
     inbound_orphan_sample_titles: tuple[str, ...] = ()
     outbound_orphan_sample_titles: tuple[str, ...] = ()
 
+
 # ---------------------------------------------------------------------------
 # Link-candidate graph-impact ranking (issue #127, ADR-0011).
 #
@@ -589,6 +614,7 @@ class RankedLinkCandidate(msgspec.Struct, frozen=True):
     scope: str
     impact_score: int
     signals: tuple[LinkImpactSignal, ...] = ()
+
 
 # ---------------------------------------------------------------------------
 # Knowledge Base Control File and reserved published artifacts (issue #77).

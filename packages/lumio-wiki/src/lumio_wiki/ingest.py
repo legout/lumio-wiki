@@ -539,9 +539,7 @@ def create_managed_ingest_proposal(
     from lumio_wiki.proposal_pipeline import ProposalPipeline
 
     pipeline = ProposalPipeline(kb, store=store)
-    return pipeline.managed_ingest(
-        raw_bytes, content_type, filename, source_id, authored_markdown
-    )
+    return pipeline.managed_ingest(raw_bytes, content_type, filename, source_id, authored_markdown)
 
 
 def _extract_title(markdown: str) -> str | None:
@@ -1203,10 +1201,7 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
         proposed_titles.add(page.title)
         try:
             data, _body, _ = _parse_frontmatter(page.markdown, Path(page.relative_path))
-            proposed_entity_ids.update(
-                entity_id
-                for entity_id in _as_string_list(data.get("id"))
-            )
+            proposed_entity_ids.update(entity_id for entity_id in _as_string_list(data.get("id")))
         except Exception:
             pass
         for alias in _extract_aliases(page.markdown):

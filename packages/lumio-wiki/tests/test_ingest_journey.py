@@ -96,9 +96,7 @@ def test_plain_proposal_validates_against_existing_pages(tmp_path: Path):
         RELATED_PAGE.encode("utf-8"), "text/markdown", "related.md", kb, store=store
     )
     errors = [
-        issue.message
-        for issue in proposal.validation_report.issues
-        if issue.severity == "error"
+        issue.message for issue in proposal.validation_report.issues if issue.severity == "error"
     ]
     assert not any("unresolved relationship target" in m for m in errors), errors
     assert proposal.validation_report.is_valid

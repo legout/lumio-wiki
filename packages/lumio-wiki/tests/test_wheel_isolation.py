@@ -70,7 +70,7 @@ def _graph_page(title: str, *, body: str, claims_yaml: str = "") -> str:
         f'summary: "{title} summary."\n'
         'lifecycle: "approved"\n'
         'visibility: "public"\n'
-        'sources:\n'
+        "sources:\n"
         f'  - id: "src-{slug}"\n'
         f'    title: "{title} Source"\n'
         f"{claims}"
@@ -412,11 +412,26 @@ def test_isolated_init_ingest_publish_journey(isolated_wheel_env: dict, tmp_path
     # init
     subprocess.run([str(script), "init", str(kb_root)], check=True, capture_output=True)
 
+    # A version-2 Knowledge Base requires the Entity contract (ADR-0021): the
+    # Maintainer declares the ``page`` Entity Type in the control file's
+    # ontology, and every authored page declares a stable ``entity:<slug>`` id.
+    control_file = kb_root / "lumio.yaml"
+    control_file.write_text(
+        control_file.read_text(encoding="utf-8").replace(
+            "  entity_types:\n  predicates:",
+            "  entity_types:\n    page: {}\n  predicates:",
+        ),
+        encoding="utf-8",
+    )
+
     # Author a page as the host agent would.
     source = tmp_path / "page.md"
     source.write_text(
         "---\n"
+        'id: "entity:wheel-page"\n'
         'title: "Wheel Page"\n'
+        "entity_types:\n"
+        "  - page\n"
         "aliases: []\n"
         "tags:\n"
         '  - "wheel"\n'

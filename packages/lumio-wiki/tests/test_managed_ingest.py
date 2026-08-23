@@ -293,9 +293,11 @@ def test_managed_ingest_keeps_raw_source_in_private_state_not_under_kb_root(tmp_
     raw = b"%PDF-1.4 private raw bytes"
 
     pipeline.managed_ingest(
-        raw, "application/pdf", "2025-impact-report.pdf", "annual-impact-report", _authored_page(
-            "annual-impact-report"
-        )
+        raw,
+        "application/pdf",
+        "2025-impact-report.pdf",
+        "annual-impact-report",
+        _authored_page("annual-impact-report"),
     )
 
     # The registry lives in the ingest store, OUTSIDE the Knowledge Base root,
@@ -321,9 +323,11 @@ def test_managed_ingest_inspect_distinguishes_provenance_from_authored_content(
     pipeline, _store = _pipeline(kb, tmp_path)
     raw = b"%PDF-1.4 original"
     proposal = pipeline.managed_ingest(
-        raw, "application/pdf", "2025-impact-report.pdf", "annual-impact-report", _authored_page(
-            "annual-impact-report"
-        )
+        raw,
+        "application/pdf",
+        "2025-impact-report.pdf",
+        "annual-impact-report",
+        _authored_page("annual-impact-report"),
     )
 
     reviewed = pipeline.review(proposal.id)
@@ -353,9 +357,11 @@ def test_managed_ingest_publish_never_leaks_raw_bytes_or_registry_state(tmp_path
     pipeline, store = _pipeline(kb, tmp_path)
     raw = b"%PDF-1.4 SUPERSECRETRAWBYTES"
     proposal = pipeline.managed_ingest(
-        raw, "application/pdf", "2025-impact-report.pdf", "annual-impact-report", _authored_page(
-            "annual-impact-report"
-        )
+        raw,
+        "application/pdf",
+        "2025-impact-report.pdf",
+        "annual-impact-report",
+        _authored_page("annual-impact-report"),
     )
 
     published = pipeline.publish(proposal.id)

@@ -209,9 +209,7 @@ def _lumio_profile_lines(
     ]
 
 
-def _page_relationships(
-    page: CompiledPage, title_by_entity: dict[str, str]
-) -> list[Relationship]:
+def _page_relationships(page: CompiledPage, title_by_entity: dict[str, str]) -> list[Relationship]:
     """Project a page's accepted entity-to-entity Claims as title-level edges.
 
     The OKF exchange format carries typed edges resolved by title; since
@@ -334,9 +332,7 @@ def _render_compiled_page(
                 lines.append(f"      url: {_yaml_scalar(source.url)}")
     # Keep only edges whose targets survive in the authorized set; edges to
     # excluded targets are dropped and reported as diagnostics by the caller.
-    included_relationships = [
-        rel for rel in page_relationships if rel.target in authorized_titles
-    ]
+    included_relationships = [rel for rel in page_relationships if rel.target in authorized_titles]
     if included_relationships:
         lines.append("  relationships:")
         for rel in included_relationships:
@@ -429,9 +425,7 @@ def _render_compiled_page_profile2(
             lines.append(f"      title: {_yaml_scalar(source.title)}")
             if source.url is not None:
                 lines.append(f"      url: {_yaml_scalar(source.url)}")
-    included_relationships = [
-        rel for rel in page_relationships if rel.target in authorized_titles
-    ]
+    included_relationships = [rel for rel in page_relationships if rel.target in authorized_titles]
     if included_relationships:
         lines.append("  relationships:")
         for rel in included_relationships:
@@ -2010,5 +2004,3 @@ def import_external_compiled_markdown(
         source_origin,
         _ImportParsingPolicy.EXTERNAL_COMPILED_MARKDOWN,
     )
-
-

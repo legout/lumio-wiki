@@ -571,9 +571,7 @@ def test_register_source_write_failure_restores_live_and_reloaded_state(
     assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
 
 
-def test_bind_pending_write_failure_restores_live_and_reloaded_state(
-    tmp_path, monkeypatch
-) -> None:
+def test_bind_pending_write_failure_restores_live_and_reloaded_state(tmp_path, monkeypatch) -> None:
     registry = SourceRegistry(tmp_path / "ingest")
     registry.register_source("handbook", b"v1")
     transition = registry.stage_retirement("handbook")
@@ -722,9 +720,7 @@ def test_confirm_candidate_decision_failure_leaves_no_staged_transition(
     def fail_decision(candidate_id):
         raise OSError("candidate decision failed")
 
-    monkeypatch.setattr(
-        store.source_registry, "confirm_retirement_candidate", fail_decision
-    )
+    monkeypatch.setattr(store.source_registry, "confirm_retirement_candidate", fail_decision)
 
     with pytest.raises(OSError, match="candidate decision failed"):
         pipeline.confirm_retirement_candidate(candidate.id)
@@ -833,9 +829,7 @@ def test_confirm_candidate_accepts_matching_expected_source_id(tmp_path) -> None
     pipeline.register_source("policy", b"policy-v1")
     candidate = pipeline.record_retirement_candidate("policy", "watched file missing")
 
-    proposal = pipeline.confirm_retirement_candidate(
-        candidate.id, expected_source_id="policy"
-    )
+    proposal = pipeline.confirm_retirement_candidate(candidate.id, expected_source_id="policy")
 
     assert proposal.source_change.action == "retire"
     assert store.source_registry.get_candidate(candidate.id).status == "confirmed"
@@ -999,9 +993,7 @@ _SECRET_CANDIDATE_IDS = (
 
 
 @pytest.mark.parametrize("source_id", _SECRET_SOURCE_IDS)
-def test_registry_get_rejects_secret_bearing_source_id_without_echoing(
-    source_id, tmp_path
-) -> None:
+def test_registry_get_rejects_secret_bearing_source_id_without_echoing(source_id, tmp_path) -> None:
     registry = SourceRegistry(tmp_path / "ingest")
     registry.register_source("policy", b"v1")
 
@@ -1012,9 +1004,7 @@ def test_registry_get_rejects_secret_bearing_source_id_without_echoing(
 
 
 @pytest.mark.parametrize("source_id", _SECRET_SOURCE_IDS)
-def test_registry_stage_retirement_rejects_secret_bearing_source_id(
-    source_id, tmp_path
-) -> None:
+def test_registry_stage_retirement_rejects_secret_bearing_source_id(source_id, tmp_path) -> None:
     registry = SourceRegistry(tmp_path / "ingest")
     registry.register_source("policy", b"v1")
     prior = _state_snapshot(registry)
@@ -1029,9 +1019,7 @@ def test_registry_stage_retirement_rejects_secret_bearing_source_id(
 
 
 @pytest.mark.parametrize("source_id", _SECRET_SOURCE_IDS)
-def test_registry_stage_reactivation_rejects_secret_bearing_source_id(
-    source_id, tmp_path
-) -> None:
+def test_registry_stage_reactivation_rejects_secret_bearing_source_id(source_id, tmp_path) -> None:
     registry = SourceRegistry(tmp_path / "ingest")
     registry.register_source("policy", b"v1")
     prior = _state_snapshot(registry)
@@ -1045,9 +1033,7 @@ def test_registry_stage_reactivation_rejects_secret_bearing_source_id(
 
 
 @pytest.mark.parametrize("source_id", _SECRET_SOURCE_IDS)
-def test_registry_record_candidate_rejects_secret_bearing_source_id(
-    source_id, tmp_path
-) -> None:
+def test_registry_record_candidate_rejects_secret_bearing_source_id(source_id, tmp_path) -> None:
     registry = SourceRegistry(tmp_path / "ingest")
     registry.register_source("policy", b"v1")
     prior = _state_snapshot(registry)
@@ -1063,9 +1049,7 @@ def test_registry_record_candidate_rejects_secret_bearing_source_id(
 
 
 @pytest.mark.parametrize("candidate_id", _SECRET_CANDIDATE_IDS)
-def test_registry_get_candidate_rejects_secret_bearing_candidate_id(
-    candidate_id, tmp_path
-) -> None:
+def test_registry_get_candidate_rejects_secret_bearing_candidate_id(candidate_id, tmp_path) -> None:
     registry = SourceRegistry(tmp_path / "ingest")
     registry.register_source("policy", b"v1")
     real = registry.record_retirement_candidate("policy", "watched file missing")
@@ -1103,9 +1087,7 @@ def test_registry_decide_candidate_rejects_secret_bearing_candidate_id(
 
 
 @pytest.mark.parametrize("source_id", _SECRET_SOURCE_IDS)
-def test_pipeline_dismiss_validates_expected_source_id_before_mutating(
-    source_id, tmp_path
-) -> None:
+def test_pipeline_dismiss_validates_expected_source_id_before_mutating(source_id, tmp_path) -> None:
     # A secret-bearing expected source id must be rejected before the mismatch
     # check can interpolate it, leaving the candidate pending (no mutation).
     kb = _knowledge_base(tmp_path, ["policy"])
@@ -1123,9 +1105,7 @@ def test_pipeline_dismiss_validates_expected_source_id_before_mutating(
 
 
 @pytest.mark.parametrize("source_id", _SECRET_SOURCE_IDS)
-def test_pipeline_confirm_validates_expected_source_id_before_staging(
-    source_id, tmp_path
-) -> None:
+def test_pipeline_confirm_validates_expected_source_id_before_staging(source_id, tmp_path) -> None:
     # A secret-bearing expected source id must be rejected before staging a
     # retirement proposal or mutating the candidate.
     kb = _knowledge_base(tmp_path, ["policy"])
@@ -1144,9 +1124,7 @@ def test_pipeline_confirm_validates_expected_source_id_before_staging(
 
 
 @pytest.mark.parametrize("candidate_id", _SECRET_CANDIDATE_IDS)
-def test_pipeline_dismiss_rejects_secret_bearing_candidate_id(
-    candidate_id, tmp_path
-) -> None:
+def test_pipeline_dismiss_rejects_secret_bearing_candidate_id(candidate_id, tmp_path) -> None:
     kb = _knowledge_base(tmp_path, ["policy"])
     store = IngestStore(tmp_path / "ingest")
     pipeline = ProposalPipeline(kb, store)
@@ -1161,9 +1139,7 @@ def test_pipeline_dismiss_rejects_secret_bearing_candidate_id(
 
 
 @pytest.mark.parametrize("candidate_id", _SECRET_CANDIDATE_IDS)
-def test_pipeline_confirm_rejects_secret_bearing_candidate_id(
-    candidate_id, tmp_path
-) -> None:
+def test_pipeline_confirm_rejects_secret_bearing_candidate_id(candidate_id, tmp_path) -> None:
     kb = _knowledge_base(tmp_path, ["policy"])
     store = IngestStore(tmp_path / "ingest")
     pipeline = ProposalPipeline(kb, store)
@@ -1254,10 +1230,7 @@ def test_safe_lifecycle_trigger_display_masks_unknown_action() -> None:
     assert secret_action not in rendered
     # Empty / unrecognized values share the same fixed generic fallback.
     assert lw.safe_lifecycle_trigger_display("") == lw.SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED
-    assert (
-        lw.safe_lifecycle_trigger_display("purge")
-        == lw.SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED
-    )
+    assert lw.safe_lifecycle_trigger_display("purge") == lw.SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED
 
 
 def test_safe_lifecycle_trigger_display_never_echoes_trigger_material() -> None:

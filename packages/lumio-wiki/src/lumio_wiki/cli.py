@@ -634,6 +634,7 @@ def _run_setup_wizard() -> dict[str, Any]:
             "lancedb": "lancedb",
         },
     )
+
     def require_source_store(flag: str):
         def check(value: str) -> str | None:
             if _is_object_store_uri(value) or "://" not in value:
@@ -1968,9 +1969,7 @@ def _cmd_rollback_s3(args: argparse.Namespace) -> int:
                 exit_code=1,
             )
         try:
-            verify_rollback_coverage(
-                artifact_store, args.version, required=True
-            )
+            verify_rollback_coverage(artifact_store, args.version, required=True)
         except RetentionRequiredError as exc:
             raise CliError(
                 f"rollback blocked (artifact retention required): {exc}", exit_code=1
@@ -3591,7 +3590,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ingest_dir_argument(remove_page_parser)
     remove_page_parser.set_defaults(func=_cmd_remove_page)
-
 
     # health
     health_parser = subparsers.add_parser(

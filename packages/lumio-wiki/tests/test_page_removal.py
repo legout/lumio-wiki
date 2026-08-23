@@ -76,24 +76,18 @@ def _page(
         f'  - id: "{s.get("id", "")}"\n    title: "{s.get("title", "")}"' for s in src
     )
     claims_lines = "".join(
-        f"  - id: \"claim:{_slug(title)}-{_slug(rel['target'])}-{n}\"\n"
-        f"    predicate: \"{rel['type']}\"\n"
-        f"    object: \"entity:{_slug(rel['target'])}\"\n"
+        f'  - id: "claim:{_slug(title)}-{_slug(rel["target"])}-{n}"\n'
+        f'    predicate: "{rel["type"]}"\n'
+        f'    object: "entity:{_slug(rel["target"])}"\n'
         f"    status: accepted\n"
-        f"    evidence:\n      - section: \"Evidence\"\n"
+        f'    evidence:\n      - section: "Evidence"\n'
         for n, rel in enumerate(relationships or [])
     )
-    entity_lines = (
-        f'id: "entity:{_slug(title)}"\n'
-        "entity_types:\n"
-        "  - concept\n"
-    )
+    entity_lines = f'id: "entity:{_slug(title)}"\nentity_types:\n  - concept\n'
     if claims_lines:
         entity_lines += f"claims:\n{claims_lines}"
     body_text = (
-        f"{body}\n\n## Evidence\n\nSupporting evidence for the edges.\n"
-        if claims_lines
-        else body
+        f"{body}\n\n## Evidence\n\nSupporting evidence for the edges.\n" if claims_lines else body
     )
     return (
         "---\n"
@@ -379,7 +373,8 @@ def test_unresolved_body_link_surfaces_as_nonblocking_diagnostic(tmp_path):
     assert report2.is_valid, report2
     # ...and the dangling link surfaces as a warning diagnostic, not silently.
     link_warnings = [
-        i for i in report2.issues
+        i
+        for i in report2.issues
         if i.severity == "warning" and "internal link" in i.message and "Beta" in i.message
     ]
     assert link_warnings, "expected a broken-internal-link warning for the dangling [[Beta]]"

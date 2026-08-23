@@ -42,9 +42,7 @@ def _slug(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
-def _claims_from(
-    source_title: str, relationships: list[Relationship] | None
-) -> list[Claim]:
+def _claims_from(source_title: str, relationships: list[Relationship] | None) -> list[Claim]:
     """Convert title-level test edges to accepted entity-to-entity Claims."""
     return [
         Claim(
@@ -96,11 +94,14 @@ def _hub_kb() -> list[CompiledPage]:
         Hub --uses--> C
         D (isolated)
     """
-    hub = _page("Hub", relationships=[
-        Relationship(target="A", type="uses"),
-        Relationship(target="B", type="uses"),
-        Relationship(target="C", type="uses"),
-    ])
+    hub = _page(
+        "Hub",
+        relationships=[
+            Relationship(target="A", type="uses"),
+            Relationship(target="B", type="uses"),
+            Relationship(target="C", type="uses"),
+        ],
+    )
     a = _page("A", relationships=[Relationship(target="Sink", type="uses")])
     b = _page("B", relationships=[Relationship(target="Sink", type="uses")])
     c = _page("C")
@@ -120,11 +121,14 @@ def test_report_is_separate_type_from_graph_health_report(tmp_path):
     assert isinstance(report, StructuralGraphReport)
     # Structural report carries NO artifact/runtime observability fields and
     # NO fixed health verdict.
-    for forbidden in ("graph_fresh", "materialized", "startup_ms",
-                      "traversal_latency_ms", "is_healthy"):
-        assert not hasattr(report, forbidden), (
-            f"structural report must not expose {forbidden!r}"
-        )
+    for forbidden in (
+        "graph_fresh",
+        "materialized",
+        "startup_ms",
+        "traversal_latency_ms",
+        "is_healthy",
+    ):
+        assert not hasattr(report, forbidden), f"structural report must not expose {forbidden!r}"
 
 
 def test_report_never_embeds_compiled_page_bodies():
@@ -261,10 +265,13 @@ def test_cycles_handled():
 
 def test_duplicate_canonical_edges_counted_separately():
     # Two distinct typed Relationships to the same target = parallel edges.
-    alpha = _page("Alpha", relationships=[
-        Relationship(target="Beta", type="uses"),
-        Relationship(target="Beta", type="implements"),
-    ])
+    alpha = _page(
+        "Alpha",
+        relationships=[
+            Relationship(target="Beta", type="uses"),
+            Relationship(target="Beta", type="implements"),
+        ],
+    )
     beta = _page("Beta")
     kb = _kb([alpha, beta])
 
@@ -276,10 +283,13 @@ def test_duplicate_canonical_edges_counted_separately():
 
 
 def test_discovery_scope_dedups_parallel_edges_to_endpoint():
-    alpha = _page("Alpha", relationships=[
-        Relationship(target="Beta", type="uses"),
-        Relationship(target="Beta", type="implements"),
-    ])
+    alpha = _page(
+        "Alpha",
+        relationships=[
+            Relationship(target="Beta", type="uses"),
+            Relationship(target="Beta", type="implements"),
+        ],
+    )
     beta = _page("Beta")
     kb = _kb([alpha, beta])
 
@@ -355,11 +365,7 @@ def test_hub_samples_are_bounded():
     sink = _page("Sink")
     pages = [sink]
     for i in range(40):
-        pages.append(
-            _page(f"P{i:02d}", relationships=[
-                Relationship(target="Sink", type="uses")
-            ])
-        )
+        pages.append(_page(f"P{i:02d}", relationships=[Relationship(target="Sink", type="uses")]))
     kb = _kb(pages)
     report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL, max_hub_sample=5)
     assert len(report.top_outbound_hubs) == 5
@@ -381,12 +387,10 @@ def test_orphan_samples_are_bounded_and_deterministic():
     assert len(report.inbound_orphan_sample_titles) == 10
     assert len(report.outbound_orphan_sample_titles) == 10
     # Deterministic (lexicographic) ordering of the representative sample.
-    assert report.inbound_orphan_sample_titles == tuple(sorted(
-        report.inbound_orphan_sample_titles
-    ))
-    assert report.outbound_orphan_sample_titles == tuple(sorted(
-        report.outbound_orphan_sample_titles
-    ))
+    assert report.inbound_orphan_sample_titles == tuple(sorted(report.inbound_orphan_sample_titles))
+    assert report.outbound_orphan_sample_titles == tuple(
+        sorted(report.outbound_orphan_sample_titles)
+    )
 
 
 def test_negative_sample_bounds_rejected():
@@ -396,9 +400,7 @@ def test_negative_sample_bounds_rejected():
     with pytest.raises(ValueError):
         kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL, max_orphan_sample=-1)
     with pytest.raises(ValueError):
-        kb.graph_diagnostics(
-            scope=GRAPH_SCOPE_CANONICAL, max_unresolved_sample=-1
-        )
+        kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL, max_unresolved_sample=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -436,9 +438,7 @@ def test_candidate_set_excluding_source_isolates_target():
     beta = _page("Beta")
     kb = _kb([alpha, beta])
     # Only Beta authorized: the Alpha->Beta edge drops (Alpha not authorized).
-    report = kb.graph_diagnostics(
-        scope=GRAPH_SCOPE_CANONICAL, candidate_titles=["Beta"]
-    )
+    report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL, candidate_titles=["Beta"])
     assert report.page_count == 1
     assert report.edge_count == 0
     assert report.outbound_orphan_count == 1
@@ -486,13 +486,9 @@ def test_unresolved_groups_are_deterministically_ordered():
 
 def test_unresolved_samples_bounded():
     # Many pages link to the same missing target; samples are bounded.
-    pages = [
-        _page(f"P{i:02d}", body="[x](missing.md)\n") for i in range(12)
-    ]
+    pages = [_page(f"P{i:02d}", body="[x](missing.md)\n") for i in range(12)]
     kb = _kb(pages)
-    report = kb.graph_diagnostics(
-        scope=GRAPH_SCOPE_DISCOVERY, max_unresolved_sample=3
-    )
+    report = kb.graph_diagnostics(scope=GRAPH_SCOPE_DISCOVERY, max_unresolved_sample=3)
     assert len(report.unresolved_references) == 1
     group = report.unresolved_references[0]
     assert group.count == 12
@@ -528,9 +524,7 @@ def test_unresolved_references_filtered_by_candidate_visibility():
     a = _page("A", body="[x](missing.md)\n")
     b = _page("B", body="[y](missing.md)\n")
     kb = _kb([a, b])
-    report = kb.graph_diagnostics(
-        scope=GRAPH_SCOPE_DISCOVERY, candidate_titles=["A"]
-    )
+    report = kb.graph_diagnostics(scope=GRAPH_SCOPE_DISCOVERY, candidate_titles=["A"])
     groups = {g.target: g for g in report.unresolved_references}
     assert groups["missing.md"].count == 1
 
@@ -569,9 +563,12 @@ def test_self_relationship_excluded_from_structural_counts():
     # A self-loop (Alpha relates to Alpha) carries no inter-page connectivity:
     # it does not connect to another page, does not reduce orphan status, and
     # does not contribute to components. It is excluded from structural counts.
-    alpha = _page("Alpha", relationships=[
-        Relationship(target="Alpha", type="self"),
-    ])
+    alpha = _page(
+        "Alpha",
+        relationships=[
+            Relationship(target="Alpha", type="self"),
+        ],
+    )
     beta = _page("Beta")
     kb = _kb([alpha, beta])
     report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
@@ -607,6 +604,7 @@ def test_report_is_frozen_struct():
         report.top_inbound_hubs.append(GraphHub(title="X", edge_count=1))  # type: ignore[union-attr]
     with pytest.raises(AttributeError):
         report.inbound_orphan_sample_titles.append("X")  # type: ignore[union-attr]
+
 
 # ---------------------------------------------------------------------------
 # Public API surface.

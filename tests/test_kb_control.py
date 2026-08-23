@@ -21,12 +21,13 @@ Acceptance mapping (issue #77):
 
 from __future__ import annotations
 
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
+import msgspec
 import pytest
-
 from lumio_wiki import (
     ACTIVITY_LOG_ARTIFACT,
     ACTIVITY_LOG_BASENAME,
@@ -37,9 +38,11 @@ from lumio_wiki import (
     SEED_CATEGORY_CATALOG,
     ContentCategory,
     ControlFileError,
+    EntityTypeDefinition,
     HotIndexPin,
     KnowledgeBaseControlFile,
     NavigationIndexCollisionError,
+    Ontology,
     SourceFingerprint,
     append_activity_log_entry,
     fingerprint_sources,
@@ -58,16 +61,35 @@ from lumio_wiki import (
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+# Minimal version-2 ontology for KBs whose pages declare no Claims (ADR-0021):
+# every page is a ``page`` Entity.
+PAGE_ONTOLOGY_YAML = "ontology:\n  entity_types:\n    page: {}\n  predicates: {}\n"
 
-def _page_markdown(title: str, summary: str, *, path: str, visibility: str = "internal") -> str:
+
+def _title_slug(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+def _page_markdown(
+    title: str,
+    summary: str,
+    *,
+    path: str,
+    visibility: str = "internal",
+    entity: bool = False,
+) -> str:
+    entity_fields = (
+        f'id: "entity:{_title_slug(title)}"\nentity_types:\n  - page\n' if entity else ""
+    )
     return (
         "---\n"
+        f"{entity_fields}"
         f'title: "{title}"\n'
         'tags: ["test"]\n'
         f'summary: "{summary}"\n'
         'lifecycle: "approved"\n'
         f'visibility: "{visibility}"\n'
-        'sources:\n'
+        "sources:\n"
         '  - id: "test-src"\n'
         '    title: "Test source"\n'
         "---\n\n"
@@ -91,16 +113,14 @@ def _build_categorized_kb(tmp_path: Path, *, pins: list[str] | None = None) -> P
     """Build a writable categorized KB with a seeded control file and two pages."""
     root = tmp_path / "kb"
     root.mkdir()
-    _write_page(root, "concepts/overview.md", "Lumio Overview", "Root-level overview")
-    _write_page(root, "entities/acme.md", "Acme Corp", "A named organization")
-    control = seeded_control_file()
+    _write_page(root, "concepts/overview.md", "Lumio Overview", "Root-level overview", entity=True)
+    _write_page(root, "entities/acme.md", "Acme Corp", "A named organization", entity=True)
+    control = msgspec.structs.replace(
+        seeded_control_file(),
+        ontology=Ontology(entity_types={"page": EntityTypeDefinition()}),
+    )
     if pins is not None:
-        control = KnowledgeBaseControlFile(
-            version=control.version,
-            categories=list(control.categories),
-            hot_index=[HotIndexPin(title=t) for t in pins],
-            mode=control.mode,
-        )
+        control = msgspec.structs.replace(control, hot_index=[HotIndexPin(title=t) for t in pins])
     write_control_file(root, control)
     return root
 
@@ -229,8 +249,7 @@ def test_unsupported_control_file_version_is_blocking(tmp_path):
     _, report = load_knowledge_base(root)
     assert not report.is_valid
     issue = next(
-        i for i in report.issues
-        if i.file == CONTROL_FILE_BASENAME and i.field == "version"
+        i for i in report.issues if i.file == CONTROL_FILE_BASENAME and i.field == "version"
     )
     assert "99" in issue.message
 
@@ -242,15 +261,13 @@ def test_absent_categories_falls_back_to_seed(tmp_path):
     Index generation treat the seed as first-class declared categories."""
     root = tmp_path / "kb"
     root.mkdir()
-    _write_page(root, "concepts/overview.md", "Overview", "An overview")
+    _write_page(root, "concepts/overview.md", "Overview", "An overview", entity=True)
     (root / CONTROL_FILE_BASENAME).write_text(
-        'version: 2\nmode: "categorized"\n'
+        'version: 2\nmode: "categorized"\n' + PAGE_ONTOLOGY_YAML
     )
     kb, report = load_knowledge_base(root)
     assert report.is_valid, [i.message for i in report.issues]
-    assert [c.name for c in kb.control.categories] == [
-        c.name for c in SEED_CATEGORY_CATALOG
-    ]
+    assert [c.name for c in kb.control.categories] == [c.name for c in SEED_CATEGORY_CATALOG]
 
 
 def test_empty_categories_falls_back_to_seed(tmp_path):
@@ -258,15 +275,13 @@ def test_empty_categories_falls_back_to_seed(tmp_path):
     default catalog and validates clean (ADR-0009)."""
     root = tmp_path / "kb"
     root.mkdir()
-    _write_page(root, "concepts/overview.md", "Overview", "An overview")
+    _write_page(root, "concepts/overview.md", "Overview", "An overview", entity=True)
     (root / CONTROL_FILE_BASENAME).write_text(
-        'version: 2\nmode: "categorized"\ncategories: []\n'
+        'version: 2\nmode: "categorized"\ncategories: []\n' + PAGE_ONTOLOGY_YAML
     )
     kb, report = load_knowledge_base(root)
     assert report.is_valid, [i.message for i in report.issues]
-    assert [c.name for c in kb.control.categories] == [
-        c.name for c in SEED_CATEGORY_CATALOG
-    ]
+    assert [c.name for c in kb.control.categories] == [c.name for c in SEED_CATEGORY_CATALOG]
 
 
 def test_empty_bare_category_name_is_blocking(tmp_path):
@@ -279,9 +294,7 @@ def test_empty_bare_category_name_is_blocking(tmp_path):
     )
     _, report = load_knowledge_base(root)
     assert not report.is_valid
-    assert any(
-        i.field == "categories" and "non-empty" in i.message for i in report.issues
-    )
+    assert any(i.field == "categories" and "non-empty" in i.message for i in report.issues)
     # The parse seam raises rather than returning a control record carrying "".
     with pytest.raises(ControlFileError):
         load_control_file(root)
@@ -340,8 +353,7 @@ def test_duplicate_category_is_blocking(tmp_path):
     root = tmp_path / "kb"
     root.mkdir()
     (root / CONTROL_FILE_BASENAME).write_text(
-        "version: 2\nmode: categorized\n"
-        "categories:\n  - name: concepts\n  - name: concepts\n"
+        "version: 2\nmode: categorized\ncategories:\n  - name: concepts\n  - name: concepts\n"
     )
     _, report = load_knowledge_base(root)
     assert not report.is_valid
@@ -358,9 +370,7 @@ def test_unresolved_hot_index_pin_is_blocking(tmp_path):
     )
     _, report = load_knowledge_base(root)
     assert not report.is_valid
-    issue = next(
-        i for i in report.issues if i.field == "hot_index" and "Ghost Page" in i.message
-    )
+    issue = next(i for i in report.issues if i.field == "hot_index" and "Ghost Page" in i.message)
     assert "unresolved Hot Index pin" in issue.message
 
 
@@ -380,9 +390,7 @@ def test_blank_bare_hot_index_pin_title_is_blocking():
         mode="categorized",
     )
     issues = validate_proposed_control_file(proposed, None)
-    assert any(
-        i.field == "hot_index" and "non-empty" in i.message for i in issues
-    )
+    assert any(i.field == "hot_index" and "non-empty" in i.message for i in issues)
 
 
 def test_whitespace_mapping_hot_index_pin_title_is_blocking(tmp_path):
@@ -393,13 +401,11 @@ def test_whitespace_mapping_hot_index_pin_title_is_blocking(tmp_path):
     _write_page(root, "overview.md", "Overview", "An overview")
     (root / CONTROL_FILE_BASENAME).write_text(
         "version: 2\nmode: categorized\ncategories:\n  - concepts\n"
-        "hot_index:\n  - title: \"   \"\n    note: \"pinned\"\n"
+        'hot_index:\n  - title: "   "\n    note: "pinned"\n'
     )
     _, report = load_knowledge_base(root)
     assert not report.is_valid
-    assert any(
-        i.field == "hot_index" and "non-empty" in i.message for i in report.issues
-    )
+    assert any(i.field == "hot_index" and "non-empty" in i.message for i in report.issues)
     # The parse seam raises rather than returning a control record with a blank pin.
     with pytest.raises(ControlFileError):
         load_control_file(root)
@@ -630,10 +636,7 @@ def test_append_activity_log_appends_one_line_preserving_history(tmp_path):
     log = (root / ACTIVITY_LOG_BASENAME).read_text()
     # Exactly one marker block (never regenerated) and both entries in order.
     assert log.count("artifact: activity-log") == 1
-    lines = [
-        line for line in log.splitlines()
-        if line.startswith("2026-")
-    ]
+    lines = [line for line in log.splitlines() if line.startswith("2026-")]
     assert lines == [
         "2026-07-16T17:13:25Z publish: First publish",
         "2026-07-17T09:00:00Z publish: Second publish",
@@ -709,9 +712,7 @@ def test_legacy_kb_without_control_file_loads_with_migration_warning():
     kb, report = load_knowledge_base(FIXTURES / "valid")
     assert kb.control is None
     assert report.is_valid, "legacy warning must be non-blocking"
-    warning = next(
-        (i for i in report.issues if i.file == CONTROL_FILE_BASENAME), None
-    )
+    warning = next((i for i in report.issues if i.file == CONTROL_FILE_BASENAME), None)
     assert warning is not None
     assert warning.severity == "warning"
     assert "Legacy Flat Mode" in warning.message
@@ -723,9 +724,7 @@ def test_legacy_kb_validates_non_blocking(tmp_path):
     _write_page(root, "overview.md", "Overview", "An overview", visibility="public")
     report = validate(root)
     assert report.is_valid
-    assert any(
-        i.severity == "warning" and "Legacy Flat Mode" in i.message for i in report.issues
-    )
+    assert any(i.severity == "warning" and "Legacy Flat Mode" in i.message for i in report.issues)
 
 
 def test_legacy_kb_publishes_only_navigation_indexes(tmp_path):
@@ -763,6 +762,8 @@ def test_publish_then_validate_categorized_kb_is_portable(tmp_path):
     assert (root / "index.md").exists()
     assert (root / HOT_INDEX_BASENAME).exists()
     assert (root / ACTIVITY_LOG_BASENAME).exists()
+    # The published tree keeps the version-2 Entity contract on every page.
+    assert {page.id for page in kb.pages} == {"entity:lumio-overview", "entity:acme-corp"}
 
 
 # ---------------------------------------------------------------------------
@@ -845,9 +846,9 @@ def _write_declared_catalog_kb(
     root = tmp_path / "kb"
     root.mkdir()
     for rel, title, summary in pages or []:
-        _write_page(root, rel, title, summary)
+        _write_page(root, rel, title, summary, entity=True)
     (root / CONTROL_FILE_BASENAME).write_text(
-        f'version: 2\nmode: "categorized"\ncategories:\n{catalog}'
+        f'version: 2\nmode: "categorized"\ncategories:\n{catalog}' + PAGE_ONTOLOGY_YAML
     )
     return root
 
@@ -908,9 +909,7 @@ def test_page_in_undeclared_category_fails_under_seed_default(tmp_path):
     root = tmp_path / "kb"
     root.mkdir()
     _write_page(root, "projects/secret.md", "Secret Project", "Undeclared")
-    (root / CONTROL_FILE_BASENAME).write_text(
-        'version: 2\nmode: "categorized"\n'
-    )
+    (root / CONTROL_FILE_BASENAME).write_text('version: 2\nmode: "categorized"\n')
     _, report = load_knowledge_base(root)
     assert not report.is_valid
     issue = next(i for i in report.issues if i.field == "category")
@@ -985,9 +984,7 @@ def test_legacy_flat_mode_unaffected_by_extensible_catalog(tmp_path):
     kb, report = load_knowledge_base(root)
     assert kb.control is None
     warnings = [i for i in report.issues if i.severity == "warning"]
-    assert any("Legacy Flat Mode" in w.message for w in warnings), [
-        w.message for w in warnings
-    ]
+    assert any("Legacy Flat Mode" in w.message for w in warnings), [w.message for w in warnings]
     assert report.is_valid
     # No category-path validation fires in Legacy Flat Mode.
     assert not any(i.field == "category" for i in report.issues)

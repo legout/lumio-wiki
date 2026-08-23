@@ -49,9 +49,7 @@ def _slug(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
-def _claims_from(
-    source_title: str, relationships: list[Relationship] | None
-) -> list[Claim]:
+def _claims_from(source_title: str, relationships: list[Relationship] | None) -> list[Claim]:
     """Convert title-level test edges to accepted entity-to-entity Claims."""
     return [
         Claim(
@@ -319,9 +317,7 @@ def test_all_candidates_preserved():
     ranked = kb.rank_link_candidates_by_graph_impact(cands)
     assert len(ranked) == len(cands)
     # Source titles are preserved.
-    assert {r.candidate.source_title for r in ranked} == {
-        c.source_title for c in cands
-    }
+    assert {r.candidate.source_title for r in ranked} == {c.source_title for c in cands}
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +367,8 @@ def test_ranked_candidate_is_frozen():
     ranked = kb.rank_link_candidates_by_graph_impact(cands)
     with pytest.raises(AttributeError):
         ranked[0].impact_score = 999  # type: ignore[misc]
+
+
 # ---------------------------------------------------------------------------
 # AC: Impact metadata names the graph scope.
 # ---------------------------------------------------------------------------
@@ -425,9 +423,7 @@ def test_canonical_scope_rejected():
     beta = _page("Beta")
     kb = _kb([alpha, beta])
     with pytest.raises(ValueError, match="discovery"):
-        kb.rank_link_candidates_by_graph_impact(
-            [], scope=GRAPH_SCOPE_CANONICAL
-        )
+        kb.rank_link_candidates_by_graph_impact([], scope=GRAPH_SCOPE_CANONICAL)
 
 
 def test_discovery_scope_sees_extracted_references_in_topology():
@@ -464,9 +460,7 @@ def test_authorization_excludes_inaccessible_target():
     cands = [_cand("Alpha", "Beta")]
 
     # candidate_titles excludes Beta.
-    ranked = kb.rank_link_candidates_by_graph_impact(
-        cands, candidate_titles=["Alpha"]
-    )
+    ranked = kb.rank_link_candidates_by_graph_impact(cands, candidate_titles=["Alpha"])
     assert ranked[0].impact_score == 0
     assert ranked[0].signals == ()
 
@@ -478,9 +472,7 @@ def test_authorization_excludes_inaccessible_source():
     kb = _kb([alpha, beta])
     cands = [_cand("Alpha", "Beta")]
 
-    ranked = kb.rank_link_candidates_by_graph_impact(
-        cands, candidate_titles=["Beta"]
-    )
+    ranked = kb.rank_link_candidates_by_graph_impact(cands, candidate_titles=["Beta"])
     assert ranked[0].impact_score == 0
     assert ranked[0].signals == ()
 
@@ -501,15 +493,14 @@ def test_inaccessible_page_does_not_affect_other_scores():
     full = kb.rank_link_candidates_by_graph_impact(cands)
 
     # With Gamma excluded.
-    excl = kb.rank_link_candidates_by_graph_impact(
-        cands, candidate_titles=["Alpha", "Beta"]
-    )
+    excl = kb.rank_link_candidates_by_graph_impact(cands, candidate_titles=["Alpha", "Beta"])
 
     # Beta's score is the same regardless of Gamma's authorization.
     full_beta = next(r for r in full if r.candidate.target_title == "Beta")
     excl_beta = next(r for r in excl if r.candidate.target_title == "Beta")
     assert full_beta.impact_score == excl_beta.impact_score
     assert {s.kind for s in full_beta.signals} == {s.kind for s in excl_beta.signals}
+
 
 def test_inaccessible_candidate_does_not_affect_accessible_ordering():
     """Removing an inaccessible candidate from the input does not change the
@@ -521,13 +512,9 @@ def test_inaccessible_candidate_does_not_affect_accessible_ordering():
     cands = find_link_candidates(kb.pages)
 
     # Authorize only Alpha and Beta (Gamma is inaccessible).
-    restricted = kb.rank_link_candidates_by_graph_impact(
-        cands, candidate_titles=["Alpha", "Beta"]
-    )
+    restricted = kb.rank_link_candidates_by_graph_impact(cands, candidate_titles=["Alpha", "Beta"])
     # Extract the ordering of Alpha->Beta only (the accessible candidate).
-    accessible_restricted = [
-        r for r in restricted if r.candidate.target_title == "Beta"
-    ]
+    accessible_restricted = [r for r in restricted if r.candidate.target_title == "Beta"]
 
     # Now rank only the accessible candidate (no inaccessible candidate in input).
     accessible_only = kb.rank_link_candidates_by_graph_impact(
@@ -581,9 +568,7 @@ def test_ranking_reflects_published_link_topology():
     assert before[0].impact_score > 0  # orphan repair + component join
 
     # Simulate publishing: Alpha now has a body link to Beta (extracted reference).
-    alpha_published = _page(
-        "Alpha", body="We mention [Beta](beta.md) here.\n"
-    )
+    alpha_published = _page("Alpha", body="We mention [Beta](beta.md) here.\n")
     kb_after = _kb([alpha_published, beta])
     # The candidate no longer exists (find_link_candidates skips linked mentions).
     cands_after = find_link_candidates(kb_after.pages)
@@ -610,9 +595,7 @@ def test_public_api_exports_ranking_types():
     ):
         assert hasattr(lumio_wiki, name), f"lumio_wiki must export {name}"
 
-    assert callable(
-        getattr(KnowledgeBase, "rank_link_candidates_by_graph_impact", None)
-    )
+    assert callable(getattr(KnowledgeBase, "rank_link_candidates_by_graph_impact", None))
 
 
 if __name__ == "__main__":

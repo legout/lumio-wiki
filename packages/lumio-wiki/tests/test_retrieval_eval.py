@@ -138,7 +138,7 @@ class TestGoldSet:
             '  - query: "gamma"\n'
             "    relevant:\n"
             '      - "Gamma"\n'
-            "    note: \"no seeds\"\n"
+            '    note: "no seeds"\n'
         )
         path = tmp_path / "gold.yaml"
         path.write_text(yaml, encoding="utf-8")

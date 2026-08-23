@@ -22,9 +22,7 @@ def _slug(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
-def _claims_from(
-    source_title: str, relationships: list[Relationship]
-) -> list[Claim]:
+def _claims_from(source_title: str, relationships: list[Relationship]) -> list[Claim]:
     """Convert title-level test edges to accepted entity-to-entity Claims."""
     return [
         Claim(
@@ -74,9 +72,7 @@ def _pages() -> list[CompiledPage]:
 
 def test_search_and_zero_index_retrieval_are_model_free(tmp_path: Path):
     pages = _pages()
-    assert [item.page.title for item in search_pages(pages, "technology")] == [
-        "Technology Stack"
-    ]
+    assert [item.page.title for item in search_pages(pages, "technology")] == ["Technology Stack"]
     results = ZeroIndexRetrieval().retrieve(pages, "deterministic retrieval", limit=1)
     assert len(results) == 1
     assert isinstance(results[0], RetrievalResult)

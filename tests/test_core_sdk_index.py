@@ -321,6 +321,4 @@ def test_lancedb_adapter_retrieve_via_kb_slot():
         results = kb.retrieve("Lumio uses LanceDB", limit=5)
     assert results
     details = " ".join(s.detail for r in results for s in r.trace.stages)
-    assert "LanceDB" in details or "BM25" in details or any(
-        "BM25" in r.reason for r in results
-    )
+    assert "LanceDB" in details or "BM25" in details or any("BM25" in r.reason for r in results)

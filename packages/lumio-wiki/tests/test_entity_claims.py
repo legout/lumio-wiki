@@ -199,6 +199,113 @@ def test_legacy_flat_pages_without_entity_contract_still_load(tmp_path):
     assert report.is_valid, [i.message for i in report.issues]
 
 
+def test_entity_projection_exposes_identity_records(tmp_path):
+    root = _write_kb(tmp_path, _valid_kb_files())
+    kb, report = load_knowledge_base(root)
+    assert report.is_valid
+
+    entities = sorted(kb.entities(), key=lambda e: e.id)
+    assert [(e.id, e.title) for e in entities] == [
+        ("entity:lancedb", "LanceDB"),
+        ("entity:lumio", "Lumio"),
+    ]
+    lumio = entities[1]
+    assert lumio.entity_types == ["software-system"]
+    assert lumio.path == "concepts/lumio.md"
+
+
+def test_value_type_without_value_is_blocked(tmp_path):
+    claim = _claim_yaml("claim:lumio-bad", "described-as", value_yaml="    value_type: string\n")
+    report = _one_claim_kb(tmp_path, claim=claim)
+
+    assert any("value_type without a value" in m for m in _errors(report)), _errors(report)
+
+
+def test_literal_value_kind_must_match_declared_kind(tmp_path):
+    # value is a YAML integer but declares value_type string.
+    claim = _claim_yaml(
+        "claim:lumio-tier",
+        "described-as",
+        value_yaml="    value: 3\n    value_type: string\n",
+    )
+    report = _one_claim_kb(tmp_path, claim=claim)
+
+    assert any("literal value kind mismatch" in m and "number" in m for m in _errors(report)), (
+        _errors(report)
+    )
+
+
+def test_empty_evidence_anchor_is_blocked(tmp_path):
+    claim = _claim_yaml(
+        "claim:lumio-uses-lancedb",
+        "uses",
+        object="entity:lancedb",
+        evidence_yaml="      - {}\n",
+    )
+    report = _one_claim_kb(tmp_path, claim=claim)
+
+    assert any(
+        "evidence anchor must identify a section or a bounded line range" in m
+        for m in _errors(report)
+    ), _errors(report)
+
+
+def test_v2_kb_requires_entity_contract_on_every_page(tmp_path):
+    # ADR-0021: every page in a version-2 Knowledge Base declares one stable
+    # Entity ID and at least one controlled Entity Type.
+    files = _valid_kb_files()
+    files["concepts/plain.md"] = (
+        "---\n"
+        'title: "Plain"\n'
+        'tags:\n  - "test"\n'
+        'summary: "Plain."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        'sources:\n  - id: "src-plain"\n    title: "Plain Source"\n'
+        "---\n\nPlain body.\n"
+    )
+    root = _write_kb(tmp_path, files)
+    report = validate(root)
+
+    errors = _errors(report)
+    assert any("missing required field: id" in m for m in errors), errors
+    assert any("at least one entity type" in m for m in errors), errors
+
+
+def test_claim_valid_time_metadata_is_parsed_and_validated(tmp_path):
+    files = _valid_kb_files()
+    files["concepts/lumio.md"] = _entity_page(
+        "Lumio",
+        "entity:lumio",
+        ["software-system"],
+        claims_yaml=(
+            _claim_yaml("claim:lumio-uses-lancedb", "uses", object="entity:lancedb").replace(
+                "    status: accepted\n", '    status: accepted\n    valid_from: "2026-01-15"\n'
+            )
+        ),
+    )
+    root = _write_kb(tmp_path, files)
+    kb, report = load_knowledge_base(root)
+
+    assert report.is_valid, [i.message for i in report.issues]
+    claim = next(p for p in kb.pages if p.id == "entity:lumio").claims[0]
+    assert claim.valid_from == "2026-01-15"
+    assert claim.valid_to is None
+
+    bad = _valid_kb_files()
+    bad["concepts/lumio.md"] = _entity_page(
+        "Lumio",
+        "entity:lumio",
+        ["software-system"],
+        claims_yaml=_claim_yaml(
+            "claim:lumio-uses-lancedb", "uses", object="entity:lancedb"
+        ).replace("    status: accepted\n", '    status: accepted\n    valid_to: "not-a-date"\n'),
+    )
+    root2 = _write_kb(tmp_path / "bad", bad)
+    errors = _errors(validate(root2))
+    assert any("valid_to 'not-a-date' is not an ISO 8601 date" in m for m in errors), errors
+
+
 def test_control_file_version_1_is_unsupported(tmp_path):
     files = _valid_kb_files()
     files["lumio.yaml"] = files["lumio.yaml"].replace("version: 2", "version: 1")
@@ -257,9 +364,7 @@ def test_entity_object_claim_on_literal_predicate_is_blocked(tmp_path):
         "Lumio",
         "entity:lumio",
         ["software-system"],
-        claims_yaml=_claim_yaml(
-            "claim:lumio-bad", "described-as", object="entity:lancedb"
-        ),
+        claims_yaml=_claim_yaml("claim:lumio-bad", "described-as", object="entity:lancedb"),
     )
     root = _write_kb(tmp_path, files)
     report = validate(root)
@@ -290,7 +395,9 @@ def test_literal_claim_on_entity_predicate_is_blocked(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _one_claim_kb(tmp_path, *, claim: str, lumio_types: list[str] | None = None) -> ValidationReport:
+def _one_claim_kb(
+    tmp_path, *, claim: str, lumio_types: list[str] | None = None
+) -> ValidationReport:
     files = _valid_kb_files()
     files["concepts/lumio.md"] = _entity_page(
         "Lumio", "entity:lumio", lumio_types or ["software-system"], claims_yaml=claim
@@ -304,7 +411,9 @@ def test_duplicate_entity_id_is_blocked(tmp_path):
         tmp_path,
         _valid_kb_files()
         | {
-            "concepts/lumio-clone.md": _entity_page("Lumio Clone", "entity:lumio", ["software-system"])
+            "concepts/lumio-clone.md": _entity_page(
+                "Lumio Clone", "entity:lumio", ["software-system"]
+            )
         },
     )
     report = validate(root)
@@ -326,14 +435,18 @@ def test_duplicate_claim_id_is_blocked(tmp_path):
     )
     report = validate(_write_kb(tmp_path, files))
 
-    assert any("duplicate claim id: claim:lumio-uses-lancedb" in m for m in _errors(report)), _errors(report)
+    assert any("duplicate claim id: claim:lumio-uses-lancedb" in m for m in _errors(report)), (
+        _errors(report)
+    )
 
 
 def test_dangling_claim_object_is_blocked(tmp_path):
     claim = _claim_yaml("claim:lumio-uses-ghost", "uses", object="entity:ghost")
     report = _one_claim_kb(tmp_path, claim=claim)
 
-    assert any("dangling object entity: entity:ghost" in m for m in _errors(report)), _errors(report)
+    assert any("dangling object entity: entity:ghost" in m for m in _errors(report)), _errors(
+        report
+    )
 
 
 def test_unknown_entity_type_is_blocked(tmp_path):
@@ -434,7 +547,9 @@ def test_unknown_evidence_section_is_blocked(tmp_path):
         ),
     )
 
-    assert any("unknown evidence section: 'No Such Section'" in m for m in _errors(report)), _errors(report)
+    assert any("unknown evidence section: 'No Such Section'" in m for m in _errors(report)), (
+        _errors(report)
+    )
 
 
 def test_redirect_cycle_is_blocked(tmp_path):
@@ -527,9 +642,7 @@ def test_proposed_status_is_blocked_on_active_page(tmp_path):
         ),
     )
 
-    assert any(
-        "proposed" in m and "Ingest Proposal" in m for m in _errors(report)
-    ), _errors(report)
+    assert any("proposed" in m and "Ingest Proposal" in m for m in _errors(report)), _errors(report)
 
 
 def test_rejected_status_is_blocked_on_active_page(tmp_path):
@@ -540,9 +653,7 @@ def test_rejected_status_is_blocked_on_active_page(tmp_path):
         ),
     )
 
-    assert any(
-        "rejected" in m and "Ingest Proposal" in m for m in _errors(report)
-    ), _errors(report)
+    assert any("rejected" in m and "Ingest Proposal" in m for m in _errors(report)), _errors(report)
 
 
 def test_all_published_statuses_are_valid_on_active_page(tmp_path):

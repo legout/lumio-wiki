@@ -60,9 +60,7 @@ def _slug(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
-def _claims_from(
-    source_title: str, relationships: list[Relationship] | None
-) -> list[Claim]:
+def _claims_from(source_title: str, relationships: list[Relationship] | None) -> list[Claim]:
     """Convert title-level test edges to accepted entity-to-entity Claims.
 
     Since ADR-0021 a canonical edge is an accepted Claim; in-memory pages are
@@ -306,9 +304,7 @@ def test_discovery_incoming_neighbors_works():
     beta = _page("Beta", path="beta.md")
     kb = _kb([alpha, beta])
 
-    assert kb.related_pages(
-        "Beta", direction="incoming", scope=GRAPH_SCOPE_DISCOVERY
-    ) == ["Alpha"]
+    assert kb.related_pages("Beta", direction="incoming", scope=GRAPH_SCOPE_DISCOVERY) == ["Alpha"]
 
 
 def test_discovery_multi_hop_path_through_extracted_edges():
@@ -321,9 +317,11 @@ def test_discovery_multi_hop_path_through_extracted_edges():
     # No canonical path exists.
     assert kb.shortest_path("Alpha", "Gamma", scope=GRAPH_SCOPE_CANONICAL) is None
     # Discovery path exists via extracted edges.
-    assert kb.shortest_path(
-        "Alpha", "Gamma", scope=GRAPH_SCOPE_DISCOVERY
-    ) == ["Alpha", "Beta", "Gamma"]
+    assert kb.shortest_path("Alpha", "Gamma", scope=GRAPH_SCOPE_DISCOVERY) == [
+        "Alpha",
+        "Beta",
+        "Gamma",
+    ]
 
 
 def test_discovery_path_respects_max_depth():
@@ -332,12 +330,12 @@ def test_discovery_path_respects_max_depth():
     gamma = _page("Gamma", path="gamma.md")
     kb = _kb([alpha, beta, gamma])
 
-    assert kb.shortest_path(
-        "Alpha", "Gamma", scope=GRAPH_SCOPE_DISCOVERY, max_depth=1
-    ) is None
-    assert kb.shortest_path(
-        "Alpha", "Gamma", scope=GRAPH_SCOPE_DISCOVERY, max_depth=2
-    ) == ["Alpha", "Beta", "Gamma"]
+    assert kb.shortest_path("Alpha", "Gamma", scope=GRAPH_SCOPE_DISCOVERY, max_depth=1) is None
+    assert kb.shortest_path("Alpha", "Gamma", scope=GRAPH_SCOPE_DISCOVERY, max_depth=2) == [
+        "Alpha",
+        "Beta",
+        "Gamma",
+    ]
 
 
 def test_discovery_respects_authorization_candidate_set():
@@ -346,11 +344,14 @@ def test_discovery_respects_authorization_candidate_set():
     kb = _kb([alpha, beta])
 
     # Gamma is not even loaded; candidate set excludes Beta too.
-    assert kb.related_pages(
-        "Alpha",
-        scope=GRAPH_SCOPE_DISCOVERY,
-        candidate_titles={"Alpha"},
-    ) == []
+    assert (
+        kb.related_pages(
+            "Alpha",
+            scope=GRAPH_SCOPE_DISCOVERY,
+            candidate_titles={"Alpha"},
+        )
+        == []
+    )
 
 
 def test_discovery_authorization_blocks_endpoint():
@@ -366,11 +367,14 @@ def test_discovery_authorization_blocks_endpoint():
 
     # Authorized set excludes Gamma; the Beta->Gamma extracted edge cannot
     # surface Gamma as an endpoint.
-    assert kb.related_pages(
-        "Beta Linker",
-        scope=GRAPH_SCOPE_DISCOVERY,
-        candidate_titles={"Alpha", "Beta", "Beta Linker"},
-    ) == []
+    assert (
+        kb.related_pages(
+            "Beta Linker",
+            scope=GRAPH_SCOPE_DISCOVERY,
+            candidate_titles={"Alpha", "Beta", "Beta Linker"},
+        )
+        == []
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -615,9 +619,9 @@ def test_extraction_is_deterministic_for_unchanged_pages():
     kb_b = _kb(pages_b)
 
     assert kb_a.extracted_references("Alpha") == kb_b.extracted_references("Alpha")
-    assert kb_a.related_pages(
+    assert kb_a.related_pages("Alpha", scope=GRAPH_SCOPE_DISCOVERY) == kb_b.related_pages(
         "Alpha", scope=GRAPH_SCOPE_DISCOVERY
-    ) == kb_b.related_pages("Alpha", scope=GRAPH_SCOPE_DISCOVERY)
+    )
 
 
 def test_extraction_stable_across_repeated_calls():
@@ -639,9 +643,7 @@ def test_extraction_independent_of_page_insertion_order():
     kb_forward = _kb([alpha, beta, gamma])
     kb_reverse = _kb([gamma, beta, alpha])
 
-    assert kb_forward.extracted_references("Alpha") == kb_reverse.extracted_references(
-        "Alpha"
-    )
+    assert kb_forward.extracted_references("Alpha") == kb_reverse.extracted_references("Alpha")
     assert kb_forward.related_pages(
         "Alpha", scope=GRAPH_SCOPE_DISCOVERY
     ) == kb_reverse.related_pages("Alpha", scope=GRAPH_SCOPE_DISCOVERY)
@@ -695,9 +697,7 @@ def test_discovery_scope_no_longer_raises():
 
     # Must NOT raise; returns the extracted neighbor.
     assert kb.related_pages("Alpha", scope=GRAPH_SCOPE_DISCOVERY) == ["Beta"]
-    assert kb.shortest_path(
-        "Alpha", "Beta", scope=GRAPH_SCOPE_DISCOVERY
-    ) == ["Alpha", "Beta"]
+    assert kb.shortest_path("Alpha", "Beta", scope=GRAPH_SCOPE_DISCOVERY) == ["Alpha", "Beta"]
 
 
 def test_unknown_scope_still_raises():
