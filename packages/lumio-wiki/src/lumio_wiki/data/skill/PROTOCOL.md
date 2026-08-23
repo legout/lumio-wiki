@@ -20,10 +20,11 @@ Discovery Graph artifact — graph state is reached through `related`,
 
 - The Knowledge Base is a directory of compiled Markdown pages plus a root
   `lumio.yaml` Control File.
-- A **Compiled Page** has YAML frontmatter (title, aliases, tags, summary,
-  lifecycle, visibility, sources, relationships, synthetic) and a body.
+- A **Compiled Page** has YAML frontmatter (title, id, entity_types, aliases,
+  tags, summary, lifecycle, visibility, sources, claims, synthetic) and a body.
 - The **Canonical Page Title** is the unique title a page is known by.
-- A typed **Relationship** is a reviewed semantic edge; an **Extracted
+- An accepted **Claim** is a reviewed, evidence-bearing semantic edge between
+  Entities (validated against the `lumio.yaml` ontology); an **Extracted
   Reference** is a deterministic non-canonical reference derived from a body
   link (topology only, never Evidence).
 - Reserved derived artifacts (`index.md`, `hot.md`, `log.md`) are marked and
@@ -200,26 +201,6 @@ lumio-wiki discard <kb> <id>
 reserved Navigation Index and Hot Index, and marks the proposal terminal. It
 refuses to publish a blocked proposal (validation always runs first).
 `discard` marks a reviewable proposal as discarded.
-
-## Stage a typed Relationship
-
-```
-lumio-wiki relationship stage <kb> <source-title> <target-title> --type <type>
-```
-
-Stages a reviewable proposal that appends a typed **Relationship** — a
-canonical, reviewed edge resolved by Canonical Page Title — to the source
-page's frontmatter. Inspect and validate it, then publish it as a separate
-Maintainer action through the ordinary proposal pipeline; the canonical graph
-is unchanged until publication. This is the canonical-graph counterpart to
-`cross-link --stage`:
-`cross-link --stage` only adds authored Markdown links (Extracted References,
-discovery-graph topology), while `relationship stage` promotes a typed
-canonical edge. The type is never inferred. Preferred types: `contradicts`,
-`derived-from`, `extends`, `implements`, `relates-to`, `replaces`, `uses`; a
-non-preferred type stages as a warning-level generic edge. Missing
-source/target, an unresolved target, or a duplicate edge produce actionable
-diagnostics.
 
 ## 10. Health and graph recovery
 

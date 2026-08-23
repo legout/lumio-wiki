@@ -121,13 +121,16 @@ def test_lookup_by_lifecycle():
 def test_related_from():
     kb, _ = load_knowledge_base(FIXTURES / "valid")
     rels = kb.related_from("Lumio Overview")
-    assert any(r.target == "Architecture" and r.type == "relates-to" for r in rels)
+    # Canonical edges are accepted Claims (ADR-0021); the legacy flat fixture
+    # carries none, so the derived Relationship view is empty.
+    assert rels == []
 
 
 def test_graph_path_two_hops():
     kb, _ = load_knowledge_base(FIXTURES / "valid")
     path = kb.graph_path("Lumio Overview", "Technology Stack")
-    assert path == ["Lumio Overview", "Architecture", "Technology Stack"]
+    # No canonical Claim edges in the flat fixture: no path exists.
+    assert path is None
 
 
 def test_graph_path_unreachable_returns_none():

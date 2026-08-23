@@ -9,8 +9,6 @@ tags:
 sources:
   - id: "relationships-bad-item"
     title: "Relationships Bad Item"
-relationships:
-  - "not a dict"
 ---
 
 Body text.

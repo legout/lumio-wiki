@@ -1,6 +1,6 @@
 """Materialized Discovery Graph serialization (issue #108, ADR-0011).
 
-The Discovery Graph adjacency (canonical Relationships plus Extracted
+The Discovery Graph adjacency (canonical accepted Claims plus Extracted
 References, in both outgoing and incoming directions) is materialized as a
 versioned MessagePack artifact in the configured derived index directory. The
 artifact carries the Knowledge Base fingerprint and extractor version so a

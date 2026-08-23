@@ -24,6 +24,8 @@ import pytest
 from lumio_wiki import KnowledgeBase, load_knowledge_base
 from lumio_wiki.records import CompiledPage, Relationship, Source
 
+from tests._entity_fixtures import claim_for, entity_id_for
+
 
 def _page(
     title: str,
@@ -33,13 +35,16 @@ def _page(
     return CompiledPage(
         path=f"{title.lower()}.md",
         title=title,
+        id=entity_id_for(title),
         aliases=[],
         tags=["test"],
         summary=f"{title} summary",
         lifecycle="approved",
         visibility=visibility,
         sources=[Source(id=f"src-{title.lower()}", title=title)],
-        relationships=relationships or [],
+        # Canonical edges are accepted entity-to-entity Claims (ADR-0021);
+        # call sites still express them as title-level Relationship records.
+        claims=[claim_for(title, rel.target, rel.type) for rel in relationships or []],
         body=f"# {title}\n",
     )
 
@@ -70,12 +75,8 @@ def _write_kb_to_disk(pages: list[CompiledPage], kb_dir: Path) -> None:
     """Write pages as minimal valid Compiled Page Markdown for load_knowledge_base."""
     kb_dir.mkdir(parents=True, exist_ok=True)
     for page in pages:
-        rels = ""
-        if page.relationships:
-            rels = "relationships:\n" + "".join(
-                f'  - target: "{r.target}"\n    type: "{r.type}"\n'
-                for r in page.relationships
-            )
+        # Claims need a Control File ontology to be declarable on disk
+        # (ADR-0021); this writer exercises plain-page load stability only.
         (kb_dir / page.path).write_text(
             "---\n"
             f'title: "{page.title}"\n'
@@ -86,7 +87,7 @@ def _write_kb_to_disk(pages: list[CompiledPage], kb_dir: Path) -> None:
             "sources:\n"
             f'  - id: "{page.sources[0].id}"\n'
             f'    title: "{page.sources[0].title}"\n'
-            f"{rels}---\n\n# {page.title}\n"
+            "---\n\n# {page.title}\n"
         )
 
 

@@ -30,13 +30,23 @@ from lumio_wiki.graph_state import (
 )
 from lumio_wiki.page_search import search_pages as search_pages_over
 from lumio_wiki.records import (
+    CLAIM_STATUS_ACCEPTED,
+    CLAIM_ORIGIN_AUTHORED,
+    CLAIM_ORIGINS,
     EXTRACTOR_VERSION,
+    LITERAL_KINDS,
     LINK_IMPACT_KIND_COMPONENT_JOIN,
     LINK_IMPACT_KIND_FRAGILE_STRENGTHENING,
     LINK_IMPACT_KIND_ORPHAN_REPAIR,
+    PROPOSAL_ONLY_CLAIM_STATUSES,
+    PUBLISHED_CLAIM_STATUSES,
     ActivityLogEntry,
+    Claim,
+    ClaimEvidence,
     CompiledPage,
     ContentCategory,
+    EntityRedirect,
+    EntityTypeDefinition,
     ExtractedReference,
     GraphHealthReport,
     GraphHub,
@@ -46,7 +56,9 @@ from lumio_wiki.records import (
     KnowledgeBaseControlFile,
     LinkCandidate,
     LinkImpactSignal,
+    Ontology,
     PageSearchResult,
+    PredicateDefinition,
     RankedLinkCandidate,
     RegistryEntry,
     Relationship,
@@ -66,34 +78,14 @@ from lumio_wiki.retrieval import RetrievalAdapter, default_retrieval_adapter
 
 VALID_LIFECYCLES = {"draft", "review", "approved", "deprecated"}
 VALID_VISIBILITIES = {"public", "internal", "restricted"}
-PREFERRED_RELATIONSHIP_TYPES = frozenset(
-    {
-        "relates-to",
-        "uses",
-        "extends",
-        "implements",
-        "contradicts",
-        "derived-from",
-        "replaces",
-    }
-)
-# Preferred Relationship vocabulary and its traversal-facing inverse labels.
-# The inverse labels are deliberately not added to the preferred vocabulary:
-# they describe the incoming view of an authored edge, rather than introducing
-# a second canonical edge vocabulary. Unknown Relationship types retain their
-# existing warning-level, generic-edge behavior.
-PREFERRED_RELATIONSHIP_INVERSES = {
-    "relates-to": "relates-to",
-    "uses": "used-by",
-    "extends": "extended-by",
-    "implements": "implemented-by",
-    "contradicts": "contradicts",
-    "derived-from": "derived",
-    "replaces": "replaced-by",
-}
-# Short public alias for callers that do not need to emphasize that the keys
-# are the preferred vocabulary.
-RELATIONSHIP_INVERSES = PREFERRED_RELATIONSHIP_INVERSES
+# Entity/Claim identity contracts (ADR-0021, issue #168). Entity IDs and
+# Claim IDs are ``entity:``/``claim:`` prefixed slugs; titles and paths are
+# not semantic identity.
+ENTITY_ID_PREFIX = "entity:"
+CLAIM_ID_PREFIX = "claim:"
+IDENTIFIER_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$")
+# The canonical graph vocabulary is Control-File ontology data since
+# ADR-0021; title-based Relationship frontmatter input is removed.
 
 # ---------------------------------------------------------------------------
 # Public graph traversal seam (issue #106, ADR-0011) and Discovery Graph
@@ -283,7 +275,7 @@ SUPPORTED_NAV_INDEX_VERSIONS = frozenset({NAV_INDEX_VERSION})
 # Page (not Markdown) nor an OKF concept. It is canonical KB content and is
 # fingerprinted alongside Compiled Pages.
 CONTROL_FILE_BASENAME = "lumio.yaml"
-CONTROL_FILE_VERSION = 1
+CONTROL_FILE_VERSION = 2
 SUPPORTED_CONTROL_FILE_VERSIONS = frozenset({CONTROL_FILE_VERSION})
 KB_MODE_CATEGORIZED = "categorized"
 KB_MODE_LEGACY = "legacy-flat"
@@ -448,12 +440,29 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         return search_pages_over(candidates, query, limit)
 
     def related_from(self, title: str, relationship_type: str | None = None) -> list[Relationship]:
-        """Return relationships whose source page has the given Canonical Title."""
+        """Return canonical edges whose source page has the given Canonical Title.
+
+        Each returned :class:`Relationship` is a derived, title-level view of
+        one accepted entity-to-entity Claim (ADR-0021): ``type`` is the Claim
+        predicate and ``target`` the object entity's Canonical Page Title.
+        """
         relationships: list[Relationship] = []
+        seen: set[tuple[str, str]] = set()
+        index = self._knowledge_index()
         for page in self.lookup_by_title(title):
-            for rel in page.relationships:
-                if relationship_type is None or rel.type == relationship_type:
-                    relationships.append(rel)
+            for claim in page.claims:
+                if claim.status != "accepted" or claim.object is None:
+                    continue
+                target = index.by_entity_id.get(claim.object)
+                if target is None:
+                    continue
+                if relationship_type is not None and claim.predicate != relationship_type:
+                    continue
+                edge = (target.title, claim.predicate)
+                if edge in seen:
+                    continue
+                seen.add(edge)
+                relationships.append(Relationship(target=edge[0], type=edge[1]))
         return relationships
 
     def graph_path(self, source_title: str, target_title: str) -> list[str] | None:
@@ -1372,7 +1381,11 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
                 visibility=page.visibility or "",
                 path=page.path,
                 source_count=len(page.sources),
-                relationship_count=len(page.relationships),
+                relationship_count=sum(
+                    1
+                    for claim in page.claims
+                    if claim.status == "accepted" and claim.object is not None
+                ),
             )
             for page in self.pages
         ]
@@ -1400,9 +1413,11 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         invalid_fields: set[str] = set()
         for issue in validation.issues:
             message = issue.message
-            if message.startswith("unresolved relationship target: "):
+            if ": dangling object entity: " in message:
                 broken_relationships.add(issue.file)
-            elif message.startswith("unknown relationship type '"):
+            elif ": unknown predicate: " in message or message.startswith(
+                "unknown entity type: "
+            ):
                 unknown_relationship_types.add(issue.file)
             elif issue.severity == "error":
                 if not (
@@ -1871,15 +1886,18 @@ class _KnowledgeIndex:
         self.by_tag: dict[str, list[CompiledPage]] = {}
         self.by_source: dict[str, list[CompiledPage]] = {}
         self.by_lifecycle: dict[str, list[CompiledPage]] = {}
+        self.by_entity_id: dict[str, CompiledPage] = {}
         self.adjacency: dict[str, list[tuple[str, str]]] = {}
-        # Reverse adjacency: target title -> [(source title, relationship type)].
+        # Reverse adjacency: target title -> [(source title, predicate)].
         # Built alongside the outgoing adjacency so incoming traversal and
-        # ``both`` direction are derived from the same Relationship set without
-        # a second pass (issue #106).
+        # ``both`` direction are derived from the same accepted-Claim set
+        # without a second pass (issue #106).
         self.incoming: dict[str, list[tuple[str, str]]] = {}
 
         for page in pages:
             self.by_title.setdefault(page.title, []).append(page)
+            if page.id:
+                self.by_entity_id[page.id] = page
             for alias in page.aliases:
                 self.by_alias.setdefault(alias, []).append(page)
             for tag in page.tags:
@@ -1887,13 +1905,25 @@ class _KnowledgeIndex:
             for source in page.sources:
                 self.by_source.setdefault(source.id, []).append(page)
             self.by_lifecycle.setdefault(page.lifecycle or "", []).append(page)
-            self.adjacency.setdefault(page.title, []).extend(
-                (rel.target, rel.type) for rel in page.relationships
-            )
-            for rel in page.relationships:
-                self.incoming.setdefault(rel.target, []).append((page.title, rel.type))
+        # Canonical adjacency (ADR-0021, issue #168): accepted entity-to-entity
+        # Claims projected onto Canonical Page Titles. Disputed and superseded
+        # Claims stay inspectable but never enter traversal; literal Claims
+        # are not graph edges.
+        for page in pages:
+            for claim in page.claims:
+                if claim.status != "accepted" or claim.object is None:
+                    continue
+                target = self.by_entity_id.get(claim.object)
+                if target is None:
+                    continue
+                self.adjacency.setdefault(page.title, []).append(
+                    (target.title, claim.predicate)
+                )
+                self.incoming.setdefault(target.title, []).append(
+                    (page.title, claim.predicate)
+                )
         # Canonical adjacency is stored pre-sorted by ``(endpoint, type)`` so
-        # graph traversal iterates Relationship edges deterministically without
+        # graph traversal iterates canonical edges deterministically without
         # per-node materialization/sorting (ADR-0011, issue #106).
         for edges in self.adjacency.values():
             edges.sort()
@@ -2006,20 +2036,109 @@ def _as_sources(value: Any) -> list[Source]:
     return sources
 
 
-def _as_relationships(value: Any) -> list[Relationship]:
+def _as_claims(value: Any, relative: str) -> tuple[list[Claim], list[ValidationIssue]]:
+    """Build ``Claim`` records from raw frontmatter, reporting structural issues.
+
+    A claim entry must be a mapping with a non-empty ``id`` and ``predicate``.
+    ``evidence`` entries may carry ``section``, ``lines`` (a 2-list of 1-based
+    body line numbers), or both. Ontology conformance is validated later
+    against the Control File; this parser enforces only shape.
+    """
+    if value is None:
+        return [], []
     if not isinstance(value, list):
-        return []
-    relationships: list[Relationship] = []
+        return [], [
+            ValidationIssue(file=relative, field="claims", message="claims must be a list")
+        ]
+    claims: list[Claim] = []
+    issues: list[ValidationIssue] = []
     for item in value:
         if not isinstance(item, dict):
+            issues.append(
+                ValidationIssue(
+                    file=relative, field="claims", message="claims must be a list of mappings"
+                )
+            )
             continue
-        relationships.append(
-            Relationship(
-                target=str(item.get("target", "")),
-                type=str(item.get("type", "")),
+        claim_id = str(item.get("id", "")).strip()
+        predicate = str(item.get("predicate", "")).strip()
+        if not claim_id:
+            issues.append(
+                ValidationIssue(file=relative, field="claims", message="claim missing id")
+            )
+            continue
+        if not predicate:
+            issues.append(
+                ValidationIssue(file=relative, field="claims", message="claim missing predicate")
+            )
+            continue
+        status = str(item.get("status", "")).strip()
+        object_value = item.get("object")
+        if object_value is not None:
+            object_value = str(object_value)
+        value_value = item.get("value")
+        value_type = item.get("value_type")
+        if value_type is not None:
+            value_type = str(value_type)
+        confidence = item.get("confidence")
+        origin = str(item.get("origin", CLAIM_ORIGIN_AUTHORED)) or CLAIM_ORIGIN_AUTHORED
+        evidence: list[ClaimEvidence] = []
+        raw_evidence = item.get("evidence")
+        if isinstance(raw_evidence, list):
+            for anchor in raw_evidence:
+                if not isinstance(anchor, dict):
+                    issues.append(
+                        ValidationIssue(
+                            file=relative,
+                            field="claims",
+                            message=f"claim {claim_id}: evidence must be a list of mappings",
+                        )
+                    )
+                    continue
+                section = anchor.get("section")
+                lines = anchor.get("lines")
+                line_start: int | None = None
+                line_end: int | None = None
+                if lines is not None:
+                    if (
+                        not isinstance(lines, list)
+                        or len(lines) != 2
+                        or any(not isinstance(n, int) or isinstance(n, bool) for n in lines)
+                    ):
+                        issues.append(
+                            ValidationIssue(
+                                file=relative,
+                                field="claims",
+                                message=(
+                                    f"claim {claim_id}: evidence lines must be "
+                                    f"[start, end] integers"
+                                ),
+                            )
+                        )
+                        lines = None
+                    else:
+                        line_start, line_end = lines
+                evidence.append(
+                    ClaimEvidence(
+                        section=str(section) if section is not None else None,
+                        line_start=line_start,
+                        line_end=line_end,
+                    )
+                )
+        claims.append(
+            Claim(
+                id=claim_id,
+                predicate=predicate,
+                status=status,
+                object=object_value,
+                value=value_value,
+                value_type=value_type,
+                confidence=float(confidence) if confidence is not None else None,
+                origin=origin,
+                evidence=evidence,
             )
         )
-    return relationships
+    return claims, issues
 
 
 class NavigationIndexCollisionError(ValueError):
@@ -2193,21 +2312,602 @@ def _load_page(text: str, relative: str) -> tuple[CompiledPage, dict[str, Any]]:
     filesystem root and an in-memory materialization (issue #120, ADR-0013).
     """
     data, body, body_start_line = _parse_frontmatter(text, Path(relative))
+    claims, claim_issues = _as_claims(data.get("claims"), relative)
     page = CompiledPage(
         path=relative,
         title=str(data.get("title", "")),
+        id=str(data.get("id", "")),
+        entity_types=_as_string_list(data.get("entity_types")),
         aliases=_as_string_list(data.get("aliases")),
         tags=_as_string_list(data.get("tags")),
         summary=str(data["summary"]) if "summary" in data else None,
         lifecycle=str(data.get("lifecycle")) if "lifecycle" in data else None,
         visibility=str(data.get("visibility")) if "visibility" in data else None,
         sources=_as_sources(data.get("sources")),
-        relationships=_as_relationships(data.get("relationships")),
+        claims=claims,
         synthetic=bool(data.get("synthetic", False)),
         body=body,
         body_start_line=body_start_line,
     )
     return page, data
+
+
+def _claim_id_issue(claim_id: str) -> str | None:
+    """Return a blocking-issue message for an invalid Claim ID, else None."""
+    if not claim_id.startswith(CLAIM_ID_PREFIX):
+        return (
+            f"claim id {claim_id!r} must use the '{CLAIM_ID_PREFIX}' prefix "
+            f"(e.g. {CLAIM_ID_PREFIX}slug)"
+        )
+    slug = claim_id[len(CLAIM_ID_PREFIX) :]
+    if not IDENTIFIER_SLUG_RE.match(slug):
+        return (
+            f"claim id {claim_id!r} is not a valid slug: use lowercase "
+            f"ASCII letters, digits, and hyphens; begin and end with a letter or digit"
+        )
+    return None
+
+
+def _entity_id_issue(entity_id: str) -> str | None:
+    """Return a blocking-issue message for an invalid Entity ID, else None."""
+    if not entity_id.startswith(ENTITY_ID_PREFIX):
+        return (
+            f"entity id {entity_id!r} must use the '{ENTITY_ID_PREFIX}' prefix "
+            f"(e.g. {ENTITY_ID_PREFIX}slug)"
+        )
+    slug = entity_id[len(ENTITY_ID_PREFIX) :]
+    if not IDENTIFIER_SLUG_RE.match(slug):
+        return (
+            f"entity id {entity_id!r} is not a valid slug: use lowercase "
+            f"ASCII letters, digits, and hyphens; begin and end with a letter or digit"
+        )
+    return None
+
+
+def _entity_claim_page_issues(
+    page: CompiledPage, data: dict[str, Any], relative: str
+) -> list[ValidationIssue]:
+    """Validate a page's Entity identity and Claim shape (ontology-free part).
+
+    Cross-page ontology conformance (known types/predicates, domain/range,
+    object resolution, ID uniqueness, evidence bounds) lives in
+    :func:`_ontology_issues` because it needs the Control File and the whole
+    page set.
+    """
+    issues: list[ValidationIssue] = []
+    has_entity_contract = "id" in data or "entity_types" in data or "claims" in data
+
+    if has_entity_contract:
+        if not page.id:
+            issues.append(
+                ValidationIssue(
+                    file=relative, field="id", message="missing required field: id"
+                )
+            )
+        else:
+            id_issue = _entity_id_issue(page.id)
+            if id_issue:
+                issues.append(ValidationIssue(file=relative, field="id", message=id_issue))
+        if not page.entity_types:
+            issues.append(
+                ValidationIssue(
+                    file=relative,
+                    field="entity_types",
+                    message="an Entity page must declare at least one entity type",
+                )
+            )
+        if "entity_types" in data and not isinstance(data["entity_types"], list):
+            issues.append(
+                ValidationIssue(
+                    file=relative, field="entity_types", message="entity_types must be a list"
+                )
+            )
+
+    for claim in page.claims:
+        id_issue = _claim_id_issue(claim.id)
+        if id_issue:
+            issues.append(ValidationIssue(file=relative, field="claims", message=id_issue))
+        if claim.status not in PUBLISHED_CLAIM_STATUSES:
+            if claim.status in PROPOSAL_ONLY_CLAIM_STATUSES:
+                issues.append(
+                    ValidationIssue(
+                        file=relative,
+                        field="claims",
+                        message=(
+                            f"claim {claim.id}: status '{claim.status}' is an Ingest "
+                            f"Proposal state; an active Compiled Page may declare only "
+                            f"{', '.join(sorted(PUBLISHED_CLAIM_STATUSES))} claims"
+                        ),
+                    )
+                )
+            else:
+                issues.append(
+                    ValidationIssue(
+                        file=relative,
+                        field="claims",
+                        message=(
+                            f"claim {claim.id}: invalid status {claim.status!r}; "
+                            f"published statuses are: "
+                            f"{', '.join(sorted(PUBLISHED_CLAIM_STATUSES))}"
+                        ),
+                    )
+                )
+        has_object = claim.object is not None
+        has_value = claim.value is not None or claim.value_type is not None
+        if has_object and has_value:
+            issues.append(
+                ValidationIssue(
+                    file=relative,
+                    field="claims",
+                    message=(
+                        f"claim {claim.id}: exactly one of object or value is allowed"
+                    ),
+                )
+            )
+        elif not has_object and not has_value:
+            issues.append(
+                ValidationIssue(
+                    file=relative,
+                    field="claims",
+                    message=(
+                        f"claim {claim.id}: exactly one of object or value is required"
+                    ),
+                )
+            )
+        elif has_value and claim.value is not None and claim.value_type is None:
+            issues.append(
+                ValidationIssue(
+                    file=relative,
+                    field="claims",
+                    message=f"claim {claim.id}: value requires value_type",
+                )
+            )
+        if claim.origin not in CLAIM_ORIGINS:
+            issues.append(
+                ValidationIssue(
+                    file=relative,
+                    field="claims",
+                    message=f"claim {claim.id}: unknown origin {claim.origin!r}",
+                )
+            )
+        if not claim.evidence:
+            issues.append(
+                ValidationIssue(
+                    file=relative,
+                    field="claims",
+                    message=(
+                        f"claim {claim.id}: missing evidence; every Claim needs at "
+                        f"least one anchor into the owning page's published content"
+                    ),
+                )
+            )
+
+    return issues
+
+
+def _body_line_count(page: CompiledPage) -> int:
+    """Number of lines in the page body (the anchorable content)."""
+    if not page.body:
+        return 0
+    return page.body.count("\n") + (0 if page.body.endswith("\n") else 1)
+
+
+def _body_sections(page: CompiledPage) -> set[str]:
+    """Markdown ATX headings present in the page body."""
+    return {
+        match.group(1).strip()
+        for match in re.finditer(r"^#{1,6}\s+(.+?)\s*#*\s*$", page.body, re.MULTILINE)
+    }
+
+
+def _ontology_issues(
+    pages: list[CompiledPage], ontology: Ontology | None
+) -> list[ValidationIssue]:
+    """Validate Entity identity, Claims, and redirects against the ontology.
+
+    Aggregates every blocking finding: duplicate/dangling Entity and Claim
+    IDs, unknown Entity Types and Predicates, subject domain and object range
+    violations, literal-kind mismatches, missing evidence anchors, evidence
+    section/line bounds, redirect target resolution, and redirect cycles.
+    ``ontology`` is None in Legacy Flat Mode (no Control File): only the
+    identity/uniqueness checks that do not need the ontology run.
+    """
+    issues: list[ValidationIssue] = []
+    entity_types = ontology.entity_types if ontology is not None else {}
+    predicates = ontology.predicates if ontology is not None else {}
+
+    seen_entity_ids: dict[str, str] = {}
+    seen_claim_ids: dict[str, str] = {}
+    pages_by_entity: dict[str, CompiledPage] = {}
+    # First pass: register every Entity ID before any Claim is validated, so
+    # a Claim may reference an object declared later in page order.
+    for page in pages:
+        if not page.id:
+            continue
+        pages_by_entity.setdefault(page.id, page)
+    for page in pages:
+        if not page.id:
+            continue
+        if page.id in seen_entity_ids:
+            issues.append(
+                ValidationIssue(
+                    file=page.path,
+                    field="id",
+                    message=(
+                        f"duplicate entity id: {page.id} (also declared by "
+                        f"{seen_entity_ids[page.id]})"
+                    ),
+                )
+            )
+        else:
+            seen_entity_ids[page.id] = page.path
+        for entity_type in page.entity_types:
+            if entity_type not in entity_types:
+                issues.append(
+                    ValidationIssue(
+                        file=page.path,
+                        field="entity_types",
+                        message=(
+                            f"unknown entity type: {entity_type}"
+                            + (
+                                ""
+                                if entity_types
+                                else "; declare it under ontology.entity_types in lumio.yaml"
+                            )
+                        ),
+                    )
+                )
+        line_count = _body_line_count(page)
+        sections = _body_sections(page)
+        for claim in page.claims:
+            if claim.id in seen_claim_ids:
+                issues.append(
+                    ValidationIssue(
+                        file=page.path,
+                        field="claims",
+                        message=(
+                            f"duplicate claim id: {claim.id} (also declared by "
+                            f"{seen_claim_ids[claim.id]})"
+                        ),
+                    )
+                )
+            else:
+                seen_claim_ids[claim.id] = page.path
+            definition = predicates.get(claim.predicate)
+            if definition is None:
+                issues.append(
+                    ValidationIssue(
+                        file=page.path,
+                        field="claims",
+                        message=(
+                            f"claim {claim.id}: unknown predicate: {claim.predicate}"
+                            + (
+                                ""
+                                if predicates
+                                else "; declare it under ontology.predicates in lumio.yaml"
+                            )
+                        ),
+                    )
+                )
+                # Domain/range checks need the definition, but object existence
+                # is definition-independent and still validated (ADR-0021).
+            if (
+                definition is not None
+                and definition.subject_types
+                and not set(page.entity_types) & set(definition.subject_types)
+            ):
+                issues.append(
+                    ValidationIssue(
+                        file=page.path,
+                        field="claims",
+                        message=(
+                            f"claim {claim.id}: predicate {claim.predicate} requires a "
+                            f"subject with one of types {sorted(definition.subject_types)} "
+                            f"(page has {sorted(page.entity_types) or 'no types'}) — domain violation"
+                        ),
+                    )
+                )
+            if claim.object is not None:
+                if definition is not None and definition.literal_kind is not None:
+                    issues.append(
+                        ValidationIssue(
+                            file=page.path,
+                            field="claims",
+                            message=(
+                                f"claim {claim.id}: predicate {claim.predicate} does not "
+                                f"accept an entity object (literal_kind: "
+                                f"{definition.literal_kind})"
+                            ),
+                        )
+                    )
+                target = pages_by_entity.get(claim.object)
+                if target is None:
+                    issues.append(
+                        ValidationIssue(
+                            file=page.path,
+                            field="claims",
+                            message=f"claim {claim.id}: dangling object entity: {claim.object}",
+                        )
+                    )
+                elif (
+                    definition is not None
+                    and definition.object_types
+                    and not set(target.entity_types) & set(definition.object_types)
+                ):
+                    issues.append(
+                        ValidationIssue(
+                            file=page.path,
+                            field="claims",
+                            message=(
+                                f"claim {claim.id}: predicate {claim.predicate} requires an "
+                                f"object with one of types {sorted(definition.object_types)} "
+                                f"(entity {claim.object} has "
+                                f"{sorted(target.entity_types) or 'no types'}) — range violation"
+                            ),
+                        )
+                    )
+            elif claim.value is not None or claim.value_type is not None:
+                if definition is not None and definition.literal_kind is None:
+                    issues.append(
+                        ValidationIssue(
+                            file=page.path,
+                            field="claims",
+                            message=(
+                                f"claim {claim.id}: predicate {claim.predicate} does not "
+                                f"accept a literal object"
+                            ),
+                        )
+                    )
+                elif definition is not None and claim.value_type != definition.literal_kind:
+                    issues.append(
+                        ValidationIssue(
+                            file=page.path,
+                            field="claims",
+                            message=(
+                                f"claim {claim.id}: literal kind mismatch: predicate "
+                                f"{claim.predicate} accepts {definition.literal_kind}, "
+                                f"claim declares {claim.value_type}"
+                            ),
+                        )
+                    )
+            for anchor in claim.evidence:
+                if anchor.section is not None and anchor.section not in sections:
+                    issues.append(
+                        ValidationIssue(
+                            file=page.path,
+                            field="claims",
+                            message=(
+                                f"claim {claim.id}: unknown evidence section: "
+                                f"{anchor.section!r}"
+                            ),
+                        )
+                    )
+                if anchor.line_start is not None or anchor.line_end is not None:
+                    start = anchor.line_start or 1
+                    end = anchor.line_end or start
+                    if start < 1 or end < start or end > max(line_count, 1):
+                        issues.append(
+                            ValidationIssue(
+                                file=page.path,
+                                field="claims",
+                                message=(
+                                    f"claim {claim.id}: evidence lines [{start}, {end}] "
+                                    f"are out of bounds (body has {line_count} lines)"
+                                ),
+                            )
+                        )
+
+    if ontology is not None:
+        for redirect in ontology.redirects:
+            id_issue = _entity_id_issue(redirect.from_id)
+            if id_issue:
+                issues.append(
+                    ValidationIssue(
+                        file=CONTROL_FILE_BASENAME, field="ontology.redirects", message=id_issue
+                    )
+                )
+            elif redirect.from_id in seen_entity_ids:
+                issues.append(
+                    ValidationIssue(
+                        file=CONTROL_FILE_BASENAME,
+                        field="ontology.redirects",
+                        message=(
+                            f"redirect source {redirect.from_id} is a live entity; "
+                            f"only a retired (merged) entity may redirect"
+                        ),
+                    )
+                )
+            target = redirect.to_id
+            resolved: set[str] = set()
+            cursor: str | None = target
+            hop_redirects = {r.from_id: r.to_id for r in ontology.redirects}
+            while cursor is not None and cursor in hop_redirects and cursor not in resolved:
+                resolved.add(cursor)
+                cursor = hop_redirects[cursor]
+            if cursor in resolved:
+                # The walk revisited a redirect id: the chain never terminates.
+                issues.append(
+                    ValidationIssue(
+                        file=CONTROL_FILE_BASENAME,
+                        field="ontology.redirects",
+                        message=(
+                            f"redirect cycle: {redirect.from_id} -> {target} never "
+                            f"reaches a live entity (merge-cycle)"
+                        ),
+                    )
+                )
+            elif cursor not in seen_entity_ids:
+                issues.append(
+                    ValidationIssue(
+                        file=CONTROL_FILE_BASENAME,
+                        field="ontology.redirects",
+                        message=(
+                            f"redirect target does not resolve: {redirect.from_id} -> "
+                            f"{target} (terminal id {cursor} is not a live entity)"
+                        ),
+                    )
+                )
+
+    return issues
+
+
+def _as_ontology(value: Any) -> tuple[Ontology, list[ValidationIssue]]:
+    """Build the :class:`Ontology` from raw Control File YAML.
+
+    Structural only: known shapes, valid slug ids, known literal kinds, and
+    internal reference resolution (a Predicate's ``subject_types`` /
+    ``object_types`` / ``inverse`` must reference declared vocabulary).
+    """
+    if value is None:
+        return Ontology(), []
+    if not isinstance(value, dict):
+        return Ontology(), [
+            ValidationIssue(
+                file=CONTROL_FILE_BASENAME,
+                field="ontology",
+                message="ontology must be a mapping with entity_types and predicates",
+            )
+        ]
+    issues: list[ValidationIssue] = []
+
+    raw_entity_types = value.get("entity_types")
+    entity_types: dict[str, EntityTypeDefinition] = {}
+    if raw_entity_types is not None:
+        if not isinstance(raw_entity_types, dict):
+            issues.append(
+                ValidationIssue(
+                    file=CONTROL_FILE_BASENAME,
+                    field="ontology.entity_types",
+                    message="ontology.entity_types must be a mapping of type id to definition",
+                )
+            )
+        else:
+            for type_id, raw_def in raw_entity_types.items():
+                name_issue = _category_name_issue(str(type_id))
+                if name_issue is not None:
+                    issues.append(
+                        ValidationIssue(
+                            file=CONTROL_FILE_BASENAME,
+                            field="ontology.entity_types",
+                            message=f"invalid entity type id {type_id!r}: use a lowercase slug",
+                        )
+                    )
+                    continue
+                description = None
+                if isinstance(raw_def, dict) and raw_def.get("description") is not None:
+                    description = str(raw_def["description"])
+                entity_types[type_id] = EntityTypeDefinition(description=description)
+
+    raw_predicates = value.get("predicates")
+    predicates: dict[str, PredicateDefinition] = {}
+    if raw_predicates is not None:
+        if not isinstance(raw_predicates, dict):
+            issues.append(
+                ValidationIssue(
+                    file=CONTROL_FILE_BASENAME,
+                    field="ontology.predicates",
+                    message="ontology.predicates must be a mapping of predicate id to definition",
+                )
+            )
+        else:
+            for predicate_id, raw_def in raw_predicates.items():
+                if not isinstance(predicate_id, str) or not IDENTIFIER_SLUG_RE.match(
+                    predicate_id
+                ):
+                    issues.append(
+                        ValidationIssue(
+                            file=CONTROL_FILE_BASENAME,
+                            field="ontology.predicates",
+                            message=(
+                                f"invalid predicate id {predicate_id!r}: use a lowercase "
+                                f"slug (letters, digits, hyphens)"
+                            ),
+                        )
+                    )
+                    continue
+                if not isinstance(raw_def, dict):
+                    issues.append(
+                        ValidationIssue(
+                            file=CONTROL_FILE_BASENAME,
+                            field="ontology.predicates",
+                            message=f"predicate {predicate_id!r} must be a mapping",
+                        )
+                    )
+                    continue
+                subject_types = _as_string_list(raw_def.get("subject_types"))
+                object_types = _as_string_list(raw_def.get("object_types"))
+                literal_kind = raw_def.get("literal_kind")
+                if literal_kind is not None and literal_kind not in LITERAL_KINDS:
+                    issues.append(
+                        ValidationIssue(
+                            file=CONTROL_FILE_BASENAME,
+                            field="ontology.predicates",
+                            message=(
+                                f"predicate {predicate_id!r}: unknown literal_kind "
+                                f"{literal_kind!r}; known kinds: {sorted(LITERAL_KINDS)}"
+                            ),
+                        )
+                    )
+                    literal_kind = None
+                inverse = raw_def.get("inverse")
+                synonyms = _as_string_list(raw_def.get("synonyms"))
+                description = raw_def.get("description")
+                predicates[predicate_id] = PredicateDefinition(
+                    subject_types=subject_types,
+                    object_types=object_types,
+                    literal_kind=str(literal_kind) if literal_kind is not None else None,
+                    inverse=str(inverse) if inverse is not None else None,
+                    synonyms=synonyms,
+                    description=str(description) if description is not None else None,
+                )
+
+    raw_redirects = value.get("redirects")
+    redirects: list[EntityRedirect] = []
+    if raw_redirects is not None:
+        if not isinstance(raw_redirects, dict):
+            issues.append(
+                ValidationIssue(
+                    file=CONTROL_FILE_BASENAME,
+                    field="ontology.redirects",
+                    message="ontology.redirects must be a mapping of retired id to surviving id",
+                )
+            )
+        else:
+            for from_id, to_id in raw_redirects.items():
+                redirects.append(
+                    EntityRedirect(from_id=str(from_id), to_id=str(to_id))
+                )
+
+    # Internal reference resolution inside the ontology itself.
+    for predicate_id, definition in predicates.items():
+        for type_id in definition.subject_types + definition.object_types:
+            if type_id not in entity_types:
+                issues.append(
+                    ValidationIssue(
+                        file=CONTROL_FILE_BASENAME,
+                        field="ontology.predicates",
+                        message=(
+                            f"predicate {predicate_id!r} references undeclared "
+                            f"entity type {type_id!r}"
+                        ),
+                    )
+                )
+        if definition.inverse is not None and definition.inverse not in predicates:
+            issues.append(
+                ValidationIssue(
+                    file=CONTROL_FILE_BASENAME,
+                    field="ontology.predicates",
+                    message=(
+                        f"predicate {predicate_id!r} declares inverse "
+                        f"{definition.inverse!r}, which is not a declared predicate"
+                    ),
+                )
+            )
+
+    return (
+        Ontology(entity_types=entity_types, predicates=predicates, redirects=redirects),
+        issues,
+    )
 
 
 def _validate_page(
@@ -2324,37 +3024,18 @@ def _validate_page(
         )
 
     if "relationships" in data:
-        if not isinstance(data["relationships"], list):
-            page_issues.append(
-                ValidationIssue(
-                    file=relative,
-                    field="relationships",
-                    message="relationships must be a list",
-                )
+        page_issues.append(
+            ValidationIssue(
+                file=relative,
+                field="relationships",
+                message=(
+                    "relationships frontmatter input was removed; declare "
+                    "evidence-bearing claims instead (ADR-0021)"
+                ),
             )
-        elif any(not isinstance(item, dict) for item in data["relationships"]):
-            page_issues.append(
-                ValidationIssue(
-                    file=relative,
-                    field="relationships",
-                    message="relationships must be a list of mappings",
-                )
-            )
-        else:
-            for rel in page.relationships:
-                if rel.type and rel.type not in PREFERRED_RELATIONSHIP_TYPES:
-                    page_issues.append(
-                        ValidationIssue(
-                            file=relative,
-                            field="relationships",
-                            severity="warning",
-                            message=(
-                                f"unknown relationship type '{rel.type}'; "
-                                f"preferred types are: "
-                                f"{', '.join(sorted(PREFERRED_RELATIONSHIP_TYPES))}"
-                            ),
-                        )
-                    )
+        )
+
+    page_issues.extend(_entity_claim_page_issues(page, data, relative))
 
     if not page.summary:
         page_issues.append(
@@ -2514,16 +3195,9 @@ def _cross_page_issues(
                 )
 
     canonical_titles = set(titles_by_page.keys())
-    for page in pages:
-        for rel in page.relationships:
-            if rel.target and rel.target not in canonical_titles:
-                issues.append(
-                    ValidationIssue(
-                        file=page.path,
-                        field="relationships",
-                        message=f"unresolved relationship target: {rel.target}",
-                    )
-                )
+    if not canonical_titles and not pages:
+        return issues
+    del canonical_titles
 
     issues.extend(_orphan_issues(pages, index))
     issues.extend(_broken_internal_link_issues(index))
@@ -2640,24 +3314,28 @@ def _stale_issues(pages: list[CompiledPage]) -> list[ValidationIssue]:
 
 
 def _contradiction_issues(pages: list[CompiledPage]) -> list[ValidationIssue]:
-    """Return non-blocking findings for ``contradicts`` typed Relationships.
+    """Return non-blocking findings for ``contradicts``-predicated Claims.
 
-    A ``contradicts`` relationship is a valid, reviewed semantic claim. It is
-    surfaced here so active contradiction claims are visible at a glance in
-    the QA report, supporting review-by-exception (#111).
+    A claim whose predicate is ``contradicts`` (when the KB's ontology
+    declares it) is a valid, reviewed semantic claim. It is surfaced here so
+    active contradiction claims are visible at a glance in the QA report,
+    supporting review-by-exception (#111).
     """
     issues: list[ValidationIssue] = []
     for page in pages:
-        for rel in page.relationships:
-            if rel.type == "contradicts" and rel.target:
-                issues.append(
-                    ValidationIssue(
-                        file=page.path,
-                        field="relationships",
-                        severity="warning",
-                        message=f"contradiction claim: {rel.target}",
-                    )
+        for claim in page.claims:
+            if claim.predicate != "contradicts" or claim.object is None:
+                continue
+            if claim.status != "accepted":
+                continue
+            issues.append(
+                ValidationIssue(
+                    file=page.path,
+                    field="claims",
+                    severity="warning",
+                    message=f"contradiction claim: {claim.object}",
                 )
+            )
     return issues
 
 
@@ -2997,12 +3675,15 @@ def _load_and_validate_control_file(
                     )
                 )
 
+    ontology, ontology_issues = _as_ontology(raw.get("ontology"))
+    issues.extend(ontology_issues)
     control = KnowledgeBaseControlFile(
         version=parsed_version,
         categories=categories,
         hot_index=pins,
         mode=str(mode),
         path=CONTROL_FILE_BASENAME,
+        ontology=ontology,
     )
     return control, issues
 
@@ -3029,6 +3710,8 @@ def seeded_control_file() -> KnowledgeBaseControlFile:
     A new categorized Knowledge Base adopts this catalog; Maintainers propose
     catalog and Hot Index pin changes through the normal review-and-publish
     workflow. The seeded categories are broad navigation routing only (issue #76).
+    The version-2 seed carries an empty ontology: Entity Types and Predicates
+    are KB-local content a Maintainer declares deliberately (ADR-0021).
     """
     return KnowledgeBaseControlFile(
         version=CONTROL_FILE_VERSION,
@@ -3036,6 +3719,7 @@ def seeded_control_file() -> KnowledgeBaseControlFile:
         hot_index=[],
         mode=KB_MODE_CATEGORIZED,
         path=CONTROL_FILE_BASENAME,
+        ontology=Ontology(),
     )
 
 
@@ -3072,9 +3756,58 @@ def write_control_file(path: str | Path, control: KnowledgeBaseControlFile) -> P
                 lines.append(f"    note: {_control_yaml_scalar(pin.note)}")
             else:
                 lines.append(f"  - {title}")
+    _append_ontology_lines(lines, control)
     content = "\n".join(lines) + "\n"
     _atomic_write_text(target, content)
     return target
+
+
+def _append_ontology_lines(lines: list[str], control: KnowledgeBaseControlFile) -> None:
+    """Append the deterministic ontology section for a version-2 Control File.
+
+    Keys are emitted in sorted order and scalars reuse the shared YAML scalar
+    renderer so unchanged ontology content produces byte-identical output.
+    An empty ontology still writes its three empty sections so the version-2
+    contract is visible and diffable.
+    """
+    ontology = control.ontology
+    if ontology is None:
+        return
+    lines.append("ontology:")
+    lines.append("  entity_types:")
+    for type_id in sorted(ontology.entity_types):
+        definition = ontology.entity_types[type_id]
+        if definition.description is not None:
+            lines.append(f"    {type_id}:")
+            lines.append(
+                f"      description: {_control_yaml_scalar(definition.description)}"
+            )
+        else:
+            lines.append(f"    {type_id}: {{}}")
+    lines.append("  predicates:")
+    for predicate_id in sorted(ontology.predicates):
+        definition = ontology.predicates[predicate_id]
+        lines.append(f"    {predicate_id}:")
+        if definition.subject_types:
+            lines.append("      subject_types:")
+            lines.extend(
+                f"        - {t}" for t in definition.subject_types
+            )
+        if definition.object_types:
+            lines.append("      object_types:")
+            lines.extend(f"        - {t}" for t in definition.object_types)
+        if definition.literal_kind is not None:
+            lines.append(f"      literal_kind: {definition.literal_kind}")
+        if definition.inverse is not None:
+            lines.append(f"      inverse: {_control_yaml_scalar(definition.inverse)}")
+        if definition.synonyms:
+            lines.append("      synonyms:")
+            lines.extend(f"        - {s}" for s in definition.synonyms)
+        if definition.description is not None:
+            lines.append(f"      description: {_control_yaml_scalar(definition.description)}")
+    lines.append("  redirects:")
+    for redirect in sorted(ontology.redirects, key=lambda r: (r.from_id, r.to_id)):
+        lines.append(f"    {redirect.from_id}: {redirect.to_id}")
 
 
 def _control_yaml_scalar(value: str) -> str:
@@ -3177,6 +3910,10 @@ def _load_and_validate(source: _KbSource) -> tuple[KnowledgeBase, ValidationRepo
     issues.extend(_cross_page_issues(pages, _KnowledgeIndex(pages)))
     control, control_issues = _load_and_validate_control_file(source, pages)
     issues.extend(control_issues)
+    # Entity/Claim ontology validation (ADR-0021, issue #168): runs with the
+    # parsed ontology when a Control File is present, and in identity-only
+    # mode (uniqueness + dangling objects) in Legacy Flat Mode.
+    issues.extend(_ontology_issues(pages, control.ontology if control else None))
     return KnowledgeBase(root=source.root, pages=pages, control=control), ValidationReport(
         issues=issues
     )

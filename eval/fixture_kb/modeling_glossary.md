@@ -1,5 +1,8 @@
 ---
 title: "Modeling Glossary"
+id: "entity:modeling-glossary"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-modeling_glossary"
     title: "Modeling Glossary"
-relationships: []
 synthetic: true
 ---
 

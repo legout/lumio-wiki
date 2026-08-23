@@ -40,7 +40,6 @@ PAGE_MD = textwrap.dedent(
     sources:
       - id: "cli"
         title: "CLI test source"
-    relationships: []
     synthetic: false
     ---
 
@@ -449,14 +448,14 @@ def test_page_unknown_title_returns_1(kb_root: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_related_lists_outgoing_titles(kb_root: Path, capsys: pytest.CaptureFixture[str]):
-    rc = main(["related", str(kb_root), "Lumio Overview"])
+def test_related_lists_outgoing_titles(graph_kb: Path, capsys: pytest.CaptureFixture[str]):
+    rc = main(["related", str(graph_kb), "Lumio Overview"])
     assert rc == 0
     assert "Architecture" in capsys.readouterr().out
 
 
-def test_paths_finds_shortest_path(kb_root: Path, capsys: pytest.CaptureFixture[str]):
-    rc = main(["paths", str(kb_root), "Lumio Overview", "Technology Stack"])
+def test_paths_finds_shortest_path(graph_kb: Path, capsys: pytest.CaptureFixture[str]):
+    rc = main(["paths", str(graph_kb), "Lumio Overview", "Technology Stack"])
     assert rc == 0
     out = capsys.readouterr().out.strip()
     assert "Lumio Overview" in out
@@ -548,7 +547,6 @@ _MANAGED_PAGE = (
     "sources:\n"
     '  - id: "annual-impact-report"\n'
     '    title: "2025 Impact Report"\n'
-    "relationships: []\n"
     "synthetic: false\n"
     "---\n\n"
     "# Managed Impact Report\n\n"
@@ -811,7 +809,6 @@ def test_ingest_distiller_llm_with_fake_provider_stages_proposal(
         "sources:\n"
         '  - id: "llm"\n'
         '    title: "LLM source"\n'
-        "relationships: []\n"
         "---\n\n# LLM CLI Page\n\nBody.\n"
     )
     fake_client = MagicMock()
@@ -931,6 +928,93 @@ def categorized_kb(tmp_path: Path) -> Path:
     return root
 
 
+# A categorized KB whose canonical graph is the chain
+# Lumio Overview -> Architecture -> Technology Stack (accepted entity Claims;
+# the title-based relationship frontmatter input is gone, ADR-0021).
+_GRAPH_CONTROL = """\
+version: 2
+mode: "categorized"
+categories:
+  - name: concepts
+ontology:
+  entity_types:
+    concept: {}
+  predicates:
+    uses:
+      subject_types: [concept]
+      object_types: [concept]
+"""
+
+
+def _graph_page(title: str, *, body: str, claims_yaml: str = "") -> str:
+    slug = title.lower().replace(" ", "-")
+    claims = f"claims:\n{claims_yaml}" if claims_yaml else ""
+    return (
+        "---\n"
+        f'id: "entity:{slug}"\n'
+        f'title: "{title}"\n'
+        "entity_types:\n"
+        "  - concept\n"
+        'tags:\n  - "test"\n'
+        f'summary: "{title} summary."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        'sources:\n'
+        f'  - id: "src-{slug}"\n'
+        f'    title: "{title} Source"\n'
+        f"{claims}"
+        "---\n\n"
+        f"# {title}\n\n## Overview\n\n{body}\n"
+    )
+
+
+@pytest.fixture
+def graph_kb(tmp_path: Path) -> Path:
+    """A claim-bearing KB with the canonical chain
+    Lumio Overview -> Architecture -> Technology Stack."""
+    root = tmp_path / "graph-kb"
+    root.mkdir(parents=True)
+    (root / "lumio.yaml").write_text(_GRAPH_CONTROL, encoding="utf-8")
+    pages = {
+        "concepts/overview.md": _graph_page(
+            "Lumio Overview",
+            body="Lumio is a deployable chat platform for trusted knowledge and data.",
+            claims_yaml=(
+                "  - id: claim:lumio-overview-uses-architecture\n"
+                "    predicate: uses\n"
+                '    object: "entity:architecture"\n'
+                "    status: accepted\n"
+                "    evidence:\n"
+                '      - section: "Overview"\n'
+            ),
+        ),
+        "concepts/architecture.md": _graph_page(
+            "Architecture",
+            body=(
+                "Lumio is built as a modular monolith with a framework-independent "
+                "Core SDK. Lumio uses LanceDB for the derived lexical index."
+            ),
+            claims_yaml=(
+                "  - id: claim:architecture-uses-technology-stack\n"
+                "    predicate: uses\n"
+                '    object: "entity:technology-stack"\n'
+                "    status: accepted\n"
+                "    evidence:\n"
+                '      - section: "Overview"\n'
+            ),
+        ),
+        "concepts/technology.md": _graph_page(
+            "Technology Stack",
+            body="LanceDB provides the embedded vector index.",
+        ),
+    }
+    for rel, text in pages.items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    return root
+
+
 # --- related / paths: explicit bounds + truthful trace (AC1) ---
 
 
@@ -966,24 +1050,24 @@ def test_related_trace_reports_scope_direction_and_bounds(
     assert "artifact=" not in out
 
 
-def test_paths_max_depth_bounds_traversal(kb_root: Path):
+def test_paths_max_depth_bounds_traversal(graph_kb: Path):
     """AC1: --max-depth is an explicit bound. A 2-hop path is unreachable at depth 1."""
     # Canonical path Lumio Overview -> Architecture -> Technology Stack is 2 hops.
     rc_shallow = main(
-        ["paths", str(kb_root), "Lumio Overview", "Technology Stack", "--max-depth", "1"]
+        ["paths", str(graph_kb), "Lumio Overview", "Technology Stack", "--max-depth", "1"]
     )
     assert rc_shallow == 1  # bounded out — no path within 1 hop
     rc_deep = main(
-        ["paths", str(kb_root), "Lumio Overview", "Technology Stack", "--max-depth", "2"]
+        ["paths", str(graph_kb), "Lumio Overview", "Technology Stack", "--max-depth", "2"]
     )
     assert rc_deep == 0
 
 
-def test_paths_trace_reports_found_and_hops(kb_root: Path, capsys: pytest.CaptureFixture[str]):
+def test_paths_trace_reports_found_and_hops(graph_kb: Path, capsys: pytest.CaptureFixture[str]):
     rc = main(
         [
             "paths",
-            str(kb_root),
+            str(graph_kb),
             "Lumio Overview",
             "Technology Stack",
             "--scope",
@@ -1060,20 +1144,20 @@ def test_index_prints_subdirectory_index(categorized_kb: Path, capsys: pytest.Ca
 
 
 def test_corrupt_artifact_does_not_block_zero_index_operation(
-    kb_root: Path, capsys: pytest.CaptureFixture[str]
+    graph_kb: Path, capsys: pytest.CaptureFixture[str]
 ):
     """AC4: a corrupt graph artifact never blocks search/page/related/paths."""
-    index_dir = default_index_dir(kb_root)
+    index_dir = default_index_dir(graph_kb)
     index_dir.mkdir(parents=True, exist_ok=True)
     (index_dir / GRAPH_ARTIFACT_FILENAME).write_bytes(b"\x00\x01\x02 not msgpack")
     capsys.readouterr()  # clear
     # Every zero-index operation still works.
-    assert main(["search", str(kb_root), "LanceDB"]) == 0
-    assert main(["page", str(kb_root), "Architecture"]) == 0
-    assert main(["related", str(kb_root), "Lumio Overview"]) == 0
-    assert main(["paths", str(kb_root), "Lumio Overview", "Technology Stack"]) == 0
+    assert main(["search", str(graph_kb), "LanceDB"]) == 0
+    assert main(["page", str(graph_kb), "Architecture"]) == 0
+    assert main(["related", str(graph_kb), "Lumio Overview"]) == 0
+    assert main(["paths", str(graph_kb), "Lumio Overview", "Technology Stack"]) == 0
     # health reports the graph as not fresh (corrupt → ignored).
-    rc = main(["health", str(kb_root)])
+    rc = main(["health", str(graph_kb)])
     out = capsys.readouterr().out
     assert rc == 0
     assert "graph_fresh:" in out and "False" in out
@@ -1570,7 +1654,6 @@ SOURCE_POLICY_PAGE_MD = textwrap.dedent(
     sources:
       - id: "policy"
         title: "Policy Knowledge Source"
-    relationships: []
     synthetic: false
     ---
 

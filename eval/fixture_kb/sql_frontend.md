@@ -1,5 +1,8 @@
 ---
 title: "SQL Frontend"
+id: "entity:sql-frontend"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-sql_frontend"
     title: "SQL Frontend"
-relationships: []
 synthetic: true
 ---
 

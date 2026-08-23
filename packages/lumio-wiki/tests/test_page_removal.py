@@ -25,6 +25,7 @@ the ``sole-source-lost`` classification produced by a source retirement.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import lumio_wiki as lw
@@ -44,6 +45,11 @@ from lumio_wiki.proposal_pipeline import ProposalBlockedError, ProposalPipeline
 # ---------------------------------------------------------------------------
 
 
+def _slug(text: str) -> str:
+    """Entity-id slug: lowercase, non-alphanumerics collapsed to hyphens."""
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
 def _write(root: Path, rel: str, text: str) -> None:
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,20 +59,42 @@ def _write(root: Path, rel: str, text: str) -> None:
 def _page(
     title: str, *, body: str = "Body.", sources=None, relationships=None, aliases=None
 ) -> str:
+    """Render a Compiled Page.
+
+    Since ADR-0021 the title-based ``relationships`` frontmatter input is
+    gone: a typed edge to another page is an accepted, evidence-bearing Claim
+    whose object is the target page's Entity id ("entity:<slug-of-title>").
+    Every page declares its Entity id and type so claim objects resolve.
+    """
     src = (
         sources
         if sources is not None
         else [{"id": f"{title.lower()}-src", "title": f"{title} src"}]
     )
-    rels = relationships if relationships is not None else []
     als = aliases if aliases is not None else []
     src_lines = "\n".join(
         f'  - id: "{s.get("id", "")}"\n    title: "{s.get("title", "")}"' for s in src
     )
-    if rels:
-        rel_lines = "\n".join(f'  - target: "{r["target"]}"\n    type: "{r["type"]}"' for r in rels)
-    else:
-        rel_lines = "[]"
+    claims_lines = "".join(
+        f"  - id: \"claim:{_slug(title)}-{_slug(rel['target'])}-{n}\"\n"
+        f"    predicate: \"{rel['type']}\"\n"
+        f"    object: \"entity:{_slug(rel['target'])}\"\n"
+        f"    status: accepted\n"
+        f"    evidence:\n      - section: \"Evidence\"\n"
+        for n, rel in enumerate(relationships or [])
+    )
+    entity_lines = (
+        f'id: "entity:{_slug(title)}"\n'
+        "entity_types:\n"
+        "  - concept\n"
+    )
+    if claims_lines:
+        entity_lines += f"claims:\n{claims_lines}"
+    body_text = (
+        f"{body}\n\n## Evidence\n\nSupporting evidence for the edges.\n"
+        if claims_lines
+        else body
+    )
     return (
         "---\n"
         f'title: "{title}"\n'
@@ -76,11 +104,10 @@ def _page(
         'lifecycle: "approved"\n'
         'visibility: "public"\n'
         f"sources:\n{src_lines}\n"
-        f"relationships: {rel_lines if not rels else ''}\n{rel_lines if rels else ''}".rstrip()
-        + "\n"
+        f"{entity_lines}"
         "synthetic: false\n"
         "---\n"
-        f"# {title}\n\n{body}\n"
+        f"# {title}\n\n{body_text}\n"
     )
 
 
@@ -95,7 +122,23 @@ def _categorized_kb(tmp_path: Path, *, hot_pins: list[str] | None = None) -> Pat
     _write(
         root,
         "lumio.yaml",
-        f"version: 1\nmode: categorized\ncategories:\n  - {{name: concepts}}{pins_block}",
+        (
+            "version: 2\n"
+            "mode: categorized\n"
+            "categories:\n"
+            "  - {name: concepts}\n"
+            "ontology:\n"
+            "  entity_types:\n"
+            "    concept: {}\n"
+            "  predicates:\n"
+            "    depends-on:\n"
+            "      subject_types: [concept]\n"
+            "      object_types: [concept]\n"
+            "    see:\n"
+            "      subject_types: [concept]\n"
+            "      object_types: [concept]\n"
+            f"{pins_block}"
+        ),
     )
     return root
 
@@ -196,9 +239,9 @@ def test_relationship_repair_drops_edges_and_body_links_become_candidates(tmp_pa
     # The dropped edge surfaces in the blast radius (review disclosure).
     assert proposal.blast_radius is not None
     assert any("Beta" in c for c in proposal.blast_radius.relationship_changes)
-    # The repair markdown no longer references Beta as a relationship target.
+    # The repair markdown no longer claims the removed page's Entity.
     _data, _body, _ = lw.parse_frontmatter(repair.markdown, Path("concepts/alpha.md"))
-    assert all(r["target"] != "Beta" for r in _data.get("relationships", []))
+    assert all(c.get("object") != "entity:beta" for c in _data.get("claims", []))
 
     # AC6: the wikilink/body link becomes a location-bearing candidate, never
     # silently redirected. Alpha's body still mentions Beta verbatim.
@@ -395,9 +438,9 @@ def test_publish_removes_page_regenerates_artifacts_and_logs_activity(tmp_path):
     kb2, report2 = load_knowledge_base(root)
     assert report2.is_valid, report2
     assert "Beta" not in [p.title for p in kb2.pages]
-    # The repaired Alpha no longer depends on Beta.
+    # The repaired Alpha no longer claims Beta.
     alpha = next(p for p in kb2.pages if p.title == "Alpha")
-    assert all(r.target != "Beta" for r in alpha.relationships)
+    assert all(claim.object != "entity:beta" for claim in alpha.claims)
 
     # AC7: Navigation Index regenerated and excludes Beta.
     index = (root / "index.md").read_text(encoding="utf-8")

@@ -23,7 +23,6 @@ from lumio_lancedb import (  # noqa: E402
 from lumio_lancedb.index import _save_fingerprint  # noqa: E402
 from lumio_wiki.records import (  # noqa: E402
     CompiledPage,
-    Relationship,
     SourceFingerprint,
 )
 
@@ -34,7 +33,6 @@ def _pages() -> list[CompiledPage]:
             path="overview.md",
             title="LanceDB Retrieval",
             body="Lumio uses LanceDB for BM25 full-text evidence search.\n",
-            relationships=[Relationship(target="tech.md", type="depends-on")],
         ),
         CompiledPage(
             path="tech.md",

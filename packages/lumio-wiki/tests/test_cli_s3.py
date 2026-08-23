@@ -33,8 +33,11 @@ class _StubS3Location:
 
 @pytest.fixture
 def stub_s3_resolution(monkeypatch):
-    """Route S3 URIs to the ``valid`` fixture Snapshot via the CLI seam."""
-    snapshot = FilesystemLocation(FIXTURES / "valid").resolve()
+    """Route S3 URIs to the ``categorized_kb`` fixture Snapshot via the CLI seam."""
+    # The categorized fixture carries an accepted entity Claim
+    # (Lumio Overview -> Acme Corp), so graph traversal has a canonical edge
+    # now that the title-based relationship input is gone (ADR-0021).
+    snapshot = FilesystemLocation(FIXTURES / "categorized_kb").resolve()
 
     def _fake_resolve(uri):
         assert cli._is_object_store_uri(uri), "S3 path must reach the object-store branch"
@@ -128,16 +131,15 @@ def test_cli_related_s3_uri_traverses_the_graph(stub_s3_resolution, capsys):
     rc = cli.main(["related", "s3://bucket/kb", "Lumio Overview"])
     captured = capsys.readouterr()
     assert rc == 0
-    # The fixture's Lumio Overview has outgoing relationships.
-    out = captured.out.strip()
-    assert out == "" or "No related pages" in out or out  # command always exits 0
+    # The fixture's Lumio Overview has an accepted claim edge to Acme Corp.
+    assert "Acme Corp" in captured.out
 
 
 def test_cli_paths_s3_uri_finds_a_path(stub_s3_resolution, capsys):
-    rc = cli.main(["paths", "s3://bucket/kb", "Lumio Overview", "Technology Stack"])
+    rc = cli.main(["paths", "s3://bucket/kb", "Lumio Overview", "Acme Corp"])
     captured = capsys.readouterr()
     assert rc == 0
-    assert "Lumio Overview" in captured.out and "Technology Stack" in captured.out
+    assert "Lumio Overview" in captured.out and "Acme Corp" in captured.out
 
 
 def test_cli_doctor_reports_the_s3_extra(capsys):

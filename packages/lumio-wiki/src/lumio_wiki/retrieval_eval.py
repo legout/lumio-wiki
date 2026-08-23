@@ -256,7 +256,7 @@ class GraphExpansionStage:
     """Discovery Graph expansion that selects eligible pages before ranking (issue #112).
 
     Graph expansion is a *modifier* of lexical ranking, not a standalone ranker:
-    it broadens the eligible page set along canonical Relationships plus
+    it broadens the eligible page set along canonical accepted Claims plus
     Extracted References so weakly-matching but relevant pages surface in top-k
     instead of being outranked by strong-but-irrelevant matches. A query without
     seed titles is inapplicable (N/A) rather than scored as zero recall.

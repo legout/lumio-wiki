@@ -1,5 +1,8 @@
 ---
 title: "Query Engine"
+id: "entity:query-engine"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,12 +13,20 @@ visibility: "public"
 sources:
   - id: "fixture-query_engine"
     title: "Query Engine"
-relationships:
-  - target: "SQL Frontend"
-    type: "relates-to"
-  - target: "Vector Index"
-    type: "relates-to"
 synthetic: true
+claims:
+  - id: "claim:query-engine-sql-frontend-1"
+    predicate: "relates-to"
+    object: "entity:sql-frontend"
+    status: "accepted"
+    evidence:
+      - section: "Query Engine"
+  - id: "claim:query-engine-vector-index-2"
+    predicate: "relates-to"
+    object: "entity:vector-index"
+    status: "accepted"
+    evidence:
+      - section: "Query Engine"
 ---
 
 # Query Engine

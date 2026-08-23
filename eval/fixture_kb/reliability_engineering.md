@@ -1,5 +1,8 @@
 ---
 title: "Reliability Engineering"
+id: "entity:reliability-engineering"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,12 +13,20 @@ visibility: "public"
 sources:
   - id: "fixture-reliability_engineering"
     title: "Reliability Engineering"
-relationships:
-  - target: "Failure Domains"
-    type: "relates-to"
-  - target: "Recovery Procedures"
-    type: "relates-to"
 synthetic: true
+claims:
+  - id: "claim:reliability-engineering-failure-domains-1"
+    predicate: "relates-to"
+    object: "entity:failure-domains"
+    status: "accepted"
+    evidence:
+      - section: "Reliability Engineering"
+  - id: "claim:reliability-engineering-recovery-procedures-2"
+    predicate: "relates-to"
+    object: "entity:recovery-procedures"
+    status: "accepted"
+    evidence:
+      - section: "Reliability Engineering"
 ---
 
 # Reliability Engineering

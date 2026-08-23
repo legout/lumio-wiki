@@ -1,5 +1,8 @@
 ---
 title: "Batch Loader"
+id: "entity:batch-loader"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-batch_loader"
     title: "Batch Loader"
-relationships: []
 synthetic: true
 ---
 

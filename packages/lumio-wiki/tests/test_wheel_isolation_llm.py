@@ -89,7 +89,6 @@ _FAKE_PROVIDER_MARKDOWN = (
     "sources:\n"
     '  - id: "llm"\n'
     '    title: "Fake provider source"\n'
-    "relationships: []\n"
     "---\n\n"
     "# LLM Wheel Page\n\n"
     "Body distilled by the fake provider.\n"

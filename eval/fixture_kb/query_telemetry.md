@@ -1,5 +1,8 @@
 ---
 title: "Query Telemetry"
+id: "entity:query-telemetry"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-query_telemetry"
     title: "Query Telemetry"
-relationships: []
 synthetic: true
 ---
 

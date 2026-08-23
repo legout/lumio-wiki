@@ -11,7 +11,6 @@ visibility: "internal"
 sources:
   - id: "injection-test"
     title: "Prompt injection test cases"
-relationships: []
 synthetic: false
 ---
 

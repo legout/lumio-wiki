@@ -1,5 +1,8 @@
 ---
 title: "Ingestion Pipeline"
+id: "entity:ingestion-pipeline"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,12 +13,20 @@ visibility: "public"
 sources:
   - id: "fixture-ingestion_pipeline"
     title: "Ingestion Pipeline"
-relationships:
-  - target: "Batch Loader"
-    type: "relates-to"
-  - target: "Stream Connector"
-    type: "relates-to"
 synthetic: true
+claims:
+  - id: "claim:ingestion-pipeline-batch-loader-1"
+    predicate: "relates-to"
+    object: "entity:batch-loader"
+    status: "accepted"
+    evidence:
+      - section: "Ingestion Pipeline"
+  - id: "claim:ingestion-pipeline-stream-connector-2"
+    predicate: "relates-to"
+    object: "entity:stream-connector"
+    status: "accepted"
+    evidence:
+      - section: "Ingestion Pipeline"
 ---
 
 # Ingestion Pipeline

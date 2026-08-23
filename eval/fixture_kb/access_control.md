@@ -1,5 +1,8 @@
 ---
 title: "Access Control"
+id: "entity:access-control"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,12 +13,20 @@ visibility: "public"
 sources:
   - id: "fixture-access_control"
     title: "Access Control"
-relationships:
-  - target: "Role Model"
-    type: "relates-to"
-  - target: "Audit Trail"
-    type: "relates-to"
 synthetic: true
+claims:
+  - id: "claim:access-control-role-model-1"
+    predicate: "relates-to"
+    object: "entity:role-model"
+    status: "accepted"
+    evidence:
+      - section: "Access Control"
+  - id: "claim:access-control-audit-trail-2"
+    predicate: "relates-to"
+    object: "entity:audit-trail"
+    status: "accepted"
+    evidence:
+      - section: "Access Control"
 ---
 
 # Access Control

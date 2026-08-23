@@ -1,13 +1,40 @@
 from __future__ import annotations
 
 import importlib
+import re
 from pathlib import Path
 
 import pytest
 from lumio_wiki.embeddings import EmbeddingError
 from lumio_wiki.page_search import search_pages
-from lumio_wiki.records import CompiledPage, Relationship, RetrievalResult, Source
+from lumio_wiki.records import (
+    CLAIM_STATUS_ACCEPTED,
+    Claim,
+    CompiledPage,
+    Relationship,
+    RetrievalResult,
+    Source,
+)
 from lumio_wiki.retrieval import ZeroIndexRetrieval
+
+
+def _slug(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+def _claims_from(
+    source_title: str, relationships: list[Relationship]
+) -> list[Claim]:
+    """Convert title-level test edges to accepted entity-to-entity Claims."""
+    return [
+        Claim(
+            id=f"claim:{_slug(source_title)}-{_slug(rel.target)}-{n}",
+            predicate=rel.type,
+            object=f"entity:{_slug(rel.target)}",
+            status=CLAIM_STATUS_ACCEPTED,
+        )
+        for n, rel in enumerate(relationships)
+    ]
 
 
 def _pages() -> list[CompiledPage]:
@@ -15,19 +42,25 @@ def _pages() -> list[CompiledPage]:
         CompiledPage(
             path="overview.md",
             title="Lumio Overview",
+            id="entity:lumio-overview",
+            entity_types=["concept"],
             aliases=["Overview"],
             tags=["lumio"],
             summary="Portable trusted knowledge.",
             lifecycle="approved",
             visibility="public",
             sources=[Source(id="overview", title="Overview source")],
-            relationships=[Relationship(type="uses", target="Technology Stack")],
+            claims=_claims_from(
+                "Lumio Overview", [Relationship(type="uses", target="Technology Stack")]
+            ),
             body="# Lumio Overview\n\nLumio uses deterministic retrieval.",
             body_start_line=10,
         ),
         CompiledPage(
             path="stack.md",
             title="Technology Stack",
+            id="entity:technology-stack",
+            entity_types=["concept"],
             tags=["technology"],
             summary="The Python technology choices.",
             lifecycle="approved",

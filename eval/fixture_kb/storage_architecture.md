@@ -1,5 +1,8 @@
 ---
 title: "Storage Architecture"
+id: "entity:storage-architecture"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,12 +13,20 @@ visibility: "public"
 sources:
   - id: "fixture-storage_architecture"
     title: "Storage Architecture"
-relationships:
-  - target: "Cold Tier"
-    type: "relates-to"
-  - target: "Hot Cache"
-    type: "relates-to"
 synthetic: true
+claims:
+  - id: "claim:storage-architecture-cold-tier-1"
+    predicate: "relates-to"
+    object: "entity:cold-tier"
+    status: "accepted"
+    evidence:
+      - section: "Storage Architecture"
+  - id: "claim:storage-architecture-hot-cache-2"
+    predicate: "relates-to"
+    object: "entity:hot-cache"
+    status: "accepted"
+    evidence:
+      - section: "Storage Architecture"
 ---
 
 # Storage Architecture

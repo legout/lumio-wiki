@@ -115,7 +115,7 @@ def test_control_file_loads_with_catalog_and_pins():
     kb, report = load_knowledge_base(FIXTURES / "categorized_kb")
     assert report.is_valid
     assert kb.control is not None
-    assert kb.control.version == 1
+    assert kb.control.version == 2
     assert kb.control.mode == KB_MODE_CATEGORIZED
     names = [c.name for c in kb.control.categories]
     assert names == [
@@ -132,7 +132,7 @@ def test_control_file_loads_with_catalog_and_pins():
 
 def test_seeded_control_file_has_seven_seed_categories():
     control = seeded_control_file()
-    assert control.version == 1
+    assert control.version == 2
     assert [c.name for c in control.categories] == [c.name for c in SEED_CATEGORY_CATALOG]
     assert control.hot_index == []
     assert control.mode == KB_MODE_CATEGORIZED
@@ -142,7 +142,7 @@ def test_write_control_file_round_trips_and_is_deterministic(tmp_path):
     root = tmp_path / "kb"
     root.mkdir()
     control = KnowledgeBaseControlFile(
-        version=1,
+        version=2,
         categories=[
             ContentCategory(name="concepts", description="Core ideas."),
             ContentCategory(name="entities"),
@@ -244,7 +244,7 @@ def test_absent_categories_falls_back_to_seed(tmp_path):
     root.mkdir()
     _write_page(root, "concepts/overview.md", "Overview", "An overview")
     (root / CONTROL_FILE_BASENAME).write_text(
-        'version: 1\nmode: "categorized"\n'
+        'version: 2\nmode: "categorized"\n'
     )
     kb, report = load_knowledge_base(root)
     assert report.is_valid, [i.message for i in report.issues]
@@ -260,7 +260,7 @@ def test_empty_categories_falls_back_to_seed(tmp_path):
     root.mkdir()
     _write_page(root, "concepts/overview.md", "Overview", "An overview")
     (root / CONTROL_FILE_BASENAME).write_text(
-        'version: 1\nmode: "categorized"\ncategories: []\n'
+        'version: 2\nmode: "categorized"\ncategories: []\n'
     )
     kb, report = load_knowledge_base(root)
     assert report.is_valid, [i.message for i in report.issues]
@@ -275,7 +275,7 @@ def test_empty_bare_category_name_is_blocking(tmp_path):
     root = tmp_path / "kb"
     root.mkdir()
     (root / CONTROL_FILE_BASENAME).write_text(
-        'version: 1\nmode: categorized\ncategories:\n  - ""\n  - concepts\n'
+        'version: 2\nmode: categorized\ncategories:\n  - ""\n  - concepts\n'
     )
     _, report = load_knowledge_base(root)
     assert not report.is_valid
@@ -292,7 +292,7 @@ def test_whitespace_bare_category_name_is_blocking(tmp_path):
     root = tmp_path / "kb"
     root.mkdir()
     (root / CONTROL_FILE_BASENAME).write_text(
-        'version: 1\nmode: categorized\ncategories:\n  - "   "\n'
+        'version: 2\nmode: categorized\ncategories:\n  - "   "\n'
     )
     _, report = load_knowledge_base(root)
     assert not report.is_valid
@@ -304,7 +304,7 @@ def test_unsupported_control_file_mode_is_blocking(tmp_path):
     root = tmp_path / "kb"
     root.mkdir()
     (root / CONTROL_FILE_BASENAME).write_text(
-        "version: 1\nmode: bogus-mode\ncategories:\n  - concepts\n"
+        "version: 2\nmode: bogus-mode\ncategories:\n  - concepts\n"
     )
     _, report = load_knowledge_base(root)
     assert not report.is_valid
@@ -324,7 +324,7 @@ def test_legacy_flat_mode_in_present_control_file_is_blocking(tmp_path):
     root.mkdir()
     _write_page(root, "overview.md", "Overview", "An overview")
     (root / CONTROL_FILE_BASENAME).write_text(
-        "version: 1\nmode: legacy-flat\ncategories:\n  - concepts\n"
+        "version: 2\nmode: legacy-flat\ncategories:\n  - concepts\n"
     )
     _, report = load_knowledge_base(root)
     assert not report.is_valid
@@ -340,7 +340,7 @@ def test_duplicate_category_is_blocking(tmp_path):
     root = tmp_path / "kb"
     root.mkdir()
     (root / CONTROL_FILE_BASENAME).write_text(
-        "version: 1\nmode: categorized\n"
+        "version: 2\nmode: categorized\n"
         "categories:\n  - name: concepts\n  - name: concepts\n"
     )
     _, report = load_knowledge_base(root)
@@ -353,7 +353,7 @@ def test_unresolved_hot_index_pin_is_blocking(tmp_path):
     root.mkdir()
     _write_page(root, "concepts/overview.md", "Overview", "An overview")
     (root / CONTROL_FILE_BASENAME).write_text(
-        "version: 1\nmode: categorized\ncategories:\n  - concepts\n"
+        "version: 2\nmode: categorized\ncategories:\n  - concepts\n"
         "hot_index:\n  - title: Ghost Page\n"
     )
     _, report = load_knowledge_base(root)
@@ -374,7 +374,7 @@ def test_blank_bare_hot_index_pin_title_is_blocking():
     """A bare-string Hot Index pin with a blank/whitespace title is rejected
     structurally, not silently admitted as a nameless pin (issue #77)."""
     proposed = KnowledgeBaseControlFile(
-        version=1,
+        version=2,
         categories=[ContentCategory(name="concepts")],
         hot_index=[HotIndexPin(title="   ")],
         mode="categorized",
@@ -392,7 +392,7 @@ def test_whitespace_mapping_hot_index_pin_title_is_blocking(tmp_path):
     root.mkdir()
     _write_page(root, "overview.md", "Overview", "An overview")
     (root / CONTROL_FILE_BASENAME).write_text(
-        "version: 1\nmode: categorized\ncategories:\n  - concepts\n"
+        "version: 2\nmode: categorized\ncategories:\n  - concepts\n"
         "hot_index:\n  - title: \"   \"\n    note: \"pinned\"\n"
     )
     _, report = load_knowledge_base(root)
@@ -782,7 +782,7 @@ def test_validate_proposed_control_file_reports_unresolved_pins(tmp_path):
     assert report.is_valid
 
     proposed = KnowledgeBaseControlFile(
-        version=1,
+        version=2,
         categories=[ContentCategory(name="concepts")],
         hot_index=[HotIndexPin(title="Ghost Page")],
         mode="categorized",
@@ -795,7 +795,7 @@ def test_validate_proposed_control_file_reports_unresolved_pins(tmp_path):
 
     # A resolved pin validates cleanly.
     valid = KnowledgeBaseControlFile(
-        version=1,
+        version=2,
         categories=[ContentCategory(name="concepts")],
         hot_index=[HotIndexPin(title="Overview")],
         mode="categorized",
@@ -811,7 +811,7 @@ def test_validate_proposed_control_file_empty_catalog_falls_back_to_seed(tmp_pat
     valid (ADR-0009). A Maintainer proposing a Control File without an
     explicit catalog gets the seed, just like an absent declaration."""
     proposed = KnowledgeBaseControlFile(
-        version=1,
+        version=2,
         categories=[],
         hot_index=[],
         mode="categorized",
@@ -847,7 +847,7 @@ def _write_declared_catalog_kb(
     for rel, title, summary in pages or []:
         _write_page(root, rel, title, summary)
     (root / CONTROL_FILE_BASENAME).write_text(
-        f'version: 1\nmode: "categorized"\ncategories:\n{catalog}'
+        f'version: 2\nmode: "categorized"\ncategories:\n{catalog}'
     )
     return root
 
@@ -909,7 +909,7 @@ def test_page_in_undeclared_category_fails_under_seed_default(tmp_path):
     root.mkdir()
     _write_page(root, "projects/secret.md", "Secret Project", "Undeclared")
     (root / CONTROL_FILE_BASENAME).write_text(
-        'version: 1\nmode: "categorized"\n'
+        'version: 2\nmode: "categorized"\n'
     )
     _, report = load_knowledge_base(root)
     assert not report.is_valid
@@ -1014,7 +1014,7 @@ def test_load_control_file_parse_seam_validates_declared_catalog(tmp_path):
     root = tmp_path / "kb"
     root.mkdir()
     (root / CONTROL_FILE_BASENAME).write_text(
-        'version: 1\nmode: "categorized"\ncategories:\n  - Projects\n'
+        'version: 2\nmode: "categorized"\ncategories:\n  - Projects\n'
     )
     with pytest.raises(ControlFileError) as exc_info:
         load_control_file(root)
@@ -1026,7 +1026,7 @@ def test_load_control_file_parse_seam_accepts_declared_non_seed(tmp_path):
     root = tmp_path / "kb"
     root.mkdir()
     (root / CONTROL_FILE_BASENAME).write_text(
-        'version: 1\nmode: "categorized"\ncategories:\n  - projects\n'
+        'version: 2\nmode: "categorized"\ncategories:\n  - projects\n'
     )
     control = load_control_file(root)
     assert control is not None

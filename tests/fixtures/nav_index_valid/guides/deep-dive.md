@@ -9,9 +9,6 @@ visibility: "internal"
 sources:
   - id: "deep-dive-doc"
     title: "Deep dive notes"
-relationships:
-  - target: "Lumio Overview"
-    type: "derived-from"
 ---
 
 # Deep Dive

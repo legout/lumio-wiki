@@ -65,44 +65,46 @@ class ProposalBlockedError(ProposalPipelineError):
     """A proposal cannot be published because validation blocks it."""
 
 
-def _drop_relationship_edges(data: dict, removed_title: str) -> bool:
-    """Drop frontmatter Relationship edges targeting ``removed_title``.
+def _drop_claims_for_entity(data: dict, removed_entity_id: str) -> bool:
+    """Drop frontmatter Claims whose object is ``removed_entity_id``.
 
-    The default, reviewed repair for a Page Removal (issue #135, AC5): every
-    canonical Relationship whose target would otherwise disappear is removed
-    in the same proposal. Only edges are dropped; the page body is untouched
-    (body links become location-bearing repair candidates, never guessed —
-    AC6). Returns whether any edge was dropped.
+    The default, reviewed repair for a Page Removal (issue #135, AC5, as
+    revised by ADR-0021): every canonical Claim whose object Entity would
+    otherwise dangle is removed in the same proposal. Only Claims are dropped;
+    the page body is untouched (body links become location-bearing repair
+    candidates, never guessed — AC6). Returns whether any Claim was dropped.
     """
     changed = False
-    relationships = data.get("relationships")
-    if isinstance(relationships, list):
+    claims = data.get("claims")
+    if isinstance(claims, list):
         kept: list = []
-        for rel in relationships:
-            if isinstance(rel, dict) and str(rel.get("target", "")).strip() == removed_title:
+        for claim in claims:
+            if (
+                isinstance(claim, dict)
+                and str(claim.get("object", "")).strip() == removed_entity_id
+            ):
                 changed = True
                 continue
-            kept.append(rel)
+            kept.append(claim)
         if changed:
-            data["relationships"] = kept
+            data["claims"] = kept
     return changed
 
 
 def _repair_page_for_removal(
-    markdown: str, removed_title: str, source_path: str
+    markdown: str, removed_entity_id: str, source_path: str
 ) -> tuple[str, bool]:
-    """Return a page's Markdown with Relationship edges to a removed page dropped.
+    """Return a page's Markdown with Claims targeting a removed Entity dropped.
 
-    Mirrors the rename reference-repair pattern (ADR-0016) but REMOVES the
-    edges instead of retargeting them: a removal has no chosen destination, so
-    the safe, reviewed repair is to drop the dangling canonical edge. Returns
+    A removal has no chosen destination, so the safe, reviewed repair is to
+    drop the Claim that would otherwise dangle (ADR-0021). Returns
     ``(rewritten_markdown, was_changed)``.
     """
     try:
         data, body, _ = parse_frontmatter(markdown, Path(source_path))
     except Exception:
         return markdown, False
-    changed = _drop_relationship_edges(data, removed_title)
+    changed = _drop_claims_for_entity(data, removed_entity_id)
     if not changed:
         return markdown, False
     frontmatter = yaml.encode(data).decode("utf-8").strip()
@@ -469,8 +471,9 @@ class ProposalPipeline:
             raise ProposalPipelineError(
                 f"no Compiled Page found for Canonical Title {title!r}"
             )
+        removed_entity_id = target_page.id
 
-        # Relationship repair (AC5): every OTHER page with a canonical
+        # Claim repair (AC5, ADR-0021): every OTHER page with a canonical
         # Relationship targeting the removed title gets a revision that DROPS
         # those edges. Redirect is an explicit Maintainer edit to the staged
         # proposal; the default, reviewed repair is to drop the dangling edge.
@@ -478,13 +481,15 @@ class ProposalPipeline:
         for page in self._kb.pages:
             if page.title == title or not page.path:
                 continue
-            if not any(rel.target == title for rel in page.relationships):
+            if not any(claim.object == removed_entity_id for claim in page.claims):
                 continue
             try:
                 page_markdown = (self._kb.root / page.path).read_text(encoding="utf-8")
             except OSError:
                 continue
-            repaired, changed = _repair_page_for_removal(page_markdown, title, page.path)
+            repaired, changed = _repair_page_for_removal(
+                page_markdown, removed_entity_id, page.path
+            )
             if not changed:
                 continue
             proposed_pages.append(

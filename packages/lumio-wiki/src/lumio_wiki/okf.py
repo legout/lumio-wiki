@@ -42,7 +42,6 @@ from lumio_wiki.knowledge_base import (
     RESERVED_ARTIFACT_MARKERS,
     RESERVED_ARTIFACT_VERSIONS,
     FrontmatterError,
-    _as_relationships,
     _as_sources,
     _as_string_list,
     _dir_index_body,
@@ -210,6 +209,32 @@ def _lumio_profile_lines(
     ]
 
 
+def _page_relationships(
+    page: CompiledPage, title_by_entity: dict[str, str]
+) -> list[Relationship]:
+    """Project a page's accepted entity-to-entity Claims as title-level edges.
+
+    The OKF exchange format carries typed edges resolved by title; since
+    ADR-0021 the canonical source of those edges is accepted Claims.
+    Dangling object entities (no live page) are skipped: the export's
+    authorization filter reports scope-outs, not validation failures.
+    """
+    edges: list[Relationship] = []
+    seen: set[tuple[str, str]] = set()
+    for claim in page.claims:
+        if claim.status != "accepted" or claim.object is None:
+            continue
+        target_title = title_by_entity.get(claim.object)
+        if target_title is None:
+            continue
+        edge = (target_title, claim.predicate)
+        if edge in seen:
+            continue
+        seen.add(edge)
+        edges.append(Relationship(target=target_title, type=claim.predicate))
+    return edges
+
+
 def _materialize_relationship_body_links(
     page: CompiledPage,
     relationships: Sequence[Relationship],
@@ -267,6 +292,7 @@ def _render_compiled_page(
     page: CompiledPage,
     authorized_titles: set[str],
     authorized_paths: dict[str, str],
+    page_relationships: list[Relationship],
 ) -> str:
     """Render one authorized Compiled Page as an OKF Profile 1 document.
 
@@ -308,7 +334,9 @@ def _render_compiled_page(
                 lines.append(f"      url: {_yaml_scalar(source.url)}")
     # Keep only edges whose targets survive in the authorized set; edges to
     # excluded targets are dropped and reported as diagnostics by the caller.
-    included_relationships = [rel for rel in page.relationships if rel.target in authorized_titles]
+    included_relationships = [
+        rel for rel in page_relationships if rel.target in authorized_titles
+    ]
     if included_relationships:
         lines.append("  relationships:")
         for rel in included_relationships:
@@ -348,6 +376,7 @@ def _render_compiled_page_profile2(
     page: CompiledPage,
     authorized_titles: set[str],
     authorized_paths: dict[str, str],
+    page_relationships: list[Relationship],
 ) -> str:
     """Render one authorized Compiled Page as an OKF Profile 2 document.
 
@@ -400,7 +429,9 @@ def _render_compiled_page_profile2(
             lines.append(f"      title: {_yaml_scalar(source.title)}")
             if source.url is not None:
                 lines.append(f"      url: {_yaml_scalar(source.url)}")
-    included_relationships = [rel for rel in page.relationships if rel.target in authorized_titles]
+    included_relationships = [
+        rel for rel in page_relationships if rel.target in authorized_titles
+    ]
     if included_relationships:
         lines.append("  relationships:")
         for rel in included_relationships:
@@ -655,19 +686,23 @@ def _export_okf_profile(
     authorized = sorted(pages, key=lambda page: page.path)
     authorized_titles = {page.title for page in authorized}
     authorized_paths = {page.title: page.path for page in authorized}
+    title_by_entity = {page.id: page.title for page in authorized if page.id}
     known_paths = _bundle_paths(authorized)
 
     files: dict[str, str] = {}
     excluded_map: dict[tuple[str, str], int] = {}
     broken_map: dict[str, int] = {}
     for page in authorized:
+        page_relationships = _page_relationships(page, title_by_entity)
         if profile_version == OKF_PROFILE2_VERSION:
             files[page.path] = _render_compiled_page_profile2(
-                page, authorized_titles, authorized_paths
+                page, authorized_titles, authorized_paths, page_relationships
             )
         else:
-            files[page.path] = _render_compiled_page(page, authorized_titles, authorized_paths)
-        for rel in page.relationships:
+            files[page.path] = _render_compiled_page(
+                page, authorized_titles, authorized_paths, page_relationships
+            )
+        for rel in page_relationships:
             # Edges to targets outside the authorized set are removed and
             # reported. Empty targets are malformed rather than scoped-out, so
             # they are dropped silently.
@@ -1494,6 +1529,32 @@ def _imported_document_source(
     )
 
 
+def _diagnose_dropped_relationships(
+    rel: str,
+    raw_relationships: Any,
+    diagnostics: list[OkfImportDiagnostic],
+) -> None:
+    """Disclose imported ``relationships`` frontmatter dropped at canonicalization.
+
+    Since ADR-0021 the canonical graph is built from evidence-bearing Claims;
+    title-based relationship frontmatter has no canonical equivalent, so any
+    imported relationship metadata is dropped with a disclosure diagnostic.
+    """
+    if not raw_relationships:
+        return
+    diagnostics.append(
+        OkfImportDiagnostic(
+            path=rel,
+            kind="external-key",
+            severity="dropped",
+            message=(
+                "relationships frontmatter dropped at canonicalization; "
+                "canonical edges are evidence-bearing Claims (ADR-0021)"
+            ),
+        )
+    )
+
+
 def _render_canonical_page_markdown(
     *,
     title: str,
@@ -1504,7 +1565,6 @@ def _render_canonical_page_markdown(
     visibility: str,
     synthetic: bool,
     sources: list[Source],
-    relationships: list[Relationship],
     body: str,
 ) -> str:
     """Render canonical Lumio frontmatter plus the unchanged body.
@@ -1538,11 +1598,6 @@ def _render_canonical_page_markdown(
             lines.append(f"    title: {_yaml_scalar(source.title)}")
             if source.url is not None:
                 lines.append(f"    url: {_yaml_scalar(source.url)}")
-    if relationships:
-        lines.append("relationships:")
-        for rel in relationships:
-            lines.append(f"  - target: {_yaml_scalar(rel.target)}")
-            lines.append(f"    type: {_yaml_scalar(rel.type)}")
     lines.append("---")
     return "\n".join(lines) + body
 
@@ -1672,7 +1727,7 @@ def _parse_okf_page(
         visibility = str(lumio_raw.get("visibility") or "").strip() or "internal"
         synthetic = bool(lumio_raw.get("synthetic"))
         sources = _as_sources(lumio_raw.get("sources"))
-        relationships = _as_relationships(lumio_raw.get("relationships"))
+        _diagnose_dropped_relationships(rel, lumio_raw.get("relationships"), diagnostics)
         # The profile identification block (profile, profile_version,
         # okf_version, okf_pin) is recognized identification, not an unknown
         # producer extension; only keys beyond the identification block and the
@@ -1701,7 +1756,7 @@ def _parse_okf_page(
             raw_synthetic = data.get("synthetic")
             synthetic = raw_synthetic if isinstance(raw_synthetic, bool) else False
             sources = _as_sources(data.get("sources"))
-            relationships = _as_relationships(data.get("relationships"))
+            _diagnose_dropped_relationships(rel, data.get("relationships"), diagnostics)
         else:
             aliases = []
             lifecycle = "draft"
@@ -1769,7 +1824,6 @@ def _parse_okf_page(
         visibility=visibility,
         synthetic=synthetic,
         sources=sources,
-        relationships=relationships,
         body=body,
     )
     diagnostics.append(
@@ -1956,3 +2010,5 @@ def import_external_compiled_markdown(
         source_origin,
         _ImportParsingPolicy.EXTERNAL_COMPILED_MARKDOWN,
     )
+
+

@@ -1,5 +1,8 @@
 ---
 title: "Vector Index"
+id: "entity:vector-index"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-vector_index"
     title: "Vector Index"
-relationships: []
 synthetic: true
 ---
 

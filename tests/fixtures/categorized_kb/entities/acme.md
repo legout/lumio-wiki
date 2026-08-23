@@ -1,5 +1,8 @@
 ---
+id: "entity:acme-corp"
 title: "Acme Corp"
+entity_types:
+  - organization
 tags:
   - "entity"
 summary: "A named organization tracked by the knowledge base."

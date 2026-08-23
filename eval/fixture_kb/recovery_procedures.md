@@ -1,5 +1,8 @@
 ---
 title: "Recovery Procedures"
+id: "entity:recovery-procedures"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-recovery_procedures"
     title: "Recovery Procedures"
-relationships: []
 synthetic: true
 ---
 

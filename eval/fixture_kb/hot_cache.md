@@ -1,5 +1,8 @@
 ---
 title: "Hot Cache"
+id: "entity:hot-cache"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-hot_cache"
     title: "Hot Cache"
-relationships: []
 synthetic: true
 ---
 

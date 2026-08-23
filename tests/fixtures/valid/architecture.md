@@ -11,11 +11,6 @@ visibility: "internal"
 sources:
   - id: "architecture-doc"
     title: "Architecture decision records"
-relationships:
-  - target: "Lumio Overview"
-    type: "relates-to"
-  - target: "Technology Stack"
-    type: "relates-to"
 synthetic: false
 ---
 

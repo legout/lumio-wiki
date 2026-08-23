@@ -40,7 +40,6 @@ lifecycle: "approved"
 visibility: "public"
 sources:
 {source_lines}
-relationships: []
 synthetic: false
 ---
 

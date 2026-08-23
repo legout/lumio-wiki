@@ -11,9 +11,6 @@ visibility: "public"
 sources:
   - id: "tech-stack"
     title: "Technology choices"
-relationships:
-  - target: "Architecture"
-    type: "uses"
 synthetic: false
 ---
 

@@ -1,5 +1,8 @@
 ---
 title: "Reliability Dashboard"
+id: "entity:reliability-dashboard"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-reliability_dashboard"
     title: "Reliability Dashboard"
-relationships: []
 synthetic: true
 ---
 

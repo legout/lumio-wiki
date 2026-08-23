@@ -1,5 +1,8 @@
 ---
 title: "Entity Schema"
+id: "entity:entity-schema"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-entity_schema"
     title: "Entity Schema"
-relationships: []
 synthetic: true
 ---
 

@@ -1,5 +1,8 @@
 ---
 title: "Storage Billing"
+id: "entity:storage-billing"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-storage_billing"
     title: "Storage Billing"
-relationships: []
 synthetic: true
 ---
 

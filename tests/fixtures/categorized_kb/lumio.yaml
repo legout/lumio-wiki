@@ -1,4 +1,4 @@
-version: 1
+version: 2
 mode: "categorized"
 categories:
   - name: concepts
@@ -15,6 +15,22 @@ categories:
     description: "Documentation for file, extract, collection, and data-lake assets."
   - name: synthesis
     description: "Cross-source conclusions and synthesized knowledge."
+ontology:
+  entity_types:
+    concept: {}
+    organization: {}
+  predicates:
+    uses:
+      subject_types:
+        - concept
+      object_types:
+        - organization
+      inverse: used-by
+    used-by:
+      subject_types:
+        - organization
+      object_types:
+        - concept
 hot_index:
   - title: "Lumio Overview"
   - title: "Acme Corp"

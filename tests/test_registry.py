@@ -31,12 +31,14 @@ def test_registry_entry_has_expected_fields():
     assert entry.visibility == "public"
     assert entry.path == "overview.md"
     assert entry.source_count == 1
-    assert entry.relationship_count == 1
+    # Canonical edges are Claims (ADR-0021); the migrated flat fixture
+    # carries none, so the derived edge count is zero.
+    assert entry.relationship_count == 0
 
     architecture = next(entry for entry in kb.registry() if entry.title == "Architecture")
     assert architecture.visibility == "internal"
     assert architecture.source_count == 1
-    assert architecture.relationship_count == 2
+    assert architecture.relationship_count == 0
 
 
 def test_registry_is_rebuildable():

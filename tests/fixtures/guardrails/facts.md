@@ -11,7 +11,6 @@ visibility: "public"
 sources:
   - id: "guardrails-facts"
     title: "Guardrails policy"
-relationships: []
 synthetic: false
 ---
 

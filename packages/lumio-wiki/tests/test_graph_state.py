@@ -14,6 +14,7 @@ All tests are zero-index: no LanceDB, PyArrow, or operational database.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import time
@@ -35,6 +36,8 @@ from lumio_wiki.knowledge_base import (
     load_knowledge_base,
 )
 from lumio_wiki.records import (
+    CLAIM_STATUS_ACCEPTED,
+    Claim,
     CompiledPage,
     GraphHealthReport,
     Relationship,
@@ -44,6 +47,25 @@ from lumio_wiki.records import (
 # ---------------------------------------------------------------------------
 # Page + Knowledge Base builders.
 # ---------------------------------------------------------------------------
+
+
+def _slug(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+def _claims_from(
+    source_title: str, relationships: list[Relationship] | None
+) -> list[Claim]:
+    """Convert title-level test edges to accepted entity-to-entity Claims."""
+    return [
+        Claim(
+            id=f"claim:{_slug(source_title)}-{_slug(rel.target)}-{n}",
+            predicate=rel.type,
+            object=f"entity:{_slug(rel.target)}",
+            status=CLAIM_STATUS_ACCEPTED,
+        )
+        for n, rel in enumerate(relationships or [])
+    ]
 
 
 def _page(
@@ -58,13 +80,15 @@ def _page(
     return CompiledPage(
         path=path or f"{title.lower()}.md",
         title=title,
+        id=f"entity:{_slug(title)}",
+        entity_types=["concept"],
         aliases=aliases or [],
         tags=["test"],
         summary=f"{title} summary",
         lifecycle="approved",
         visibility=visibility,
         sources=[Source(id=f"src-{title.lower()}", title=title)],
-        relationships=relationships or [],
+        claims=_claims_from(title, relationships),
         body=body,
     )
 
@@ -553,26 +577,57 @@ def test_rebuilt_graph_reproduces_public_traversal_results(tmp_path):
 
 
 def _linked_disk_kb(root: Path) -> KnowledgeBase:
-    """Write the linked graph to disk and load+validate a real Knowledge Base."""
+    """Write the linked graph to disk and load+validate a real Knowledge Base.
+
+    Since ADR-0021 the canonical Alpha --uses--> Beta edge is an accepted,
+    evidence-bearing Claim validated against a version-2 Control File
+    ontology; the body links remain Extracted References.
+    """
     root.mkdir(parents=True, exist_ok=True)
+    (root / "lumio.yaml").write_text(
+        "version: 2\n"
+        'mode: "categorized"\n'
+        "categories:\n"
+        "  - name: concepts\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    concept: {}\n"
+        "  predicates:\n"
+        "    uses:\n"
+        "      subject_types:\n"
+        "        - concept\n"
+        "      object_types:\n"
+        "        - concept\n",
+        encoding="utf-8",
+    )
     (root / "alpha.md").write_text(
         "---\n"
+        'id: "entity:alpha"\n'
         'title: "Alpha"\n'
+        "entity_types:\n"
+        "  - concept\n"
         "tags: [\"test\"]\n"
         'summary: "Alpha summary."\n'
         'lifecycle: "approved"\n'
         'visibility: "public"\n'
         "sources:\n  - id: \"src-alpha\"\n"
-        "relationships:\n"
-        "  - target: \"Beta\"\n"
-        "    type: \"uses\"\n"
+        "claims:\n"
+        "  - id: claim:alpha-beta\n"
+        "    predicate: uses\n"
+        '    object: "entity:beta"\n'
+        "    status: accepted\n"
+        "    evidence:\n"
+        '      - section: "Alpha"\n'
         "---\n"
-        "See [g](gamma.md).\n",
+        "# Alpha\n\nSee [g](gamma.md).\n",
         encoding="utf-8",
     )
     (root / "beta.md").write_text(
         "---\n"
+        'id: "entity:beta"\n'
         'title: "Beta"\n'
+        "entity_types:\n"
+        "  - concept\n"
         "tags: [\"test\"]\n"
         'summary: "Beta summary."\n'
         'lifecycle: "approved"\n'
@@ -584,14 +639,17 @@ def _linked_disk_kb(root: Path) -> KnowledgeBase:
     )
     (root / "gamma.md").write_text(
         "---\n"
+        'id: "entity:gamma"\n'
         'title: "Gamma"\n'
+        "entity_types:\n"
+        "  - concept\n"
         "tags: [\"test\"]\n"
         'summary: "Gamma summary."\n'
         'lifecycle: "approved"\n'
         'visibility: "public"\n'
         "sources:\n  - id: \"src-gamma\"\n"
         "---\n"
-        "Back to [b](beta.md).\n",
+        "# Gamma\n\nBack to [b](beta.md).\n",
         encoding="utf-8",
     )
     kb, report = load_knowledge_base(root)

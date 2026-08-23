@@ -1,5 +1,8 @@
 ---
 title: "Data Model"
+id: "entity:data-model"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,12 +13,20 @@ visibility: "public"
 sources:
   - id: "fixture-data_model"
     title: "Data Model"
-relationships:
-  - target: "Event Schema"
-    type: "relates-to"
-  - target: "Entity Schema"
-    type: "relates-to"
 synthetic: true
+claims:
+  - id: "claim:data-model-event-schema-1"
+    predicate: "relates-to"
+    object: "entity:event-schema"
+    status: "accepted"
+    evidence:
+      - section: "Data Model"
+  - id: "claim:data-model-entity-schema-2"
+    predicate: "relates-to"
+    object: "entity:entity-schema"
+    status: "accepted"
+    evidence:
+      - section: "Data Model"
 ---
 
 # Data Model

@@ -58,8 +58,8 @@ body), then bind it to the original source with
 ## Ubiquitous language
 
 The Knowledge Base is a local filesystem tree of compiled Markdown pages.
-A **Compiled Page** has YAML frontmatter (title, aliases, tags, summary,
-lifecycle, visibility, sources, relationships, synthetic) and a body. The
+A **Compiled Page** has YAML frontmatter (title, id, entity_types, aliases,
+tags, summary, lifecycle, visibility, sources, claims, synthetic) and a body. The
 **Canonical Page Title** is the unique title a page is known by. A typed
 **Relationship** is a reviewed semantic edge; an **Extracted Reference** is a
 deterministic non-canonical reference derived from a body link. An **Ingest
@@ -94,7 +94,6 @@ root directory in every command below.
 | `lumio-wiki health <kb> [--rebuild]` | Page counts, validation status, Discovery Graph health + fingerprint. `--rebuild` materializes a fresh graph artifact (actionable recovery); a bad/missing artifact never blocks zero-index operation. |
 | `lumio-wiki lint <kb>` | Read-only cross-page QA report: validation, graph health, canonical/discovery structural diagnostics, scope disclosure. Exit 1 when invalid (ADR-0015). |
 | `lumio-wiki cross-link <kb> [--limit N] [--stage]` | Missing-link candidates ranked by Discovery Graph impact. `--stage` stages one reviewable repair proposal per top candidate; never direct-writes. |
-| `lumio-wiki relationship stage <kb> <source> <target> --type T` | Stage a typed canonical Relationship proposal (e.g. `--type uses`). Distinct from `cross-link --stage` (authored Markdown links / Extracted References); reviewed through the same proposal pipeline. |
 | `lumio-wiki source <kb> <register\|list\|retire\|reactivate> --source-id <id>` | Manage private Knowledge Source lifecycle state (ADR-0014). Explicit `retire`/`reactivate` stage ordinary reviewable proposals; `list` reports identities/status without disclosing raw bytes. |
 | `lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]` | Secret-free metadata for the ONE exact Source Version bound to the id: safe filename, media type, size, digest abbreviation, publication binding, verified availability, authorization outcome (ADR-0020). Local worktrees resolve the registry's current version; S3 KBs / `--published-version` resolve the private Source Binding Manifest — never a silent fallback to the latest version. Raw Source Artifacts are optional (retention is disabled by default) and private; inspection is authorized provenance review, not Evidence and not claim-level lineage. |
 | `lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>` | Byte-exact original Source Artifact to an explicit destination, digest and size re-verified (ADR-0020). A directory destination receives the safe filename. Content is not rendered or converted here. |
@@ -151,8 +150,8 @@ have the original source file.
    Markdown file). You do NOT convert it yourself — no `[documents]` extra is
    required for managed ingest.
 2. Author the proposed Compiled Page Markdown: YAML frontmatter (title,
-   aliases, tags, summary, lifecycle, visibility, sources, relationships,
-   synthetic) plus a body. Match the existing Knowledge Base's voice and
+   aliases, tags, summary, lifecycle, visibility, sources, synthetic) plus a
+   body. Match the existing Knowledge Base's voice and
    structure. **The page MUST declare the source identity in `sources[].id`.**
 3. Choose a stable, lowercase `--source-id` for the original source (e.g.
    `annual-impact-report`) and bind both in ONE command:
@@ -197,18 +196,13 @@ Knowledge Base connected:
    the candidate list (or only link repairs, `--stage`). `cross-link --stage`
    only adds authored Markdown links (Extracted References, discovery-graph
    topology) — it never creates a typed canonical Relationship.
-5. `lumio-wiki relationship stage <kb> <source> <target> --type T` promotes a
-   typed canonical Relationship (e.g. `--type uses`) through the same
-   proposal-first pipeline. It is the canonical-graph counterpart to
-   `cross-link --stage`; the type is never inferred. Preferred types:
-   `contradicts`, `derived-from`, `extends`, `implements`, `relates-to`,
-   `replaces`, `uses` (a non-preferred type stages as a warning-level
-   generic edge).
+5. Canonical edges are accepted, evidence-bearing **Claims** authored directly
+   in Compiled Page frontmatter and validated against the `lumio.yaml`
+   ontology (ADR-0021). `cross-link --stage` never creates one.
 
 The same operations exist on the public Python surface
 (`lumio_wiki.run_lint`, `lumio_wiki.run_dream_cycle`,
-`lumio_wiki.stage_dream_repairs`, `lumio_wiki.stage_cross_link_proposal`,
-`lumio_wiki.stage_relationship_proposal`).
+`lumio_wiki.stage_dream_repairs`, `lumio_wiki.stage_cross_link_proposal`).
 
 ## Optional capabilities
 

@@ -12,9 +12,6 @@ sources:
   - id: "lumio-overview"
     title: "Lumio public landing page"
     url: "https://example.com/lumio"
-relationships:
-  - target: "Architecture"
-    type: "relates-to"
 synthetic: false
 ---
 

@@ -23,11 +23,21 @@ def test_foundation_loads_validates_fingerprints_searches_reads_and_traverses():
     assert kb.fingerprint().digest == fingerprint_sources(FIXTURES / "valid").digest
     assert kb.lookup_by_title("Architecture")[0].body
     assert kb.search_pages("LanceDB")
-    assert kb.related_from("Lumio Overview")
-    assert kb.graph_path("Lumio Overview", "Technology Stack") == [
+    # ADR-0021: canonical edges are accepted entity-to-entity Claims. The
+    # legacy `valid` fixture carries none (its Relationship blocks were
+    # removed with the input contract), so canonical traversal over it is
+    # empty and title-level edges come from the categorized fixture's
+    # accepted claim instead.
+    assert kb.related_from("Lumio Overview") == []
+    assert kb.graph_path("Lumio Overview", "Technology Stack") is None
+    cat_kb, cat_report = load_knowledge_base(FIXTURES / "categorized_kb")
+    assert cat_report.is_valid, [i.message for i in cat_report.issues]
+    assert [(rel.target, rel.type) for rel in cat_kb.related_from("Lumio Overview")] == [
+        ("Acme Corp", "uses")
+    ]
+    assert cat_kb.graph_path("Lumio Overview", "Acme Corp") == [
         "Lumio Overview",
-        "Architecture",
-        "Technology Stack",
+        "Acme Corp",
     ]
     retrieved = kb.retrieve("Lumio uses LanceDB", limit=2)
     assert retrieved and all(isinstance(item, RetrievalResult) for item in retrieved)

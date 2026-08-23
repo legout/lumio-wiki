@@ -1,5 +1,8 @@
 ---
 title: "Event Schema"
+id: "entity:event-schema"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-event_schema"
     title: "Event Schema"
-relationships: []
 synthetic: true
 ---
 

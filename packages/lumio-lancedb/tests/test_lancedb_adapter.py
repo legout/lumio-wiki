@@ -16,7 +16,7 @@ from lumio_lancedb import (
     has_semantic_index,
     search_lexical_index,
 )
-from lumio_wiki.records import CompiledPage, Relationship
+from lumio_wiki.records import CompiledPage
 
 
 def _pages() -> list[CompiledPage]:
@@ -25,7 +25,6 @@ def _pages() -> list[CompiledPage]:
             path="overview.md",
             title="Overview",
             body="Lumio uses LanceDB for derived evidence retrieval.\n",
-            relationships=[Relationship(target="tech.md", type="depends-on")],
         ),
         CompiledPage(
             path="tech.md",

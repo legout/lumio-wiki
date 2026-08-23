@@ -1,0 +1,12 @@
+version: 2
+mode: "categorized"
+categories: []
+ontology:
+  entity_types:
+    system: {}
+  predicates:
+    relates-to:
+      subject_types:
+        - system
+      object_types:
+        - system

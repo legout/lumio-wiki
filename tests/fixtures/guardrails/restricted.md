@@ -11,7 +11,6 @@ visibility: "restricted"
 sources:
   - id: "restricted-facts"
     title: "Restricted facts"
-relationships: []
 synthetic: false
 ---
 

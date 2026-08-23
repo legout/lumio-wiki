@@ -29,6 +29,7 @@ All tests are zero-index: no LanceDB is built.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,8 @@ from lumio_wiki.knowledge_base import (
     extract_references,
 )
 from lumio_wiki.records import (
+    CLAIM_STATUS_ACCEPTED,
+    Claim,
     CompiledPage,
     Evidence,
     ExtractedReference,
@@ -51,6 +54,29 @@ from lumio_wiki.records import (
 # ---------------------------------------------------------------------------
 # Page builders.
 # ---------------------------------------------------------------------------
+
+
+def _slug(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+def _claims_from(
+    source_title: str, relationships: list[Relationship] | None
+) -> list[Claim]:
+    """Convert title-level test edges to accepted entity-to-entity Claims.
+
+    Since ADR-0021 a canonical edge is an accepted Claim; in-memory pages are
+    not validated, so no evidence anchors are required.
+    """
+    return [
+        Claim(
+            id=f"claim:{_slug(source_title)}-{_slug(rel.target)}-{n}",
+            predicate=rel.type,
+            object=f"entity:{_slug(rel.target)}",
+            status=CLAIM_STATUS_ACCEPTED,
+        )
+        for n, rel in enumerate(relationships or [])
+    ]
 
 
 def _page(
@@ -66,13 +92,15 @@ def _page(
     return CompiledPage(
         path=path or f"{title.lower().replace(' ', '-')}.md",
         title=title,
+        id=f"entity:{_slug(title)}",
+        entity_types=["concept"],
         aliases=aliases or [],
         tags=["test"],
         summary=f"{title} summary",
         lifecycle="approved",
         visibility=visibility,
         sources=[Source(id=f"src-{title.lower()}", title=title)],
-        relationships=relationships or [],
+        claims=_claims_from(title, relationships),
         body=body,
         body_start_line=body_start_line,
     )
@@ -489,7 +517,7 @@ def test_extraction_does_not_mutate_page_body_or_frontmatter():
     kb.extracted_references("Alpha")
     loaded = [p for p in kb.pages if p.title == "Alpha"][0]
     assert loaded.body == original_body
-    assert loaded.relationships == []
+    assert loaded.claims == []
 
 
 def test_extracted_reference_is_not_promoted_to_relationship():
@@ -497,7 +525,7 @@ def test_extracted_reference_is_not_promoted_to_relationship():
     beta = _page("Beta", path="beta.md")
     kb = _kb([source, beta])
 
-    # related_from returns only typed Relationships from frontmatter.
+    # related_from returns derived views of accepted Claims only (ADR-0021).
     assert kb.related_from("Alpha") == []
     # graph_path (legacy canonical) does not see extracted edges.
     assert kb.graph_path("Alpha", "Beta") is None

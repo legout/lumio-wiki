@@ -1,5 +1,8 @@
 ---
 title: "Security Bulletin"
+id: "entity:security-bulletin"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-security_bulletin"
     title: "Security Bulletin"
-relationships: []
 synthetic: true
 ---
 

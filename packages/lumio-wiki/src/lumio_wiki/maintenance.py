@@ -142,7 +142,7 @@ def run_lint(
     extracted = extract_references(kb.pages)
     canonical: list[Relationship] = []
     for page in kb.pages:
-        canonical.extend(page.relationships)
+        canonical.extend(kb.related_from(page.title))
 
     return LintReport(
         kb_path=str(kb.root),
@@ -275,39 +275,6 @@ def category_for_page_path(kb: KnowledgeBase, page_path: str) -> str | None:
     return parts[0] if parts[0] in configured else None
 
 
-def add_relationship_to_frontmatter(page_markdown: str, target: str, relationship_type: str) -> str:
-    """Append a typed Relationship to a page's frontmatter, preserving the body.
-
-    Sets ``compound_revision`` so the Proposal Pipeline validates the page
-    against the full candidate Knowledge Base (the relationship target lives
-    in another page). The flag is stripped at publish (issue #79).
-    """
-    if not page_markdown.startswith("---"):
-        raise MaintenanceError("page has no YAML frontmatter to edit")
-    try:
-        _leading, fm_yaml, body = page_markdown.split("---", 2)
-    except ValueError as exc:
-        raise MaintenanceError("page frontmatter is malformed: missing closing fence") from exc
-    data = msgspec.yaml.decode(fm_yaml)
-    if not isinstance(data, dict):
-        raise MaintenanceError("page frontmatter did not decode to a mapping")
-    relationships = data.get("relationships")
-    if not isinstance(relationships, list):
-        relationships = []
-    already = any(
-        isinstance(rel, dict)
-        and rel.get("target") == target
-        and rel.get("type") == relationship_type
-        for rel in relationships
-    )
-    if not already:
-        relationships.append({"target": target, "type": relationship_type})
-    data["relationships"] = relationships
-    data["compound_revision"] = True
-    encoded = msgspec.yaml.encode(data).decode("utf-8")
-    return f"---\n{encoded}---{body}"
-
-
 def _revision_routing_fields(kb: KnowledgeBase, page_path: str) -> dict:
     """Return the routing fields a compound revision must restate (P2.6).
 
@@ -372,35 +339,6 @@ def stage_cross_link_proposal(
         **_revision_routing_fields(kb, candidate.source_path),
     )
     return _stage_revised_page(kb, store, repaired, candidate.source_path)
-
-
-def stage_relationship_proposal(
-    kb_path: str | Path,
-    page_title: str,
-    target_title: str,
-    relationship_type: str,
-    *,
-    store: IngestStore,
-) -> IngestProposal:
-    """Stage a REVIEWABLE proposal promoting one semantic Relationship.
-
-    Appends a typed Relationship to the named page's frontmatter and stages
-    the result through the Proposal Pipeline. ``target_title`` must be the
-    Canonical Page Title of an existing page; candidate-scope validation
-    checks that the promoted Relationship resolves. Never direct-writes.
-    """
-    kb, _report = load_knowledge_base(kb_path)
-    page = next((p for p in kb.pages if p.title == page_title), None)
-    if page is None:
-        raise MaintenanceError(f"no Compiled Page titled {page_title!r}")
-    source_path = Path(kb.root) / page.path
-    page_markdown = source_path.read_text(encoding="utf-8")
-    edited = add_relationship_to_frontmatter(page_markdown, target_title, relationship_type)
-    if kb.control is not None:
-        # add_relationship_to_frontmatter already set compound_revision; this
-        # pass only adds the routing declarations (idempotent).
-        edited = mark_compound_revision(edited, **_revision_routing_fields(kb, page.path))
-    return _stage_revised_page(kb, store, edited, page.path)
 
 
 # ---------------------------------------------------------------------------

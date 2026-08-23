@@ -26,10 +26,127 @@ class RegistryEntry(msgspec.Struct, frozen=True):
 
 
 class Relationship(msgspec.Struct, frozen=True):
-    """A typed, directed edge to another Compiled Page."""
+    """A derived, title-level view of one canonical graph edge.
+
+    Since ADR-0021, canonical edges are accepted, entity-to-entity Claims.
+    This record is the projection consumed by title-oriented surfaces
+    (traversal, registry views, OKF exchange); it is no longer a page
+    frontmatter input contract.
+    """
 
     target: str = ""
     type: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Entity/Claim ontology records (issue #168, ADR-0021).
+#
+# Each Compiled Page declares exactly one stable Entity ID and one or more
+# controlled Entity Types, and owns its subject Claims. A Claim carries
+# exactly one object: another Entity ID or a typed literal. Predicates,
+# Entity Types, and Entity redirects are declared by the version-2 Control
+# File ontology. Only the three published lifecycle values may appear in an
+# active Compiled Page; ``proposed`` and ``rejected`` are Ingest Proposal
+# state only.
+# ---------------------------------------------------------------------------
+
+#: Published Claim lifecycle values valid in an active Compiled Page.
+CLAIM_STATUS_ACCEPTED = "accepted"
+CLAIM_STATUS_DISPUTED = "disputed"
+CLAIM_STATUS_SUPERSEDED = "superseded"
+PUBLISHED_CLAIM_STATUSES = frozenset(
+    {CLAIM_STATUS_ACCEPTED, CLAIM_STATUS_DISPUTED, CLAIM_STATUS_SUPERSEDED}
+)
+#: Lifecycle values that exist only inside Ingest Proposals (ADR-0021).
+PROPOSAL_ONLY_CLAIM_STATUSES = frozenset({"proposed", "rejected"})
+
+#: Literal kinds a Predicate may declare for typed-literal Claim objects.
+LITERAL_KIND_STRING = "string"
+LITERAL_KIND_NUMBER = "number"
+LITERAL_KIND_BOOLEAN = "boolean"
+LITERAL_KINDS = frozenset({LITERAL_KIND_STRING, LITERAL_KIND_NUMBER, LITERAL_KIND_BOOLEAN})
+
+#: Claim origin metadata distinguishing authored and migrated assertions
+#: (model-assisted candidates remain proposal-only future work).
+CLAIM_ORIGIN_AUTHORED = "authored"
+CLAIM_ORIGIN_MIGRATED = "migrated"
+CLAIM_ORIGINS = frozenset({CLAIM_ORIGIN_AUTHORED, CLAIM_ORIGIN_MIGRATED})
+
+
+class EntityTypeDefinition(msgspec.Struct, frozen=True):
+    """A controlled Entity Type declared by the Control File ontology."""
+
+    description: str | None = None
+
+
+class PredicateDefinition(msgspec.Struct, frozen=True):
+    """A controlled Predicate declared by the Control File ontology.
+
+    ``subject_types``/``object_types`` constrain the Entity Types a Claim's
+    subject and entity object may carry. A Predicate accepts typed-literal
+    objects through ``literal_kind`` instead of ``object_types``. Neither
+    constraint list is required: an unconstrained Predicate accepts any
+    subject or any entity object.
+    """
+
+    subject_types: list[str] = msgspec.field(default_factory=list)
+    object_types: list[str] = msgspec.field(default_factory=list)
+    literal_kind: str | None = None
+    inverse: str | None = None
+    synonyms: list[str] = msgspec.field(default_factory=list)
+    description: str | None = None
+
+
+class ClaimEvidence(msgspec.Struct, frozen=True):
+    """One Claim Evidence anchor into the owning page's published content.
+
+    An anchor identifies a supporting section heading, a bounded 1-based
+    line range within the page body, or both. It never exposes private
+    Source Artifact coordinates (ADR-0021).
+    """
+
+    section: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+
+
+class Claim(msgspec.Struct, frozen=True):
+    """A stable, reviewed proposition owned by its subject Entity's page.
+
+    Exactly one object is carried: ``object`` (another Entity ID) or
+    ``value`` plus ``value_type`` (a typed literal). ``status`` is the
+    published lifecycle; proposed/rejected assertions live only inside
+    Ingest Proposals.
+    """
+
+    id: str
+    predicate: str
+    status: str = ""
+    object: str | None = None
+    value: str | float | int | bool | None = None
+    value_type: str | None = None
+    confidence: float | None = None
+    origin: str = CLAIM_ORIGIN_AUTHORED
+    evidence: list[ClaimEvidence] = msgspec.field(default_factory=list)
+
+
+class EntityRedirect(msgspec.Struct, frozen=True):
+    """A retired Entity ID that resolves to a surviving Entity.
+
+    Recorded by a reviewed Entity Merge; the retired ID no longer owns a
+    Compiled Page but keeps references resolvable (ADR-0021).
+    """
+
+    from_id: str
+    to_id: str
+
+
+class Ontology(msgspec.Struct, frozen=True):
+    """The controlled vocabulary declared by the version-2 Control File."""
+
+    entity_types: dict[str, EntityTypeDefinition] = msgspec.field(default_factory=dict)
+    predicates: dict[str, PredicateDefinition] = msgspec.field(default_factory=dict)
+    redirects: list[EntityRedirect] = msgspec.field(default_factory=list)
 
 
 # The version of the internal-link extractor that produced an
@@ -60,17 +177,24 @@ class ExtractedReference(msgspec.Struct, frozen=True):
 
 
 class CompiledPage(msgspec.Struct, frozen=True):
-    """A loaded Markdown page from a Knowledge Base."""
+    """A loaded Markdown page from a Knowledge Base.
+
+    Every page in a categorized (Control File v2) Knowledge Base declares
+    exactly one stable Entity ``id`` and at least one controlled Entity Type,
+    and owns its subject ``claims`` (ADR-0021, issue #168).
+    """
 
     path: str
     title: str = ""
+    id: str = ""
+    entity_types: list[str] = msgspec.field(default_factory=list)
     aliases: list[str] = msgspec.field(default_factory=list)
     tags: list[str] = msgspec.field(default_factory=list)
     summary: str | None = None
     lifecycle: str | None = None
     visibility: str | None = None
     sources: list[Source] = msgspec.field(default_factory=list)
-    relationships: list[Relationship] = msgspec.field(default_factory=list)
+    claims: list[Claim] = msgspec.field(default_factory=list)
     synthetic: bool = False
     body: str = ""
     body_start_line: int = 1
@@ -500,8 +624,9 @@ class HotIndexPin(msgspec.Struct, frozen=True):
 class KnowledgeBaseControlFile(msgspec.Struct, frozen=True):
     """The versioned root Knowledge Base Control File (``lumio.yaml``).
 
-    Carries the controlled Content Category catalog and Maintainer-pinned Hot
-    Index titles. Travels with the KB; validated as a KB-local content control,
+    Carries the controlled Content Category catalog, Maintainer-pinned Hot
+    Index titles, and (version 2) the controlled Entity/Claim ontology
+    (ADR-0021). Travels with the KB; validated as a KB-local content control,
     not a Compiled Page or an application-only setting. A Knowledge Base with
     no Control File loads in Legacy Flat Mode (ADR-0008).
     """
@@ -511,6 +636,7 @@ class KnowledgeBaseControlFile(msgspec.Struct, frozen=True):
     hot_index: list[HotIndexPin] = msgspec.field(default_factory=list)
     mode: str = "categorized"
     path: str = "lumio.yaml"
+    ontology: Ontology | None = None
 
 
 class ActivityLogEntry(msgspec.Struct, frozen=True):

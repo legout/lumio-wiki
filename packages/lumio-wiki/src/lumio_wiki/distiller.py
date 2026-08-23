@@ -69,7 +69,7 @@ _DISTILL_SYSTEM_PROMPT_TEMPLATE = (
     "'runbook', 'dataset descriptor'), durability_rationale (one sentence on why this page "
     "is durable knowledge worth maintaining), lifecycle (draft/review/approved/deprecated), "
     "visibility (public/internal/restricted), tags (list of strings), and sources (list "
-    "with id and title). Optional fields: aliases, summary, relationships, synthetic. "
+    "with id and title). Optional fields: aliases, summary, synthetic. "
     "{synthesis_clause}Do not invent facts not present in the source text."
 )
 

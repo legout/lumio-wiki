@@ -140,7 +140,6 @@ lumio-wiki proposal inspect <kb> <id> [--json]   # review a proposal (metadata +
 lumio-wiki proposal validate <kb> <id>       # validate a proposal
 lumio-wiki publish <kb> <id>                 # publish a reviewed proposal
 lumio-wiki discard <kb> <id>                 # discard a proposal
-lumio-wiki relationship stage <kb> <src> <tgt> --type T  # stage a typed canonical Relationship proposal
 lumio-wiki cross-link <kb> [--stage]         # missing-link candidates (Extracted References); --stage repairs as links
 lumio-wiki source <kb> <list|retire|reactivate> --source-id <id>  # manage private Source lifecycle (ADR-0014)
 lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]  # secret-free metadata for the exact bound Source Version (ADR-0020)
@@ -380,7 +379,7 @@ uv run python experiments/mykg/convert_mykg.py \
 
 The output contains candidate pages plus private
 `relationship-candidates.jsonl` and `conversion-report.json` sidecars. The
-converter never writes extracted edges into page `relationships:` frontmatter.
+converter never writes extracted edges into page `claims:` frontmatter.
 Stage the candidate pages through the ordinary external-import proposal path:
 
 ```python
@@ -411,7 +410,6 @@ pipeline.stage(proposal)
 
 Use `lumio-wiki proposal inspect`, `proposal validate`, and `publish` for the
 normal review flow. Review the private relationship sidecar separately; only
-accepted claims should be staged with `lumio-wiki relationship stage`. Never
 publish the raw corpus, myKG session files, confidence values, source paths, or
 private sidecars into the Knowledge Base.
 

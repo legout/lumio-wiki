@@ -73,7 +73,6 @@ def _authored_page(source_id: str, *, title: str = "Artifact Page", synthetic: b
         "sources:\n"
         f'  - id: "{source_id}"\n'
         f'    title: "{source_id} source"\n'
-        "relationships: []\n"
         f"synthetic: {str(synthetic).lower()}\n"
         "---\n\n"
         f"# {title}\n\n"

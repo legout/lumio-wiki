@@ -22,6 +22,7 @@ Acceptance criteria covered:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from lumio_wiki.knowledge_base import (
@@ -31,6 +32,8 @@ from lumio_wiki.knowledge_base import (
     KnowledgeBase,
 )
 from lumio_wiki.records import (
+    CLAIM_STATUS_ACCEPTED,
+    Claim,
     CompiledPage,
     Evidence,
     Relationship,
@@ -40,6 +43,25 @@ from lumio_wiki.records import (
 )
 
 COMMON = "Lumio common term"
+
+
+def _slug(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+def _claims_from(
+    source_title: str, relationships: list[Relationship] | None
+) -> list[Claim]:
+    """Convert title-level test edges to accepted entity-to-entity Claims."""
+    return [
+        Claim(
+            id=f"claim:{_slug(source_title)}-{_slug(rel.target)}-{n}",
+            predicate=rel.type,
+            object=f"entity:{_slug(rel.target)}",
+            status=CLAIM_STATUS_ACCEPTED,
+        )
+        for n, rel in enumerate(relationships or [])
+    ]
 
 
 def _page(
@@ -52,13 +74,15 @@ def _page(
     return CompiledPage(
         path=path or f"{title.lower()}.md",
         title=title,
+        id=f"entity:{_slug(title)}",
+        entity_types=["concept"],
         aliases=[],
         tags=["test"],
         summary=f"{title} summary",
         lifecycle="approved",
         visibility="public",
         sources=[Source(id=f"src-{title.lower()}", title=title)],
-        relationships=relationships or [],
+        claims=_claims_from(title, relationships),
         body=body,
         body_start_line=1,
     )

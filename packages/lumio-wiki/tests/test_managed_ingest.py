@@ -57,7 +57,6 @@ def _authored_page(source_id: str, *, title: str = "Impact Report") -> str:
         "sources:\n"
         f'  - id: "{source_id}"\n'
         f'    title: "{source_id} source"\n'
-        "relationships: []\n"
         "synthetic: false\n"
         "---\n\n"
         f"# {title}\n\n"

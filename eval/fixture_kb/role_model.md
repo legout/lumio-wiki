@@ -1,5 +1,8 @@
 ---
 title: "Role Model"
+id: "entity:role-model"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-role_model"
     title: "Role Model"
-relationships: []
 synthetic: true
 ---
 

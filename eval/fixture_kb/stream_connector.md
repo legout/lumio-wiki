@@ -1,5 +1,8 @@
 ---
 title: "Stream Connector"
+id: "entity:stream-connector"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-stream_connector"
     title: "Stream Connector"
-relationships: []
 synthetic: true
 ---
 

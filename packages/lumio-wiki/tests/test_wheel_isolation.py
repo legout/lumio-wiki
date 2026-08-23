@@ -39,6 +39,90 @@ from lumio_wiki.cli import default_index_dir
 pytestmark = pytest.mark.slow
 
 
+# A categorized KB whose canonical graph is the chain
+# Lumio Overview -> Architecture -> Technology Stack (accepted entity Claims;
+# the title-based relationship frontmatter input is gone, ADR-0021).
+_GRAPH_CONTROL = """\
+version: 2
+mode: "categorized"
+categories:
+  - name: concepts
+ontology:
+  entity_types:
+    concept: {}
+  predicates:
+    uses:
+      subject_types: [concept]
+      object_types: [concept]
+"""
+
+
+def _graph_page(title: str, *, body: str, claims_yaml: str = "") -> str:
+    slug = title.lower().replace(" ", "-")
+    claims = f"claims:\n{claims_yaml}" if claims_yaml else ""
+    return (
+        "---\n"
+        f'id: "entity:{slug}"\n'
+        f'title: "{title}"\n'
+        "entity_types:\n"
+        "  - concept\n"
+        'tags:\n  - "test"\n'
+        f'summary: "{title} summary."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        'sources:\n'
+        f'  - id: "src-{slug}"\n'
+        f'    title: "{title} Source"\n'
+        f"{claims}"
+        "---\n\n"
+        f"# {title}\n\n## Overview\n\n{body}\n"
+    )
+
+
+def _write_graph_kb(root: Path) -> Path:
+    """Write a categorized KB with the known canonical chain into ``root``."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "lumio.yaml").write_text(_GRAPH_CONTROL, encoding="utf-8")
+    pages = {
+        "concepts/overview.md": _graph_page(
+            "Lumio Overview",
+            body="Lumio is a deployable chat platform for trusted knowledge and data.",
+            claims_yaml=(
+                "  - id: claim:lumio-overview-uses-architecture\n"
+                "    predicate: uses\n"
+                '    object: "entity:architecture"\n'
+                "    status: accepted\n"
+                "    evidence:\n"
+                '      - section: "Overview"\n'
+            ),
+        ),
+        "concepts/architecture.md": _graph_page(
+            "Architecture",
+            body=(
+                "Lumio is built as a modular monolith with a framework-independent "
+                "Core SDK. Lumio uses LanceDB for the derived lexical index."
+            ),
+            claims_yaml=(
+                "  - id: claim:architecture-uses-technology-stack\n"
+                "    predicate: uses\n"
+                '    object: "entity:technology-stack"\n'
+                "    status: accepted\n"
+                "    evidence:\n"
+                '      - section: "Overview"\n'
+            ),
+        ),
+        "concepts/technology.md": _graph_page(
+            "Technology Stack",
+            body="LanceDB provides the embedded vector index.",
+        ),
+    }
+    for rel, text in pages.items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    return root
+
+
 def _has_uv() -> bool:
     return shutil.which("uv") is not None
 
@@ -215,12 +299,20 @@ def test_built_wheel_skill_protects_canonical_first_run_and_relationship_parity(
         # setup is the canonical first run; init is the lower-level KB-only op.
         assert "lumio-wiki setup" in flat, f"{name}: must name lumio-wiki setup"
         assert "lower-level" in flat, f"{name}: must document init as lower-level"
-        # Extracted References stay distinct from typed Relationships; the
-        # typed-edge command and the cross-link command are both documented.
+        # Extracted References stay distinct from typed canonical edges; since
+        # ADR-0021 canonical edges are accepted, evidence-bearing Claims.
         assert "extracted reference" in flat, f"{name}: must name Extracted References"
-        assert "cross-link" in flat, f"{name}: must document cross-link"
-        assert "relationship stage" in flat, f"{name}: must document relationship stage"
-        assert "typed" in flat, f"{name}: must name typed Relationships"
+        assert "evidence-bearing" in flat, f"{name}: must document evidence-bearing Claims"
+        # The title-based relationship frontmatter input and its staging
+        # command are gone; the shipped skill must not document them.
+        assert "relationship stage" not in flat, (
+            f"{name}: must not document the removed relationship stage command"
+        )
+    # SKILL.md additionally documents the cross-link command and the typed
+    # traversal surface.
+    skill_flat = " ".join(skill_text.lower().split())
+    assert "cross-link" in skill_flat, "SKILL.md: must document cross-link"
+    assert "typed" in skill_flat, "SKILL.md: must name typed Relationships"
 
 
 def test_skill_path_resolves_from_isolated_install(isolated_wheel_env: dict):
@@ -337,7 +429,6 @@ def test_isolated_init_ingest_publish_journey(isolated_wheel_env: dict, tmp_path
         "sources:\n"
         '  - id: "wheel"\n'
         '    title: "Wheel test"\n'
-        "relationships: []\n"
         "synthetic: false\n"
         "---\n\n"
         "# Wheel Page\n\n"
@@ -390,16 +481,14 @@ def test_isolated_init_ingest_publish_journey(isolated_wheel_env: dict, tmp_path
 
 def test_isolated_search_page_related_paths(isolated_wheel_env: dict, tmp_path: Path):
     """AC2 + AC6: search, page, related, and paths work from the isolated wheel."""
-    import shutil
 
     python = isolated_wheel_env["python"]
     bin_dir = python.parent
     script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
 
-    # Copy the valid fixture so we have a populated KB.
-    fixtures = Path(__file__).parents[3] / "tests" / "fixtures" / "valid"
-    kb_root = tmp_path / "kb"
-    shutil.copytree(fixtures, kb_root)
+    # A populated KB with the canonical chain
+    # Lumio Overview -> Architecture -> Technology Stack.
+    kb_root = _write_graph_kb(tmp_path / "kb")
 
     # search
     result = subprocess.run(
@@ -461,7 +550,6 @@ def test_isolated_proposal_inspect_and_discard(isolated_wheel_env: dict, tmp_pat
         'lifecycle: "draft"\n'
         'visibility: "internal"\n'
         'sources: [{id: "test", title: "Test"}]\n'
-        "relationships: []\n"
         "synthetic: false\n"
         "---\n\n# Inspect Page\n\nBody.\n",
         encoding="utf-8",
@@ -840,10 +928,10 @@ def test_isolated_retrieval_ladder(isolated_wheel_env: dict, tmp_path: Path):
     assert "Hot Index" in hot
     assert "Lumio Overview" in hot and "Acme Corp" in hot
 
-    # Graph steps use the valid fixture (known canonical graph:
+    # Graph steps use a claim-bearing KB (known canonical graph:
     # Lumio Overview -> Architecture -> Technology Stack).
     kb = tmp_path / "kb"
-    shutil.copytree(fixtures / "valid", kb)
+    _write_graph_kb(kb)
 
     # Ladder 1 — Navigation Index (generated catalog).
     nav = run("index", str(kb))

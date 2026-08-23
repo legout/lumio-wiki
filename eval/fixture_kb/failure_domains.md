@@ -1,5 +1,8 @@
 ---
 title: "Failure Domains"
+id: "entity:failure-domains"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-failure_domains"
     title: "Failure Domains"
-relationships: []
 synthetic: true
 ---
 

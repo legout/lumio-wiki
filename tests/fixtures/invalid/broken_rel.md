@@ -7,9 +7,6 @@ tags:
 sources:
   - id: "broken-rel"
     title: "Broken Relationship"
-relationships:
-  - target: "Missing Page"
-    type: "relates-to"
 ---
 
 Body text.

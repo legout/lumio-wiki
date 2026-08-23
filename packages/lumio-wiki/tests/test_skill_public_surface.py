@@ -226,11 +226,13 @@ def test_generated_agents_md_guides_a_restarted_session():
 
 
 def test_surfaces_distinguish_extracted_references_from_typed_relationships():
-    """Issue #148 AC4: the skill, protocol, and generated AGENTS.md keep
-    authored Markdown links / Extracted References distinct from reviewed typed
-    Relationships. In particular ``cross-link --stage`` is tied to Extracted
-    References and is never described as creating a typed canonical
-    Relationship; ``relationship stage`` is the typed-edge path."""
+    """Issue #148 AC4, post-ADR-0021: the skill, protocol, and generated
+    AGENTS.md keep authored Markdown links / Extracted References distinct
+    from reviewed typed canonical edges. ``cross-link --stage`` is tied to
+    Extracted References and is never described as creating a typed canonical
+    edge; since the title-based Relationship staging was removed, the surfaces
+    must NOT document ``relationship stage`` at all — canonical edges are
+    accepted, evidence-bearing Claims authored in Compiled Page frontmatter."""
     surfaces = {
         "SKILL.md": resolve_skill_path().read_text(encoding="utf-8"),
         "PROTOCOL.md": resolve_protocol_path().read_text(encoding="utf-8"),
@@ -239,16 +241,26 @@ def test_surfaces_distinguish_extracted_references_from_typed_relationships():
     for name, text in surfaces.items():
         flat = re.sub(r"\s+", " ", text.lower())
         assert "extracted reference" in flat, f"{name}: must name Extracted References"
+        # ADR-0021 removed the `relationship` CLI subcommand and the
+        # title-based staging workflow: no surface may cite it.
+        assert "relationship stage" not in flat, (
+            f"{name}: must not document the removed relationship stage command"
+        )
+    # The command-bearing surfaces (SKILL.md and the generated AGENTS.md)
+    # document cross-link in terms of Extracted References (body-link
+    # topology), never as creating a typed canonical edge.
+    for name in ("SKILL.md", "AGENTS.md"):
+        flat = re.sub(r"\s+", " ", surfaces[name].lower())
         assert "cross-link" in flat, f"{name}: must document cross-link"
-        # cross-link is described in terms of Extracted References (body-link
-        # topology), not as creating a typed canonical Relationship.
         assert re.search(r"cross-link.{0,180}extracted", flat), (
-            f"{name}: cross-link must be tied to Extracted References, not to typed Relationships"
+            f"{name}: cross-link must be tied to Extracted References, not to typed canonical edges"
         )
-        assert "relationship stage" in flat, (
-            f"{name}: must document relationship stage as the typed-edge command"
-        )
-        assert "typed" in flat, f"{name}: must name typed Relationships"
+        assert "typed" in flat, f"{name}: must name typed canonical edges"
+    # Canonical edges are accepted, evidence-bearing Claims validated against
+    # the Control File ontology (ADR-0021).
+    for name in ("SKILL.md", "PROTOCOL.md"):
+        flat = re.sub(r"\s+", " ", surfaces[name].lower())
+        assert "claim" in flat, f"{name}: must name Claims as the canonical edge form"
 
 
 def test_real_world_readme_names_exact_setup_and_restart_check():
@@ -265,17 +277,22 @@ def test_real_world_readme_names_exact_setup_and_restart_check():
 
 
 def test_command_coverage_parity_for_relationship_and_source_lifecycle():
-    """Issue #148 required change #4: now that the typed-Relationship staging
-    (#151) and source-lifecycle (#149) CLI work has landed, the command-coverage
-    surfaces (SKILL.md and the usage docs) must both document
-    ``relationship stage`` and the ``source`` lifecycle so the surfaces cannot
-    diverge. ``test_every_cited_command_is_a_registered_public_cli_command``
+    """ADR-0021 follow-up to issue #148 change #4: the title-based
+    ``relationship stage`` command was removed with the Relationship input
+    contract, so the packaged skill surface must not cite it anymore, while
+    the ``source`` lifecycle commands stay documented on both command-coverage
+    surfaces so they cannot diverge. (``docs/usage.md`` still carries the
+    stale command until its own migration lands; the drift guard for it is
+    restored once that doc is updated.)
+    ``test_every_cited_command_is_a_registered_public_cli_command``
     already proves every cited command is real."""
     root = Path(__file__).parents[3]
     skill = resolve_skill_path().read_text(encoding="utf-8")
     usage = (root / "docs" / "usage.md").read_text(encoding="utf-8")
+    assert "relationship stage" not in skill.lower(), (
+        "SKILL.md: must not document the removed relationship stage command"
+    )
     for name, text in (("SKILL.md", skill), ("docs/usage.md", usage)):
-        assert "relationship stage" in text.lower(), f"{name}: must document relationship stage"
         assert "lumio-wiki source" in text.lower(), (
             f"{name}: must document the source lifecycle commands"
         )

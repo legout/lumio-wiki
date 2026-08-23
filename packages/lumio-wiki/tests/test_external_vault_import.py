@@ -219,13 +219,16 @@ def test_external_adapter_preserves_metadata_after_imported_provenance(tmp_path)
             "url": "https://example.com/source",
         },
     ]
-    assert external["relationships"] == [
-        {"target": "Other", "type": "related-to"}
-    ]
+    assert "relationships" not in external
     assert by_title["Synthesis"]["sources"] == [
         {"id": "declared-input", "title": "Declared Input"}
     ]
-    assert not any(
-        diagnostic.kind == "external-key" and diagnostic.severity == "dropped"
+    # Title-based relationship frontmatter has no canonical equivalent since
+    # ADR-0021: it is dropped at canonicalization with an explicit disclosure
+    # diagnostic (canonical edges are evidence-bearing Claims).
+    assert any(
+        diagnostic.kind == "external-key"
+        and diagnostic.severity == "dropped"
+        and "relationships" in diagnostic.message
         for diagnostic in parsed.diagnostics
     )

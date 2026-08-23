@@ -35,7 +35,6 @@ from lumio_wiki.embeddings import EmbeddingError
 from lumio_wiki.records import (
     CompiledPage,
     EmbeddingModelInfo,
-    Relationship,
     SourceFingerprint,
 )
 
@@ -60,7 +59,6 @@ def _pages() -> list[CompiledPage]:
             path="overview.md",
             title="Overview",
             body="Lumio uses LanceDB for derived evidence retrieval.\n",
-            relationships=[Relationship(target="tech.md", type="depends-on")],
         ),
         CompiledPage(
             path="tech.md",

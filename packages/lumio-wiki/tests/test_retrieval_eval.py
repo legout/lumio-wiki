@@ -8,6 +8,7 @@ synthetic fixture KB lives in ``eval/test_retrieval_eval_gate.py``.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -15,9 +16,9 @@ from lumio_wiki import retrieval_eval as ev
 from lumio_wiki.knowledge_base import KnowledgeBase
 from lumio_wiki.records import (
     Citation,
+    Claim,
     CompiledPage,
     Evidence,
-    Relationship,
     RetrievalResult,
     RetrievalTrace,
     Source,
@@ -44,17 +45,40 @@ def _result(title: str, *, trace_name: str = "search") -> RetrievalResult:
     )
 
 
+def _slug(text: str) -> str:
+    """Entity-id slug: lowercase, non-alphanumerics collapsed to hyphens."""
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def _entity_id(title: str) -> str:
+    return f"entity:{_slug(title)}"
+
+
 def _page(title: str, body: str, *, rels=None) -> CompiledPage:
+    # ADR-0021: an in-memory page carries an Entity id, entity types, and
+    # accepted Claims; each legacy Relationship(target=T, type=Ty) input is
+    # an accepted Claim whose object is the target page's Entity id.
+    claims = [
+        Claim(
+            id=f"claim:{_slug(title)}-{_slug(target)}-{n}",
+            predicate=predicate,
+            object=_entity_id(target),
+            status="accepted",
+        )
+        for n, (target, predicate) in enumerate(rels or [])
+    ]
     return CompiledPage(
         path=f"{title.lower()}.md",
         title=title,
+        id=_entity_id(title),
+        entity_types=["concept"],
         aliases=[],
         tags=["t"],
         summary=f"{title} summary",
         lifecycle="approved",
         visibility="public",
         sources=[Source(id=f"s-{title.lower()}", title=title)],
-        relationships=rels or [],
+        claims=claims,
         body=body,
         body_start_line=1,
     )
@@ -184,7 +208,7 @@ class TestStages:
 
     def test_graph_expansion_restricts_to_eligible(self):
         # Hub relates to Satellite; Decoy shares the term but is not eligible.
-        hub = _page("Hub", "term alpha", rels=[Relationship(target="Sat", type="relates-to")])
+        hub = _page("Hub", "term alpha", rels=[("Sat", "relates-to")])
         sat = _page("Sat", "term only")
         dec = _page("Dec", "term alpha beta gamma")
         kb = KnowledgeBase(root=Path("."), pages=[hub, sat, dec])
@@ -280,7 +304,7 @@ class TestDeterministicHashEmbedder:
 
 class TestEvaluate:
     def _kb(self):
-        hub = _page("Hub", "term alpha", rels=[Relationship(target="Sat", type="relates-to")])
+        hub = _page("Hub", "term alpha", rels=[("Sat", "relates-to")])
         sat = _page("Sat", "term only")
         dec = _page("Dec", "term alpha beta gamma")
         return KnowledgeBase(root=Path("."), pages=[hub, sat, dec])

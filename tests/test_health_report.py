@@ -1,5 +1,6 @@
 """Deterministic health report for the Knowledge Base."""
 
+import re
 from pathlib import Path
 from shutil import copytree
 
@@ -7,6 +8,29 @@ from lumio_wiki import KnowledgeBase, load_knowledge_base
 from lumio_wiki.records import HealthReport
 
 VALID_FIXTURES = Path(__file__).parent / "fixtures" / "valid"
+
+# Categorized Control File (v2) so pages may declare evidence-bearing claims
+# (ADR-0021). ``relates-to`` is the only known predicate; other predicates used
+# by these fixtures are deliberately unknown (mapped by unknown_relationship_types).
+_CONTROL_V2 = """\
+version: 2
+mode: "categorized"
+categories:
+  - name: concepts
+ontology:
+  entity_types:
+    concept: {}
+  predicates:
+    relates-to:
+      subject_types:
+        - concept
+      object_types:
+        - concept
+"""
+
+
+def _slug(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
 def _write_page(
@@ -22,8 +46,15 @@ def _write_page(
     relationships: list[dict[str, str]] | None = None,
     body: str = "# Page\n\nContent.\n",
 ) -> None:
+    if relationships:
+        if not (root / "lumio.yaml").exists():
+            (root / "lumio.yaml").write_text(_CONTROL_V2)
     lines = ["---"]
     lines.append(f'title: "{title}"')
+    if relationships:
+        lines.append(f'id: "entity:{_slug(title)}"')
+        lines.append("entity_types:")
+        lines.append('  - "concept"')
     if aliases is not None:
         lines.append("aliases:")
         for alias in aliases:
@@ -43,10 +74,15 @@ def _write_page(
             lines.append(f'  - id: "{source["id"]}"')
             lines.append(f'    title: "{source["title"]}"')
     if relationships:
-        lines.append("relationships:")
-        for rel in relationships:
-            lines.append(f'  - target: "{rel["target"]}"')
-            lines.append(f'    type: "{rel["type"]}"')
+        # ADR-0021: canonical edges are evidence-bearing Claims, not
+        # ``relationships:`` frontmatter (removed input contract).
+        lines.append("claims:")
+        for n, rel in enumerate(relationships, start=1):
+            lines.append(f'  - id: "claim:{_slug(title)}-{_slug(rel["target"])}-{n}"')
+            lines.append(f'    predicate: "{rel["type"]}"')
+            lines.append(f'    object: "entity:{_slug(rel["target"])}"')
+            lines.append('    status: "accepted"')
+            lines.append('    evidence:\n      - section: "Page"')
     lines.append("---")
     lines.append("")
     lines.append(body)
@@ -93,7 +129,7 @@ def test_missing_summaries_reported(tmp_path: Path) -> None:
     assert report.is_healthy is False
 
 
-def test_broken_relationships_reported(tmp_path: Path) -> None:
+def test_dangling_claim_object_reported(tmp_path: Path) -> None:
     root = tmp_path / "kb"
     root.mkdir()
     _write_page(
@@ -123,6 +159,9 @@ def test_broken_relationships_reported(tmp_path: Path) -> None:
     kb, _ = load_knowledge_base(root)
     report = kb.health_report()
 
+    # ADR-0021: a dangling Claim object is a blocking validation error mapped
+    # into the broken_relationships health bucket (each error lands in one
+    # bucket, so invalid_fields stays empty here).
     assert report.broken_relationships == ["a.md"]
     assert report.is_healthy is False
 
@@ -150,7 +189,7 @@ def test_stale_index_reported(tmp_path: Path) -> None:
     assert report.is_healthy is False
 
 
-def test_unknown_relationship_types_reported(tmp_path: Path) -> None:
+def test_unknown_predicate_claim_reported(tmp_path: Path) -> None:
     root = tmp_path / "kb"
     root.mkdir()
     _write_page(
@@ -180,6 +219,9 @@ def test_unknown_relationship_types_reported(tmp_path: Path) -> None:
     kb, _ = load_knowledge_base(root)
     report = kb.health_report()
 
+    # ADR-0021: an unknown-predicate Claim is a blocking validation error
+    # mapped into the unknown_relationship_types health bucket (each error
+    # lands in one bucket, so invalid_fields stays empty here).
     assert report.unknown_relationship_types == ["a.md"]
     assert report.is_healthy is False
 
@@ -273,8 +315,11 @@ def test_health_report_is_deterministic_and_zero_llm(tmp_path: Path) -> None:
 
     assert first == second
     assert first.missing_summaries == ["b.md"]
-    assert first.broken_relationships == ["a.md"]
     assert first.duplicate_aliases == ["Shared"]
-    assert first.invalid_fields == []
+    # The Claim findings (dangling object, unknown predicate) bucket into
+    # their relationship health buckets under ADR-0021, each error landing in
+    # exactly one bucket, and the report remains deterministic.
+    assert first.broken_relationships == ["a.md"]
     assert first.unknown_relationship_types == ["a.md"]
+    assert first.invalid_fields == []
     assert first.is_healthy is False

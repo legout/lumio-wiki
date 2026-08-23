@@ -33,7 +33,6 @@ visibility: "internal"
 sources:
   - id: "iso"
     title: "Isolation source"
-relationships: []
 synthetic: false
 ---
 

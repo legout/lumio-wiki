@@ -1,5 +1,8 @@
 ---
 title: "Ingestion Audit Log"
+id: "entity:ingestion-audit-log"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-ingestion_audit_log"
     title: "Ingestion Audit Log"
-relationships: []
 synthetic: true
 ---
 

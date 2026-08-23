@@ -1,5 +1,8 @@
 ---
 title: "Audit Trail"
+id: "entity:audit-trail"
+entity_types:
+  - system
 aliases: []
 tags:
   - "fixture"
@@ -10,7 +13,6 @@ visibility: "public"
 sources:
   - id: "fixture-audit_trail"
     title: "Audit Trail"
-relationships: []
 synthetic: true
 ---
 

@@ -33,6 +33,7 @@ forwarding).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from lumio_wiki.knowledge_base import (
@@ -42,6 +43,8 @@ from lumio_wiki.knowledge_base import (
     validate,
 )
 from lumio_wiki.records import (
+    CLAIM_STATUS_ACCEPTED,
+    Claim,
     CompiledPage,
     Relationship,
     Source,
@@ -53,6 +56,25 @@ from lumio_wiki.records import (
 # Page builders — in-memory (mirror test_discovery_graph.py conventions)
 # and on-disk (for public-seam integration tests).
 # ---------------------------------------------------------------------------
+
+
+def _slug(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+def _claims_from(
+    source_title: str, relationships: list[Relationship] | None
+) -> list[Claim]:
+    """Convert title-level test edges to accepted entity-to-entity Claims."""
+    return [
+        Claim(
+            id=f"claim:{_slug(source_title)}-{_slug(rel.target)}-{n}",
+            predicate=rel.type,
+            object=f"entity:{_slug(rel.target)}",
+            status=CLAIM_STATUS_ACCEPTED,
+        )
+        for n, rel in enumerate(relationships or [])
+    ]
 
 
 def _page(
@@ -71,6 +93,8 @@ def _page(
     return CompiledPage(
         path=path or f"{title.lower().replace(' ', '-')}.md",
         title=title,
+        id=f"entity:{_slug(title)}",
+        entity_types=["concept"],
         aliases=aliases or [],
         tags=tags or ["test"],
         summary=f"{title} summary",
@@ -79,7 +103,7 @@ def _page(
         sources=sources if sources is not None else [
             Source(id=f"src-{title.lower()}", title=title)
         ],
-        relationships=relationships or [],
+        claims=_claims_from(title, relationships),
         synthetic=synthetic,
         body=body,
     )
@@ -92,29 +116,46 @@ def _page_md(
     lifecycle: str = "approved",
     visibility: str = "public",
     aliases: list[str] | None = None,
-    relationships: list[tuple[str, str]] | None = None,
+    claims: list[tuple[str, str, str]] | None = None,
+    entity_id: str | None = None,
     synthetic: bool = False,
 ) -> str:
-    """Render a single-page Markdown source for on-disk KB fixtures."""
+    """Render a single-page Markdown source for on-disk KB fixtures.
+
+    ``claims`` carries ``(claim_id, predicate, object_entity)`` triples
+    rendered as accepted, evidence-bearing Claims (ADR-0021). Pages carrying
+    claims (or any entity key) must also declare ``entity_id`` and entity
+    types and be validated against a version-2 Control File ontology.
+    """
     alias_yaml = ""
     if aliases:
         alias_yaml = "aliases:\n" + "".join(f'  - "{a}"\n' for a in aliases)
-    rel_yaml = ""
-    if relationships:
-        rel_yaml = "relationships:\n" + "".join(
-            f'  - target: "{t}"\n    type: "{ty}"\n' for t, ty in relationships
+    id_yaml = f'id: "{entity_id}"\n' if entity_id else ""
+    types_yaml = "entity_types:\n  - concept\n" if entity_id else ""
+    claims_yaml = ""
+    if claims:
+        claims_yaml = "claims:\n" + "".join(
+            f"  - id: {cid}\n"
+            f"    predicate: {predicate}\n"
+            f'    object: "{object_}"\n'
+            "    status: accepted\n"
+            "    evidence:\n"
+            f'      - section: "{title}"\n'
+            for cid, predicate, object_ in claims
         )
     syn_yaml = f"synthetic: {str(synthetic).lower()}\n" if synthetic else ""
     return (
         "---\n"
+        f"{id_yaml}"
         f'title: "{title}"\n'
+        f"{types_yaml}"
         f"{alias_yaml}"
         'tags:\n  - "test"\n'
         f'summary: "{title} summary."\n'
         f'lifecycle: "{lifecycle}"\n'
         f'visibility: "{visibility}"\n'
         f'sources:\n  - id: "src-{title.lower()}"\n    title: "{title} Source"\n'
-        f"{rel_yaml}{syn_yaml}"
+        f"{claims_yaml}{syn_yaml}"
         "---\n\n"
         f"# {title}\n\n{body}"
     )
@@ -436,11 +477,11 @@ def test_contradiction_relationship_surfaced():
     contradiction = [
         i for i in issues
         if i.file == alpha.path
-        and i.field == "relationships"
+        and i.field == "claims"
         and "contradiction" in i.message.lower()
     ]
     assert contradiction, [i.message for i in issues]
-    assert "Beta" in contradiction[0].message
+    assert "entity:beta" in contradiction[0].message
     assert contradiction[0].severity == "warning"
 
 
@@ -457,11 +498,35 @@ def test_non_contradiction_relationship_not_flagged():
 
 
 def test_contradiction_surfaced_through_public_validate_seam(tmp_path):
+    # ADR-0021: the contradiction is an accepted Claim (predicate
+    # ``contradicts``) validated against the Control File ontology.
     root = _write_kb(tmp_path, {
-        "alpha.md": _page_md("Alpha", relationships=[("Beta", "contradicts")]),
-        "beta.md": _page_md("Beta"),
+        "lumio.yaml": (
+            "version: 2\n"
+            'mode: "categorized"\n'
+            "categories:\n"
+            "  - name: concepts\n"
+            "ontology:\n"
+            "  entity_types:\n"
+            "    concept: {}\n"
+            "  predicates:\n"
+            "    contradicts:\n"
+            "      subject_types:\n"
+            "        - concept\n"
+            "      object_types:\n"
+            "        - concept\n"
+        ),
+        "alpha.md": _page_md(
+            "Alpha",
+            entity_id="entity:alpha",
+            claims=[("claim:alpha-contradicts-beta", "contradicts", "entity:beta")],
+        ),
+        "beta.md": _page_md(
+            "Beta", entity_id="entity:beta", body="# Beta\n"
+        ),
     })
     report = validate(root)
+    assert report.is_valid, [i.message for i in report.issues]
     contradiction = [
         i for i in report.issues
         if "contradiction" in i.message.lower()
@@ -549,16 +614,16 @@ def test_report_str_shows_only_valid_when_no_issues():
 def test_existing_cross_page_checks_still_fire():
     a1 = _page("Dup")
     a2 = _page("Dup", path="dup-2.md")
-    alpha = _page(
-        "Alpha",
-        relationships=[Relationship(target="Missing", type="uses")],
-    )
-    issues = _qa_issues([a1, a2, alpha])
+    b1 = _page("Bee", aliases=["Shared Alias"])
+    b2 = _page("Bee Two", path="bee-two.md", aliases=["Shared Alias"])
+    issues = _qa_issues([a1, a2, b1, b2])
 
     dup = [i for i in issues if i.field == "title" and "duplicate" in i.message.lower()]
-    unresolved = [
-        i for i in issues
-        if i.field == "relationships" and "unresolved" in i.message.lower()
+    dup_alias = [
+        i for i in issues if i.field == "aliases" and "duplicate" in i.message.lower()
     ]
     assert dup, [i.message for i in issues]
-    assert unresolved, [i.message for i in issues]
+    assert dup_alias, [i.message for i in issues]
+    # The old "unresolved relationship target" cross-page check moved to
+    # ontology validation: dangling Claim objects are blocking errors there
+    # (covered in test_entity_claims.py).

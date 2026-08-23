@@ -30,7 +30,6 @@ visibility: "internal"
 sources:
   - id: "jrn"
     title: "Journey source"
-relationships: []
 synthetic: false
 ---
 
@@ -50,9 +49,6 @@ visibility: "internal"
 sources:
   - id: "jrn-related"
     title: "Journey related source"
-relationships:
-  - target: "Lumio Overview"
-    type: "relates-to"
 synthetic: false
 ---
 
@@ -88,11 +84,12 @@ def test_public_surface_exposes_the_journey_interfaces():
         assert hasattr(lw, name), f"lumio_wiki must export {name}"
 
 
-def test_plain_proposal_resolves_relationships_against_existing_pages(tmp_path: Path):
-    # Regression: a NEW page with a typed Relationship to an EXISTING page was
-    # falsely blocked as "unresolved relationship target" because plain
-    # proposals validated proposed pages in isolation (no KB overlay, no
-    # Control File). Staging must use the same candidate gate as publish.
+def test_plain_proposal_validates_against_existing_pages(tmp_path: Path):
+    # Regression: a NEW page staged against an EXISTING KB was falsely
+    # blocked because plain proposals validated proposed pages in isolation
+    # (no KB overlay, no Control File). Staging must use the same candidate
+    # gate as publish. (Typed relationship frontmatter input was removed by
+    # ADR-0021; claim staging through proposals is issue #169.)
     kb = _kb(tmp_path)
     store = lw.IngestStore(tmp_path / "ingest")
     proposal = lw.create_proposal_without_provider(

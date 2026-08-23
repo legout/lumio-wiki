@@ -28,7 +28,7 @@ import msgspec.yaml as yaml
 
 from lumio_wiki.knowledge_base import (
     KnowledgeBaseControlFile,
-    _as_relationships,
+    _as_claims,
     _as_sources,
     _as_string_list,
     _parse_frontmatter,
@@ -813,8 +813,8 @@ def _synthesis_cross_source_issues(page: ProposedPage) -> list[ValidationIssue]:
     """
     data = _safe_frontmatter(page.markdown)
     sources = _as_sources(data.get("sources"))
-    relationships = _as_relationships(data.get("relationships"))
-    if len(sources) >= 2 or relationships:
+    claims, _ = _as_claims(data.get("claims"), page.relative_path)
+    if len(sources) >= 2 or claims:
         return []
     return [
         ValidationIssue(
@@ -1172,11 +1172,17 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
     for page in kb.pages:
         existing_by_title.setdefault(page.title, page)
 
-    # Build reverse adjacency (backlinks) from the existing KB pages.
+    # Build reverse adjacency (backlinks) from the existing KB pages, keyed by
+    # Canonical Page Title of accepted entity-to-entity Claim targets.
+    title_by_entity = {page.id: page.title for page in kb.pages if page.id}
     backlinks: dict[str, set[str]] = {}
     for page in kb.pages:
-        for rel in page.relationships:
-            backlinks.setdefault(rel.target, set()).add(page.title)
+        for claim in page.claims:
+            if claim.object is None or claim.status != "accepted":
+                continue
+            target_title = title_by_entity.get(claim.object)
+            if target_title is not None:
+                backlinks.setdefault(target_title, set()).add(page.title)
 
     new_titles: list[str] = []
     changed_titles: list[str] = []
@@ -1192,8 +1198,17 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
 
     proposed_titles: set[str] = set()
     proposed_aliases: set[str] = set()
+    proposed_entity_ids: set[str] = set()
     for page in proposal_pages:
         proposed_titles.add(page.title)
+        try:
+            data, _body, _ = _parse_frontmatter(page.markdown, Path(page.relative_path))
+            proposed_entity_ids.update(
+                entity_id
+                for entity_id in _as_string_list(data.get("id"))
+            )
+        except Exception:
+            pass
         for alias in _extract_aliases(page.markdown):
             proposed_aliases.add(alias)
 
@@ -1206,7 +1221,7 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
 
         aliases = _as_string_list(data.get("aliases"))
         visibility = data.get("visibility")
-        relationships = _as_relationships(data.get("relationships"))
+        claims, _ = _as_claims(data.get("claims"), page.relative_path)
         sources = _as_sources(data.get("sources"))
         # Identity risks. A compound revision (issue #79) or an explicit
         # category move (issue #80) targets an existing Compiled Page by
@@ -1246,25 +1261,34 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
             if existing_visibility and visibility and existing_visibility != str(visibility):
                 visibility_changes.append(f"{title}: {existing_visibility} -> {visibility}")
 
-        # Relationship changes.
+        # Claim changes (accepted entity-to-entity Claims, objects projected
+        # to Canonical Page Titles where the entity has a live page).
         if title in existing_by_title:
-            existing_rels = {
-                (rel.target, rel.type) for rel in existing_by_title[title].relationships
+            existing_edges = {
+                (title_by_entity.get(c.object, c.object or ""), c.predicate)
+                for c in existing_by_title[title].claims
+                if c.status == "accepted" and c.object is not None
             }
-            proposed_rels = {(rel.target, rel.type) for rel in relationships}
-            for target, rel_type in proposed_rels - existing_rels:
+            proposed_edges = {
+                (title_by_entity.get(c.object, c.object), c.predicate)
+                for c in claims
+                if c.status == "accepted" and c.object is not None
+            }
+            for target, rel_type in proposed_edges - existing_edges:
                 relationship_changes.append(f"{title}: +{rel_type} -> {target}")
-            for target, rel_type in existing_rels - proposed_rels:
+            for target, rel_type in existing_edges - proposed_edges:
                 relationship_changes.append(f"{title}: -{rel_type} -> {target}")
         else:
-            for rel in relationships:
-                relationship_changes.append(f"{title}: +{rel.type} -> {rel.target}")
+            for claim in claims:
+                if claim.status == "accepted" and claim.object is not None:
+                    target = title_by_entity.get(claim.object, claim.object)
+                    relationship_changes.append(f"{title}: +{claim.predicate} -> {target}")
 
-        # Unresolved relationship targets.
-        all_known = existing_titles | existing_aliases | proposed_titles | proposed_aliases
-        for rel in relationships:
-            if rel.target not in all_known:
-                unresolved_targets.append(f"{title}: {rel.target}")
+        # Unresolved Claim objects (dangling Entity IDs).
+        all_known_ids = set(title_by_entity) | proposed_entity_ids
+        for claim in claims:
+            if claim.object is not None and claim.object not in all_known_ids:
+                unresolved_targets.append(f"{title}: {claim.object}")
 
         # Source changes.
         if title in existing_by_title:
