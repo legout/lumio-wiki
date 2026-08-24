@@ -35,6 +35,9 @@ from lumio_wiki.records import (
     GRAPH_EDGE_ORIGIN_CLAIM,
     GRAPH_EDGE_ORIGIN_EXTRACTED,
     GRAPH_EDGE_ORIGINS,
+    GRAPH_EDGE_SCOPE_CANONICAL,
+    GRAPH_EDGE_SCOPE_DISCOVERY,
+    GRAPH_EDGE_SCOPES,
     GraphEdge,
     GraphState,
     SourceFingerprint,
@@ -63,6 +66,7 @@ _EDGE_FIELDS = (
     "line_start",
     "line_end",
     "extractor_version",
+    "scope",
 )
 
 
@@ -150,13 +154,20 @@ def _decode_edge(values: dict[str, object]) -> GraphEdge | None:
     origin = values["origin"]
     if origin not in GRAPH_EDGE_ORIGINS:
         return None
+    scope = values["scope"]
+    if scope not in GRAPH_EDGE_SCOPES:
+        return None
     if origin == GRAPH_EDGE_ORIGIN_CLAIM:
         if not values["claim_id"] or not values["predicate"]:
+            return None
+        if scope != GRAPH_EDGE_SCOPE_CANONICAL:
             return None
     elif origin == GRAPH_EDGE_ORIGIN_EXTRACTED:
         if values["claim_id"] or values["predicate"]:
             return None
         if not values["source_path"] or not values["extractor_version"]:
+            return None
+        if scope != GRAPH_EDGE_SCOPE_DISCOVERY:
             return None
         line_start, line_end = values["line_start"], values["line_end"]
         if not isinstance(line_start, int) or not isinstance(line_end, int):

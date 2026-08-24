@@ -393,8 +393,19 @@ def _v2_edge(
     line_start: int = 0,
     line_end: int = 0,
     extractor_version: str = "",
+    scope: str = "canonical",
 ) -> list[object]:
-    return [endpoint, predicate, claim_id, origin, source_path, line_start, line_end, extractor_version]
+    return [
+        endpoint,
+        predicate,
+        claim_id,
+        origin,
+        source_path,
+        line_start,
+        line_end,
+        extractor_version,
+        scope,
+    ]
 
 
 def _v2_payload(outgoing_edge: list[object]) -> dict[str, object]:
@@ -410,6 +421,11 @@ def _v2_payload(outgoing_edge: list[object]) -> dict[str, object]:
                     predicate=str(outgoing_edge[1]),
                     claim_id=str(outgoing_edge[2]),
                     origin=str(outgoing_edge[3]),
+                    source_path=str(outgoing_edge[4]),
+                    line_start=outgoing_edge[5],  # type: ignore[arg-type]
+                    line_end=outgoing_edge[6],  # type: ignore[arg-type]
+                    extractor_version=str(outgoing_edge[7]),
+                    scope=str(outgoing_edge[8]),
                 )
             ]
         },
@@ -417,10 +433,53 @@ def _v2_payload(outgoing_edge: list[object]) -> dict[str, object]:
     }
 
 
+def test_valid_claim_edge_decodes():
+    # A well-formed 9-field accepted-Claim edge decodes with its scope.
+    state = deserialize_graph(
+        msgpack.packb(_v2_payload(_v2_edge()), use_bin_type=True)
+    )
+    assert state is not None
+    edge = state.outgoing["entity:alpha"][0]
+    assert edge.scope == "canonical"
+    assert edge.origin == "claim"
+
+
 def test_unknown_edge_origin_rejected():
     # A corrupt artifact whose edges decode type-wise but carry an origin
     # outside GRAPH_EDGE_ORIGINS must not become live graph state (#170).
     bad = msgpack.packb(_v2_payload(_v2_edge(origin="banana")), use_bin_type=True)
+    assert deserialize_graph(bad) is None
+
+
+def test_unknown_edge_scope_rejected():
+    bad = msgpack.packb(_v2_payload(_v2_edge(scope="banana")), use_bin_type=True)
+    assert deserialize_graph(bad) is None
+
+
+def test_claim_edge_with_discovery_scope_rejected():
+    # An accepted-Claim edge belongs to the canonical scope; a mismatched
+    # scope/origin pair is corrupt data.
+    bad = msgpack.packb(_v2_payload(_v2_edge(scope="discovery")), use_bin_type=True)
+    assert deserialize_graph(bad) is None
+
+
+def test_extracted_edge_with_canonical_scope_rejected():
+    # An Extracted Reference exists only in discovery scope.
+    bad = msgpack.packb(
+        _v2_payload(
+            _v2_edge(
+                predicate="",
+                claim_id="",
+                origin="extracted-reference",
+                source_path="alpha.md",
+                line_start=1,
+                line_end=1,
+                extractor_version=EXTRACTOR_VERSION,
+                scope="canonical",
+            )
+        ),
+        use_bin_type=True,
+    )
     assert deserialize_graph(bad) is None
 
 
@@ -443,6 +502,7 @@ def test_extracted_edge_with_claim_identity_rejected():
                 line_start=1,
                 line_end=1,
                 extractor_version=EXTRACTOR_VERSION,
+                scope="discovery",
             )
         ),
         use_bin_type=True,
@@ -451,11 +511,20 @@ def test_extracted_edge_with_claim_identity_rejected():
 
 
 def test_extracted_edge_without_provenance_rejected():
-    # An Extracted Reference must carry source path, 1-based bounded line
-    # range, and extractor version.
+    # An Extracted Reference must carry source path, extractor version, and a
+    # 1-based bounded line range (here: empty path and inverted range).
     bad = msgpack.packb(
         _v2_payload(
-            _v2_edge(origin="extracted-reference", source_path="", line_start=2, line_end=1)
+            _v2_edge(
+                predicate="",
+                claim_id="",
+                origin="extracted-reference",
+                source_path="",
+                line_start=2,
+                line_end=1,
+                extractor_version=EXTRACTOR_VERSION,
+                scope="discovery",
+            )
         ),
         use_bin_type=True,
     )
@@ -642,6 +711,7 @@ def test_rebuilt_graph_matches_in_memory_derivation(tmp_path):
 
     kb.materialize_graph(index_dir)
     state = deserialize_graph((index_dir / GRAPH_ARTIFACT_FILENAME).read_bytes())
+    assert state is not None
 
     assert state.outgoing == index.discovery_adjacency
     assert state.incoming == index.discovery_incoming

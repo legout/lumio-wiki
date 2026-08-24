@@ -433,6 +433,15 @@ GRAPH_EDGE_ORIGIN_CLAIM = "claim"
 GRAPH_EDGE_ORIGIN_EXTRACTED = "extracted-reference"
 GRAPH_EDGE_ORIGINS = frozenset({GRAPH_EDGE_ORIGIN_CLAIM, GRAPH_EDGE_ORIGIN_EXTRACTED})
 
+#: Edge scope disclosure (issue #170): the narrowest graph scope an edge
+#: belongs to. An accepted-Claim edge is part of the canonical Knowledge
+#: Graph (and therefore also present in discovery traversal); an Extracted
+#: Reference edge exists only in the Discovery Graph. Values coincide with
+#: the ``GRAPH_SCOPE_*`` traversal-scope constants.
+GRAPH_EDGE_SCOPE_CANONICAL = "canonical"
+GRAPH_EDGE_SCOPE_DISCOVERY = "discovery"
+GRAPH_EDGE_SCOPES = frozenset({GRAPH_EDGE_SCOPE_CANONICAL, GRAPH_EDGE_SCOPE_DISCOVERY})
+
 
 class GraphEdge(msgspec.Struct, frozen=True):
     """One directed edge in the materialized graph.
@@ -442,8 +451,11 @@ class GraphEdge(msgspec.Struct, frozen=True):
     Canonical Page Title. ``origin`` discloses whether the edge is an
     accepted entity-to-entity Claim (``predicate``/``claim_id`` set) or a
     non-canonical Extracted Reference (``source_path``/``line_start``/
-    ``line_end``/``extractor_version`` provenance set). Extracted References
-    never carry a Claim identity and are never promoted to Claims.
+    ``line_end``/``extractor_version`` provenance set). ``scope`` discloses
+    the narrowest graph scope the edge belongs to (``canonical`` for
+    accepted Claims, ``discovery`` for Extracted References). Extracted
+    References never carry a Claim identity and are never promoted to
+    Claims.
     """
 
     endpoint: str
@@ -454,12 +466,14 @@ class GraphEdge(msgspec.Struct, frozen=True):
     line_start: int = 0
     line_end: int = 0
     extractor_version: str = ""
+    scope: str = GRAPH_EDGE_SCOPE_CANONICAL
 
     def reversed(self, endpoint: str) -> GraphEdge:
         """Return the mirrored view of this edge pointing back at ``endpoint``.
 
-        Copies every origin/predicate/provenance field unchanged so the
-        incoming view is the exact reverse of the outgoing edge (issue #170).
+        Copies every origin/predicate/scope/provenance field unchanged so
+        the incoming view is the exact reverse of the outgoing edge (issue
+        #170).
         """
         return GraphEdge(
             endpoint=endpoint,
@@ -470,10 +484,11 @@ class GraphEdge(msgspec.Struct, frozen=True):
             line_start=self.line_start,
             line_end=self.line_end,
             extractor_version=self.extractor_version,
+            scope=self.scope,
         )
 
     @property
-    def sort_key(self) -> tuple[str, str, str, str, str, int, int, str]:
+    def sort_key(self) -> tuple[str, str, str, str, str, int, int, str, str]:
         """Deterministic edge ordering key (endpoint, then origin metadata)."""
         return (
             self.endpoint,
@@ -484,6 +499,7 @@ class GraphEdge(msgspec.Struct, frozen=True):
             self.line_start,
             self.line_end,
             self.extractor_version,
+            self.scope,
         )
 
 

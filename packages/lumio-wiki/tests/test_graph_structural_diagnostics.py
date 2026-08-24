@@ -138,7 +138,7 @@ def test_report_never_embeds_compiled_page_bodies():
     # No body text leaks anywhere in the report payload.
     blob = repr(report)
     for page in _hub_kb():
-        assert page.summary not in blob
+        assert (page.summary or "") not in blob
     assert "body" not in {f for f in dir(report)}
 
 
@@ -290,7 +290,7 @@ def test_duplicate_canonical_edges_counted_separately():
     )
 
 
-def test_discovery_scope_dedups_parallel_edges_to_endpoint():
+def test_discovery_scope_retains_parallel_edges_to_same_endpoint():
     alpha = _page(
         "Alpha",
         relationships=[
@@ -302,14 +302,18 @@ def test_discovery_scope_dedups_parallel_edges_to_endpoint():
     kb = _kb([alpha, beta])
 
     report = kb.graph_diagnostics(scope=GRAPH_SCOPE_DISCOVERY)
-    # Discovery adjacency dedups to one edge per endpoint.
-    assert report.edge_count == 1
+    # Discovery state retains EVERY edge with its own Claim identity and
+    # provenance (issue #170); endpoint deduplication belongs to traversal,
+    # which surfaces each page once through its visited set.
+    assert report.edge_count == 2
     assert report.top_outbound_hubs == (
-        GraphHub(title="Alpha", edge_count=1, entity_id="entity:alpha"),
+        GraphHub(title="Alpha", edge_count=2, entity_id="entity:alpha"),
     )
     assert report.top_inbound_hubs == (
-        GraphHub(title="Beta", edge_count=1, entity_id="entity:beta"),
+        GraphHub(title="Beta", edge_count=2, entity_id="entity:beta"),
     )
+    # Traversal still returns the endpoint once.
+    assert kb.related_pages("Alpha", scope=GRAPH_SCOPE_DISCOVERY) == ["Beta"]
 
 
 # ---------------------------------------------------------------------------

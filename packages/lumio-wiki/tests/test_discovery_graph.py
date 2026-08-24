@@ -45,6 +45,7 @@ from lumio_wiki.records import (
     CLAIM_STATUS_ACCEPTED,
     GRAPH_EDGE_ORIGIN_CLAIM,
     GRAPH_EDGE_ORIGIN_EXTRACTED,
+    GRAPH_EDGE_SCOPE_DISCOVERY,
     Claim,
     CompiledPage,
     Evidence,
@@ -927,6 +928,7 @@ def test_legacy_pages_without_entity_id_fall_back_to_titles():
                 line_start=1,
                 line_end=1,
                 extractor_version=EXTRACTOR_VERSION,
+                scope=GRAPH_EDGE_SCOPE_DISCOVERY,
             )
         ]
     }

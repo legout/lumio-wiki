@@ -54,6 +54,8 @@ from lumio_wiki.records import (
     ExtractedReference,
     GRAPH_EDGE_ORIGIN_CLAIM,
     GRAPH_EDGE_ORIGIN_EXTRACTED,
+    GRAPH_EDGE_SCOPE_CANONICAL,
+    GRAPH_EDGE_SCOPE_DISCOVERY,
     GraphEdge,
     GraphHealthReport,
     GraphHub,
@@ -2062,6 +2064,7 @@ class _KnowledgeIndex:
                     predicate=claim.predicate,
                     claim_id=claim.id,
                     origin=GRAPH_EDGE_ORIGIN_CLAIM,
+                    scope=GRAPH_EDGE_SCOPE_CANONICAL,
                 )
                 self.adjacency.setdefault(source_key, []).append(edge)
                 self.incoming.setdefault(edge.endpoint, []).append(
@@ -2076,35 +2079,27 @@ class _KnowledgeIndex:
             edges.sort(key=_graph_edge_sort_key)
 
         # Discovery Graph adjacency (issue #107, ADR-0011; issue #170):
-        # canonical accepted Claims PLUS Extracted References, with equivalent
-        # edges (same source key -> target key) deduplicated deterministically.
-        # An extracted edge to a target already reachable via an accepted
-        # Claim is not added again, so discovery traversal surfaces each
-        # endpoint once. Extracted edges carry no predicate/claim identity —
-        # they are never canonical and are never promoted to Claims.
+        # EVERY canonical accepted Claim edge PLUS EVERY exactly-resolved
+        # Extracted Reference, each retained with its full origin and
+        # provenance metadata. Edges to the same endpoint are NOT merged
+        # here: an Extracted Reference beside a Claim to the same target
+        # keeps its own provenance in the graph state (issue #170), while
+        # TRAVERSAL deduplicates endpoints through its visited set so a
+        # related-page expansion still surfaces each page once. Extracted
+        # edges carry no predicate/claim identity — they are never canonical
+        # and are never promoted to Claims.
         extracted, diags = _extract_references(pages)
         self.extracted_references = extracted
         self.extraction_diagnostics = diags
-        self.discovery_adjacency: dict[str, list[GraphEdge]] = {}
-        self.discovery_incoming: dict[str, list[GraphEdge]] = {}
-        for source_key, edges in self.adjacency.items():
-            seen: set[str] = set()
-            merged: list[GraphEdge] = []
-            for edge in edges:
-                if edge.endpoint in seen:
-                    continue
-                seen.add(edge.endpoint)
-                merged.append(edge)
-            self.discovery_adjacency[source_key] = merged
+        self.discovery_adjacency: dict[str, list[GraphEdge]] = {
+            source_key: list(edges) for source_key, edges in self.adjacency.items()
+        }
         for ref in extracted:
             src_key = self.graph_key_by_title.get(ref.source_title)
             tgt_key = self.graph_key_by_title.get(ref.target_title)
             if src_key is None or tgt_key is None:
                 continue
-            bucket = self.discovery_adjacency.setdefault(src_key, [])
-            if any(edge.endpoint == tgt_key for edge in bucket):
-                continue
-            bucket.append(
+            self.discovery_adjacency.setdefault(src_key, []).append(
                 GraphEdge(
                     endpoint=tgt_key,
                     origin=GRAPH_EDGE_ORIGIN_EXTRACTED,
@@ -2112,26 +2107,18 @@ class _KnowledgeIndex:
                     line_start=ref.line_start,
                     line_end=ref.line_end,
                     extractor_version=ref.extractor_version,
+                    scope=GRAPH_EDGE_SCOPE_DISCOVERY,
                 )
             )
-        for source_key, edges in self.incoming.items():
-            seen_in: set[str] = set()
-            merged_in: list[GraphEdge] = []
-            for edge in edges:
-                if edge.endpoint in seen_in:
-                    continue
-                seen_in.add(edge.endpoint)
-                merged_in.append(edge)
-            self.discovery_incoming[source_key] = merged_in
+        self.discovery_incoming: dict[str, list[GraphEdge]] = {
+            source_key: list(edges) for source_key, edges in self.incoming.items()
+        }
         for ref in extracted:
             src_key = self.graph_key_by_title.get(ref.source_title)
             tgt_key = self.graph_key_by_title.get(ref.target_title)
             if src_key is None or tgt_key is None:
                 continue
-            bucket = self.discovery_incoming.setdefault(tgt_key, [])
-            if any(edge.endpoint == src_key for edge in bucket):
-                continue
-            bucket.append(
+            self.discovery_incoming.setdefault(tgt_key, []).append(
                 GraphEdge(
                     endpoint=src_key,
                     origin=GRAPH_EDGE_ORIGIN_EXTRACTED,
@@ -2139,6 +2126,7 @@ class _KnowledgeIndex:
                     line_start=ref.line_start,
                     line_end=ref.line_end,
                     extractor_version=ref.extractor_version,
+                    scope=GRAPH_EDGE_SCOPE_DISCOVERY,
                 )
             )
         for edges in self.discovery_adjacency.values():
@@ -2147,7 +2135,9 @@ class _KnowledgeIndex:
             edges.sort(key=_graph_edge_sort_key)
 
 
-def _graph_edge_sort_key(edge: GraphEdge) -> tuple[str, str, str, str, str, int, int, str]:
+def _graph_edge_sort_key(
+    edge: GraphEdge,
+) -> tuple[str, str, str, str, str, int, int, str, str]:
     """Deterministic total order over edges (issue #170)."""
     return edge.sort_key
 
