@@ -30,9 +30,9 @@ import mimetypes
 import os
 import subprocess
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import lumio_wiki
 from lumio_wiki import (
@@ -78,6 +78,11 @@ from lumio_wiki.env_loader import (
     load_project_config,
     read_kb_path_from_env_file,
     resolve_env_value,
+)
+from lumio_wiki.url_fetch import (
+    DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_REDIRECTS,
+    DEFAULT_TIMEOUT_SECONDS,
 )
 from lumio_wiki.knowledge_base import (
     DEFAULT_GRAPH_MAX_DEPTH,
@@ -1800,21 +1805,15 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             )
         except (ManagedIngestError, SourceRegistryError) as exc:
             raise CliError(str(exc), exit_code=1) from exc
-        print(f"Staged proposal {proposal.id}")
-        print(f"  status:         {proposal.status}")
-        print(f"  source_id:      {proposal.provenance.source_id}")
-        print(f"  content_type:    {proposal.provenance.content_type}")
-        print(f"  converted_by:   {proposal.provenance.converted_by}")
-        print(f"  source_hash:    {proposal.provenance.source_hash}")
-        print(f"  affected_pages: {', '.join(proposal.affected_pages) or '(none)'}")
-        print(f"  blocked:        {proposal.blocked}")
-        print()
-        print("Review with:")
-        print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
-        print(f"  lumio-wiki proposal validate {args.path} {proposal.id}")
-        if is_reviewable_proposal(proposal) and not proposal.blocked:
-            print(f"  lumio-wiki publish {args.path} {proposal.id}")
-        return 0
+        return _print_staged_proposal_summary(
+            proposal,
+            args.path,
+            rows=[
+                ("content_type:", proposal.provenance.content_type),
+                ("converted_by:", proposal.provenance.converted_by),
+                ("source_hash:", proposal.provenance.source_hash),
+            ],
+        )
 
     # Route through select_source_processor so text/Markdown uses the
     # dependency-free processor and document sources (PDF, image, DOCX, HTML,
@@ -1979,6 +1978,230 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_staged_proposal_summary(
+    proposal, kb_path: str, rows: Sequence[tuple[str, object]] = ()
+) -> int:
+    """Print the shared managed-ingest staging summary + review guidance.
+
+    One printer for the managed branch of ``ingest`` (issue #149),
+    ``ingest-url``, and ``ingest-research`` (issue #178): identical status,
+    source-id, affected-pages, blocked, and inspect/validate/publish rows,
+    with per-command ``rows`` (``source_url``, ``consulted``, ...) inserted
+    after ``source_id``. ``content_type:`` keeps its historical 4-space
+    alignment (pinned by the #149 CLI output contract).
+    """
+    print(f"Staged proposal {proposal.id}")
+    print(f"  status:         {proposal.status}")
+    print(f"  source_id:      {proposal.provenance.source_id}")
+    for label, value in rows:
+        if label == "content_type:":
+            print(f"  content_type:    {value}")
+        else:
+            print(f"  {label:<16}{value}")
+    print(f"  affected_pages: {', '.join(proposal.affected_pages) or '(none)'}")
+    print(f"  blocked:        {proposal.blocked}")
+    print()
+    print("Review with:")
+    print(f"  lumio-wiki proposal inspect {kb_path} {proposal.id}")
+    print(f"  lumio-wiki proposal validate {kb_path} {proposal.id}")
+    if is_reviewable_proposal(proposal) and not proposal.blocked:
+        print(f"  lumio-wiki publish {kb_path} {proposal.id}")
+    return 0
+
+
+def _cmd_ingest_url(args: argparse.Namespace) -> int:
+    """Stage an HTTPS Knowledge Source under a stable Source ID (issue #178).
+
+    Safe, bounded, proposal-first URL ingestion: the fetch boundary rejects
+    non-HTTPS schemes, credential-bearing URLs, private/loopback/link-local
+    destinations, oversized payloads, and excessive redirects by default;
+    every redirect hop is re-validated. The host agent remains the Distiller —
+    fetched bytes are provenance + optional private artifact retention, never
+    page content — and publication goes through the ordinary staged-proposal
+    pipeline.
+    """
+    kb, _report = _load_kb(args.path)
+    compiled_page: Path | None = args.compiled_page
+    source_id: str | None = args.source_id
+    # Both required together — including the both-missing case, which must
+    # produce an actionable CliError rather than a traceback on None.
+    if compiled_page is None or source_id is None:
+        raise CliError(
+            "--compiled-page and --source-id are required together (issue #178)."
+        )
+    if not compiled_page.is_file():
+        raise CliError(f"compiled-page file not found: {compiled_page}")
+    authored_markdown = compiled_page.read_text(encoding="utf-8")
+
+    from lumio_wiki.url_fetch import UrlFetchError, UrlFetchPolicy, fetch_url
+
+    policy = UrlFetchPolicy(
+        max_bytes=args.max_bytes,
+        timeout_seconds=args.timeout,
+        max_redirects=args.max_redirects,
+        allow_http=args.allow_http,
+        allow_private_destinations=args.allow_private_destination,
+    )
+    try:
+        result = fetch_url(args.url, policy)
+    except UrlFetchError as exc:
+        raise CliError(str(exc)) from exc
+
+    ingest_dir = _resolve_ingest_dir(args, kb.root)
+    ingest_dir.mkdir(parents=True, exist_ok=True)
+    store = IngestStore(ingest_dir)
+    pipeline = ProposalPipeline(kb, store=store, artifact_store=_artifact_store_from_env())
+    try:
+        proposal = pipeline.managed_ingest(
+            result.body,
+            result.media_type,
+            result.filename,
+            source_id,
+            authored_markdown,
+            source_url=result.final_url,
+            retrieved_at=result.retrieved_at,
+        )
+    except (ManagedIngestError, SourceRegistryError) as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    print(f"Fetched {result.final_url} ({len(result.body)} bytes, {result.media_type})")
+    if result.redirects:
+        print(f"  redirects:      {result.redirects} (final URL above)")
+    print(f"  retrieved_at:   {result.retrieved_at}")
+    print(f"Staged proposal {proposal.id}")
+    print(f"  status:         {proposal.status}")
+    print(f"  source_id:      {proposal.provenance.source_id}")
+    print(f"  source_url:     {proposal.provenance.source_url}")
+    print(f"  retrieved_at:   {proposal.provenance.retrieved_at}")
+    print(f"  content_type:    {proposal.provenance.content_type}")
+    print(f"  source_hash:    {proposal.provenance.source_hash}")
+    print(f"  affected_pages: {', '.join(proposal.affected_pages) or '(none)'}")
+    print(f"  blocked:        {proposal.blocked}")
+    print()
+    print("Review with:")
+    print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
+    print(f"  lumio-wiki proposal validate {args.path} {proposal.id}")
+    if is_reviewable_proposal(proposal) and not proposal.blocked:
+        print(f"  lumio-wiki publish {args.path} {proposal.id}")
+    return 0
+
+
+def _parse_research_manifest(path: Path) -> list:
+    """Parse and validate a consulted-URL manifest (issue #178).
+
+    The manifest is an explicit list of ``{url, title, accessed_at}`` entries.
+    It fails closed: every URL must be HTTPS (no credentials), timestamps must
+    be ISO-8601, and an empty manifest is rejected (a research bundle without
+    consulted sources is not a research bundle).
+    """
+    import msgspec.yaml as yaml
+
+    try:
+        data = yaml.decode(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise CliError(f"manifest is not valid YAML: {exc}") from exc
+    if not isinstance(data, list) or not data:
+        raise CliError(
+            "manifest must be a non-empty YAML list of consulted sources "
+            "(- url: ... / title: ... / accessed_at: ...)"
+        )
+    from lumio_wiki.ingest import ConsultedSource
+    from lumio_wiki.url_fetch import UrlFetchError, _validate_scheme
+
+    consulted: list[ConsultedSource] = []
+    for i, entry in enumerate(data, start=1):
+        if not isinstance(entry, dict) or "url" not in entry:
+            raise CliError(f"manifest entry {i} must be a mapping with a 'url' key")
+        # issue #178 spec: an EXPLICIT manifest of consulted URLs/titles/
+        # access timestamps — every field is required so provenance is
+        # complete at staging time.
+        for field in ("url", "title", "accessed_at"):
+            if entry.get(field) in (None, ""):
+                raise CliError(
+                    f"manifest entry {i} is missing required field {field!r} "
+                    "(url, title, and accessed_at are all required)"
+                )
+        url = str(entry["url"])
+        try:
+            _validate_scheme(url, allow_http=False)
+        except UrlFetchError as exc:
+            raise CliError(f"manifest entry {i} URL is not acceptable: {exc}") from exc
+        import urllib.parse
+
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.hostname:
+            raise CliError(f"manifest entry {i} URL has no host: {url!r}")
+        if parsed.username or parsed.password:
+            raise CliError(
+                f"manifest entry {i} URL is credential-bearing; pass credentials "
+                "through the environment, not the URL"
+            )
+        accessed_at = entry.get("accessed_at")
+        if accessed_at is not None:
+            # YAML decodes ISO timestamps to datetime; normalize back to a
+            # canonical ISO-8601 string (``T`` separator) after validation.
+            try:
+                accessed_at = datetime.fromisoformat(str(accessed_at)).isoformat()
+            except ValueError:
+                raise CliError(
+                    f"manifest entry {i} accessed_at is not ISO-8601: {accessed_at!r}"
+                ) from None
+        title = entry.get("title")
+        consulted.append(
+            ConsultedSource(
+                url=url,
+                title=str(title) if title is not None else None,
+                accessed_at=accessed_at,
+            )
+        )
+    return consulted
+
+
+def _cmd_ingest_research(args: argparse.Namespace) -> int:
+    """Stage an agent-authored research report with consulted-URL provenance (issue #178).
+
+    The bounded research bundle: the report is the host-agent-authored
+    Compiled Page candidate (distinguishing quotations from synthesis is the
+    author's contract); the manifest's consulted URLs are recorded as
+    PROVENANCE — never automatic Claims, Citations, or Evidence. Publication
+    goes through the ordinary staged-proposal pipeline. No network access.
+    """
+    kb, _report = _load_kb(args.path)
+    report: Path = args.report
+    if not report.is_file():
+        raise CliError(f"research report not found: {report}")
+    authored_markdown = report.read_text(encoding="utf-8")
+    consulted = _parse_research_manifest(args.manifest)
+
+    ingest_dir = _resolve_ingest_dir(args, kb.root)
+    ingest_dir.mkdir(parents=True, exist_ok=True)
+    store = IngestStore(ingest_dir)
+    pipeline = ProposalPipeline(kb, store=store, artifact_store=_artifact_store_from_env())
+    report_bytes = report.read_bytes()
+    try:
+        proposal = pipeline.managed_ingest(
+            report_bytes,
+            "text/markdown",
+            report.name,
+            args.source_id,
+            authored_markdown,
+            consulted_sources=consulted,
+        )
+    except (ManagedIngestError, SourceRegistryError) as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    return _print_staged_proposal_summary(
+        proposal,
+        args.path,
+        rows=[
+            (
+                "consulted:",
+                f"{len(proposal.provenance.consulted_sources)} sources",
+            )
+        ],
+    )
+
+
+
+
 def _proposal_pipeline(args: argparse.Namespace):
     """Load the KB and construct a ProposalPipeline over the resolved ingest store."""
     kb, _report = _load_kb(args.path)
@@ -2035,6 +2258,19 @@ def _cmd_proposal_inspect(args: argparse.Namespace) -> int:
         print(f"source_id:       {proposal.provenance.source_id}")
     if proposal.provenance.source_hash:
         print(f"source_hash:     {proposal.provenance.source_hash}")
+    # issue #178: truthful URL provenance — the FINAL URL after redirects and
+    # the retrieval timestamp for fetched Knowledge Sources.
+    if proposal.provenance.source_url:
+        print(f"source_url:      {proposal.provenance.source_url}")
+    if proposal.provenance.retrieved_at:
+        print(f"retrieved_at:    {proposal.provenance.retrieved_at}")
+    # issue #178: research-bundle consulted URLs — provenance disclosure, never
+    # automatic Claims/Citations/Evidence.
+    if proposal.provenance.consulted_sources:
+        print(f"consulted:       {len(proposal.provenance.consulted_sources)} sources")
+        for consulted in proposal.provenance.consulted_sources:
+            title = f" — {consulted.title}" if consulted.title else ""
+            print(f"  {consulted.url}{title} ({consulted.accessed_at})")
     if proposal.raw_source_path:
         print(f"raw_source:      {proposal.raw_source_path}")
     if proposal.blast_radius is not None:
@@ -4512,6 +4748,111 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     capture_session_parser.set_defaults(func=_cmd_capture_session)
+
+    # ingest-url (issue #178): safe, bounded, proposal-first URL ingestion.
+    ingest_url_parser = subparsers.add_parser(
+        "ingest-url",
+        help="Stage a fetched HTTPS Knowledge Source under a stable Source ID.",
+        description=(
+            "Fetch one URL under a fail-closed safety policy (HTTPS only by "
+            "default; private/loopback/link-local destinations, "
+            "credential-bearing URLs, oversized payloads, and excessive "
+            "redirects are rejected) and stage the ORIGINAL bytes under a "
+            "stable Knowledge Source identity with truthful final-URL "
+            "provenance. The host agent remains the Distiller: fetched bytes "
+            "are never page content, and publication goes through the "
+            "ordinary inspect/validate/publish pipeline."
+        ),
+    )
+    _add_kb_argument(ingest_url_parser)
+    ingest_url_parser.add_argument("url", type=str, help="HTTPS URL to fetch.")
+    ingest_url_parser.add_argument(
+        "--compiled-page",
+        type=Path,
+        default=None,
+        help=(
+            "Host-agent-authored Compiled Page Markdown to bind to the fetched "
+            "source. Required together with --source-id; the authored page must "
+            "declare the source id in sources[].id."
+        ),
+    )
+    ingest_url_parser.add_argument(
+        "--source-id",
+        type=str,
+        default=None,
+        help=(
+            "Explicit, stable Knowledge Source identity (lowercase ASCII "
+            "label). Required together with --compiled-page."
+        ),
+    )
+    ingest_url_parser.add_argument(
+        "--max-bytes",
+        type=int,
+        default=DEFAULT_MAX_BYTES,
+        help=f"Maximum response size in bytes (default: {DEFAULT_MAX_BYTES}).",
+    )
+    ingest_url_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=f"Per-hop socket timeout in seconds (default: {DEFAULT_TIMEOUT_SECONDS}).",
+    )
+    ingest_url_parser.add_argument(
+        "--max-redirects",
+        type=int,
+        default=DEFAULT_MAX_REDIRECTS,
+        help=f"Maximum redirect hops (default: {DEFAULT_MAX_REDIRECTS}).",
+    )
+    ingest_url_parser.add_argument(
+        "--allow-http",
+        action="store_true",
+        help=(
+            "Permit plain http:// URLs (intranet deployments). HTTPS remains the default policy."
+        ),
+    )
+    ingest_url_parser.add_argument(
+        "--allow-private-destination",
+        action="store_true",
+        help=(
+            "Permit loopback/link-local/private-network destinations "
+            "(trusted local endpoints). Rejected by default."
+        ),
+    )
+    _add_ingest_dir_argument(ingest_url_parser)
+    ingest_url_parser.set_defaults(func=_cmd_ingest_url)
+
+    # ingest-research (issue #178): bounded research bundle.
+    ingest_research_parser = subparsers.add_parser(
+        "ingest-research",
+        help="Stage an agent-authored research report with consulted-URL provenance.",
+        description=(
+            "Stage the bounded research bundle: an agent-authored Markdown "
+            "report (the Compiled Page candidate — quotations and synthesis "
+            "are the author's contract) plus an explicit manifest of "
+            "consulted URLs/titles/access timestamps. Consulted URLs are "
+            "recorded as provenance only — never automatic Claims, Citations, "
+            "or Evidence — and publication goes through the ordinary "
+            "inspect/validate/publish pipeline. No network access."
+        ),
+    )
+    _add_kb_argument(ingest_research_parser)
+    ingest_research_parser.add_argument(
+        "report", type=Path, help="Path to the agent-authored research report Markdown."
+    )
+    ingest_research_parser.add_argument(
+        "--manifest",
+        type=Path,
+        required=True,
+        help=("YAML manifest of consulted sources: a list of {url, title, accessed_at} entries."),
+    )
+    ingest_research_parser.add_argument(
+        "--source-id",
+        type=str,
+        required=True,
+        help="Explicit, stable Knowledge Source identity (lowercase ASCII label).",
+    )
+    _add_ingest_dir_argument(ingest_research_parser)
+    ingest_research_parser.set_defaults(func=_cmd_ingest_research)
 
     # proposal (nested)
     proposal_parser = subparsers.add_parser(

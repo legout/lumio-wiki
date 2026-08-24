@@ -1021,7 +1021,10 @@ def test_isolated_retrieval_ladder(isolated_wheel_env: dict, tmp_path: Path):
         "--trace",
     )
     # Stable Entity IDs ride along for machine consumers (issue #172).
-    assert "Lumio Overview (entity:lumio-overview) -> Architecture (entity:architecture) -> Technology Stack (entity:technology-stack)" in paths
+    assert (
+        "Lumio Overview (entity:lumio-overview) -> Architecture (entity:architecture) -> Technology Stack (entity:technology-stack)"
+        in paths
+    )
     assert "# trace:" in paths and "found=true" in paths and "hops=2" in paths
 
     index_dir = default_index_dir(kb)
@@ -1123,3 +1126,87 @@ def test_s3_journey_installs_only_wiki_lancedb_and_skill(
     assert skill.returncode == 0, skill.stderr
     assert (project / ".agents" / "skills" / "lumio-wiki" / "SKILL.md").is_file()
     assert (project / ".agents" / "skills" / "lumio-wiki" / "PROTOCOL.md").is_file()
+
+
+def test_isolated_ingest_research_journey(isolated_wheel_env: dict, tmp_path: Path):
+    """issue #178: the research-bundle command works from a fresh wheel install.
+
+    ingest-research is fully offline (the manifest is provenance, never
+    fetched), so it proves the new #178 surface in the base wheel without
+    network access and without any optional extra.
+    """
+    python = isolated_wheel_env["python"]
+    bin_dir = python.parent
+    script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
+    kb_root = tmp_path / "kb"
+
+    subprocess.run([str(script), "init", str(kb_root)], check=True, capture_output=True)
+    control_file = kb_root / "lumio.yaml"
+    control_file.write_text(
+        control_file.read_text(encoding="utf-8").replace(
+            "  entity_types:\n  predicates:",
+            "  entity_types:\n    page: {}\n  predicates:",
+        ),
+        encoding="utf-8",
+    )
+
+    report = tmp_path / "research.md"
+    report.write_text(
+        "---\n"
+        'id: "entity:wheel-research"\n'
+        'title: "Wheel Research"\n'
+        "entity_types:\n"
+        "  - page\n"
+        "aliases: []\n"
+        'tags:\n  - "research"\n'
+        'summary: "Research bundle from the isolated wheel."\n'
+        'category: "concepts"\n'
+        'type: "concept"\n'
+        'durability_rationale: "Durable synthesis for the wheel research test."\n'
+        'lifecycle: "draft"\n'
+        'visibility: "internal"\n'
+        "sources:\n"
+        '  - id: "wheel-research-q3"\n'
+        '    title: "Q3 wheel research"\n'
+        "synthetic: false\n"
+        "---\n\n"
+        "# Wheel Research\n\n"
+        "> Quoted passage.\n\n"
+        "Synthesis authored in the isolated install.\n",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "- url: https://example.com/a\n"
+        '  title: "Source A"\n'
+        "  accessed_at: 2026-07-01T10:00:00+00:00\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            str(script),
+            "ingest-research",
+            str(kb_root),
+            str(report),
+            "--manifest",
+            str(manifest),
+            "--source-id",
+            "wheel-research-q3",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"ingest-research failed:\n{result.stderr}"
+    assert "Staged proposal" in result.stdout
+    assert "consulted:      1 sources" in result.stdout
+
+    proposals_dir = kb_root / ".lumio" / "ingest" / "proposals"
+    proposal_id = next(proposals_dir.glob("*.json")).stem
+    result = subprocess.run(
+        [str(script), "publish", str(kb_root), proposal_id],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"publish failed:\n{result.stderr}"
+    assert (kb_root / "concepts" / "wheel_research.md").is_file()

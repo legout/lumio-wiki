@@ -107,6 +107,7 @@ Once an Operator has deployed Lumio (above) or you are running locally:
 ### Developer — run locally
 
 Requirements: **Python ≥ 3.14** and [uv](https://docs.astral.sh/uv/).
+
 ```bash
 uv sync                       # install dependencies + the package
 uv run lumio validate tests/fixtures/valid   # smoke-test the SDK against the sample KB
@@ -206,8 +207,8 @@ offline FakeProvider.
 |---|---|---|
 | `LUMIO_KB_PATH` | `tests/fixtures/valid` | Path to the compiled Knowledge Base the app loads. |
 | `LUMIO_STORAGE_MODE` | `git` | `git`, `shared`, or `hybrid`. |
-| `LUMIO_GIT_SOURCE` | _(none)_ | Git URL for the canonical KB (used by `git` and `hybrid`). |
-| `LUMIO_SHARED_SOURCE` | _(none)_ | Shared-storage path (used by `shared` and `hybrid`). |
+| `LUMIO_GIT_SOURCE` | *(none)* | Git URL for the canonical KB (used by `git` and `hybrid`). |
+| `LUMIO_SHARED_SOURCE` | *(none)* | Shared-storage path (used by `shared` and `hybrid`). |
 | `LUMIO_CONFIG_PATH` | `data/config` | Runtime config: storage-mode and write-mode state. |
 | `LUMIO_INGEST_PATH` | `data/ingest` | Staged ingest proposals and uploaded raw sources. |
 | `LUMIO_PUBLISH_PATH` | `data/publish` | Published-version records. |
@@ -237,6 +238,8 @@ lumio-wiki page <kb-path> "<title>"              # read a Compiled Page by Canon
 lumio-wiki related <kb-path> "<title>"           # list pages related to a title
 lumio-wiki paths <kb-path> "<src>" "<dst>"       # shortest typed path between two titles
 lumio-wiki ingest <kb-path> <source> [--distiller passthrough|llm]   # stage a Knowledge Source as a proposal
+lumio-wiki ingest-url <kb-path> <url> --compiled-page <page.md> --source-id <id>  # safe URL ingestion (HTTPS-only, bounded, SSRF-safe)
+lumio-wiki ingest-research <kb-path> <report.md> --manifest <manifest.yaml> --source-id <id>  # research bundle (consulted URLs = provenance)
 lumio-wiki proposal list|inspect|validate <kb-path> [id]      # review staged proposals
 lumio-wiki publish <kb-path> <id>                # publish a reviewed proposal
 lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]  # secret-free metadata for the exact bound Source Version
@@ -312,9 +315,9 @@ Role gates are enforced as middleware.
 
 | Route | Role | Purpose |
 |---|---|---|
-| `GET /health` | _(none)_ | Liveness probe. |
-| `GET/POST /setup` | _(first-run only)_ | Create the Owner account; disabled once one exists. |
-| `GET/POST /login` · `GET/POST /register` · `POST /logout` | _(auth)_ | Session login / logout; self-service Reader registration (disabled until an Owner exists). |
+| `GET /health` | *(none)* | Liveness probe. |
+| `GET/POST /setup` | *(first-run only)* | Create the Owner account; disabled once one exists. |
+| `GET/POST /login` · `GET/POST /register` · `POST /logout` | *(auth)* | Session login / logout; self-service Reader registration (disabled until an Owner exists). |
 | `GET/POST /chat` · `POST /chat/ask` · `GET /chat/reading-room` · `GET /chat/threads` · `GET /chat/threads/{id}` | Reader | Chat + Citation Workspace: cited answer with retrieval trace. Selecting a Citation opens the cited Compiled Page in the Reading Room column (or a responsive sheet on narrower displays); the page and cited range are URL-addressable and survive reload, Back/Forward, and shared deep links. |
 | `GET /kb` · `GET /kb/page/{title}` · `GET /kb/export` | Reader | Reading Room: browse published Compiled Pages, deterministic lexical search (title, alias, tag, summary, body) with prev/next ranked-result navigation, full-width standalone document reading, and Markdown export (raw sources excluded). No chat composer or generated answer on the standalone surface. |
 | `POST /v1/chat/completions` | Reader | OpenAI-compatible endpoint; same retrieval, citation, refusal, and guardrails as `/chat`. Returns a `lumio` extension block with citations, trace, and `covered`. |
@@ -325,7 +328,7 @@ Role gates are enforced as middleware.
 
 **Storage modes** (see `LUMIO_STORAGE_MODE`):
 
-- `git` _(default)_ — Git is the canonical source; Lumio pulls on boot and
+- `git` *(default)* — Git is the canonical source; Lumio pulls on boot and
   commits/pushes on publish.
 - `shared` — a shared-storage path is canonical (when Git is unavailable).
 - `hybrid` — Git is canonical; shared storage mirrors bundles.

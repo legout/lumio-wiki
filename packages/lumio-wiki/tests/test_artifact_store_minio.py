@@ -490,10 +490,15 @@ def test_minio_cli_source_link_downloads_same_digest_and_fetch_is_byte_exact(
 
     rc = main(
         [
-            "source", "link", str(kb),
-            "--source-id", "minio-report",
-            "--published-version", "v165",
-            "--expires", "30s",
+            "source",
+            "link",
+            str(kb),
+            "--source-id",
+            "minio-report",
+            "--published-version",
+            "v165",
+            "--expires",
+            "30s",
         ]
     )
     assert rc == 0
@@ -510,14 +515,18 @@ def test_minio_cli_source_link_downloads_same_digest_and_fetch_is_byte_exact(
     with pytest.raises(urllib.error.HTTPError):
         urllib.request.urlopen(url.replace(digest, "0" * 64), timeout=10)
 
-
     out_file = tmp_path / "fetched.pdf"
     rc = main(
         [
-            "source", "fetch", str(kb),
-            "--source-id", "minio-report",
-            "--published-version", "v165",
-            "--output", str(out_file),
+            "source",
+            "fetch",
+            str(kb),
+            "--source-id",
+            "minio-report",
+            "--published-version",
+            "v165",
+            "--output",
+            str(out_file),
         ]
     )
     assert rc == 0
@@ -542,9 +551,13 @@ def test_minio_cli_unauthorized_credentials_get_distinct_access_denied(
 
     for command in ("inspect", "fetch", "link"):
         argv = [
-            "source", command, str(kb),
-            "--source-id", "minio-report",
-            "--published-version", "v165",
+            "source",
+            command,
+            str(kb),
+            "--source-id",
+            "minio-report",
+            "--published-version",
+            "v165",
         ]
         if command == "fetch":
             argv += ["--output", str(tmp_path / "out.pdf")]
@@ -555,9 +568,7 @@ def test_minio_cli_unauthorized_credentials_get_distinct_access_denied(
         assert artifact_prefix not in err
 
 
-def test_minio_cli_source_resolve_identity_and_denial(
-    tmp_path, prefixes, monkeypatch, capsys
-):
+def test_minio_cli_source_resolve_identity_and_denial(tmp_path, prefixes, monkeypatch, capsys):
     """`source resolve` over a real S3 binding manifest (issue #176).
 
     Authorized: a page-title query resolves to the bound Source identity
@@ -575,7 +586,7 @@ def test_minio_cli_source_resolve_identity_and_denial(
         "---\n"
         'title: "MinIO Artifact Page"\n'
         "aliases: []\n"
-        'tags: []\n'
+        "tags: []\n"
         'summary: "Authored from the minio-report Knowledge Source."\n'
         'lifecycle: "approved"\n'
         'visibility: "internal"\n'
@@ -592,9 +603,12 @@ def test_minio_cli_source_resolve_identity_and_denial(
     # Authorized: resolve by page title through the v165 binding manifest.
     rc = main(
         [
-            "source", "resolve", str(kb),
+            "source",
+            "resolve",
+            str(kb),
             "MinIO Artifact Page",
-            "--published-version", "v165",
+            "--published-version",
+            "v165",
         ]
     )
     assert rc == 0
@@ -609,9 +623,12 @@ def test_minio_cli_source_resolve_identity_and_denial(
     assert (
         main(
             [
-                "source", "resolve", str(kb),
+                "source",
+                "resolve",
+                str(kb),
                 "minio-report",
-                "--published-version", "v165",
+                "--published-version",
+                "v165",
                 "--json",
             ]
         )
@@ -628,9 +645,12 @@ def test_minio_cli_source_resolve_identity_and_denial(
     monkeypatch.setenv("LUMIO_S3_SECRET_ACCESS_KEY", "wrong-secret-on-purpose")
     rc = main(
         [
-            "source", "resolve", str(kb),
+            "source",
+            "resolve",
+            str(kb),
             "MinIO Artifact Page",
-            "--published-version", "v165",
+            "--published-version",
+            "v165",
         ]
     )
     assert rc == 1
@@ -638,3 +658,77 @@ def test_minio_cli_source_resolve_identity_and_denial(
     assert "access denied" in err
     assert artifact_prefix not in err
     assert "minio-report" not in err
+
+
+def test_minio_url_ingest_retains_fetched_bytes_as_artifact(tmp_path, prefixes):
+    """issue #178: URL ingestion retains the FETCHED bytes as a private artifact.
+
+    The fetch runs hermetically against a local server through the documented
+    ``--allow-http``/``--allow-private-destination`` escape hatch; the
+    retained artifact, binding, and provenance all describe the exact fetched
+    content hash — never a page-body mutation of it.
+    """
+    import shutil
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import lumio_wiki as lw
+    from lumio_wiki.url_fetch import UrlFetchPolicy, fetch_url
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            body = b"<html><body>minio url source page</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        host, port = server.server_address[:2]
+        url = f"http://{host}:{port}/page.html"
+        result = fetch_url(
+            url,
+            UrlFetchPolicy(allow_http=True, allow_private_destinations=True),
+        )
+    finally:
+        server.shutdown()
+
+    store, _, artifact_prefix = prefixes
+    artifacts = _artifact_store(store, artifact_prefix)
+    root = tmp_path / "kb"
+    shutil.copytree(FIXTURES, root)
+    kb, report = lw.load_knowledge_base(root)
+    assert report.is_valid, report
+
+    ingest = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store=ingest, artifact_store=artifacts)
+    proposal = pipeline.managed_ingest(
+        result.body,
+        result.media_type,
+        result.filename,
+        "minio-url-report",
+        _authored_page("minio-url-report"),
+        source_url=result.final_url,
+        retrieved_at=result.retrieved_at,
+    )
+    assert proposal.provenance.source_url == url
+    assert proposal.provenance.source_hash == artifact_content_hash(result.body)
+
+    # The exact fetched bytes are privately retained and digest-verified.
+    retained = artifacts.get_artifact(
+        source_id="minio-url-report", content_hash=artifact_content_hash(result.body)
+    )
+    assert bytes(retained) == result.body
+
+    # The published page is the AUTHORED markdown, and the public prefix
+    # never sees the fetched bytes.
+    assert pipeline.publish(proposal.id).status == "published"
+    published = (root / "minio_artifact_page.md").read_text(encoding="utf-8")
+    assert "Body authored from the original source." in published
+    assert "minio url source page" not in published

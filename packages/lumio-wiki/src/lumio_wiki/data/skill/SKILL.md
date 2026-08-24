@@ -224,6 +224,25 @@ invoke it in the background, and never capture without the user's ask.
    the page, the manifest record, or output. A named transcript that is
    missing is reported, never fabricated. Capture never auto-publishes.
 
+**URLs** (issue #178): when the source is a web page, use
+`lumio-wiki ingest-url <kb> <url> --compiled-page <page.md> --source-id <id>`.
+The fetch is bounded and fail-closed (HTTPS only by default; private,
+loopback, and link-local destinations rejected; credentials rejected;
+bytes/time/redirects bounded; every redirect hop re-validated). The staged
+proposal records the FINAL URL and retrieval time as provenance; the fetched
+bytes are never page content. `--allow-http` and
+`--allow-private-destination` exist only for explicitly trusted local
+endpoints.
+
+**Research reports** (issue #178): when you authored a research report over
+several consulted URLs, stage it as a bounded research bundle:
+`lumio-wiki ingest-research <kb> <report.md> --manifest <manifest.yaml>
+--source-id <id>`. The manifest lists each consulted URL, title, and access
+timestamp; consulted URLs are provenance only and never become Claims,
+Citations, or Evidence. Clearly distinguish quoted passages from your own
+synthesis in the report body.
+
+
 ## Workflow: maintenance (you are the Maintainer)
 
 Run periodically or after large ingests — the Dream Cycle keeps a living
