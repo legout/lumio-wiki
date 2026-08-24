@@ -18,6 +18,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
+import msgspec
 import msgspec.yaml as yaml
 
 from lumio_wiki import publish_reserved_artifacts
@@ -326,6 +327,10 @@ class ProposalPipeline:
         filename: str | None,
         source_id: str,
         authored_markdown: str,
+        *,
+        source_url: str | None = None,
+        retrieved_at: str | None = None,
+        consulted_sources: list | None = None,
     ) -> IngestProposal:
         """Bind an original raw Knowledge Source and an authored page (issue #149).
 
@@ -341,6 +346,11 @@ class ProposalPipeline:
         privately (ADR-0014), so an identical retry reuses the current Source
         Version without duplication and a changed-bytes retry is rejected
         without registry or proposal mutation.
+
+        issue #178: ``source_url``/``retrieved_at`` carry the truthful FINAL
+        URL provenance of a fetched Knowledge Source (recorded in proposal
+        provenance only — never page content), and ``consulted_sources``
+        records a research bundle's consulted URLs as provenance.
         """
         from lumio_wiki.ingest import (
             ManagedIngestError,
@@ -350,6 +360,13 @@ class ProposalPipeline:
 
         # 1. Provenance over the ORIGINAL bytes; no converter runs.
         provenance = _managed_provenance(raw_bytes, content_type, filename, source_id)
+        if source_url is not None or retrieved_at is not None or consulted_sources:
+            provenance = msgspec.structs.replace(
+                provenance,
+                source_url=source_url,
+                retrieved_at=retrieved_at,
+                consulted_sources=list(consulted_sources or []),
+            )
         # 2. Resolve the explicit source identity in PRIVATE registry state
         #    (register new / reuse identical / reject changed / reject retired)
         #    and — when a Source Artifact Store is configured — retain the

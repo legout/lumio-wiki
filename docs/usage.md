@@ -135,6 +135,11 @@ lumio-wiki paths <kb> "<src>" "<dst>"        # shortest typed path between two t
 lumio-wiki hot <kb>                          # Maintainer-pinned Hot Index (retrieval ladder step 0)
 lumio-wiki index <kb> [dir]                  # generated Navigation Index (step 1)
 lumio-wiki ingest <kb> <file> [--distiller passthrough|llm]   # stage a Knowledge Source as a proposal
+lumio-wiki ingest <kb> <source> --compiled-page <page.md> --source-id <id>  # managed host-Distiller ingest (bind original source + authored page, issue #149)
+lumio-wiki ingest-url <kb> <url> --compiled-page <page.md> --source-id <id> # safe URL ingestion (HTTPS-only, bounded, SSRF-safe; issue #178)
+              [--max-bytes N] [--timeout S] [--max-redirects N]
+              [--allow-http] [--allow-private-destination]   # explicit escape hatches for trusted local endpoints
+lumio-wiki ingest-research <kb> <report.md> --manifest <manifest.yaml> --source-id <id>  # bounded research bundle (consulted URLs = provenance; issue #178)
 lumio-wiki proposal list <kb>                # list staged proposals
 lumio-wiki proposal inspect <kb> <id> [--json]   # review a proposal (metadata + diff)
 lumio-wiki proposal validate <kb> <id>       # validate a proposal

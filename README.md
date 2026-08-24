@@ -237,6 +237,8 @@ lumio-wiki page <kb-path> "<title>"              # read a Compiled Page by Canon
 lumio-wiki related <kb-path> "<title>"           # list pages related to a title
 lumio-wiki paths <kb-path> "<src>" "<dst>"       # shortest typed path between two titles
 lumio-wiki ingest <kb-path> <source> [--distiller passthrough|llm]   # stage a Knowledge Source as a proposal
+lumio-wiki ingest-url <kb-path> <url> --compiled-page <page.md> --source-id <id>  # safe URL ingestion (HTTPS-only, bounded, SSRF-safe)
+lumio-wiki ingest-research <kb-path> <report.md> --manifest <manifest.yaml> --source-id <id>  # research bundle (consulted URLs = provenance)
 lumio-wiki proposal list|inspect|validate <kb-path> [id]      # review staged proposals
 lumio-wiki publish <kb-path> <id>                # publish a reviewed proposal
 lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]  # secret-free metadata for the exact bound Source Version

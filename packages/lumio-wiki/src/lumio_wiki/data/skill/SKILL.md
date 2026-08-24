@@ -89,6 +89,8 @@ root directory in every command below.
 | `lumio-wiki paths <kb> <source> <target> [--scope canonical\|discovery] [--direction ...] [--max-depth N] [--max-edges N] [--trace]` | Shortest directed path between two titles, hop-bounded. |
 | `lumio-wiki ingest <kb> <file> [--content-type T]` | Read a text/Markdown file, distill it (you are the Distiller), stage a reviewable Ingest Proposal. No private Source identity is established. |
 | `lumio-wiki ingest <kb> <source> --compiled-page <page.md> --source-id <id>` | Managed host-Distiller ingest (issue #149): bind the ORIGINAL raw source to your authored Compiled Page under one stable identity; registers the source, stages the authored page as one proposal. No `[documents]` extra required. |
+| `lumio-wiki ingest-url <kb> <url> --compiled-page <page.md> --source-id <id> [--max-bytes N] [--timeout S] [--max-redirects N] [--allow-http] [--allow-private-destination]` | Safe, bounded URL ingestion (issue #178): fetch one HTTPS URL under a fail-closed policy (private/loopback/link-local destinations, credentials, oversize payloads, and excessive redirects rejected; every redirect hop re-validated), then stage the ORIGINAL bytes under a stable Source ID with truthful final-URL provenance. Fetched bytes are never page content; publication goes through the ordinary proposal pipeline. |
+| `lumio-wiki ingest-research <kb> <report.md> --manifest <manifest.yaml> --source-id <id>` | Bounded research bundle (issue #178): stage your agent-authored research report with an explicit manifest of consulted URLs/titles/access timestamps. Consulted URLs are recorded as provenance only — never automatic Claims, Citations, or Evidence. No network access. |
 | `lumio-wiki proposal list <kb>` | List staged proposals. |
 | `lumio-wiki proposal inspect <kb> <id> [--json]` | Print proposal metadata, blast radius, diff (or full JSON). |
 | `lumio-wiki proposal validate <kb> <id>` | Print the proposal's validation report. Exit 1 on errors. |
@@ -196,6 +198,24 @@ Plain text/Markdown passthrough (no separate original source) still works:
 `lumio-wiki ingest <kb> <file>` distills the file and stages it, but it does
 NOT establish a private Source identity — use the managed mode whenever you
 have the original bytes to preserve lineage.
+
+**URLs** (issue #178): when the source is a web page, use
+`lumio-wiki ingest-url <kb> <url> --compiled-page <page.md> --source-id <id>`.
+The fetch is bounded and fail-closed (HTTPS only by default; private,
+loopback, and link-local destinations rejected; credentials rejected;
+bytes/time/redirects bounded; every redirect hop re-validated). The staged
+proposal records the FINAL URL and retrieval time as provenance; the fetched
+bytes are never page content. `--allow-http` and
+`--allow-private-destination` exist only for explicitly trusted local
+endpoints.
+
+**Research reports** (issue #178): when you authored a research report over
+several consulted URLs, stage it as a bounded research bundle:
+`lumio-wiki ingest-research <kb> <report.md> --manifest <manifest.yaml>
+--source-id <id>`. The manifest lists each consulted URL, title, and access
+timestamp; consulted URLs are provenance only and never become Claims,
+Citations, or Evidence. Clearly distinguish quoted passages from your own
+synthesis in the report body.
 
 ## Workflow: maintenance (you are the Maintainer)
 

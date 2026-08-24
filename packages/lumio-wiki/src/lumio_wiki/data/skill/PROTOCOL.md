@@ -165,6 +165,49 @@ raw bytes; `lumio-wiki source <kb> retire --source-id <id>` and `reactivate
 --source-id <id> --file <bytes>` stage ordinary reviewable proposals (the
 source stays active/retired until the proposal publishes).
 
+### Safe URL ingestion (issue #178)
+
+```
+lumio-wiki ingest-url <kb> <url> --compiled-page <page.md> --source-id <id>
+```
+
+Fetches ONE HTTPS URL under a fail-closed policy and stages the original
+bytes under a stable Source ID — the same managed ingest contract (the page
+MUST declare the `--source-id` in `sources[].id`; the authored page, never
+fetched content, is the proposal). Safety: HTTPS only by default
+(`--allow-http` exists for trusted intranet endpoints); loopback,
+link-local, private-network, and cloud-metadata destinations are rejected
+(`--allow-private-destination` for trusted local endpoints); credential-
+bearing URLs are rejected; bytes/time/redirects are bounded
+(`--max-bytes/--timeout/--max-redirects`); every redirect hop is re-validated
+and the recorded `source_url` is the FINAL URL after redirects. Fetched bytes
+are provenance and (when retention is configured) a private Source Artifact —
+never a Claim, Citation, or Evidence. Publication goes through the ordinary
+inspect/validate/publish pipeline.
+
+### Research bundle (issue #178)
+
+```
+lumio-wiki ingest-research <kb> <report.md> --manifest <manifest.yaml> --source-id <id>
+```
+
+Stages an agent-authored research report (the Compiled Page candidate —
+clearly distinguish source quotations from your own synthesis) together with
+an explicit manifest of consulted URLs:
+
+```yaml
+- url: https://example.com/a
+  title: "Source A"
+  accessed_at: 2026-07-01T10:00:00+00:00
+```
+
+Consulted URLs are recorded as PROVENANCE only (visible in `proposal
+inspect`) — never automatic Claims, Citations, or Evidence. Every URL must
+be HTTPS without credentials, timestamps ISO-8601, and the manifest
+non-empty. No network access runs. The report MUST declare the `--source-id`
+in `sources[].id`, and publication goes through the ordinary
+inspect/validate/publish pipeline.
+
 ### Plain text/Markdown passthrough (no separate original source)
 
 ```

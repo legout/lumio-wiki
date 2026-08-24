@@ -638,3 +638,77 @@ def test_minio_cli_source_resolve_identity_and_denial(
     assert "access denied" in err
     assert artifact_prefix not in err
     assert "minio-report" not in err
+
+
+def test_minio_url_ingest_retains_fetched_bytes_as_artifact(tmp_path, prefixes):
+    """issue #178: URL ingestion retains the FETCHED bytes as a private artifact.
+
+    The fetch runs hermetically against a local server through the documented
+    ``--allow-http``/``--allow-private-destination`` escape hatch; the
+    retained artifact, binding, and provenance all describe the exact fetched
+    content hash — never a page-body mutation of it.
+    """
+    import shutil
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import lumio_wiki as lw
+    from lumio_wiki.url_fetch import UrlFetchPolicy, fetch_url
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            body = b"<html><body>minio url source page</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        host, port = server.server_address[:2]
+        url = f"http://{host}:{port}/page.html"
+        result = fetch_url(
+            url,
+            UrlFetchPolicy(allow_http=True, allow_private_destinations=True),
+        )
+    finally:
+        server.shutdown()
+
+    store, _, artifact_prefix = prefixes
+    artifacts = _artifact_store(store, artifact_prefix)
+    root = tmp_path / "kb"
+    shutil.copytree(FIXTURES, root)
+    kb, report = lw.load_knowledge_base(root)
+    assert report.is_valid, report
+
+    ingest = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store=ingest, artifact_store=artifacts)
+    proposal = pipeline.managed_ingest(
+        result.body,
+        result.media_type,
+        result.filename,
+        "minio-url-report",
+        _authored_page("minio-url-report"),
+        source_url=result.final_url,
+        retrieved_at=result.retrieved_at,
+    )
+    assert proposal.provenance.source_url == url
+    assert proposal.provenance.source_hash == artifact_content_hash(result.body)
+
+    # The exact fetched bytes are privately retained and digest-verified.
+    retained = artifacts.get_artifact(
+        source_id="minio-url-report", content_hash=artifact_content_hash(result.body)
+    )
+    assert bytes(retained) == result.body
+
+    # The published page is the AUTHORED markdown, and the public prefix
+    # never sees the fetched bytes.
+    assert pipeline.publish(proposal.id).status == "published"
+    published = (root / "minio_artifact_page.md").read_text(encoding="utf-8")
+    assert "Body authored from the original source." in published
+    assert "minio url source page" not in published

@@ -53,6 +53,19 @@ if TYPE_CHECKING:
     from lumio_wiki.source_processor import SourceProcessor
 
 
+class ConsultedSource(msgspec.Struct, frozen=True):
+    """One consulted URL recorded as research provenance (issue #178).
+
+    A research bundle's manifest entry: the URL, its title, and the access
+    timestamp. Consulted sources are PROVENANCE — they never become Claims,
+    Citations, or Evidence without authored Compiled Page content and review.
+    """
+
+    url: str
+    title: str | None = None
+    accessed_at: str | None = None
+
+
 class SourceProvenance(msgspec.Struct, frozen=True):
     """Identity and routing metadata for the raw source behind a proposal."""
 
@@ -73,6 +86,15 @@ class SourceProvenance(msgspec.Struct, frozen=True):
     # in the authored page's ``sources[].id``; the registry's version hashes
     # and status stay private (ADR-0014).
     source_id: str | None = None
+    # issue #178: truthful URL provenance for fetched Knowledge Sources — the
+    # FINAL URL after redirects and the retrieval timestamp. ``None`` for
+    # local-file ingest. Fetched content is never page content by itself; it
+    # is registered privately and reviewed through the ordinary pipeline.
+    source_url: str | None = None
+    retrieved_at: str | None = None
+    # issue #178: consulted URLs recorded by a research bundle manifest.
+    # Provenance only — never automatic Claims, Citations, or Evidence.
+    consulted_sources: list[ConsultedSource] = msgspec.field(default_factory=list)
 
 
 class ProposedPage(msgspec.Struct, frozen=True):
