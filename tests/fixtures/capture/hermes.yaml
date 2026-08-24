@@ -1,0 +1,8 @@
+client: hermes
+project: lumio-reader
+started_at: "2026-08-24T14:00:00Z"
+ended_at: "2026-08-24T14:10:00Z"
+transcript: hermes-session.jsonl
+artifacts:
+  - hermes-memory-snapshot.json
+redactions: []

@@ -1,0 +1,7 @@
+client: claude-code
+project: lumio-reader
+started_at: "2026-08-24T13:00:00Z"
+ended_at: "2026-08-24T13:20:00Z"
+transcript: claude-session.jsonl
+artifacts: []
+redactions: []

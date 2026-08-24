@@ -197,6 +197,33 @@ Plain text/Markdown passthrough (no separate original source) still works:
 NOT establish a private Source identity — use the managed mode whenever you
 have the original bytes to preserve lineage.
 
+## Workflow: capture (you are the Distiller)
+
+Explicitly capture the CURRENT session or a research result as reviewable
+knowledge (issue #179). Capture is consent-only and preview-first: never
+invoke it in the background, and never capture without the user's ask.
+
+1. Author a Compiled Page of declarative knowledge only — decisions,
+   verified findings, commands/results, and citations. NOT a raw transcript,
+   and never hidden model reasoning (a transcript-shaped page is refused).
+   The page MUST declare the capture's source id in `sources[].id`.
+2. Write a bounded capture manifest YAML: `client` (e.g. `pi`, `codex`,
+   `claude-code`, `hermes`, or any manual lowercase label), `project`,
+   `started_at`/`ended_at`, `transcript` (a path or a `sha256:<hex>` digest
+   reference), `artifacts`, and explicit `redactions` labels.
+3. Preview WITHOUT staging:
+   `lumio-wiki capture session <kb> --compiled-page <page.md>
+   --manifest <capture.yaml> --source-id <id>`. This registers NOTHING — it
+   prints included sections and redaction counts for the user to confirm.
+4. Only after the user approves, re-run with `--yes`. The transcript/export
+   bytes (or the manifest itself when no transcript is bound) are registered
+   under the source identity and the redacted page is staged as ONE
+   reviewable proposal; review and publish it exactly like ingest.
+   Secrets, credentials, signed URLs, private object keys, environment
+   dumps, and hidden reasoning are redacted before staging and never enter
+   the page, the manifest record, or output. A named transcript that is
+   missing is reported, never fabricated. Capture never auto-publishes.
+
 ## Workflow: maintenance (you are the Maintainer)
 
 Run periodically or after large ingests — the Dream Cycle keeps a living
