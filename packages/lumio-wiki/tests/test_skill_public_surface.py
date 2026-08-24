@@ -144,6 +144,29 @@ def test_skill_documents_the_full_retrieval_ladder():
     assert "retrieval ladder" in skill.lower()
 
 
+def test_open_action_labels_are_documented_across_all_public_surfaces():
+    """Issue #177 + ADR-0017: labelled open actions must not drift.
+
+    The four action labels, the Reader base URL key, and the
+    never-an-implicit-artifact-URL rule are repeated workflow facts across
+    SKILL.md, PROTOCOL.md, and the generated AGENTS.md section. ADR-0017
+    requires repeated facts to stay in parity across public surfaces, so
+    each surface is pinned here.
+    """
+    surfaces = dict(_skill_and_protocol())
+    surfaces["AGENTS.md"] = _generated_agents_md()
+    labels = ("open:", "web:", "source-url:", "source-artifact:")
+    for name, text in surfaces.items():
+        for label in labels:
+            assert label in text, f"{name} does not document the {label} action"
+        assert "LUMIO_READER_BASE_URL" in text, (
+            f"{name} does not name LUMIO_READER_BASE_URL"
+        )
+        assert "signed" in text.lower() or "artifact" in text.lower(), (
+            f"{name} does not disclose the private-artifact rule"
+        )
+
+
 def test_protocol_cites_compiled_page_paths_and_passages():
     """AC5: the protocol instructs citing paths AND passages."""
     protocol = resolve_protocol_path().read_text()

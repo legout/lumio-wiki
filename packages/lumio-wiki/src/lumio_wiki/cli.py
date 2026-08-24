@@ -62,6 +62,7 @@ from lumio_wiki.citation_actions import (
     ReaderBaseURLError,
     citation_open_actions,
     normalize_reader_base_url,
+    page_open_actions,
     render_open_actions,
     source_action_lines,
 )
@@ -1365,7 +1366,7 @@ def _search_object_store(
         )
         if note:
             print(f"note: {note}")
-        _print_page_search_results(results)
+        _print_page_search_results(results, reader_base_url=reader_base_url)
         return 0
 
     # semantic / hybrid through the adapter bound to the exact remote index.
@@ -1442,12 +1443,7 @@ def _cmd_page(args: argparse.Namespace) -> int:
         # Source inspect command (never an implicit artifact URL, ADR-0020).
         reader_base = _reader_base_url()
         for line in render_open_actions(
-            citation_open_actions(
-                page_title=page.title,
-                page_path=page.path,
-                entity_id=page.id or None,
-                reader_base_url=reader_base,
-            )
+            page_open_actions(page, reader_base_url=reader_base)
         ):
             print(line)
         for source in page.sources:

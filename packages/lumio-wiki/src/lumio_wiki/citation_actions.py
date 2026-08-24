@@ -31,6 +31,7 @@ backward-compatible.
 
 from __future__ import annotations
 
+import re
 from urllib.parse import quote, urljoin
 
 from lumio_wiki.records import CitationOpenActions, CompiledPage
@@ -44,6 +45,55 @@ READER_PAGE_PATH_TEMPLATE: str = "/kb/page/{title}"
 #: object-store scheme: an S3/GS/Azure URI is private storage, never a public
 #: browser URL (issue #177, ADR-0013).
 _READER_URL_SCHEMES: frozenset[str] = frozenset({"http", "https"})
+
+#: Object-store URI schemes that must never surface as user-facing document
+#: URLs (issue #177 AC): an authored ``sources[].url`` holding one is storage
+#: provenance, not an openable link.
+_OBJECT_STORE_URL_SCHEMES: frozenset[str] = frozenset(
+    {"s3", "s3a", "gs", "gcs", "az", "abfs"}
+)
+
+#: Characters that make a shell word safe to interpolate bare. A subset of
+#: ``shlex``-safe characters: no whitespace, no quoting, no expansion.
+_SHELL_SAFE_ARG_RE: "re.Pattern[str]" = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
+
+
+def _shell_double_quoted(value: str) -> str:
+    """Render a copyable, shell-safe double-quoted argument.
+
+    Escapes the characters that remain active inside double quotes
+    (backslash, double quote, dollar, backtick) so a hostile Canonical Page
+    Title can never alter the printed command.
+    """
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("$", "\\$")
+        .replace("`", "\\`")
+    )
+    return f'"{escaped}"'
+
+
+def _shell_arg(value: str) -> str:
+    """Bare when the value is a safe shell word; quoted otherwise."""
+    if _SHELL_SAFE_ARG_RE.fullmatch(value):
+        return value
+    return _shell_double_quoted(value)
+
+
+def _external_document_url(url: str | None) -> str | None:
+    """Pass through only user-facing document URLs (issue #177 AC).
+
+    Object-store URIs are private storage locations — they are never
+    presented as document URLs, so they are dropped from the labelled
+    ``source-url:`` action entirely.
+    """
+    if url is None:
+        return None
+    scheme = url.split("://", 1)[0].lower() if "://" in url else ""
+    if scheme in _OBJECT_STORE_URL_SCHEMES:
+        return None
+    return url
 
 
 class ReaderBaseURLError(ValueError):
@@ -98,6 +148,15 @@ def normalize_reader_base_url(raw: str) -> str:
             "Reader base URL must be a bare origin (optionally with a "
             "sub-path), without query string or fragment"
         )
+    port: int | None
+    try:
+        port = parts.port  # Raises ValueError for a malformed/out-of-range port.
+    except ValueError:
+        port = -1
+    if port is not None and not 1 <= port <= 65535:
+        raise ReaderBaseURLError(
+            f"Reader base URL has an invalid port (got {value!r})"
+        )
     # urlsplit keeps the case of the scheme; normalize it for joining.
     normalized = value if parts.scheme.islower() else parts.scheme.lower() + value[len(parts.scheme) :]
     return normalized.rstrip("/")
@@ -121,17 +180,18 @@ def reader_page_url(reader_base_url: str, page_title: str) -> str:
 
 
 def page_open_command(page_title: str) -> str:
-    """The copyable CLI action that opens a cited Compiled Page."""
-    return f'lumio-wiki page "{page_title}"'
+    """The copyable, shell-safe CLI action that opens a cited Compiled Page."""
+    return f"lumio-wiki page {_shell_double_quoted(page_title)}"
 
 
 def source_inspect_command(source_id: str) -> str:
     """The explicit private-Source action (ADR-0020).
 
     A private Source Artifact is opened through explicit, inspectable
-    commands — never an implicitly emitted signed or public URL.
+    commands — never an implicitly emitted signed or public URL. The id is
+    quoted only when it is not a safe bare shell word.
     """
-    return f"lumio-wiki source inspect --source-id {source_id}"
+    return f"lumio-wiki source inspect --source-id {_shell_arg(source_id)}"
 
 
 def page_open_actions(
@@ -164,7 +224,9 @@ def citation_open_actions(
     appear only when a Source id/URL is actually present on the page.
     An invalid Reader base URL raises :class:`ReaderBaseURLError` so
     misconfiguration is actionable rather than silently degrading to no
-    links.
+    links. An authored ``source_url`` that is an object-store URI is
+    dropped: object keys are never presented as user-facing document
+    URLs (issue #177 AC).
     """
     reader_url = (
         reader_page_url(reader_base_url, page_title) if reader_base_url else None
@@ -173,10 +235,10 @@ def citation_open_actions(
         page_title=page_title,
         page_path=page_path,
         entity_id=entity_id,
-        open_command=page_open_command(page_title),
+        open_command=page_open_command(page_title) if page_title else "",
         reader_url=reader_url,
         source_id=source_id,
-        source_url=source_url,
+        source_url=_external_document_url(source_url),
         source_command=source_inspect_command(source_id) if source_id else "",
     )
 
@@ -195,7 +257,7 @@ def source_action_lines(
         page_title="",
         page_path="",
         source_id=source_id,
-        source_url=source_url,
+        source_url=_external_document_url(source_url),
         source_command=source_inspect_command(source_id) if source_id else "",
     )
     return render_open_actions(actions)

@@ -125,10 +125,22 @@ def test_page_open_command_is_copyable() -> None:
     assert page_open_command("Lumio Overview") == 'lumio-wiki page "Lumio Overview"'
 
 
+def test_page_open_command_is_shell_safe_for_hostile_titles() -> None:
+    """A Canonical Page Title can never alter the printed command (review)."""
+    command = page_open_command('Evil" $(rm -rf /) `x` \\y')
+    assert command == 'lumio-wiki page "Evil\\" \\$(rm -rf /) \\`x\\` \\\\y"'
+
+
 def test_source_inspect_command_is_explicit_and_never_a_url() -> None:
     command = source_inspect_command("annual-report")
     assert command == "lumio-wiki source inspect --source-id annual-report"
     assert "://" not in command
+
+
+def test_source_inspect_command_quotes_unsafe_ids() -> None:
+    """A hostile source id is quoted instead of interpolated bare (review)."""
+    command = source_inspect_command("x; rm -rf /")
+    assert command == 'lumio-wiki source inspect --source-id "x; rm -rf /"'
 
 
 # ---------------------------------------------------------------------------
