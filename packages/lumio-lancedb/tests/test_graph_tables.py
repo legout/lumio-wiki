@@ -481,3 +481,21 @@ def test_projection_of_synthetic_and_unloaded_pages_is_truthful(categorized_kb, 
             tmp_path / "lance",
             SourceFingerprint(digest="0" * 64),
         )
+
+
+def test_schema_mismatched_tables_return_none(categorized_kb, tmp_path):
+    """A graph_edges table missing required columns is corrupt, not fatal."""
+    import lancedb
+    import pyarrow as pa
+
+    fingerprint = fingerprint_sources(tmp_path)
+    build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint)
+
+    db = lancedb.connect(tmp_path / "lance")
+    db.create_table(
+        GRAPH_EDGE_TABLE_NAME,
+        data=[{"edge_id": "claim:x"}],
+        schema=pa.schema([pa.field("edge_id", pa.string())]),
+        mode="overwrite",
+    )
+    assert load_graph_state(tmp_path / "lance", fingerprint) is None

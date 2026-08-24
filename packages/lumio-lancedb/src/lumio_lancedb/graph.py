@@ -57,21 +57,6 @@ from lumio_lancedb.location import IndexLocation, as_location
 ENTITY_TABLE_NAME = "entities"
 GRAPH_EDGE_TABLE_NAME = "graph_edges"
 
-#: Columns needed to rebuild traversal adjacency from a graph-edge row.
-_EDGE_LOAD_COLUMNS = (
-    "kind",
-    "subject",
-    "endpoint",
-    "predicate",
-    "status",
-    "edge_id",
-    "scope",
-    "source_path",
-    "line_start",
-    "line_end",
-    "extractor_version",
-)
-
 
 def _entity_schema() -> pa.Schema:
     """Arrow schema for the ``entities`` table (issue #171 scope).
@@ -427,16 +412,21 @@ def load_graph_state(
     stored = _load_fingerprint(index)
     if stored is None or stored.digest != expected_fingerprint.digest:
         return None
-    db = index.connect()
-    names = set(db.list_tables().tables)
-    if ENTITY_TABLE_NAME not in names or GRAPH_EDGE_TABLE_NAME not in names:
-        return None
-    table = db.open_table(GRAPH_EDGE_TABLE_NAME)
-    rows = table.to_arrow().to_pylist()
 
-    outgoing: dict[str, list[GraphEdge]] = {}
-    incoming: dict[str, list[GraphEdge]] = {}
+    # Every read/decode failure below — an unavailable store, an unreadable
+    # table, a schema mismatch, a row violating its kind contract — means the
+    # projection cannot serve graph state: return None so the caller falls
+    # back (missing/unhealthy/stale/corrupt all disclose the same way).
     try:
+        db = index.connect()
+        names = set(db.list_tables().tables)
+        if ENTITY_TABLE_NAME not in names or GRAPH_EDGE_TABLE_NAME not in names:
+            return None
+        table = db.open_table(GRAPH_EDGE_TABLE_NAME)
+        rows = table.to_arrow().to_pylist()
+
+        outgoing: dict[str, list[GraphEdge]] = {}
+        incoming: dict[str, list[GraphEdge]] = {}
         for row in rows:
             edge = _edge_from_row(row)
             if edge is None:
@@ -446,7 +436,7 @@ def load_graph_state(
                 raise _CorruptGraphTable("edge row missing subject")
             outgoing.setdefault(subject, []).append(edge)
             incoming.setdefault(edge.endpoint, []).append(edge.reversed(subject))
-    except _CorruptGraphTable:
+    except Exception:
         return None
     # Same deterministic bucket ordering the zero-index graph guarantees, so
     # traversal behavior is identical (ADR-0021 parity requirement).
