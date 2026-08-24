@@ -19,6 +19,7 @@ from lumio_lancedb.graph import (
     build_graph_tables,
     has_graph_tables,
     load_graph_state,
+    search_entity_candidates,
 )
 from lumio_lancedb.index import (
     PAGE_TABLE_NAME,
@@ -59,6 +60,7 @@ __all__ = [
     "has_semantic_index",
     "load_graph_state",
     "remote_publication_builder",
+    "search_entity_candidates",
     "search_hybrid_index",
     "search_lexical_index",
     "search_pages",

@@ -39,6 +39,8 @@ from lumio_wiki.records import (
     GRAPH_EDGE_ORIGINS,
     GRAPH_EDGE_SCOPE_CANONICAL,
     GRAPH_EDGE_SCOPE_DISCOVERY,
+    Entity,
+    EntityResolutionCandidate,
     GraphEdge,
     GraphState,
     SourceFingerprint,
@@ -466,3 +468,61 @@ def load_graph_state(
         incoming=incoming,
         edge_count=sum(len(bucket) for bucket in outgoing.values()),
     )
+
+
+def search_entity_candidates(
+    location: str | Path | IndexLocation,
+    query: str,
+    *,
+    limit: int = 5,
+    expected_fingerprint: SourceFingerprint | None = None,
+) -> list[EntityResolutionCandidate] | None:
+    """Lexically search the ``entities`` projection for resolution candidates.
+
+    Returns scored, review-only :class:`EntityResolutionCandidate` records
+    (issue #172): advisory context for a Maintainer, never a merge, write, or
+    publish. ``None`` means candidate search is unavailable — the index or
+    ``entities`` table is missing, stale (fingerprint mismatch), or errored —
+    so callers disclose the unavailability truthfully instead of implying an
+    empty result set. Needs no embedder: lexical FTS over ``search_text``.
+    """
+    index = as_location(location)
+    if index is None:
+        return None
+    try:
+        if not index.has_index():
+            return None
+        if expected_fingerprint is not None:
+            stored = _load_fingerprint(index)
+            if stored is None or stored.digest != expected_fingerprint.digest:
+                return None
+        db = index.connect()
+        if ENTITY_TABLE_NAME not in db.list_tables().tables:
+            return None
+        table = db.open_table(ENTITY_TABLE_NAME)
+        if not query.strip() or limit <= 0:
+            return []
+        rows = (
+            table.search(query, query_type="fts")
+            .select(["entity_id", "title", "page_path", "_score"])
+            # Retired redirect rows (redirect_to set, no page of their own)
+            # are not resolution candidates: only page-owning Entities are.
+            .where("redirect_to = ''")
+            .limit(limit)
+            .to_list()
+        )
+        return [
+            EntityResolutionCandidate(
+                entity=Entity(
+                    id=row["entity_id"],
+                    title=row["title"],
+                    path=row["page_path"],
+                ),
+                score=round(float(row["_score"]), 4),
+                reason="LanceDB FTS entity candidate (review only)",
+            )
+            for row in rows
+            if row["entity_id"]
+        ]
+    except Exception:
+        return None

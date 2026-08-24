@@ -178,6 +178,16 @@ def test_search_returns_matching_pages(kb_root: Path, capsys: pytest.CaptureFixt
     assert "Architecture" in out or "Technology" in out
 
 
+def test_search_output_exposes_stable_entity_ids(
+    graph_kb: Path, capsys: pytest.CaptureFixture[str]
+):
+    """Issue #172: search stays human-readable while exposing stable IDs."""
+    rc = main(["search", str(graph_kb), "LanceDB", "--limit", "5"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "entity:architecture" in out or "entity:technology-stack" in out
+
+
 def test_search_no_matches_returns_0(kb_root: Path, capsys: pytest.CaptureFixture[str]):
     rc = main(["search", str(kb_root), "zzzznomatchzzzz"])
     assert rc == 0
@@ -451,7 +461,10 @@ def test_page_unknown_title_returns_1(kb_root: Path):
 def test_related_lists_outgoing_titles(graph_kb: Path, capsys: pytest.CaptureFixture[str]):
     rc = main(["related", str(graph_kb), "Lumio Overview"])
     assert rc == 0
-    assert "Architecture" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Architecture" in out
+    # Stable Entity IDs exposed beside human-readable titles (issue #172).
+    assert "Architecture (entity:architecture)" in out
 
 
 def test_paths_finds_shortest_path(graph_kb: Path, capsys: pytest.CaptureFixture[str]):
@@ -461,6 +474,9 @@ def test_paths_finds_shortest_path(graph_kb: Path, capsys: pytest.CaptureFixture
     assert "Lumio Overview" in out
     assert "Technology Stack" in out
     assert "->" in out
+    # Stable Entity IDs exposed on every path node (issue #172).
+    assert "Lumio Overview (entity:lumio-overview)" in out
+    assert "Technology Stack (entity:technology-stack)" in out
 
 
 def test_paths_no_path_returns_1(kb_root: Path):

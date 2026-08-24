@@ -25,6 +25,7 @@ from lumio_lancedb import (
     build_lancedb_index,
     has_graph_tables,
     load_graph_state,
+    search_entity_candidates,
 )
 from lumio_lancedb.index import build_lexical_index
 from lumio_wiki.embeddings import EmbeddingError
@@ -516,3 +517,112 @@ def test_malformed_fingerprint_sidecar_returns_none(categorized_kb, tmp_path):
     (tmp_path / "lance" / "fingerprint.json").write_bytes(b"{not json")
 
     assert load_graph_state(tmp_path / "lance", fingerprint) is None
+
+
+# ---------------------------------------------------------------------------
+# Entity-resolution candidates (issue #172): review-only, truthful availability.
+# ---------------------------------------------------------------------------
+
+
+def test_search_entity_candidates_returns_scored_review_candidates(categorized_kb, tmp_path):
+    """FTS candidates carry scores/reasons and never mutate the KB."""
+    fingerprint = fingerprint_sources(tmp_path)
+    build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint)
+
+    before = {
+        p.name: p.read_bytes() for p in sorted(tmp_path.rglob("*.md"))
+    }
+    candidates = search_entity_candidates(tmp_path / "lance", "Lumio", expected_fingerprint=fingerprint)
+    assert candidates, "expected FTS candidates"
+    for candidate in candidates:
+        assert candidate.entity.id
+        assert candidate.score > 0
+        assert candidate.reason
+    # Aliases participate in the lexical surface: "Lumio Platform" (alias of
+    # entity:lumio) finds the same entity.
+    alias_hits = search_entity_candidates(tmp_path / "lance", "Platform", expected_fingerprint=fingerprint)
+    assert any(c.entity.id == "entity:lumio" for c in alias_hits)
+    # Candidates are read-only: no source file changed.
+    after = {p.name: p.read_bytes() for p in sorted(tmp_path.rglob("*.md"))}
+    assert before == after
+
+
+def test_search_entity_candidates_excludes_redirect_rows(categorized_kb, tmp_path):
+    """Retired redirect rows never appear as resolution candidates."""
+    fingerprint = fingerprint_sources(tmp_path)
+    build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint)
+
+    candidates = search_entity_candidates(tmp_path / "lance", "old-lumio", expected_fingerprint=fingerprint) or []
+    assert all(c.entity.id != "entity:old-lumio" for c in candidates)
+
+
+def test_search_entity_candidates_unavailable_truthfully(categorized_kb, tmp_path):
+    """Missing index / stale fingerprint / missing table -> None, never []."""
+    fingerprint = fingerprint_sources(tmp_path)
+
+    # No built index at all.
+    assert search_entity_candidates(tmp_path / "absent", "Lumio", expected_fingerprint=fingerprint) is None
+
+    build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint)
+    # Stale (fingerprint-mismatched) projection.
+    stale = SourceFingerprint(digest="0" * 64)
+    assert search_entity_candidates(tmp_path / "lance", "Lumio", expected_fingerprint=stale) is None
+
+    # A searched-but-empty result is a truthful [] rather than None.
+    assert search_entity_candidates(tmp_path / "lance", "zzz-no-match", expected_fingerprint=fingerprint) == []
+
+
+def test_search_entity_candidates_fingerprint_optional(categorized_kb, tmp_path):
+    """Without expected_fingerprint the built projection serves directly."""
+    build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint_sources(tmp_path))
+    candidates = search_entity_candidates(tmp_path / "lance", "LanceDB")
+    assert candidates
+    assert candidates[0].entity.id == "entity:lancedb"
+
+
+def test_graph_retrieval_bounds_identical_across_zero_index_and_lancedb(
+    categorized_kb, tmp_path
+):
+    """AC6: authorization + traversal bounds identical across adapters.
+
+    Graph expansion runs once in the Knowledge Base; the adapter only ranks.
+    Zero-index and LanceDB-backed retrieval must therefore produce the same
+    eligible page set for the same seeds/scope/bounds, with the same truthful
+    trace disclosure.
+    """
+    from lumio_wiki.knowledge_base import (
+        GRAPH_DIRECTION_OUTGOING,
+        GRAPH_SCOPE_DISCOVERY,
+    )
+
+    index_dir = tmp_path / "lance"
+    lancedb_kb = build_lancedb_index(categorized_kb, index_dir)
+    query = "Overview paragraph"
+    kwargs = {
+        "graph_seed_titles": ["Lumio"],
+        "graph_scope": GRAPH_SCOPE_DISCOVERY,
+        "graph_direction": GRAPH_DIRECTION_OUTGOING,
+        "graph_max_depth": 1,
+    }
+
+    zero = categorized_kb.retrieve(query, limit=10, **kwargs)
+    enhanced = lancedb_kb.retrieve(query, limit=10, index_dir=str(index_dir), **kwargs)
+
+    zero_titles = {r.evidence.page_title for r in zero}
+    enhanced_titles = {r.evidence.page_title for r in enhanced}
+    assert zero_titles == enhanced_titles
+    # An unauthorized seed expands to nothing under BOTH adapters.
+    empty_zero = categorized_kb.retrieve(
+        query, limit=10, graph_seed_titles=["Not A Page"]
+    )
+    empty_enhanced = lancedb_kb.retrieve(
+        query, limit=10, index_dir=str(index_dir), graph_seed_titles=["Not A Page"]
+    )
+    assert empty_zero == [] and empty_enhanced == []
+    # Both traces disclose the same graph-expansion stage shape.
+    for results in (zero, enhanced):
+        stage = next(
+            s for r in results for s in r.trace.stages if s.name == "graph-expansion"
+        )
+        assert "discovery" in stage.detail
+        assert "lifecycle=accepted" in stage.detail

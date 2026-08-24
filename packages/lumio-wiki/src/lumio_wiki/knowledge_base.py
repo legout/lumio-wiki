@@ -48,8 +48,13 @@ from lumio_wiki.records import (
     ClaimEvidence,
     CompiledPage,
     ContentCategory,
+    ENTITY_MATCH_ALIAS,
+    ENTITY_MATCH_CANONICAL_TITLE,
+    ENTITY_MATCH_ENTITY_ID,
+    ENTITY_MATCH_REDIRECT,
     Entity,
     EntityRedirect,
+    EntityResolution,
     EntityTypeDefinition,
     ExtractedReference,
     GRAPH_EDGE_ORIGIN_CLAIM,
@@ -187,6 +192,25 @@ class _GraphTopology(NamedTuple):
     wcc_id: dict[str, int]
     wcc_count: int
     largest_wcc_size: int
+
+
+class _GraphExpansion(NamedTuple):
+    """Graph-expansion output for retrieval: eligible pages + trace metadata.
+
+    Issue #172: alongside the eligible Compiled Pages the expansion records
+    the claim-aware metadata a truthful Retrieval Trace discloses — resolved
+    seed Entity IDs, unresolved seed names, traversed Claim IDs/Predicates,
+    and the edge origins actually followed (accepted Claims and/or Extracted
+    References). The lifecycle filter is implicit and disclosed as
+    ``accepted``-only: disputed/superseded Claims never enter adjacency.
+    """
+
+    pages: list
+    resolved_seed_keys: list[str]
+    unresolved_seeds: list[str]
+    traversed_claim_ids: list[str]
+    traversed_predicates: list[str]
+    traversed_origins: list[str]
 
 
 def _compute_graph_topology(
@@ -467,6 +491,95 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             for page in self.pages
             if page.id
         ]
+
+    def resolve_entity(self, name: str) -> EntityResolution:
+        """Resolve one stable Entity from an exact ID, title, or alias (#172).
+
+        Deterministic priority: exact Entity ID, then exact Canonical Page
+        Title, then exact alias. A name claimed by several pages (a shared
+        alias) returns a truthful ambiguity — ``entity`` is ``None`` and
+        ``candidates`` carries every claimant — never a guess. Unknown names
+        and Legacy Flat Mode pages (no Entity contract) resolve to nothing.
+        Resolution is read-only: it never authors, merges, accepts,
+        disputes, or supersedes a Claim.
+        """
+        index = self._knowledge_index()
+
+        def entity_of(page: CompiledPage) -> Entity:
+            return Entity(
+                id=page.id,
+                entity_types=list(page.entity_types),
+                title=page.title,
+                aliases=list(page.aliases),
+                path=page.path,
+            )
+
+        key = name.strip()
+        if not key:
+            return EntityResolution()
+
+        page = index.by_entity_id.get(key)
+        if page is not None:
+            return EntityResolution(entity=entity_of(page), matched_by=ENTITY_MATCH_ENTITY_ID)
+
+        # Retired Entity IDs stay resolvable through ontology redirects
+        # (ADR-0021): a reviewed Entity Merge records the retired ID as a
+        # redirect, so it resolves to the surviving Entity rather than
+        # "not found". Validation guarantees acyclicity; the seen-set is a
+        # cheap defense against invalid hand-edited Control Files.
+        ontology = self.control.ontology if self.control is not None else None
+        redirect_map = {r.from_id: r.to_id for r in (ontology.redirects if ontology else ())}
+        current = key
+        seen = {key}
+        while current in redirect_map and redirect_map[current] not in seen:
+            current = redirect_map[current]
+            seen.add(current)
+        if current != key:
+            surviving = index.by_entity_id.get(current)
+            if surviving is not None:
+                return EntityResolution(
+                    entity=entity_of(surviving), matched_by=ENTITY_MATCH_REDIRECT
+                )
+
+        pages = index.by_title.get(key) or []
+        pages = [p for p in pages if p.id]
+        if len(pages) == 1:
+            return EntityResolution(
+                entity=entity_of(pages[0]), matched_by=ENTITY_MATCH_CANONICAL_TITLE
+            )
+        if len(pages) > 1:
+            # Duplicate titles are invalid in categorized mode; report the
+            # ambiguity truthfully instead of picking a winner.
+            return EntityResolution(
+                matched_by=ENTITY_MATCH_CANONICAL_TITLE,
+                candidates=[entity_of(p) for p in pages],
+            )
+
+        alias_pages = [p for p in (index.by_alias.get(key) or []) if p.id]
+        if len(alias_pages) == 1:
+            return EntityResolution(
+                entity=entity_of(alias_pages[0]), matched_by=ENTITY_MATCH_ALIAS
+            )
+        if len(alias_pages) > 1:
+            return EntityResolution(
+                matched_by=ENTITY_MATCH_ALIAS,
+                candidates=[entity_of(p) for p in alias_pages],
+            )
+        return EntityResolution()
+
+    def entity_id_for_title(self, title: str) -> str | None:
+        """Stable Entity ID owning ``title``, or ``None`` (issue #172).
+
+        The ID-bearing SDK seam for title-returning operations
+        (:meth:`related_pages`, :meth:`shortest_path`): map each returned
+        Canonical Page Title to its machine-stable Entity ID through this
+        public method. ``None`` for unknown titles, ambiguous duplicate
+        titles (invalid input, never guessed), and Legacy Flat Mode pages
+        (the title is the fallback graph key there).
+        """
+        resolution = self.resolve_entity(title)
+        entity = resolution.entity
+        return entity.id if entity is not None else None
 
     def related_from(self, title: str, relationship_type: str | None = None) -> list[Relationship]:
         """Return canonical edges whose source page has the given Canonical Title.
@@ -1327,32 +1440,80 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         scope: str,
         direction: str,
         max_depth: int,
-    ) -> list[CompiledPage]:
-        """Return the graph-expanded eligible Compiled Pages for retrieval.
+    ) -> "_GraphExpansion":
+        """Return the graph-expanded eligible Compiled Pages plus trace metadata.
 
         Discovery Graph expansion (issue #112, ADR-0011): for each seed title,
-        expand authorized neighbors (scope / direction / depth bounded) through
-        the existing :meth:`related_pages` seam, union the results with the
-        seeds, and resolve to the loaded Compiled Pages. Authorization is the
-        set of loaded page titles, so an unloaded page can never enter the
-        eligible set. The graph selects page identities; the retrieval adapter
-        ranks citation-ready Evidence from them and never imports graph code.
+        resolve authorized seed keys, expand authorized neighbors (scope /
+        direction / depth bounded) breadth-first, and resolve to the loaded
+        Compiled Pages. Authorization is the set of loaded page titles, so an
+        unloaded page can never enter the eligible set. The graph selects
+        page identities; the retrieval adapter ranks citation-ready Evidence
+        from them and never imports graph code.
+
+        Since issue #172 the expansion also records claim-aware metadata for
+        a truthful Retrieval Trace: resolved seed Entity IDs, unresolved seed
+        names, traversed Claim IDs/Predicates, and edge origins. Disputed and
+        superseded Claims never enter traversal (only accepted Claims are
+        adjacency), so they can never masquerade as traversed support.
         """
         authorized = {page.title for page in self.pages if page.title}
-        eligible_titles: set[str] = set()
+        candidate = self._graph_candidate(authorized)
+        resolved: list[str] = []
+        unresolved: list[str] = []
         for seed in seed_titles:
-            if seed in authorized:
-                eligible_titles.add(seed)
-            eligible_titles.update(
-                self.related_pages(
-                    seed,
-                    direction=direction,
-                    scope=scope,
-                    candidate_titles=authorized,
-                    max_depth=max_depth,
-                )
-            )
-        return [page for page in self.pages if page.title in eligible_titles]
+            keys = self._authorized_seed_keys(seed, candidate)
+            if keys:
+                resolved.extend(key for key in keys if key not in resolved)
+            else:
+                unresolved.append(seed)
+        allowed = self._graph_allowed_keys(candidate)
+        neighbors = self._graph_neighbor_fn(direction, scope)
+        index = self._knowledge_index()
+
+        visited = set(resolved)
+        found: set[str] = set()
+        claim_ids: set[str] = set()
+        predicates: set[str] = set()
+        origins: set[str] = set()
+        frontier: deque[tuple[str, int]] = deque((seed, 0) for seed in sorted(resolved))
+        edges_expanded = 0
+        while frontier:
+            current, depth = frontier.popleft()
+            if depth >= max_depth:
+                continue
+            for edge in neighbors(current):
+                if edge.endpoint == current or edge.endpoint not in allowed:
+                    continue
+                edges_expanded += 1
+                if edges_expanded > DEFAULT_GRAPH_MAX_EDGES:
+                    frontier.clear()
+                    break
+                origins.add(edge.origin)
+                if edge.claim_id:
+                    claim_ids.add(edge.claim_id)
+                if edge.predicate:
+                    predicates.add(edge.predicate)
+                if edge.endpoint in visited:
+                    continue
+                visited.add(edge.endpoint)
+                found.add(edge.endpoint)
+                frontier.append((edge.endpoint, depth + 1))
+
+        eligible_keys = visited
+        pages = [
+            page
+            for page in self.pages
+            if page.title and index.graph_key_by_title.get(page.title) in eligible_keys
+        ]
+        return _GraphExpansion(
+            pages=pages,
+            resolved_seed_keys=resolved,
+            unresolved_seeds=unresolved,
+            traversed_claim_ids=sorted(claim_ids),
+            traversed_predicates=sorted(predicates),
+            traversed_origins=sorted(origins),
+        )
 
     @staticmethod
     def _with_prepended_stages(
@@ -1439,19 +1600,44 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             _require_graph_direction(graph_direction)
             _require_non_negative_limit("graph_max_depth", graph_max_depth)
             seeds = list(graph_seed_titles)
-            eligible_pages = self._eligible_pages_for_graph(
+            expansion = self._eligible_pages_for_graph(
                 seeds,
                 scope=graph_scope,
                 direction=graph_direction,
                 max_depth=graph_max_depth,
             )
-            prepended_stages.append(
-                TraceStage(
-                    "graph-expansion",
-                    f"{graph_scope} scope; {len(eligible_pages)} eligible pages "
-                    f"from {len(seeds)} seeds",
+            eligible_pages = expansion.pages
+            # Truthful seed resolution (issue #172): resolved seed Entity IDs
+            # plus — as its own stage — any seed that authorized nothing.
+            seed_note = ", ".join(expansion.resolved_seed_keys) or "(none resolved)"
+            if expansion.unresolved_seeds:
+                seed_note += (
+                    f"; unresolved (no loaded authorized page): "
+                    f"{', '.join(expansion.unresolved_seeds)}"
                 )
+            prepended_stages.append(TraceStage("graph-seeds", seed_note))
+            # Claim-aware expansion disclosure (issue #172): scope, counts,
+            # accepted-only lifecycle filter, followed edge origins, traversed
+            # Claim IDs/Predicates (bounded), and the artifact source.
+            detail = (
+                f"{graph_scope} scope; {len(eligible_pages)} eligible pages "
+                f"from {len(seeds)} seeds; lifecycle=accepted "
+                f"(disputed/superseded never traverse); "
+                f"source=in-memory Entity-ID graph"
             )
+            if expansion.traversed_origins:
+                detail += f"; origins={', '.join(expansion.traversed_origins)}"
+            if expansion.traversed_claim_ids:
+                ids = expansion.traversed_claim_ids
+                shown = ", ".join(ids[:8]) + (f" (+{len(ids) - 8} more)" if len(ids) > 8 else "")
+                detail += f"; claims={shown}"
+            if expansion.traversed_predicates:
+                preds = expansion.traversed_predicates
+                shown = ", ".join(preds[:8]) + (
+                    f" (+{len(preds) - 8} more)" if len(preds) > 8 else ""
+                )
+                detail += f"; predicates={shown}"
+            prepended_stages.append(TraceStage("graph-expansion", detail))
             # Fingerprint gate: the in-memory graph is inherently current; a
             # built adapter index may be stale. Before composing them, assert the
             # stored fingerprint matches the current source. A mismatch (or a

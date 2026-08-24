@@ -28,6 +28,7 @@ from pathlib import Path
 from lumio_wiki.knowledge_base import (
     GRAPH_DIRECTION_BOTH,
     GRAPH_DIRECTION_OUTGOING,
+    GRAPH_SCOPE_CANONICAL,
     GRAPH_SCOPE_DISCOVERY,
     KnowledgeBase,
 )
@@ -68,6 +69,7 @@ def _page(
     *,
     path: str | None = None,
     relationships: list[Relationship] | None = None,
+    extra_claims: list[Claim] | None = None,
 ) -> CompiledPage:
     return CompiledPage(
         path=path or f"{title.lower()}.md",
@@ -80,7 +82,7 @@ def _page(
         lifecycle="approved",
         visibility="public",
         sources=[Source(id=f"src-{title.lower()}", title=title)],
-        claims=_claims_from(title, relationships),
+        claims=[*_claims_from(title, relationships), *(extra_claims or [])],
         body=body,
         body_start_line=1,
     )
@@ -382,3 +384,118 @@ def test_graph_expansion_deterministic_across_calls():
         graph_max_depth=2,
     )
     assert [r.evidence.id for r in first] == [r.evidence.id for r in second]
+
+
+# ---------------------------------------------------------------------------
+# 7. Claim-aware trace metadata (issue #172, ADR-0021).
+# ---------------------------------------------------------------------------
+
+
+def _expansion_stage(results: list[RetrievalResult]):
+    return next(
+        s for r in results for s in r.trace.stages if s.name == "graph-expansion"
+    )
+
+
+def test_trace_carries_resolved_seed_entity_ids():
+    kb = _graph_kb()
+    results = kb.retrieve(
+        COMMON,
+        limit=5,
+        graph_seed_titles=["A"],
+        graph_scope=GRAPH_SCOPE_DISCOVERY,
+        graph_max_depth=1,
+    )
+    seeds_stage = next(
+        s for r in results for s in r.trace.stages if s.name == "graph-seeds"
+    )
+    # The seed resolved to its stable Entity ID, not just a title.
+    assert "entity:a" in seeds_stage.detail
+
+
+def test_trace_distinguishes_claim_and_extracted_origins():
+    kb = _graph_kb()
+    discovery = kb.retrieve(
+        COMMON,
+        limit=5,
+        graph_seed_titles=["A"],
+        graph_scope=GRAPH_SCOPE_DISCOVERY,
+        graph_max_depth=2,
+    )
+    stage = _expansion_stage(discovery)
+    assert "claim" in stage.detail
+    assert "extracted-reference" in stage.detail
+
+    canonical = kb.retrieve(
+        COMMON,
+        limit=5,
+        graph_seed_titles=["A"],
+        graph_scope=GRAPH_SCOPE_CANONICAL,
+        graph_max_depth=1,
+    )
+    # Canonical scope follows only the accepted claim edge A -> B; the
+    # extracted-reference-only neighbor C stays ineligible.
+    assert _titles(canonical) == {"A", "B"}
+
+
+def test_trace_discloses_traversed_claim_ids_and_predicates():
+    kb = _graph_kb()
+    results = kb.retrieve(
+        COMMON,
+        limit=5,
+        graph_seed_titles=["A"],
+        graph_scope=GRAPH_SCOPE_DISCOVERY,
+        graph_max_depth=1,
+    )
+    stage = _expansion_stage(results)
+    # The accepted claim edge A -relates-to-> B was traversed.
+    assert "claim:a-b-0" in stage.detail
+    assert "relates-to" in stage.detail
+
+
+def test_trace_discloses_lifecycle_filter_and_excludes_disputed_claims():
+    disputed = Claim(
+        id="claim:a-d-disputed",
+        predicate="relates-to",
+        object="entity:d",
+        status="disputed",
+    )
+    a = _page(
+        "A",
+        f"{COMMON}. Alpha details.\n",
+        relationships=[Relationship(target="B", type="relates-to")],
+        path="alpha.md",
+        extra_claims=[disputed],
+    )
+    b = _page("B", f"{COMMON}. Beta details.\n", path="beta.md")
+    d = _page("D", f"{COMMON}. Delta details.\n", path="delta.md")
+    kb = _kb([a, b, d])
+    results = kb.retrieve(
+        COMMON,
+        limit=10,
+        graph_seed_titles=["A"],
+        graph_scope=GRAPH_SCOPE_DISCOVERY,
+        graph_max_depth=1,
+    )
+    stage = _expansion_stage(results)
+    assert "lifecycle=accepted" in stage.detail
+    # The disputed Claim never traversed and never enters the trace.
+    assert "claim:a-d-disputed" not in stage.detail
+    assert "D" not in _titles(results)
+
+
+def test_trace_discloses_artifact_source_and_unresolved_seeds():
+    kb = _graph_kb()
+    results = kb.retrieve(
+        COMMON,
+        limit=5,
+        graph_seed_titles=["A", "Nonexistent"],
+        graph_scope=GRAPH_SCOPE_DISCOVERY,
+        graph_max_depth=1,
+    )
+    stage = _expansion_stage(results)
+    assert "in-memory" in stage.detail
+    seeds_stage = next(
+        s for r in results for s in r.trace.stages if s.name == "graph-seeds"
+    )
+    assert "Nonexistent" in seeds_stage.detail

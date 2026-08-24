@@ -103,6 +103,54 @@ class EntityTypeDefinition(msgspec.Struct, frozen=True):
     description: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Deterministic entity resolution (issue #172, ADR-0021).
+#
+# Exact/alias lookup and review-only resolution candidates. Resolution never
+# mutates: no retrieval path authors, merges, accepts, disputes, or
+# supersedes a Claim; scored candidates are advisory for a Maintainer.
+# ---------------------------------------------------------------------------
+
+#: ``EntityResolution.matched_by``: resolved from an exact Entity ID.
+ENTITY_MATCH_ENTITY_ID = "entity-id"
+#: ``EntityResolution.matched_by``: resolved from an exact Canonical Page Title.
+ENTITY_MATCH_CANONICAL_TITLE = "canonical-title"
+#: ``EntityResolution.matched_by``: resolved from an exact alias.
+ENTITY_MATCH_ALIAS = "alias"
+#: ``EntityResolution.matched_by``: resolved through an ontology Entity
+#: redirect (a retired Entity ID pointing at its surviving Entity).
+ENTITY_MATCH_REDIRECT = "redirect"
+
+
+class EntityResolution(msgspec.Struct, frozen=True):
+    """Deterministic exact/alias entity-resolution result (issue #172).
+
+    ``entity`` is the ONE stable Entity resolved from an exact Entity ID,
+    Canonical Page Title, or alias; ``matched_by`` discloses which surface
+    matched. When a name is claimed by several pages (a shared alias), no
+    Entity is returned and ``candidates`` carries every claimant — a truthful
+    ambiguity, never a guess. Resolution is read-only and deterministic.
+    """
+
+    entity: Entity | None = None
+    matched_by: str = ""
+    candidates: list[Entity] = msgspec.field(default_factory=list)
+
+
+class EntityResolutionCandidate(msgspec.Struct, frozen=True):
+    """One scored, review-only entity-resolution candidate (issue #172).
+
+    Produced by optional enhanced-adapter search (e.g. LanceDB FTS over the
+    ``entities`` projection). A candidate is advisory context for a
+    Maintainer: it never merges, writes, or publishes anything, and never
+    becomes a Claim or redirect without the existing proposal workflow.
+    """
+
+    entity: Entity
+    score: float
+    reason: str
+
+
 class PredicateDefinition(msgspec.Struct, frozen=True):
     """A controlled Predicate declared by the Control File ontology.
 

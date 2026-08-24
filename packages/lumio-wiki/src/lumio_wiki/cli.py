@@ -73,6 +73,7 @@ from lumio_wiki.knowledge_base import (
     DEFAULT_GRAPH_MAX_EDGES,
     DEFAULT_GRAPH_MAX_RESULTS,
     NAV_INDEX_BASENAME,
+    fingerprint_sources,
 )
 from lumio_wiki.source_inspection import (
     DEFAULT_LINK_EXPIRES,
@@ -446,6 +447,10 @@ def _print_page_search_results(results: list) -> None:
         if page.summary:
             print(f"summary: {page.summary}")
         print(f"path:    {page.path}")
+        # Stable Entity ID for machine consumers (issue #172): titles are
+        # labels, IDs are identity (ADR-0021). Legacy pages omit the line.
+        if page.id:
+            print(f"entity:  {page.id}")
         print(f"score:   {result.score}")
         if result.matched_fields:
             print(f"matched: {', '.join(result.matched_fields)}")
@@ -1341,6 +1346,21 @@ def _cmd_page(args: argparse.Namespace) -> int:
     return 0
 
 
+def _entity_id_suffix(kb: KnowledgeBase, title: str) -> str:
+    """Stable Entity-ID suffix for one Canonical Page Title (#172).
+
+    ``" (entity:...)"`` when the title resolves to a page-owning Entity;
+    empty for Legacy Flat Mode pages (title is the fallback graph key there,
+    so the title alone already names the identity truthfully). Uses the
+    public SDK seam (:meth:`KnowledgeBase.entity_id_for_title`); the CLI
+    never reaches into private Knowledge Base internals.
+    """
+    entity_id = kb.entity_id_for_title(title)
+    if entity_id is not None and entity_id != title:
+        return f" ({entity_id})"
+    return ""
+
+
 def _cmd_related(args: argparse.Namespace) -> int:
     kb = _open_read_kb(args.path)
     titles = kb.related_pages(
@@ -1353,8 +1373,10 @@ def _cmd_related(args: argparse.Namespace) -> int:
         max_results=args.max_results,
     )
     if titles:
+        # Human-readable titles with stable Entity IDs for machine consumers
+        # (issue #172): titles are labels, IDs are identity (ADR-0021).
         for title in titles:
-            print(title)
+            print(f"{title}{_entity_id_suffix(kb, title)}")
     else:
         print(f"No related pages found for: {args.title}")
     if args.trace:
@@ -1386,7 +1408,9 @@ def _cmd_paths(args: argparse.Namespace) -> int:
     found = path is not None
     hops = max(len(path) - 1, 0) if found else 0
     if found:
-        print(" -> ".join(path))
+        # Human-readable titles with stable Entity IDs (issue #172): titles
+        # are labels, IDs are identity (ADR-0021).
+        print(" -> ".join(f"{title}{_entity_id_suffix(kb, title)}" for title in path))
     if args.trace:
         print(
             _format_graph_trace(
@@ -1408,6 +1432,85 @@ def _cmd_paths(args: argparse.Namespace) -> int:
         )
         return 1
     return 0
+
+
+def _cmd_entity(args: argparse.Namespace) -> int:
+    """Resolve one stable Entity from an exact ID, title, or alias (#172).
+
+    Deterministic exact/alias lookup is always available (zero-index,
+    model-free). ``--candidates`` additionally runs optional LanceDB FTS
+    entity-resolution search: candidates are REVIEW-ONLY context with
+    scores/reasons — nothing is merged, written, or published — and without
+    the enhanced adapter the flag fails truthfully with the exact install
+    command.
+    """
+    kb = _open_read_kb(args.path)
+    resolution = kb.resolve_entity(args.name)
+    if resolution.entity is not None:
+        entity = resolution.entity
+        print(f"# {entity.title}")
+        print(f"entity:      {entity.id}")
+        print(f"matched by:  {resolution.matched_by}")
+        if entity.path:
+            print(f"path:        {entity.path}")
+        if entity.entity_types:
+            print(f"entity types:{', '.join(entity.entity_types)}")
+        if entity.aliases:
+            print(f"aliases:     {', '.join(entity.aliases)}")
+    elif resolution.candidates:
+        print(f"Ambiguous {resolution.matched_by} match for: {args.name}")
+        for candidate in resolution.candidates:
+            print(f"  - {candidate.title} [{candidate.id}] ({candidate.path})")
+    else:
+        print(f"No entity found for: {args.name}", file=sys.stderr)
+        if not args.candidates:
+            return 1
+
+    if args.candidates:
+        _print_entity_candidates(kb, args)
+    # Ambiguity and unresolved names are resolution failures: rc 1 (the
+    # candidates above are still printed for review).
+    return 0 if resolution.entity is not None else 1
+
+
+def _print_entity_candidates(kb: KnowledgeBase, args: argparse.Namespace) -> None:
+    """Print scored, review-only entity-resolution candidates (issue #172).
+
+    ``None`` (index missing/stale/unhealthy) is disclosed truthfully; it is
+    never presented as an empty result. The index is built on demand at the
+    effective index directory — the same progressive-enhancement behavior as
+    ``search --mode semantic`` (no embedder needed: FTS only).
+    """
+    import importlib
+
+    from lumio_wiki import retrieval_eval
+
+    if not retrieval_eval.lancedb_available():
+        raise CliError(
+            "--candidates needs lumio-lancedb; install with:  "
+            "pip install lumio-lancedb"
+        )
+    module = importlib.import_module("lumio_lancedb")
+    index_dir = args.index_dir or str(Path(args.path) / DERIVED_DIR_NAME / "lance")
+    module.build_lancedb_index(kb, index_dir)
+    candidates = module.search_entity_candidates(
+        index_dir,
+        args.name,
+        limit=args.limit,
+        expected_fingerprint=fingerprint_sources(kb.root),
+    )
+    print("candidates (review candidates only — never merged, written, or published):")
+    if candidates is None:
+        print(f"  unavailable: no healthy entity projection at {index_dir}")
+        return
+    if not candidates:
+        print("  (no entity-resolution candidates matched)")
+        return
+    for candidate in candidates:
+        print(
+            f"  - {candidate.entity.title} [{candidate.entity.id}] "
+            f"score={candidate.score} {candidate.reason}"
+        )
 
 
 def _cmd_hot(args: argparse.Namespace) -> int:
@@ -3354,6 +3457,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a truthful diagnostic line (scope/direction/bounds/found/hops).",
     )
     paths_parser.set_defaults(func=_cmd_paths)
+
+    # entity (deterministic entity resolution, issue #172)
+    entity_parser = subparsers.add_parser(
+        "entity",
+        help="Resolve a stable Entity from an exact ID, title, or alias.",
+        description=(
+            "Deterministic exact/alias entity lookup (always available). "
+            "--candidates adds optional LanceDB FTS entity-resolution "
+            "candidates: review-only context with scores/reasons, never "
+            "merged or published (issue #172)."
+        ),
+    )
+    _add_kb_argument(entity_parser)
+    entity_parser.add_argument(
+        "name",
+        type=str,
+        help="Entity ID, Canonical Page Title, or exact alias.",
+    )
+    entity_parser.add_argument(
+        "--candidates",
+        action="store_true",
+        help="Also list scored LanceDB FTS entity-resolution candidates "
+        "(review-only; needs lumio-lancedb).",
+    )
+    entity_parser.add_argument(
+        "--index-dir",
+        type=str,
+        default=None,
+        help="Derived index directory for --candidates (default: <kb>/.lumio/lance).",
+    )
+    entity_parser.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help="Max entity-resolution candidates returned (default: 5).",
+    )
+    entity_parser.set_defaults(func=_cmd_entity)
 
     # hot (retrieval-ladder step 0: curated Hot Index)
     hot_parser = subparsers.add_parser(
