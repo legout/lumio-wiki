@@ -52,6 +52,9 @@ from lumio_wiki.records import (
     EntityRedirect,
     EntityTypeDefinition,
     ExtractedReference,
+    GRAPH_EDGE_ORIGIN_CLAIM,
+    GRAPH_EDGE_ORIGIN_EXTRACTED,
+    GraphEdge,
     GraphHealthReport,
     GraphHub,
     GraphState,
@@ -185,14 +188,15 @@ class _GraphTopology(NamedTuple):
 
 
 def _compute_graph_topology(
-    outgoing: dict[str, list[tuple[str, str]]],
+    outgoing: dict[str, list[GraphEdge]],
     nodes: frozenset[str],
 ) -> _GraphTopology:
     """Compute directed degrees, undirected projection, and WCC assignment.
 
     The single shared implementation for both ``graph_diagnostics`` and
     ``rank_link_candidates_by_graph_impact``. Iterates authorized nodes in
-    sorted order for deterministic results.
+    sorted order for deterministic results. Nodes and endpoints are graph
+    keys (stable Entity IDs; issue #170).
     """
     in_degree: dict[str, int] = {t: 0 for t in nodes}
     out_degree: dict[str, int] = {t: 0 for t in nodes}
@@ -200,7 +204,8 @@ def _compute_graph_topology(
     undirected: dict[str, set[str]] = {t: set() for t in nodes}
     edge_count = 0
     for src in sorted(nodes):
-        for endpoint, _rtype in outgoing.get(src, ()):
+        for edge in outgoing.get(src, ()):
+            endpoint = edge.endpoint
             if endpoint == src or endpoint not in nodes:
                 continue
             edge_count += 1
@@ -490,26 +495,36 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
     def graph_path(self, source_title: str, target_title: str) -> list[str] | None:
         """Return the shortest directed path from ``source_title`` to ``target_title``.
 
-        Returns ``None`` if no path exists.
+        Titles are resolved to stable Entity IDs at the module edge
+        (issue #170); the search runs over Entity-ID adjacency and the path is
+        returned in human-readable Canonical Page Titles. Returns ``None`` if
+        no path exists.
         """
         if source_title == target_title:
             return [source_title]
 
-        adjacency = self._knowledge_index().adjacency
-        if source_title not in adjacency:
+        index = self._knowledge_index()
+        source_key = index.graph_key_by_title.get(source_title)
+        target_key = index.graph_key_by_title.get(target_title)
+        if source_key is None or target_key is None:
+            return None
+        adjacency = index.adjacency
+        if source_key not in adjacency:
             return None
 
-        queue: deque[tuple[str, list[str]]] = deque([(source_title, [source_title])])
-        visited = {source_title}
+        queue: deque[tuple[str, list[str]]] = deque([(source_key, [source_key])])
+        visited = {source_key}
 
         while queue:
             current, path = queue.popleft()
-            for next_title, _ in adjacency.get(current, []):
-                if next_title == target_title:
-                    return path + [next_title]
-                if next_title not in visited:
-                    visited.add(next_title)
-                    queue.append((next_title, path + [next_title]))
+            for edge in adjacency.get(current, []):
+                endpoint = edge.endpoint
+                if endpoint == target_key:
+                    keys = path + [endpoint]
+                    return [index.title_by_graph_key.get(k, k) for k in keys]
+                if endpoint not in visited:
+                    visited.add(endpoint)
+                    queue.append((endpoint, path + [endpoint]))
 
         return None
 
@@ -537,28 +552,36 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
     ) -> list[str]:
         """Return the bounded, authorized Canonical Page Titles related to ``title``.
 
+        ``title`` (a Canonical Page Title or Alias) is resolved to stable
+        Entity IDs at the module edge; traversal runs over Entity-ID adjacency
+        and results are returned as human-readable Canonical Page Titles —
+        titles are labels, never identity (issue #170, ADR-0021).
+
         Expands graph neighbors breadth-first up to ``max_depth`` hops,
         following ``direction`` (``"outgoing"``, ``"incoming"``, or
         ``"both"``). ``scope`` selects the graph: ``"canonical"`` (default)
-        traverses only reviewed typed Relationships; ``"discovery"`` traverses
-        canonical Relationships PLUS Extracted References derived from
-        exactly-resolved internal links in Compiled Page bodies (ADR-0011,
-        issue #107). In discovery scope, equivalent edges (same
-        source_title -> target_title) are deduplicated to a single endpoint.
+        traverses only accepted entity-to-entity Claims (Claim Predicate IDs
+        as the relationship type); ``"discovery"`` traverses canonical Claims
+        PLUS Extracted References derived from exactly-resolved internal links
+        in Compiled Page bodies (ADR-0011, issue #107). In discovery scope,
+        equivalent edges (same source -> target) are deduplicated to a single
+        endpoint.
 
         Traversal operates ONLY over ``candidate_titles`` — the
         already-authorized Canonical Page Titles the caller has visibility to.
-        Endpoint resolution and expansion never return a page outside that set;
-        when ``candidate_titles`` is ``None`` every loaded Compiled Page title
-        is the authorized universe. ``title`` itself is never included in the
+        Authorization is checked BEFORE graph resolution/expansion: an
+        unauthorized page cannot influence result counts, and endpoints are
+        only resolved for pages inside the authorized set. When
+        ``candidate_titles`` is ``None`` every loaded Compiled Page title is
+        the authorized universe. ``title`` itself is never included in the
         result.
 
         ``max_edges`` bounds the number of edges inspected/expanded and
         ``max_results`` bounds the returned title count; both truncate
         deterministically (results are sorted by Canonical Page Title).
         ``max_depth``, ``max_edges``, and ``max_results`` must all be
-        non-negative. When ``title`` is not in the authorized candidate set the
-        result is empty.
+        non-negative. When the resolved page is not in the authorized
+        candidate set the result is empty.
         """
         _require_graph_scope(scope)
         _require_graph_direction(direction)
@@ -566,41 +589,43 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         _require_non_negative_limit("max_edges", max_edges)
         _require_non_negative_limit("max_results", max_results)
         candidate = self._graph_candidate(candidate_titles)
-        if title not in candidate:
+        seeds = self._authorized_seed_keys(title, candidate)
+        if not seeds:
             return []
+        allowed = self._graph_allowed_keys(candidate)
         neighbors = self._graph_neighbor_fn(direction, scope)
+        title_of = self._knowledge_index().title_by_graph_key
 
-        visited = {title}
-        found: list[str] = []
-        frontier: deque[tuple[str, int]] = deque([(title, 0)])
+        visited = set(seeds)
+        found: set[str] = set()
+        frontier: deque[tuple[str, int]] = deque((seed, 0) for seed in sorted(seeds))
         edges_expanded = 0
         while frontier:
             current, depth = frontier.popleft()
             if depth >= max_depth:
                 continue
-            # Iterate raw Relationship edges in deterministic order and debit
-            # the expanded-edge budget per ELIGIBLE edge inspected (after the
+            # Iterate raw graph edges in deterministic order and debit the
+            # expanded-edge budget per ELIGIBLE edge inspected (after the
             # relationship-type and candidate-set filters), not per unique
             # endpoint. Parallel edges to the same endpoint each consume the
             # budget; non-candidate / wrong-type / self edges are filtered in
             # O(1) without expanding the graph.
-            for endpoint, rtype in neighbors(current):
-                if relationship_type is not None and rtype != relationship_type:
+            for edge in neighbors(current):
+                if relationship_type is not None and edge.predicate != relationship_type:
                     continue
-                if endpoint == title or endpoint not in candidate:
+                if edge.endpoint in visited or edge.endpoint not in allowed:
                     continue
                 edges_expanded += 1
                 if edges_expanded > max_edges:
                     frontier.clear()
                     break
-                if endpoint not in visited:
-                    visited.add(endpoint)
-                    found.append(endpoint)
-                    frontier.append((endpoint, depth + 1))
+                visited.add(edge.endpoint)
+                found.add(edge.endpoint)
+                frontier.append((edge.endpoint, depth + 1))
 
         # Deterministic truncation: sort all discovered titles, then cap.
         # max_results is validated non-negative above, so the slice always binds.
-        return sorted(found)[:max_results]
+        return sorted(title_of.get(k, k) for k in found)[:max_results]
 
     def shortest_path(
         self,
@@ -638,13 +663,20 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         _require_non_negative_limit("max_edges", max_edges)
         candidate = self._graph_candidate(candidate_titles)
         if source_title == target_title:
-            return [source_title] if source_title in candidate else None
-        if source_title not in candidate or target_title not in candidate:
+            resolved = self._authorized_seed_keys(source_title, candidate)
+            return [source_title] if resolved else None
+        source_keys = self._authorized_seed_keys(source_title, candidate)
+        target_keys = self._authorized_seed_keys(target_title, candidate)
+        if not source_keys or not target_keys:
             return None
+        allowed = self._graph_allowed_keys(candidate)
         neighbors = self._graph_neighbor_fn(direction, scope)
+        title_of = self._knowledge_index().title_by_graph_key
 
-        visited = {source_title}
-        queue: deque[tuple[str, list[str]]] = deque([(source_title, [source_title])])
+        visited = set(source_keys)
+        queue: deque[tuple[str, list[str]]] = deque(
+            (seed, [seed]) for seed in sorted(source_keys)
+        )
         edges_expanded = 0
         while queue:
             current, path = queue.popleft()
@@ -654,14 +686,16 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             # the candidate-set filter), not per unique endpoint.
             # ``shortest_path`` does not filter by relationship type, so every
             # candidate edge counts.
-            for endpoint, _rtype in neighbors(current):
-                if endpoint == current or endpoint not in candidate:
+            for edge in neighbors(current):
+                endpoint = edge.endpoint
+                if endpoint == current or endpoint not in allowed:
                     continue
                 edges_expanded += 1
                 if edges_expanded > max_edges:
                     return None
-                if endpoint == target_title:
-                    return path + [endpoint]
+                if endpoint in target_keys:
+                    keys = path + [endpoint]
+                    return [title_of.get(k, k) for k in keys]
                 if endpoint not in visited:
                     visited.add(endpoint)
                     queue.append((endpoint, path + [endpoint]))
@@ -673,24 +707,61 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             return frozenset(page.title for page in self.pages if page.title)
         return frozenset(candidate_titles)
 
+    def _graph_allowed_keys(self, candidate: frozenset[str]) -> frozenset[str]:
+        """Map authorized Canonical Page Titles to authorized graph keys.
+
+        Graph keys are stable Entity IDs (Canonical Page Title fallback for
+        Legacy Flat Mode pages without an Entity ID — issue #170). Titles not
+        present in the loaded Knowledge Base authorize nothing.
+        """
+        index = self._knowledge_index()
+        return frozenset(
+            index.graph_key_by_title[title]
+            for title in candidate
+            if title in index.graph_key_by_title
+        )
+
+    def _authorized_seed_keys(
+        self, title_or_alias: str, candidate: frozenset[str]
+    ) -> list[str]:
+        """Resolve a Canonical Page Title or Alias to authorized seed keys.
+
+        Resolution is a local lookup, not graph expansion. Authorization is
+        applied BEFORE the resolved identity can seed any traversal: only
+        pages whose Canonical Page Title is in the authorized ``candidate``
+        set contribute keys (issue #170: resolve titles/aliases to Entity IDs
+        at the module edge, without making titles identity).
+        """
+        index = self._knowledge_index()
+        pages = index.by_title.get(title_or_alias) or index.by_alias.get(
+            title_or_alias, []
+        )
+        keys: list[str] = []
+        for page in pages:
+            if page.title and page.title in candidate:
+                key = index.graph_key_by_title.get(page.title)
+                if key is not None and key not in keys:
+                    keys.append(key)
+        return keys
+
     def _graph_neighbor_fn(self, direction: str, scope: str = GRAPH_SCOPE_CANONICAL):
-        """Return a ``title -> iterable[(endpoint, relationship_type)]`` closure.
+        """Return a ``graph key -> iterable[GraphEdge]`` closure.
 
-        Yields the RAW edges reachable from ``title`` per ``direction`` in
-        deterministic ``(endpoint, relationship_type)`` order, WITHOUT
-        materializing, de-duplicating, or sorting a per-node neighbor list.
-        The caller debits its expanded-edge budget per eligible edge as it
-        inspects them, applying the relationship-type, candidate-set, and
-        self-loop filters itself (those filters do not expand the graph).
+        Yields the RAW edges reachable from a graph key (stable Entity ID) per
+        ``direction`` in deterministic order, WITHOUT materializing,
+        de-duplicating, or sorting a per-node neighbor list. The caller debits
+        its expanded-edge budget per eligible edge as it inspects them,
+        applying the relationship-type, candidate-set, and self-loop filters
+        itself (those filters do not expand the graph).
 
-        ``scope`` selects the graph: ``canonical`` uses only reviewed typed
-        Relationships; ``discovery`` uses canonical Relationships PLUS
+        ``scope`` selects the graph: ``canonical`` uses only accepted
+        entity-to-entity Claims; ``discovery`` uses canonical Claims PLUS
         Extracted References (equivalent edges deduplicated to a single
-        endpoint). Extracted edges carry an empty relationship type.
+        endpoint). Extracted edges carry an empty predicate and claim ID.
 
-        Determinism comes from the adjacency being stored pre-sorted by
-        ``(endpoint, relationship_type)`` in ``_KnowledgeIndex``; ``both``
-        direction lazily merges the two pre-sorted streams via ``heapq.merge``.
+        Determinism comes from the adjacency being stored pre-sorted in
+        ``_KnowledgeIndex``; ``both`` direction lazily merges the two
+        pre-sorted streams via ``heapq.merge``.
         """
         index = self._knowledge_index()
         if scope == GRAPH_SCOPE_DISCOVERY:
@@ -702,18 +773,22 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
 
         if direction == GRAPH_DIRECTION_OUTGOING:
 
-            def neighbors(title: str):
-                return outgoing.get(title, ())
+            def neighbors(key: str):
+                return outgoing.get(key, ())
 
         elif direction == GRAPH_DIRECTION_INCOMING:
 
-            def neighbors(title: str):
-                return incoming.get(title, ())
+            def neighbors(key: str):
+                return incoming.get(key, ())
 
         else:  # GRAPH_DIRECTION_BOTH
 
-            def neighbors(title: str):
-                return heapq.merge(outgoing.get(title, ()), incoming.get(title, ()))
+            def neighbors(key: str):
+                return heapq.merge(
+                    outgoing.get(key, ()),
+                    incoming.get(key, ()),
+                    key=_graph_edge_sort_key,
+                )
 
         return neighbors
 
@@ -899,11 +974,14 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         already-authorized Canonical Page Titles the caller has visibility to.
         When ``candidate_titles`` is ``None`` every loaded Compiled Page title
         is the authorized universe; edges whose source or endpoint falls
-        outside the candidate set are excluded. ``max_hub_sample``,
-        ``max_orphan_sample``, and ``max_unresolved_sample`` bound the
-        representative samples (NOT health thresholds); callers retain access
-        to complete actionable unresolved-reference locations through
-        :meth:`extraction_diagnostics`.
+        outside the candidate set are excluded. Nodes are stable Entity IDs
+        (issue #170): hub and orphan identity is Entity-based, so a title
+        change does not alter the report, while report fields stay
+        human-readable titles with the Entity ID disclosed alongside hubs.
+        ``max_hub_sample``, ``max_orphan_sample``, and
+        ``max_unresolved_sample`` bound the representative samples (NOT health
+        thresholds); callers retain access to complete actionable
+        unresolved-reference locations through :meth:`extraction_diagnostics`.
         """
         _require_graph_scope(scope)
         _require_non_negative_limit("max_hub_sample", max_hub_sample)
@@ -918,7 +996,8 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
 
         candidate = self._graph_candidate(candidate_titles)
         all_titles = frozenset(page.title for page in self.pages if page.title)
-        nodes = candidate & all_titles
+        nodes = self._graph_allowed_keys(candidate & all_titles)
+        title_of = index.title_by_graph_key
 
         topo = _compute_graph_topology(outgoing, nodes)
         in_degree = topo.in_degree
@@ -928,8 +1007,12 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         largest = topo.largest_wcc_size
 
         page_count = len(nodes)
-        inbound_orphans = sorted(t for t in nodes if in_degree[t] == 0)
-        outbound_orphans = sorted(t for t in nodes if out_degree[t] == 0)
+        inbound_orphans = sorted(
+            (k for k in nodes if in_degree[k] == 0), key=lambda k: title_of.get(k, k)
+        )
+        outbound_orphans = sorted(
+            (k for k in nodes if out_degree[k] == 0), key=lambda k: title_of.get(k, k)
+        )
         coverage = (largest / page_count) if page_count else 0.0
 
         top_inbound_hubs = self._top_hubs(nodes, in_degree, max_hub_sample)
@@ -953,26 +1036,40 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             top_inbound_hubs=top_inbound_hubs,
             top_outbound_hubs=top_outbound_hubs,
             unresolved_references=unresolved,
-            inbound_orphan_sample_titles=tuple(inbound_orphans[:max_orphan_sample]),
-            outbound_orphan_sample_titles=tuple(outbound_orphans[:max_orphan_sample]),
+            inbound_orphan_sample_titles=tuple(
+                title_of.get(k, k) for k in inbound_orphans[:max_orphan_sample]
+            ),
+            outbound_orphan_sample_titles=tuple(
+                title_of.get(k, k) for k in outbound_orphans[:max_orphan_sample]
+            ),
         )
 
-    @staticmethod
     def _top_hubs(
+        self,
         nodes: frozenset[str],
         degree: dict[str, int],
         max_sample: int,
     ) -> tuple[GraphHub, ...]:
         """Return deterministic top hubs by directed degree, bounded.
 
-        Ranks titles by descending degree with lexicographic title tie-break,
-        excludes zero-degree titles, and caps at ``max_sample``. Hub status is
-        navigational topology, never a Relationship semantic claim.
+        Ranks graph keys (stable Entity IDs) by descending degree with
+        lexicographic ``(title, entity id)`` tie-break, excludes zero-degree
+        nodes, and caps at ``max_sample``. Each hub discloses its Entity ID
+        alongside the human-readable title. Hub status is navigational
+        topology, never a Relationship semantic claim.
         """
+        index = self._knowledge_index()
+        title_of = index.title_by_graph_key
         return tuple(
-            GraphHub(title=t, edge_count=degree[t])
-            for t in sorted(nodes, key=lambda x: (-degree[x], x))
-            if degree[t] > 0
+            GraphHub(
+                title=title_of.get(k, k),
+                edge_count=degree[k],
+                entity_id=k,
+            )
+            for k in sorted(
+                nodes, key=lambda x: (-degree[x], title_of.get(x, x), x)
+            )
+            if degree[k] > 0
         )[:max_sample]
 
     def _aggregate_unresolved_references(
@@ -1086,7 +1183,10 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
 
         candidate_set = self._graph_candidate(candidate_titles)
         all_titles = frozenset(page.title for page in self.pages if page.title)
-        nodes = candidate_set & all_titles
+        # Authorized topology over stable Entity-ID graph keys (issue #170);
+        # LinkCandidate fields stay title-oriented, so map at this edge.
+        nodes = self._graph_allowed_keys(candidate_set & all_titles)
+        key_of = index.graph_key_by_title
 
         # Compute the authorized topology ONCE via the shared structural
         # helper (same source of truth as graph_diagnostics). Each candidate
@@ -1100,15 +1200,23 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         for cand in candidates:
             src_title = cand.source_title
             tgt_title = cand.target_title
+            src_key = key_of.get(src_title)
+            tgt_key = key_of.get(tgt_title)
 
             signals: list[LinkImpactSignal] = []
             score = 0
 
             # Authorization gate: inaccessible page identities do not affect
             # scores, counts, reasons, or output ordering.
-            if src_title in nodes and tgt_title in nodes and src_title != tgt_title:
+            if (
+                src_key in nodes
+                and tgt_key in nodes
+                and src_key is not None
+                and tgt_key is not None
+                and src_key != tgt_key
+            ):
                 # Orphan repair: target has zero inbound edges.
-                if in_degree[tgt_title] == 0:
+                if in_degree[tgt_key] == 0:
                     score += LINK_IMPACT_WEIGHT_ORPHAN_REPAIR
                     signals.append(
                         LinkImpactSignal(
@@ -1121,7 +1229,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
                     )
 
                 # Component joining: source and target in different WCCs.
-                if wcc_id[src_title] != wcc_id[tgt_title]:
+                if wcc_id[src_key] != wcc_id[tgt_key]:
                     score += LINK_IMPACT_WEIGHT_COMPONENT_JOIN
                     signals.append(
                         LinkImpactSignal(
@@ -1134,7 +1242,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
 
                 # Fragile strengthening: same WCC, no direct edge exists.
                 # Adding a direct edge strengthens the indirect connection.
-                elif tgt_title not in out_endpoints[src_title]:
+                elif tgt_key not in out_endpoints[src_key]:
                     score += LINK_IMPACT_WEIGHT_FRAGILE_STRENGTHENING
                     signals.append(
                         LinkImpactSignal(
@@ -1898,7 +2006,15 @@ def extract_references(pages: Sequence[CompiledPage]) -> list[ExtractedReference
 
 
 class _KnowledgeIndex:
-    """In-memory exact-lookup and graph indexes derived from a list of pages."""
+    """In-memory exact-lookup and graph indexes derived from a list of pages.
+
+    Since issue #170 (ADR-0021) the graph adjacency is keyed by stable Entity
+    IDs, not Canonical Page Titles: a title or path change does not alter
+    Entity identity or traversal topology. Pages in Legacy Flat Mode without
+    an Entity ID fall back to their Canonical Page Title as the graph key, so
+    legacy Knowledge Bases keep working; identity remains the Entity ID
+    wherever one is declared.
+    """
 
     def __init__(self, pages: list[CompiledPage]) -> None:
         self.by_title: dict[str, list[CompiledPage]] = {}
@@ -1907,17 +2023,27 @@ class _KnowledgeIndex:
         self.by_source: dict[str, list[CompiledPage]] = {}
         self.by_lifecycle: dict[str, list[CompiledPage]] = {}
         self.by_entity_id: dict[str, CompiledPage] = {}
-        self.adjacency: dict[str, list[tuple[str, str]]] = {}
-        # Reverse adjacency: target title -> [(source title, predicate)].
+        # Graph keys: stable Entity IDs (Canonical Page Title fallback for
+        # Legacy Flat Mode pages without an Entity ID) — issue #170.
+        self.graph_key_by_title: dict[str, str] = {}
+        self.title_by_graph_key: dict[str, str] = {}
+        self.adjacency: dict[str, list[GraphEdge]] = {}
+        # Reverse adjacency: target graph key -> [GraphEdge(source)].
         # Built alongside the outgoing adjacency so incoming traversal and
         # ``both`` direction are derived from the same accepted-Claim set
         # without a second pass (issue #106).
-        self.incoming: dict[str, list[tuple[str, str]]] = {}
+        self.incoming: dict[str, list[GraphEdge]] = {}
 
         for page in pages:
             self.by_title.setdefault(page.title, []).append(page)
             if page.id:
                 self.by_entity_id[page.id] = page
+            if page.title:
+                # Duplicated titles share the fallback key; canonical mode
+                # validates duplicates as errors, so this only affects
+                # already-invalid legacy input.
+                self.graph_key_by_title[page.title] = page.id or page.title
+                self.title_by_graph_key[page.id or page.title] = page.title
             for alias in page.aliases:
                 self.by_alias.setdefault(alias, []).append(page)
             for tag in page.tags:
@@ -1925,71 +2051,124 @@ class _KnowledgeIndex:
             for source in page.sources:
                 self.by_source.setdefault(source.id, []).append(page)
             self.by_lifecycle.setdefault(page.lifecycle or "", []).append(page)
-        # Canonical adjacency (ADR-0021, issue #168): accepted entity-to-entity
-        # Claims projected onto Canonical Page Titles. Disputed and superseded
+        # Canonical adjacency (ADR-0021, issue #170): accepted entity-to-entity
+        # Claims projected onto stable Entity IDs. Disputed and superseded
         # Claims stay inspectable but never enter traversal; literal Claims
         # are not graph edges.
         for page in pages:
+            if not page.title:
+                continue
+            source_key = self.graph_key_by_title[page.title]
             for claim in page.claims:
                 if claim.status != "accepted" or claim.object is None:
                     continue
                 target = self.by_entity_id.get(claim.object)
-                if target is None:
+                if target is None or not target.title:
                     continue
-                self.adjacency.setdefault(page.title, []).append((target.title, claim.predicate))
-                self.incoming.setdefault(target.title, []).append((page.title, claim.predicate))
-        # Canonical adjacency is stored pre-sorted by ``(endpoint, type)`` so
-        # graph traversal iterates canonical edges deterministically without
-        # per-node materialization/sorting (ADR-0011, issue #106).
+                edge = GraphEdge(
+                    endpoint=self.graph_key_by_title[target.title],
+                    predicate=claim.predicate,
+                    claim_id=claim.id,
+                    origin=GRAPH_EDGE_ORIGIN_CLAIM,
+                )
+                self.adjacency.setdefault(source_key, []).append(edge)
+                self.incoming.setdefault(edge.endpoint, []).append(
+                    GraphEdge(endpoint=source_key, **{
+                        field: getattr(edge, field)
+                        for field in (
+                            "predicate",
+                            "claim_id",
+                            "origin",
+                            "source_path",
+                            "line_start",
+                            "line_end",
+                            "extractor_version",
+                        )
+                    })
+                )
+        # Canonical adjacency is stored pre-sorted so graph traversal
+        # iterates canonical edges deterministically without per-node
+        # materialization/sorting (ADR-0011, issue #106).
         for edges in self.adjacency.values():
-            edges.sort()
+            edges.sort(key=_graph_edge_sort_key)
         for edges in self.incoming.values():
-            edges.sort()
+            edges.sort(key=_graph_edge_sort_key)
 
-        # Discovery Graph adjacency (issue #107, ADR-0011): canonical
-        # Relationships PLUS Extracted References, with equivalent edges
-        # (same source_title -> target_title) deduplicated deterministically.
-        # An extracted edge to a target already reachable via a canonical
-        # Relationship is not added again, so discovery traversal surfaces
-        # each endpoint once. Extracted edges carry an empty relationship
-        # type so the existing per-edge budget loop treats them uniformly.
+        # Discovery Graph adjacency (issue #107, ADR-0011; issue #170):
+        # canonical accepted Claims PLUS Extracted References, with equivalent
+        # edges (same source key -> target key) deduplicated deterministically.
+        # An extracted edge to a target already reachable via an accepted
+        # Claim is not added again, so discovery traversal surfaces each
+        # endpoint once. Extracted edges carry no predicate/claim identity —
+        # they are never canonical and are never promoted to Claims.
         extracted, diags = _extract_references(pages)
         self.extracted_references = extracted
         self.extraction_diagnostics = diags
-        self.discovery_adjacency: dict[str, list[tuple[str, str]]] = {}
-        self.discovery_incoming: dict[str, list[tuple[str, str]]] = {}
-        for source_title, edges in self.adjacency.items():
+        self.discovery_adjacency: dict[str, list[GraphEdge]] = {}
+        self.discovery_incoming: dict[str, list[GraphEdge]] = {}
+        for source_key, edges in self.adjacency.items():
             seen: set[str] = set()
-            merged: list[tuple[str, str]] = []
-            for endpoint, rtype in edges:
-                if endpoint in seen:
+            merged: list[GraphEdge] = []
+            for edge in edges:
+                if edge.endpoint in seen:
                     continue
-                seen.add(endpoint)
-                merged.append((endpoint, rtype))
-            self.discovery_adjacency[source_title] = merged
+                seen.add(edge.endpoint)
+                merged.append(edge)
+            self.discovery_adjacency[source_key] = merged
         for ref in extracted:
-            bucket = self.discovery_adjacency.setdefault(ref.source_title, [])
-            if any(endpoint == ref.target_title for endpoint, _ in bucket):
+            src_key = self.graph_key_by_title.get(ref.source_title)
+            tgt_key = self.graph_key_by_title.get(ref.target_title)
+            if src_key is None or tgt_key is None:
                 continue
-            bucket.append((ref.target_title, ""))
-        for source_title, edges in self.incoming.items():
+            bucket = self.discovery_adjacency.setdefault(src_key, [])
+            if any(edge.endpoint == tgt_key for edge in bucket):
+                continue
+            bucket.append(
+                GraphEdge(
+                    endpoint=tgt_key,
+                    origin=GRAPH_EDGE_ORIGIN_EXTRACTED,
+                    source_path=ref.source_path,
+                    line_start=ref.line_start,
+                    line_end=ref.line_end,
+                    extractor_version=ref.extractor_version,
+                )
+            )
+        for source_key, edges in self.incoming.items():
             seen_in: set[str] = set()
-            merged_in: list[tuple[str, str]] = []
-            for endpoint, rtype in edges:
-                if endpoint in seen_in:
+            merged_in: list[GraphEdge] = []
+            for edge in edges:
+                if edge.endpoint in seen_in:
                     continue
-                seen_in.add(endpoint)
-                merged_in.append((endpoint, rtype))
-            self.discovery_incoming[source_title] = merged_in
+                seen_in.add(edge.endpoint)
+                merged_in.append(edge)
+            self.discovery_incoming[source_key] = merged_in
         for ref in extracted:
-            bucket = self.discovery_incoming.setdefault(ref.target_title, [])
-            if any(endpoint == ref.source_title for endpoint, _ in bucket):
+            src_key = self.graph_key_by_title.get(ref.source_title)
+            tgt_key = self.graph_key_by_title.get(ref.target_title)
+            if src_key is None or tgt_key is None:
                 continue
-            bucket.append((ref.source_title, ""))
+            bucket = self.discovery_incoming.setdefault(tgt_key, [])
+            if any(edge.endpoint == src_key for edge in bucket):
+                continue
+            bucket.append(
+                GraphEdge(
+                    endpoint=src_key,
+                    origin=GRAPH_EDGE_ORIGIN_EXTRACTED,
+                    source_path=ref.source_path,
+                    line_start=ref.line_start,
+                    line_end=ref.line_end,
+                    extractor_version=ref.extractor_version,
+                )
+            )
         for edges in self.discovery_adjacency.values():
-            edges.sort()
+            edges.sort(key=_graph_edge_sort_key)
         for edges in self.discovery_incoming.values():
-            edges.sort()
+            edges.sort(key=_graph_edge_sort_key)
+
+
+def _graph_edge_sort_key(edge: GraphEdge) -> tuple[str, str, str, str, str, int, int, str]:
+    """Deterministic total order over edges (issue #170)."""
+    return edge.sort_key
 
 
 class FrontmatterError(Exception):
@@ -3321,9 +3500,14 @@ def _orphan_issues(pages: list[CompiledPage], index: _KnowledgeIndex) -> list[Va
         title = page.title
         if not title:
             continue
-        has_canonical_inbound = any(src != title for src, _ in index.incoming.get(title, []))
+        key = index.graph_key_by_title.get(title)
+        if key is None:
+            continue
+        has_canonical_inbound = any(
+            edge.endpoint != key for edge in index.incoming.get(key, [])
+        )
         has_discovery_inbound = any(
-            src != title for src, _ in index.discovery_incoming.get(title, [])
+            edge.endpoint != key for edge in index.discovery_incoming.get(key, [])
         )
         if has_discovery_inbound:
             # Has inbound topology (at least via body links). If it also has

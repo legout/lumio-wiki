@@ -1,4 +1,4 @@
-"""Materialized Discovery Graph serialization (issue #108, ADR-0011).
+"""Materialized Discovery Graph serialization (issue #108, ADR-0011; #170, ADR-0021).
 
 The Discovery Graph adjacency (canonical accepted Claims plus Extracted
 References, in both outgoing and incoming directions) is materialized as a
@@ -8,6 +8,12 @@ later load accepts it ONLY when both match the loaded Knowledge Base behavior.
 A missing, stale, corrupt, partial, or incompatible artifact is ignored and
 the graph is rebuilt deterministically in memory — these functions NEVER raise
 on a bad artifact.
+
+Since issue #170 (ADR-0021) the adjacency is keyed by stable Entity IDs, not
+Canonical Page Titles: a title or path change does not alter Entity identity
+or traversal topology. Each edge records its origin (accepted entity Claim or
+Extracted Reference), Claim ID, Predicate, direction view, and — for Extracted
+References — the source path/line and extractor version.
 
 Markdown remains the source of truth (ADR-0011). The artifact lives outside
 the Knowledge Base source tree and is never a Compiled Page, Reserved
@@ -25,17 +31,32 @@ from typing import Protocol
 
 import msgpack
 
-from lumio_wiki.records import GraphState, SourceFingerprint
+from lumio_wiki.records import GraphEdge, GraphState, SourceFingerprint
 
-# The MessagePack artifact format version. Bumped only when the serialized
-# layout changes in a way an older reader could misinterpret. Independent of
-# the link-extractor version (``EXTRACTOR_VERSION``), which tracks when the
-# derived edge SET changes.
-GRAPH_ARTIFACT_VERSION = 1
+# The MessagePack artifact format version. Bumped to 2 with the Entity-ID
+# rebuild (issue #170): keys are Entity IDs and edges carry
+# (endpoint, predicate, claim_id, origin, source_path, line_start, line_end,
+# extractor_version) metadata, which a version-1 reader could misinterpret.
+# Bumped only when the serialized layout changes in a way an older reader
+# could misinterpret. Independent of the link-extractor version
+# (``EXTRACTOR_VERSION``), which tracks when the derived edge SET changes.
+GRAPH_ARTIFACT_VERSION = 2
 
 # The artifact filename inside the configured derived index directory. Sits
 # beside optional LanceDB tables under the same logical index dir.
 GRAPH_ARTIFACT_FILENAME = "discovery-graph.msgpack"
+
+# Edge fields, in the exact order serialized into the MessagePack layout.
+_EDGE_FIELDS = (
+    "endpoint",
+    "predicate",
+    "claim_id",
+    "origin",
+    "source_path",
+    "line_start",
+    "line_end",
+    "extractor_version",
+)
 
 
 class _GraphIndex(Protocol):
@@ -44,11 +65,12 @@ class _GraphIndex(Protocol):
     Kept as a Protocol so this module does not import the private
     ``_KnowledgeIndex`` (which would create a circular import with
     ``knowledge_base``). Any object exposing the two discovery adjacency maps
-    works.
+    works. Keys are Entity IDs (Canonical Page Titles only for Legacy Flat
+    Mode pages without an Entity ID); edges are ``GraphEdge`` records.
     """
 
-    discovery_adjacency: dict[str, list[tuple[str, str]]]
-    discovery_incoming: dict[str, list[tuple[str, str]]]
+    discovery_adjacency: dict[str, list[GraphEdge]]
+    discovery_incoming: dict[str, list[GraphEdge]]
 
 
 def build_graph_state(
@@ -63,12 +85,12 @@ def build_graph_state(
     is the reverse view over the same edge set).
     """
     outgoing = {
-        title: [tuple(edge) for edge in edges]
-        for title, edges in index.discovery_adjacency.items()
+        key: list(edges)
+        for key, edges in index.discovery_adjacency.items()
     }
     incoming = {
-        title: [tuple(edge) for edge in edges]
-        for title, edges in index.discovery_incoming.items()
+        key: list(edges)
+        for key, edges in index.discovery_incoming.items()
     }
     edge_count = sum(len(edges) for edges in outgoing.values())
     return GraphState(
@@ -81,6 +103,10 @@ def build_graph_state(
     )
 
 
+def _encode_edge(edge: GraphEdge) -> list[object]:
+    return [getattr(edge, field) for field in _EDGE_FIELDS]
+
+
 def serialize_graph(
     index: _GraphIndex,
     fingerprint: SourceFingerprint,
@@ -88,10 +114,9 @@ def serialize_graph(
 ) -> bytes:
     """Serialize the discovery adjacency to deterministic MessagePack bytes.
 
-    Keys are emitted in sorted order and edges preserve the pre-sorted
-    ``(endpoint, type)`` order stored by ``_KnowledgeIndex``, so serializing
-    the same index twice (or rebuilding from unchanged Markdown) yields
-    byte-identical output.
+    Keys are emitted in sorted order and edges preserve the pre-sorted order
+    stored by ``_KnowledgeIndex``, so serializing the same index twice (or
+    rebuilding from unchanged Markdown) yields byte-identical output.
     """
     state = build_graph_state(index, fingerprint, extractor_version)
     payload = {
@@ -99,12 +124,12 @@ def serialize_graph(
         "fingerprint_digest": state.fingerprint_digest,
         "extractor_version": state.extractor_version,
         "outgoing": {
-            title: [[endpoint, etype] for endpoint, etype in state.outgoing[title]]
-            for title in sorted(state.outgoing)
+            key: [_encode_edge(edge) for edge in state.outgoing[key]]
+            for key in sorted(state.outgoing)
         },
         "incoming": {
-            title: [[endpoint, etype] for endpoint, etype in state.incoming[title]]
-            for title in sorted(state.incoming)
+            key: [_encode_edge(edge) for edge in state.incoming[key]]
+            for key in sorted(state.incoming)
         },
         "edge_count": state.edge_count,
     }
@@ -113,47 +138,60 @@ def serialize_graph(
 
 def _decode_adjacency(
     raw: object,
-) -> dict[str, list[tuple[str, str]]] | None:
+) -> dict[str, list[GraphEdge]] | None:
     """Validate and decode a MessagePack adjacency map, or ``None`` if malformed."""
     if not isinstance(raw, dict):
         return None
-    result: dict[str, list[tuple[str, str]]] = {}
+    result: dict[str, list[GraphEdge]] = {}
     for key, edges in raw.items():
         if not isinstance(key, str):
             return None
         if not isinstance(edges, list):
             return None
-        bucket: list[tuple[str, str]] = []
+        bucket: list[GraphEdge] = []
         for edge in edges:
-            if not isinstance(edge, (list, tuple)) or len(edge) != 2:
+            if not isinstance(edge, (list, tuple)) or len(edge) != len(_EDGE_FIELDS):
                 return None
-            endpoint, etype = edge
-            if not isinstance(endpoint, str) or not isinstance(etype, str):
-                return None
-            bucket.append((endpoint, etype))
+            values: dict[str, object] = {}
+            for field, value in zip(_EDGE_FIELDS, edge, strict=True):
+                if field in ("line_start", "line_end"):
+                    if not isinstance(value, int) or isinstance(value, bool):
+                        return None
+                elif not isinstance(value, str):
+                    return None
+                values[field] = value
+            bucket.append(GraphEdge(**values))  # type: ignore[arg-type]
         result[key] = bucket
     return result
 
 
 def _incoming_is_reverse_of_outgoing(
-    outgoing: dict[str, list[tuple[str, str]]],
-    incoming: dict[str, list[tuple[str, str]]],
+    outgoing: dict[str, list[GraphEdge]],
+    incoming: dict[str, list[GraphEdge]],
 ) -> bool:
     """Return whether ``incoming`` is exactly the reverse view of ``outgoing``.
 
-    For every edge ``(endpoint, type)`` under ``outgoing[src]`` there must be a
-    matching ``(src, type)`` under ``incoming[endpoint]``, and vice versa, with
-    no stray or missing entries. Buckets are compared as sorted multisets so
-    storage order does not matter.
+    For every edge under ``outgoing[src]`` there must be a mirrored edge under
+    ``incoming[edge.endpoint]`` whose endpoint is ``src`` and whose origin
+    metadata (Claim ID, Predicate, origin, provenance) is identical, and vice
+    versa, with no stray or missing entries. Buckets are compared as sorted
+    multisets so storage order does not matter.
     """
-    expected: dict[str, list[tuple[str, str]]] = {}
+    expected: list[tuple[str, GraphEdge]] = []
     for src, edges in outgoing.items():
-        for endpoint, etype in edges:
-            expected.setdefault(endpoint, []).append((src, etype))
-    expected_norm = {
-        key: sorted(value) for key, value in expected.items()
-    }
-    actual_norm = {key: sorted(value) for key, value in incoming.items()}
+        for edge in edges:
+            expected.append(
+                (edge.endpoint, GraphEdge(endpoint=src, **{
+                    field: getattr(edge, field)
+                    for field in _EDGE_FIELDS
+                    if field != "endpoint"
+                }))
+            )
+    expected_norm = sorted(expected, key=lambda pair: (pair[0], pair[1].sort_key))
+    actual: list[tuple[str, GraphEdge]] = [
+        (key, edge) for key, edges in incoming.items() for edge in edges
+    ]
+    actual_norm = sorted(actual, key=lambda pair: (pair[0], pair[1].sort_key))
     return expected_norm == actual_norm
 
 

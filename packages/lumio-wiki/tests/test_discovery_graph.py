@@ -32,6 +32,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import msgspec
 import pytest
 from lumio_wiki.knowledge_base import (
     EXTRACTOR_VERSION,
@@ -42,10 +43,13 @@ from lumio_wiki.knowledge_base import (
 )
 from lumio_wiki.records import (
     CLAIM_STATUS_ACCEPTED,
+    GRAPH_EDGE_ORIGIN_CLAIM,
+    GRAPH_EDGE_ORIGIN_EXTRACTED,
     Claim,
     CompiledPage,
     Evidence,
     ExtractedReference,
+    GraphEdge,
     Relationship,
     RetrievalResult,
     Source,
@@ -768,3 +772,161 @@ def test_image_links_not_extracted_as_references():
     kb = _kb([source, beta])
 
     assert kb.extracted_references("Alpha") == []
+
+
+# ---------------------------------------------------------------------------
+# Entity-ID graph identity (issue #170, ADR-0021).
+#
+# The canonical and Discovery Graphs are keyed by stable Entity IDs: a title
+# or path change does not alter Entity identity or accepted traversal
+# topology, and titles/aliases are resolved to Entity IDs at the module edge
+# while human-readable titles remain the output surface.
+# ---------------------------------------------------------------------------
+
+
+def test_title_change_preserves_canonical_topology_and_identity():
+    # AC1: renaming a page's title (same stable Entity ID) leaves the
+    # Entity-ID adjacency and the accepted traversal topology unchanged.
+    def build(beta_title: str) -> KnowledgeBase:
+        alpha = _page("Alpha", relationships=[Relationship(target="Beta", type="uses")])
+        beta = _page(beta_title)
+        # Pin the Entity ID: identity is the id, never the title.
+        beta = msgspec.structs.replace(beta, id="entity:beta")
+        return _kb([alpha, beta])
+
+    before, after = build("Beta"), build("Beta Renamed")
+    before_index, after_index = before._knowledge_index(), after._knowledge_index()
+    assert before_index.adjacency == after_index.adjacency
+    assert before_index.incoming == after_index.incoming
+    # Canonical traversal over the renamed page still reaches it (by title
+    # surface), and direction/scope results are structurally identical.
+    assert before.related_pages("Alpha") == ["Beta"]
+    assert after.related_pages("Alpha") == ["Beta Renamed"]
+    assert before.shortest_path("Alpha", "Beta") == ["Alpha", "Beta"]
+    assert after.shortest_path("Alpha", "Beta Renamed") == ["Alpha", "Beta Renamed"]
+
+
+def test_related_pages_resolves_alias_to_entity_id_seed():
+    # Titles/aliases resolve to Entity IDs at the module edge (issue #170).
+    alpha = _page("Alpha", relationships=[Relationship(target="Beta Canonical", type="uses")])
+    beta = _page("Beta Canonical", aliases=["Beta Alias"])
+    kb = _kb([alpha, beta])
+
+    assert kb.related_pages("Beta Alias", direction="incoming") == ["Alpha"]
+    assert kb.shortest_path("Beta Alias", "Alpha", direction="incoming") == [
+        "Beta Canonical",
+        "Alpha",
+    ]
+
+
+def test_only_accepted_entity_claims_enter_traversal():
+    # AC2/AC4 (per #167): disputed, superseded, and literal Claims stay
+    # inspectable but outside canonical AND discovery traversal.
+    from lumio_wiki.records import CLAIM_STATUS_DISPUTED, CLAIM_STATUS_SUPERSEDED
+
+    alpha = _page(
+        "Alpha",
+        relationships=[Relationship(target="Beta", type="uses")],
+    )
+    # Replace the auto-built claim set with a mixed-lifecycle set.
+    claims = [
+        Claim(
+            id="claim:accepted",
+            predicate="uses",
+            object="entity:beta",
+            status=CLAIM_STATUS_ACCEPTED,
+        ),
+        Claim(
+            id="claim:disputed",
+            predicate="uses",
+            object="entity:gamma",
+            status=CLAIM_STATUS_DISPUTED,
+        ),
+        Claim(
+            id="claim:superseded",
+            predicate="uses",
+            object="entity:delta",
+            status=CLAIM_STATUS_SUPERSEDED,
+        ),
+        Claim(
+            id="claim:literal",
+            predicate="launched-in",
+            value=2026,
+            value_type="number",
+            status=CLAIM_STATUS_ACCEPTED,
+        ),
+    ]
+    alpha = msgspec.structs.replace(alpha, claims=claims)
+    beta, gamma, delta = _page("Beta"), _page("Gamma"), _page("Delta")
+    kb = _kb([alpha, beta, gamma, delta])
+
+    for scope in (GRAPH_SCOPE_CANONICAL, GRAPH_SCOPE_DISCOVERY):
+        assert kb.related_pages("Alpha", scope=scope) == ["Beta"]
+    index = kb._knowledge_index()
+    assert index.adjacency == {
+        "entity:alpha": [
+            GraphEdge(
+                endpoint="entity:beta",
+                predicate="uses",
+                claim_id="claim:accepted",
+                origin=GRAPH_EDGE_ORIGIN_CLAIM,
+            )
+        ]
+    }
+    # The non-accepted Claims remain inspectable on the page itself.
+    assert len(alpha.claims) == 4
+
+
+def test_dangling_claim_object_produces_no_edge():
+    # AC4: a Claim whose object Entity has no page (blocked by publication
+    # validation) is defensively absent from the graph, never a crash.
+    alpha = _page(
+        "Alpha",
+        relationships=[Relationship(target="Ghost", type="uses")],
+    )
+    beta = _page("Beta")
+    kb = _kb([alpha, beta])  # no "Ghost" page
+
+    assert kb.related_pages("Alpha") == []
+    assert kb.graph_diagnostics(scope=GRAPH_SCOPE_DISCOVERY).edge_count == 0
+
+
+def test_legacy_pages_without_entity_id_fall_back_to_titles():
+    # Legacy Flat Mode pages without an Entity ID keep working: the graph key
+    # falls back to the Canonical Page Title (issue #170 keeps legacy
+    # Knowledge Bases functional).
+    alpha = CompiledPage(
+        path="alpha.md",
+        title="Alpha",
+        tags=["test"],
+        summary="Alpha",
+        lifecycle="approved",
+        visibility="public",
+        sources=[Source(id="src-alpha", title="Alpha")],
+        body="[b](beta.md)\n",
+    )
+    beta = CompiledPage(
+        path="beta.md",
+        title="Beta",
+        tags=["test"],
+        summary="Beta",
+        lifecycle="approved",
+        visibility="public",
+        sources=[Source(id="src-beta", title="Beta")],
+    )
+    kb = _kb([alpha, beta])
+
+    assert kb.related_pages("Alpha", scope=GRAPH_SCOPE_DISCOVERY) == ["Beta"]
+    state = kb.load_or_derive_graph(Path("does-not-exist"))
+    assert state.outgoing == {
+        "Alpha": [
+            GraphEdge(
+                endpoint="Beta",
+                origin=GRAPH_EDGE_ORIGIN_EXTRACTED,
+                source_path="alpha.md",
+                line_start=1,
+                line_end=1,
+                extractor_version=EXTRACTOR_VERSION,
+            )
+        ]
+    }

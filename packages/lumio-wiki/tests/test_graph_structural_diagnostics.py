@@ -185,9 +185,13 @@ def test_canonical_counts_and_directionality():
     assert report.outbound_orphan_count == 3
 
     # Hub is the dominant outbound hub (3 outgoing edges).
-    assert report.top_outbound_hubs[0] == GraphHub(title="Hub", edge_count=3)
+    assert report.top_outbound_hubs[0] == GraphHub(
+        title="Hub", edge_count=3, entity_id="entity:hub"
+    )
     # Sink is the dominant inbound hub (2 incoming edges).
-    assert report.top_inbound_hubs[0] == GraphHub(title="Sink", edge_count=2)
+    assert report.top_inbound_hubs[0] == GraphHub(
+        title="Sink", edge_count=2, entity_id="entity:sink"
+    )
     # Directionality: Hub has zero inbound, so it never appears as inbound hub.
     assert all(h.title != "Hub" for h in report.top_inbound_hubs)
     # Sink has zero outbound, so it never appears as outbound hub.
@@ -278,8 +282,12 @@ def test_duplicate_canonical_edges_counted_separately():
     report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
     # Canonical adjacency keeps both parallel edges.
     assert report.edge_count == 2
-    assert report.top_outbound_hubs == (GraphHub(title="Alpha", edge_count=2),)
-    assert report.top_inbound_hubs == (GraphHub(title="Beta", edge_count=2),)
+    assert report.top_outbound_hubs == (
+        GraphHub(title="Alpha", edge_count=2, entity_id="entity:alpha"),
+    )
+    assert report.top_inbound_hubs == (
+        GraphHub(title="Beta", edge_count=2, entity_id="entity:beta"),
+    )
 
 
 def test_discovery_scope_dedups_parallel_edges_to_endpoint():
@@ -296,8 +304,12 @@ def test_discovery_scope_dedups_parallel_edges_to_endpoint():
     report = kb.graph_diagnostics(scope=GRAPH_SCOPE_DISCOVERY)
     # Discovery adjacency dedups to one edge per endpoint.
     assert report.edge_count == 1
-    assert report.top_outbound_hubs == (GraphHub(title="Alpha", edge_count=1),)
-    assert report.top_inbound_hubs == (GraphHub(title="Beta", edge_count=1),)
+    assert report.top_outbound_hubs == (
+        GraphHub(title="Alpha", edge_count=1, entity_id="entity:alpha"),
+    )
+    assert report.top_inbound_hubs == (
+        GraphHub(title="Beta", edge_count=1, entity_id="entity:beta"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +386,9 @@ def test_hub_samples_are_bounded():
     assert titles == sorted(titles)
     # The single inbound hub (Sink, degree 40) is bounded too.
     assert len(report.top_inbound_hubs) == 1
-    assert report.top_inbound_hubs[0] == GraphHub(title="Sink", edge_count=40)
+    assert report.top_inbound_hubs[0] == GraphHub(
+        title="Sink", edge_count=40, entity_id="entity:sink"
+    )
 
 
 def test_orphan_samples_are_bounded_and_deterministic():

@@ -37,8 +37,11 @@ from lumio_wiki.knowledge_base import (
 )
 from lumio_wiki.records import (
     CLAIM_STATUS_ACCEPTED,
+    GRAPH_EDGE_ORIGIN_CLAIM,
+    GRAPH_EDGE_ORIGIN_EXTRACTED,
     Claim,
     CompiledPage,
+    GraphEdge,
     GraphHealthReport,
     Relationship,
     Source,
@@ -141,15 +144,34 @@ def test_artifact_contains_incoming_and_outgoing_adjacency(tmp_path):
     state = deserialize_graph((index_dir / GRAPH_ARTIFACT_FILENAME).read_bytes())
 
     assert state is not None
-    # Outgoing: Alpha -> Beta (canonical uses), Alpha -> Gamma (extracted),
-    # Gamma -> Beta (extracted).
-    assert state.outgoing["Alpha"] == [("Beta", "uses"), ("Gamma", "")]
-    assert state.outgoing["Gamma"] == [("Beta", "")]
-    # Incoming mirrors: Beta is reached from Alpha (uses) and Gamma (extracted);
-    # Gamma is reached from Alpha (extracted).
-    assert ("Alpha", "uses") in state.incoming["Beta"]
-    assert ("Gamma", "") in state.incoming["Beta"]
-    assert state.incoming["Gamma"] == [("Alpha", "")]
+    # Outgoing over Entity IDs (issue #170): entity:alpha -> entity:beta
+    # (accepted Claim uses), entity:alpha -> entity:gamma (extracted),
+    # entity:gamma -> entity:beta (extracted).
+    [beta_edge, gamma_edge] = state.outgoing["entity:alpha"]
+    assert beta_edge == GraphEdge(
+        endpoint="entity:beta",
+        predicate="uses",
+        claim_id="claim:alpha-beta-0",
+        origin=GRAPH_EDGE_ORIGIN_CLAIM,
+    )
+    assert gamma_edge.origin == GRAPH_EDGE_ORIGIN_EXTRACTED
+    assert gamma_edge.endpoint == "entity:gamma"
+    assert gamma_edge.predicate == "" and gamma_edge.claim_id == ""
+    # Extracted provenance: source path, 1-based line range, extractor version.
+    assert gamma_edge.source_path == "alpha.md"
+    assert gamma_edge.line_start >= 1 and gamma_edge.line_end >= gamma_edge.line_start
+    assert gamma_edge.extractor_version == EXTRACTOR_VERSION
+    [gamma_out] = state.outgoing["entity:gamma"]
+    assert gamma_out.endpoint == "entity:beta"
+    assert gamma_out.origin == GRAPH_EDGE_ORIGIN_EXTRACTED
+    # Incoming mirrors: entity:beta is reached from alpha (uses) and gamma
+    # (extracted); entity:gamma is reached from alpha (extracted).
+    assert [e.endpoint for e in state.incoming["entity:beta"]] == [
+        "entity:alpha",
+        "entity:gamma",
+    ]
+    assert state.incoming["entity:beta"][0].predicate == "uses"
+    assert [e.endpoint for e in state.incoming["entity:gamma"]] == ["entity:alpha"]
 
 
 def test_artifact_records_graph_version(tmp_path):
@@ -902,10 +924,34 @@ def test_roundtrip_preserves_canonical_edge_types(tmp_path):
     kb.materialize_graph(index_dir)
     state = deserialize_graph((index_dir / GRAPH_ARTIFACT_FILENAME).read_bytes())
 
-    assert dict(state.outgoing["Alpha"]) == {"Beta": "uses", "Gamma": "implements"}
+    assert state is not None
+    # Round-trip preserves Entity IDs, Claim IDs, Predicates, direction, and
+    # edge origin (issue #170 AC6).
+    assert state.outgoing["entity:alpha"] == [
+        GraphEdge(
+            endpoint="entity:beta",
+            predicate="uses",
+            claim_id="claim:alpha-beta-0",
+            origin=GRAPH_EDGE_ORIGIN_CLAIM,
+        ),
+        GraphEdge(
+            endpoint="entity:gamma",
+            predicate="implements",
+            claim_id="claim:alpha-gamma-1",
+            origin=GRAPH_EDGE_ORIGIN_CLAIM,
+        ),
+    ]
     # Incoming carries the same typed edges reversed.
-    assert ("Alpha", "uses") in state.incoming["Beta"]
-    assert ("Alpha", "implements") in state.incoming["Gamma"]
+    assert state.incoming["entity:beta"] == [
+        GraphEdge(
+            endpoint="entity:alpha",
+            predicate="uses",
+            claim_id="claim:alpha-beta-0",
+            origin=GRAPH_EDGE_ORIGIN_CLAIM,
+        )
+    ]
+    assert state.incoming["entity:gamma"][0].predicate == "implements"
+    assert state.incoming["entity:gamma"][0].endpoint == "entity:alpha"
 
 
 def test_load_or_derive_is_idempotent(tmp_path):

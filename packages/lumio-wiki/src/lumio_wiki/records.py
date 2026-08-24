@@ -411,7 +411,7 @@ class HealthReport(msgspec.Struct, frozen=True):
 
 
 # ---------------------------------------------------------------------------
-# Materialized Discovery Graph (issue #108, ADR-0011).
+# Materialized Discovery Graph (issue #108, ADR-0011; issue #170, ADR-0021).
 #
 # The Discovery Graph adjacency is materialized as a versioned MessagePack
 # artifact in the derived index directory so startup can skip re-extraction
@@ -419,24 +419,75 @@ class HealthReport(msgspec.Struct, frozen=True):
 # ``GraphState`` is the in-memory representation loaded from the artifact or
 # derived directly; ``GraphHealthReport`` is the aggregate observability
 # surface. Neither exposes MessagePack layout.
+#
+# Since issue #170 the graph is keyed by stable Entity IDs, not Canonical
+# Page Titles: a title or path change does not alter Entity identity or
+# traversal topology. Each edge carries its origin (accepted entity Claim or
+# Extracted Reference), Claim ID, Predicate, and — for Extracted References —
+# the source path/line and extractor version (ADR-0021).
 # ---------------------------------------------------------------------------
+
+#: Edge origin: an accepted, entity-to-entity Claim (canonical Knowledge Graph).
+GRAPH_EDGE_ORIGIN_CLAIM = "claim"
+#: Edge origin: an Extracted Reference (non-canonical discovery topology).
+GRAPH_EDGE_ORIGIN_EXTRACTED = "extracted-reference"
+GRAPH_EDGE_ORIGINS = frozenset({GRAPH_EDGE_ORIGIN_CLAIM, GRAPH_EDGE_ORIGIN_EXTRACTED})
+
+
+class GraphEdge(msgspec.Struct, frozen=True):
+    """One directed edge in the materialized graph.
+
+    ``endpoint`` is the neighboring node's graph key: the stable Entity ID,
+    or — only for pages in Legacy Flat Mode that declare no Entity ID — the
+    Canonical Page Title. ``origin`` discloses whether the edge is an
+    accepted entity-to-entity Claim (``predicate``/``claim_id`` set) or a
+    non-canonical Extracted Reference (``source_path``/``line_start``/
+    ``line_end``/``extractor_version`` provenance set). Extracted References
+    never carry a Claim identity and are never promoted to Claims.
+    """
+
+    endpoint: str
+    predicate: str = ""
+    claim_id: str = ""
+    origin: str = GRAPH_EDGE_ORIGIN_CLAIM
+    source_path: str = ""
+    line_start: int = 0
+    line_end: int = 0
+    extractor_version: str = ""
+
+    @property
+    def sort_key(self) -> tuple[str, str, str, str, str, int, int, str]:
+        """Deterministic edge ordering key (endpoint, then origin metadata)."""
+        return (
+            self.endpoint,
+            self.predicate,
+            self.claim_id,
+            self.origin,
+            self.source_path,
+            self.line_start,
+            self.line_end,
+            self.extractor_version,
+        )
 
 
 class GraphState(msgspec.Struct, frozen=True):
     """Materialized Discovery Graph adjacency (loaded from artifact or derived).
 
     Carries the versioned, fingerprint-bound discovery adjacency in both
-    outgoing and incoming directions. Edges are ``(endpoint, type)`` tuples;
-    extracted references carry an empty type. Built deterministically from a
-    ``_KnowledgeIndex`` and rebuildable byte-identically from unchanged
+    outgoing and incoming directions, keyed by stable Entity IDs (Canonical
+    Page Titles are graph keys only for Legacy Flat Mode pages without an
+    Entity ID). Edges are :class:`GraphEdge` records disclosing Claim ID,
+    Predicate, origin, and Extracted Reference provenance; extracted
+    references carry an empty predicate and claim ID. Built deterministically
+    from a ``_KnowledgeIndex`` and rebuildable byte-identically from unchanged
     Markdown.
     """
 
     version: int
     fingerprint_digest: str
     extractor_version: str
-    outgoing: dict[str, list[tuple[str, str]]]
-    incoming: dict[str, list[tuple[str, str]]]
+    outgoing: dict[str, list[GraphEdge]]
+    incoming: dict[str, list[GraphEdge]]
     edge_count: int
 
 
@@ -475,14 +526,16 @@ class GraphHealthReport(msgspec.Struct, frozen=True):
 class GraphHub(msgspec.Struct, frozen=True):
     """One directed inbound/outbound hub entry in a structural report.
 
-    A Canonical Page Title paired with its directed edge count for the
-    report's scope. Hub status is navigational topology, never a
-    Relationship semantic claim: a high inbound count means many edges point
-    here, not that the page is semantically central.
+    A human-readable Canonical Page Title paired with its stable Entity ID
+    (issue #170) and its directed edge count for the report's scope. Hub
+    status is navigational topology, never a Relationship semantic claim: a
+    high inbound count means many edges point here, not that the page is
+    semantically central.
     """
 
     title: str
     edge_count: int
+    entity_id: str = ""
 
 
 class UnresolvedReferenceSample(msgspec.Struct, frozen=True):
