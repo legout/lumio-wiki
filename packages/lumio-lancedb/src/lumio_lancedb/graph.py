@@ -46,10 +46,11 @@ from lumio_wiki.records import (
 
 try:  # pragma: no cover - exercised indirectly via build/search tests
     import pyarrow as pa
-    from lancedb.index import FTS
+    from lancedb.index import FTS, LabelList
 except ImportError:  # pragma: no cover - optional dependency unavailable
     pa = None
     FTS = None
+    LabelList = None
 
 from lumio_lancedb.index import _load_fingerprint, _save_fingerprint
 from lumio_lancedb.location import IndexLocation, as_location
@@ -284,10 +285,9 @@ def build_graph_tables(
     """Build fresh ``entities`` and ``graph_edges`` tables beside the Evidence
     tables and record the source fingerprint beside them.
 
-    Scalar indexes serve exact ID/status/kind lookups; FTS over
-    ``search_text`` serves lexical candidate retrieval. List columns
-    (``aliases``, ``entity_types``) have no LanceDB scalar-index equivalent
-    and stay queryable through SQL containment filters and the FTS surface.
+    Scalar indexes serve exact ID/status/kind lookups; ``LabelList`` indexes
+    accelerate containment lookups over the ``aliases``/``entity_types`` list
+    columns; FTS over ``search_text`` serves lexical candidate retrieval.
     Never queries LanceDB during traversal: consumers load adjacency once via
     :func:`load_graph_state`.
     """
@@ -304,6 +304,8 @@ def build_graph_tables(
     )
     if entity_rows:
         entities.create_index("entity_id")
+        entities.create_index("aliases", config=LabelList())
+        entities.create_index("entity_types", config=LabelList())
         entities.create_index("search_text", config=FTS())
 
     edge_rows = _graph_edge_rows(kb)
@@ -321,16 +323,27 @@ def build_graph_tables(
     _save_fingerprint(index, fingerprint)
 
 
-def has_graph_tables(index_dir: str | Path | IndexLocation) -> bool:
-    """Cheap health probe: both graph tables exist in the location's index.
+def has_graph_tables(
+    index_dir: str | Path | IndexLocation,
+    expected_fingerprint: SourceFingerprint | None = None,
+) -> bool:
+    """Health probe: both graph tables exist, and optionally match a fingerprint.
 
-    Works uniformly for local and remote locations through the
-    :class:`~lumio_lancedb.location.IndexLocation` health contract; used to
-    gate requested-table completeness after a build.
+    Extends the local/remote :class:`~lumio_lancedb.location.IndexLocation`
+    health contract for the graph projections (issue #171): verifies table
+    presence through a real connection (unlike the sidecar-only
+    ``has_index``), and — when ``expected_fingerprint`` is given — that the
+    recorded index fingerprint matches, so a stale projection is reported
+    unhealthy. Used to gate requested-table completeness after a build or
+    publication.
     """
     index = as_location(index_dir)
     if index is None or not index.has_index():
         return False
+    if expected_fingerprint is not None:
+        stored = _load_fingerprint(index)
+        if stored is None or stored.digest != expected_fingerprint.digest:
+            return False
     db = index.connect()
     names = set(db.list_tables().tables)
     return ENTITY_TABLE_NAME in names and GRAPH_EDGE_TABLE_NAME in names
@@ -407,17 +420,20 @@ def load_graph_state(
     never queries LanceDB: the whole adjacency is read once, here.
     """
     index = as_location(location)
-    if index is None or not index.has_index():
-        return None
-    stored = _load_fingerprint(index)
-    if stored is None or stored.digest != expected_fingerprint.digest:
+    if index is None:
         return None
 
-    # Every read/decode failure below — an unavailable store, an unreadable
-    # table, a schema mismatch, a row violating its kind contract — means the
-    # projection cannot serve graph state: return None so the caller falls
-    # back (missing/unhealthy/stale/corrupt all disclose the same way).
+    # Every read/decode failure below — an unavailable store, a malformed
+    # fingerprint sidecar, an unreadable table, a schema mismatch, a row
+    # violating its kind contract — means the projection cannot serve graph
+    # state: return None so the caller falls back (missing/unhealthy/stale/
+    # corrupt all disclose the same way).
     try:
+        if not index.has_index():
+            return None
+        stored = _load_fingerprint(index)
+        if stored is None or stored.digest != expected_fingerprint.digest:
+            return None
         db = index.connect()
         names = set(db.list_tables().tables)
         if ENTITY_TABLE_NAME not in names or GRAPH_EDGE_TABLE_NAME not in names:

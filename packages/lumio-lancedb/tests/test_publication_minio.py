@@ -131,8 +131,9 @@ def test_minio_publish_with_remote_lancedb_builds_healthchecks_and_activates(kb)
 
     # A Reader retrieves Evidence through the published remote index.
     snapshot = S3Location(store, prefix).resolve()
+    bucket = _os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-wiki-it")
     lance_loc = RemoteIndexLocation(
-        f"s3://{_os.environ.get('LUMIO_S3_TEST_BUCKET', 'lumio-wiki-it')}/{prefix}/v1/{LANCE_DERIVED_DIR}",
+        f"s3://{bucket}/{prefix}/v1/{LANCE_DERIVED_DIR}",
         storage_options=storage_options,
         store=store,
         sidecar_prefix=f"{prefix}/v1/{LANCE_DERIVED_DIR}",
@@ -183,8 +184,9 @@ def test_minio_rollback_to_a_lancedb_version_keeps_the_index_bound(kb):
 
     # The rolled-back version's remote index still serves retrieval.
     snapshot = S3Location(store, prefix).resolve()
+    bucket = _os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-wiki-it")
     lance_loc = RemoteIndexLocation(
-        f"s3://{_os.environ.get('LUMIO_S3_TEST_BUCKET', 'lumio-wiki-it')}/{prefix}/v1/{LANCE_DERIVED_DIR}",
+        f"s3://{bucket}/{prefix}/v1/{LANCE_DERIVED_DIR}",
         storage_options=storage_options,
         store=store,
         sidecar_prefix=f"{prefix}/v1/{LANCE_DERIVED_DIR}",

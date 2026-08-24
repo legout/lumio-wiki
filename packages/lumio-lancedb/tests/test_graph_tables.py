@@ -499,3 +499,20 @@ def test_schema_mismatched_tables_return_none(categorized_kb, tmp_path):
         mode="overwrite",
     )
     assert load_graph_state(tmp_path / "lance", fingerprint) is None
+
+
+def test_has_graph_tables_is_fingerprint_aware(categorized_kb, tmp_path):
+    fingerprint = fingerprint_sources(tmp_path)
+    build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint)
+
+    assert has_graph_tables(tmp_path / "lance", fingerprint) is True
+    assert has_graph_tables(tmp_path / "lance", SourceFingerprint(digest="0" * 64)) is False
+
+
+def test_malformed_fingerprint_sidecar_returns_none(categorized_kb, tmp_path):
+    """A corrupt sidecar (undecodable JSON) discloses as fallback, not a raise."""
+    fingerprint = fingerprint_sources(tmp_path)
+    build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint)
+    (tmp_path / "lance" / "fingerprint.json").write_bytes(b"{not json")
+
+    assert load_graph_state(tmp_path / "lance", fingerprint) is None

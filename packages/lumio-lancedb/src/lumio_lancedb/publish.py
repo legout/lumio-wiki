@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from lumio_wiki.s3_publish import IndexBuilder, RemoteIndexCompletion
+
 from lumio_lancedb.graph import (
     ENTITY_TABLE_NAME,
     GRAPH_EDGE_TABLE_NAME,
@@ -31,12 +33,10 @@ from lumio_lancedb.index import (
     LanceDBRetrievalAdapter,
 )
 from lumio_lancedb.location import RemoteIndexLocation
-from lumio_wiki.s3_publish import IndexBuilder, RemoteIndexCompletion
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
-    from obstore.store import ObjectStore
-
     from lumio_wiki.embeddings import Embedder
+    from obstore.store import ObjectStore
 
 __all__ = ["remote_publication_builder"]
 
@@ -109,9 +109,7 @@ def remote_publication_builder(
                 f"table(s) {', '.join(sorted(missing))}"
             )
         try:
-            tables = {
-                name: int(db.open_table(name).count_rows()) for name in sorted(present)
-            }
+            tables = {name: int(db.open_table(name).count_rows()) for name in sorted(present)}
         except Exception as exc:
             raise RuntimeError(
                 f"remote LanceDB index at {index_uri} is unhealthy: could not "
