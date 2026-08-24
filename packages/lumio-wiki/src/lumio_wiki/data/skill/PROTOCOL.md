@@ -288,6 +288,19 @@ Artifacts.
   Page Title, the relative path the CLI prints, AND the supporting passage
   from the Compiled Page body. Read the page (ladder step 3) to copy the
   exact passage; do not cite from memory or from a search snippet alone.
+- **Open citations with labelled actions.** `search` and `page` output label
+  how to open each cited Compiled Page; reuse the labels verbatim in your
+  answer so every citation is actionable (issue #177):
+  - `open:` the copyable CLI action, `lumio-wiki page "<title>"`;
+  - `web:` a browser Reading Room link — emitted ONLY when a valid
+    `LUMIO_READER_BASE_URL` (http(s) origin) is configured; an
+    S3/object-store URI is never a document URL;
+  - `source-url:` the authored external `sources[].url` when the page
+    declares one — visibly distinct from a Compiled Page link;
+  - `source-artifact:` the EXPLICIT private-Source action
+    (`lumio-wiki source inspect --source-id <id>`). No signed, public, or
+    permanent Source Artifact URL is ever emitted implicitly; `source
+    fetch`/`source link` run only on explicit request (ADR-0020).
 - **Cite or refuse.** Domain claims require a citation to a Compiled Page
   (Canonical Title + path + passage). If the Knowledge Base does not support
   a claim, say "not covered by this knowledge base" — do not fabricate.

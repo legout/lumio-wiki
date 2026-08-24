@@ -528,6 +528,10 @@ def test_isolated_search_page_related_paths(isolated_wheel_env: dict, tmp_path: 
     )
     assert result.returncode == 0, f"search failed:\n{result.stderr}"
     assert "Architecture" in result.stdout or "Technology" in result.stdout
+    # Issue #177: labelled open actions ship in the isolated wheel; no
+    # browser link is emitted without a configured Reader base URL.
+    assert "open:            lumio-wiki page " in result.stdout
+    assert "web:" not in result.stdout
 
     # page (read by Canonical Page Title)
     result = subprocess.run(
@@ -538,6 +542,18 @@ def test_isolated_search_page_related_paths(isolated_wheel_env: dict, tmp_path: 
     assert result.returncode == 0, f"page failed:\n{result.stderr}"
     assert "# Architecture" in result.stdout
     assert "modular monolith" in result.stdout
+    assert "open:            lumio-wiki page " in result.stdout
+
+    # search with a configured Reader base URL labels browser links (issue #177)
+    env = {**os.environ, "LUMIO_READER_BASE_URL": "https://lumio.example.com"}
+    result = subprocess.run(
+        [str(script), "search", str(kb_root), "LanceDB"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, f"search failed:\n{result.stderr}"
+    assert "web:             https://lumio.example.com/kb/page/" in result.stdout
 
     # related
     result = subprocess.run(
