@@ -66,7 +66,10 @@ from lumio_wiki.env_loader import (
     RETRIEVAL_MODE_ENV_VAR,
     SOURCE_STORE_ENV_VAR,
     discover_kb_path_from_project_env,
+    discover_nearest_env_file,
     load_project_config,
+    read_kb_path_from_env_file,
+    resolve_env_value,
 )
 from lumio_wiki.knowledge_base import (
     DEFAULT_GRAPH_MAX_DEPTH,
@@ -75,6 +78,7 @@ from lumio_wiki.knowledge_base import (
     NAV_INDEX_BASENAME,
     fingerprint_sources,
 )
+from lumio_wiki.records import ValidationReport
 from lumio_wiki.source_inspection import (
     DEFAULT_LINK_EXPIRES,
     OUTCOME_ACCESS_DENIED,
@@ -139,7 +143,7 @@ def _resolve_index_dir(args: argparse.Namespace, kb_root: Path) -> Path:
     return Path(raw) if raw else default_index_dir(kb_root)
 
 
-def _load_kb(path: str | Path) -> tuple[KnowledgeBase, object]:
+def _load_kb(path: str | Path) -> tuple[KnowledgeBase, ValidationReport]:
     """Load a Knowledge Base and return ``(kb, report)`` or raise :class:`CliError`."""
     try:
         return load_knowledge_base(path)
@@ -361,6 +365,62 @@ def _bind_remote_lancedb(snapshot) -> tuple[Any, Any]:
     return module, location
 
 
+def _probe_lancedb_index(
+    module: Any, location: Any, expected_fingerprint: Any
+) -> tuple[bool | None, bool | None, str | None]:
+    """Probe a bound LanceDB index: presence, fingerprint, tables (issue #175).
+
+    Returns ``(healthy, fingerprint_matches, note)``; ``note`` is ``None`` on
+    the healthy path and otherwise carries the exact degradation note search
+    discloses, so ``status`` and ``search`` report one shared degradation
+    taxonomy. ``fingerprint_matches`` is ``None`` when no fingerprint sidecar
+    was recorded (unknown, not stale). Transport/auth/corruption errors
+    degrade to an ``unavailable`` note rather than raising.
+    """
+    import msgspec
+
+    from lumio_wiki.fingerprint_store import FINGERPRINT_FILE
+    from lumio_wiki.records import SourceFingerprint
+
+    describe = location.describe
+
+    def degraded(message: str) -> tuple[bool, None, str]:
+        return False, None, f"{message}; zero-index page search over the same Published Version"
+
+    try:
+        if not location.has_index():
+            return degraded(f"LanceDB index missing at {describe}")
+        fingerprint_matches: bool | None = None
+        raw = location.read_sidecar(FINGERPRINT_FILE)
+        if raw is not None:
+            stored = msgspec.json.decode(raw, type=SourceFingerprint)
+            fingerprint_matches = stored.digest == expected_fingerprint.digest
+            if stored.digest != expected_fingerprint.digest:
+                return (
+                    False,
+                    False,
+                    f"LanceDB index stale at {describe} (fingerprint mismatch); "
+                    f"zero-index page search over the same Published Version",
+                )
+        if hasattr(location, "connect") and hasattr(module, "PAGE_TABLE_NAME"):
+            present = set(location.connect().list_tables().tables)
+            required = {
+                getattr(module, "TABLE_NAME", "evidence"),
+                module.PAGE_TABLE_NAME,
+            }
+            missing = required - present
+            if missing:
+                return degraded(
+                    f"LanceDB index incomplete at {describe} "
+                    f"(missing table(s): {', '.join(sorted(missing))})"
+                )
+        return True, fingerprint_matches, None
+    except Exception as exc:  # transport/auth/corruption — degrade truthfully
+        return degraded(
+            f"LanceDB index unavailable at {describe} ({type(exc).__name__}: {exc})"
+        )
+
+
 def _remote_lance_page_search(
     module: Any,
     location: Any,
@@ -377,51 +437,23 @@ def _remote_lance_page_search(
     propagate — they are configuration errors, not degradations.
     """
     from lumio_wiki.embeddings import EmbeddingError
-    from lumio_wiki.fingerprint_store import FINGERPRINT_FILE
 
     def _fallback(note: str) -> tuple[list, str]:
         return snapshot.knowledge_base.search_pages(query, limit=limit), note
 
-    describe = location.describe
     try:
-        if not location.has_index():
-            return _fallback(
-                f"LanceDB index missing at {describe}; "
-                f"zero-index page search over the same Published Version"
-            )
-        raw = location.read_sidecar(FINGERPRINT_FILE)
-        stored = None
-        if raw is not None:
-            import msgspec
-
-            from lumio_wiki.records import SourceFingerprint
-
-            stored = msgspec.json.decode(raw, type=SourceFingerprint)
-        if stored is not None and stored.digest != snapshot.fingerprint.digest:
-            return _fallback(
-                f"LanceDB index stale at {describe} (fingerprint mismatch); "
-                f"zero-index page search over the same Published Version"
-            )
-        if hasattr(location, "connect") and hasattr(module, "PAGE_TABLE_NAME"):
-            present = set(location.connect().list_tables().tables)
-            required = {
-                getattr(module, "TABLE_NAME", "evidence"),
-                module.PAGE_TABLE_NAME,
-            }
-            missing = required - present
-            if missing:
-                return _fallback(
-                    f"LanceDB index incomplete at {describe} (missing table(s): "
-                    f"{', '.join(sorted(missing))}); "
-                    f"zero-index page search over the same Published Version"
-                )
+        _healthy, _matches, note = _probe_lancedb_index(
+            module, location, snapshot.fingerprint
+        )
+        if note is not None:
+            return _fallback(note)
         results = module.search_pages(list(snapshot.pages), query, limit=limit, index_dir=location)
         return results, None
     except EmbeddingError:
         raise
     except Exception as exc:  # transport/auth/corruption — degrade truthfully
         return _fallback(
-            f"LanceDB index unavailable at {describe} "
+            f"LanceDB index unavailable at {location.describe} "
             f"({type(exc).__name__}: {exc}); "
             f"zero-index page search over the same Published Version"
         )
@@ -858,6 +890,11 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         print("  1. Run: lumio-wiki validate")
     print("  2. Start your agent harness in this directory.")
     print("     It will read LUMIO_KB_PATH from .env and the protocol from AGENTS.md.")
+
+    # 7. Shared post-setup summary: the same renderer `status` prints
+    # (issue #175), collected from the just-written configuration.
+    print()
+    _print_setup_status_summary()
     return 0
 
 
@@ -2236,6 +2273,341 @@ def _cmd_health(args: argparse.Namespace) -> int:
     for issue in warnings:
         print(f"  WARN:  {issue.file}: {issue.field}: {issue.message}")
     return 0 if report.is_valid else 1
+
+
+# ---------------------------------------------------------------------------
+# Effective configuration + runtime state (issue #175).
+#
+# ``status`` explains the project's effective Knowledge Base configuration and
+# retrieval state from one secret-free command, and ``setup`` prints the same
+# renderer after writing configuration. The collector returns a flat dict whose
+# keys are exactly the rendered output keys, so the human and ``--json`` forms
+# can never disagree (backend and mode are separate keys by construction).
+# ---------------------------------------------------------------------------
+
+
+def _resolve_location_with_source(
+    kb_argument: str | None,
+) -> tuple[str, str]:
+    """Resolve the effective Knowledge Base location and its config source.
+
+    Applies the documented precedence (issue #152, ADR-0017) and returns
+    ``(location, source_description)``: an explicit argument, an exported
+    ``LUMIO_KB_PATH``, or the nearest trusted project ``.env``.
+    """
+    if kb_argument is not None:
+        return kb_argument, "argument"
+    exported = os.environ.get(KB_PATH_ENV_VAR, "")
+    if exported.strip():
+        return exported, "exported env (LUMIO_KB_PATH)"
+    env_path = discover_nearest_env_file()
+    if env_path is not None:
+        value = read_kb_path_from_env_file(env_path)
+        if value:
+            try:
+                return resolve_env_value(value, env_path.parent), f"project .env ({env_path})"
+            except (OSError, RuntimeError, ValueError):
+                pass
+    raise CliError(
+        "no Knowledge Base location configured. Pass <kb>, export "
+        "LUMIO_KB_PATH, or run 'lumio-wiki setup <kb>' (or 'setup --from "
+        "<s3-uri>') to write it to .env."
+    )
+
+
+def _artifact_retention_policy() -> str:
+    """Return the effective Source Artifact retention policy label."""
+    value = os.environ.get(ARTIFACT_RETENTION_ENV_VAR) or load_project_config().get(
+        ARTIFACT_RETENTION_ENV_VAR
+    )
+    if value is None:
+        return "unset"
+    normalized = value.strip().lower()
+    if normalized not in {"required", "disabled"}:
+        raise CliError(
+            f"{ARTIFACT_RETENTION_ENV_VAR} must be 'required' or 'disabled', got {value!r}"
+        )
+    return normalized
+
+
+def _artifact_store_summary() -> tuple[str, bool | None]:
+    """Summarize the private Source Artifact Store without credentials or keys.
+
+    Returns ``(kind, available)``. Only the kind is reported: the store URI is
+    private (ADR-0020) and availability is never probed with credentials, so
+    ``available`` stays ``None`` (not probed) rather than guessed.
+    """
+    value = os.environ.get(SOURCE_STORE_ENV_VAR) or load_project_config().get(
+        SOURCE_STORE_ENV_VAR
+    )
+    if not value:
+        return "none", None
+    if _is_object_store_uri(value):
+        return "s3", None
+    return "local directory", None
+
+
+def _lancedb_status_fields(
+    *,
+    backend: str,
+    is_s3: bool,
+    fingerprint: Any,
+    descriptor: Any,
+    kb_root: Path | None,
+) -> dict[str, Any]:
+    """Collect the LanceDB requested/available/healthy/fingerprint fields.
+
+    Never raises: every probe outcome degrades into ``lancedb_fallback`` with
+    recovery guidance (issue #175). Probes reuse the shared
+    :func:`_probe_lancedb_index` degradation taxonomy so ``status`` and
+    ``search`` cannot disagree about index health.
+    """
+    from lumio_wiki import retrieval_eval
+
+    fields: dict[str, Any] = {
+        "lancedb_requested": backend == "lancedb",
+        "lancedb_available": retrieval_eval.lancedb_available(),
+        "lancedb_healthy": None,
+        "lancedb_fingerprint_matches": None,
+        "lancedb_fallback": None,
+        "lancedb_index": None,
+    }
+    if not fields["lancedb_requested"]:
+        return fields
+    if not fields["lancedb_available"]:
+        fields["lancedb_fallback"] = (
+            "lumio-lancedb is not installed; retrieval falls back to the "
+            "zero-index backend — install it with: pip install 'lumio-lancedb[s3]'"
+        )
+        return fields
+
+    import importlib
+
+    module = importlib.import_module("lumio_lancedb")
+
+    if is_s3:
+        if descriptor is None:
+            fields["lancedb_fallback"] = (
+                "the resolved Published Version carries no remote derived index; "
+                "retrieval falls back to zero-index — publish it with "
+                "'lumio-wiki publish-s3 --retrieval lancedb'"
+            )
+            return fields
+        location = module.RemoteIndexLocation(
+            descriptor.uri,
+            storage_options=_lance_storage_options_from_env() or None,
+            store=descriptor.store,
+            sidecar_prefix=descriptor.sidecar_prefix,
+        )
+    else:
+        index_dir = (kb_root / DERIVED_DIR_NAME / "lance") if kb_root else None
+        if index_dir is None or not index_dir.exists():
+            fields["lancedb_fallback"] = (
+                f"no local derived index yet; the first semantic/hybrid search "
+                f"builds it under {index_dir}"
+            )
+            return fields
+        location = module.LocalIndexLocation(index_dir)
+
+    fields["lancedb_index"] = location.describe
+    healthy, matches, note = _probe_lancedb_index(module, location, fingerprint)
+    fields["lancedb_healthy"] = healthy
+    fields["lancedb_fingerprint_matches"] = matches
+    if note is not None:
+        recovery = (
+            " — publish a fresh version with 'lumio-wiki publish-s3 --retrieval lancedb'"
+            if is_s3
+            else " — the next semantic/hybrid search rebuilds it"
+        )
+        fields["lancedb_fallback"] = f"{note}{recovery}"
+    return fields
+
+
+def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
+    """Collect the effective configuration + runtime state as a flat dict.
+
+    The dict keys are the rendered output keys verbatim (issue #175): one
+    stable shape feeds the human renderer, ``--json``, and the post-``setup``
+    summary. Never includes credentials, signed URLs, private object keys, or
+    provider secrets — private stores are summarized by kind only.
+    """
+    location, source = _resolve_location_with_source(kb_argument)
+    is_s3 = _is_object_store_uri(location)
+    backend = _retrieval_backend()
+    mode = _resolve_search_mode(argparse.Namespace(mode=None))
+
+    status: dict[str, Any] = {
+        "role": "reader" if is_s3 else "maintainer",
+        "kb_location": location,
+        "config_source": source,
+        "published_version": None,
+        "fingerprint": None,
+        "retrieval_backend": backend,
+        "retrieval_mode": mode,
+        "graph_source": None,
+        "graph_fresh": None,
+        "graph_materialized": None,
+        "graph_edges": None,
+        "lancedb_requested": False,
+        "lancedb_available": None,
+        "lancedb_healthy": None,
+        "lancedb_fingerprint_matches": None,
+        "lancedb_fallback": None,
+        "lancedb_index": None,
+        "artifact_retention": _artifact_retention_policy(),
+        "artifact_store": _artifact_store_summary()[0],
+        "artifact_store_available": _artifact_store_summary()[1],
+        "validation_valid": None,
+        "validation_errors": None,
+        "validation_warnings": None,
+        "next_action": None,
+    }
+
+    descriptor = None
+    fingerprint_obj = None
+    kb_root: Path | None = None
+    if is_s3:
+        try:
+            snapshot = _resolve_object_store_location(location).resolve()
+        except KnowledgeBaseError as exc:
+            raise CliError(f"could not resolve S3 Knowledge Base at {location}: {exc}") from exc
+        descriptor = snapshot.remote_derived_index
+        status["published_version"] = descriptor.version if descriptor else None
+        fingerprint_obj = snapshot.fingerprint
+        status["fingerprint"] = snapshot.fingerprint.digest
+        report = snapshot.validation_report
+        status["validation_valid"] = report.is_valid
+        status["validation_errors"] = sum(
+            1 for i in report.issues if i.severity == "error"
+        )
+        status["validation_warnings"] = sum(
+            1 for i in report.issues if i.severity == "warning"
+        )
+        state, graph_source = snapshot.location.graph_state_with_source()
+        status["graph_source"] = graph_source
+        status["graph_fresh"] = graph_source == "published artifact"
+        status["graph_materialized"] = graph_source == "published artifact"
+        status["graph_edges"] = state.edge_count
+    else:
+        kb, report = _load_kb(location)
+        kb_root = Path(kb.root)
+        fingerprint_obj = fingerprint_sources(kb.root)
+        status["fingerprint"] = fingerprint_obj.digest
+        status["validation_valid"] = report.is_valid
+        status["validation_errors"] = sum(1 for i in report.issues if i.severity == "error")
+        status["validation_warnings"] = sum(1 for i in report.issues if i.severity == "warning")
+        graph_health = kb.graph_health(default_index_dir(kb.root))
+        status["graph_source"] = "artifact" if graph_health.graph_fresh else "memory"
+        status["graph_fresh"] = graph_health.graph_fresh
+        status["graph_materialized"] = graph_health.materialized
+        status["graph_edges"] = graph_health.edge_count
+
+    status.update(
+        _lancedb_status_fields(
+            backend=backend,
+            is_s3=is_s3,
+            fingerprint=fingerprint_obj,
+            descriptor=descriptor,
+            kb_root=kb_root,
+        )
+    )
+
+    # One concrete next action, most-recovery-critical first.
+    if status["validation_errors"]:  # tri-state: None = not loaded, >0 = invalid
+        status["next_action"] = (
+            f"fix {status['validation_errors']} validation error(s): run "
+            f"'lumio-wiki validate {location}'"
+        )
+    elif not status["lancedb_available"]:
+        status["next_action"] = "install the retrieval adapter: pip install 'lumio-lancedb[s3]'"
+    elif status["lancedb_fallback"] is not None:
+        status["next_action"] = status["lancedb_fallback"]
+    elif not is_s3 and not status["graph_fresh"]:
+        status["next_action"] = (
+            f"run 'lumio-wiki health {location} --rebuild' to materialize "
+            f"the Discovery Graph"
+        )
+    else:
+        status["next_action"] = "none required"
+    return status
+
+
+_ROLE_LABELS = {"maintainer": "maintainer (local worktree)", "reader": "reader (read-only S3)"}
+
+
+def _render_status(status: dict[str, Any]) -> str:
+    """Render a collected status dict as the concise human summary."""
+    lines: list[str] = []
+    width = max(len(key) for key in status) + 1
+
+    def fmt(key: str) -> str:
+        value = status[key]
+        if value is None:
+            rendered = "(n/a)"
+        elif value is True:
+            rendered = "true"
+        elif value is False:
+            rendered = "false"
+        else:
+            rendered = str(value)
+        if key == "role":
+            rendered = _ROLE_LABELS.get(rendered, rendered)
+        return f"{key}:{' ' * (width - len(key))}{rendered}"
+
+    order = (
+        "role",
+        "kb_location",
+        "config_source",
+        "published_version",
+        "fingerprint",
+        "retrieval_backend",
+        "retrieval_mode",
+        "graph_source",
+        "graph_fresh",
+        "graph_materialized",
+        "graph_edges",
+        "lancedb_requested",
+        "lancedb_available",
+        "lancedb_healthy",
+        "lancedb_fingerprint_matches",
+        "lancedb_fallback",
+        "lancedb_index",
+        "artifact_retention",
+        "artifact_store",
+        "artifact_store_available",
+        "validation_valid",
+        "validation_errors",
+        "validation_warnings",
+        "next_action",
+    )
+    for key in order:
+        lines.append(fmt(key))
+    return "\n".join(lines)
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    status = _collect_status(getattr(args, "kb", None))
+    if getattr(args, "json", False):
+        print(json.dumps(status, indent=2, sort_keys=True))
+    else:
+        print(_render_status(status))
+    return 0
+
+
+def _print_setup_status_summary() -> None:
+    """Print the shared post-setup status summary (issue #175).
+
+    Runs after ``setup`` wrote its configuration. A not-yet-resolvable
+    location (e.g. an S3 URI whose endpoint is unreachable right now) must
+    never fail setup after the writes succeeded, so the summary degrades to
+    the actionable message instead.
+    """
+    try:
+        status = _collect_status()
+    except CliError as exc:
+        print(f"status:  (not resolvable yet: {exc})")
+        return
+    print(_render_status(status))
 
 
 # ---------------------------------------------------------------------------
@@ -3843,6 +4215,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Materialize the Discovery Graph artifact (actionable recovery), then report.",
     )
     health_parser.set_defaults(func=_cmd_health)
+
+    # status — effective configuration + runtime state (issue #175).
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Explain the effective Knowledge Base configuration and retrieval state.",
+        description=(
+            "One secret-free summary of the project's effective Knowledge Base "
+            "configuration and runtime state: project role, location and its "
+            "configuration source, the active Published Version (S3), retrieval "
+            "backend and mode as separate fields, Discovery Graph source, "
+            "LanceDB health with fallback reasons, Source Artifact retention, "
+            "validation state, and one concrete next action. 'setup' prints the "
+            "same summary after writing configuration."
+        ),
+    )
+    # Uses its own ``kb`` dest (not _add_kb_argument): main()'s shared
+    # default-path pre-resolution would erase the configuration-source
+    # attribution status exists to disclose.
+    status_parser.add_argument(
+        "kb",
+        nargs="?",
+        default=None,
+        type=str,
+        help=(
+            "Knowledge Base root directory or S3 object-store URI. When "
+            "omitted, resolved with its source disclosed: an exported "
+            "LUMIO_KB_PATH, then the nearest project .env."
+        ),
+    )
+    status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the stable machine-readable JSON form instead of the human summary.",
+    )
+    status_parser.set_defaults(func=_cmd_status)
 
     # eval — retrieval gold-set evaluation harness (issue #138).
     eval_parser = subparsers.add_parser(

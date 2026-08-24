@@ -87,5 +87,6 @@ automatically when no `<kb>` argument is given).
 
 - `lumio-wiki doctor` — version, detected extras, skill location.
 - `lumio-wiki health` — page counts, validation, Discovery Graph health.
+- `lumio-wiki status [<kb> | --json]` — effective configuration and retrieval state: role, location + config source, published version/fingerprint (S3), retrieval backend/mode, graph source, LanceDB health + fallback, artifact retention, validation, next action.
 - `lumio-wiki validate` — exit 0 if valid, 1 otherwise.
 - `lumio-wiki lint` — full QA report (superset of validate + structural diagnostics).

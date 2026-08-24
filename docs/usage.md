@@ -156,6 +156,7 @@ lumio-wiki rollback-s3 <dest> --version <v>      # CAS-activate a prior complete
 lumio-wiki cleanup-s3 <dest>                     # report inactive incomplete version prefixes
                                                   #   (interrupted builds); deletes nothing
 lumio-wiki health <kb> [--rebuild]           # page counts, validation, Discovery Graph health
+lumio-wiki status [<kb>] [--json]            # effective config + retrieval state, one secret-free summary (#175)
 lumio-wiki eval <kb> [--gold-set <f>] [--semantic [--model <name>]] [--json]  # recall@k per retrieval stage (#138)
 lumio-wiki eval-ontology <kb> [--gold-set <f>] [--json]  # entity resolution / traversal / scope separation (#173)
 lumio-wiki doctor                            # install shape: version, optionals, skill location
@@ -748,6 +749,11 @@ lumio serve --port 8000
 ```
 
 Then open `http://localhost:8000/setup` to create the Owner account
+(first-run only). See the [README](../README.md) for Docker deployment,
+storage modes, and the full HTTP surface.
+ See the [README](../README.md) for Docker deployment,
+storage modes, and the full HTTP surface.
+en open `http://localhost:8000/setup` to create the Owner account
 (first-run only). See the [README](../README.md) for Docker deployment,
 storage modes, and the full HTTP surface.
  See the [README](../README.md) for Docker deployment,

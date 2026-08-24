@@ -160,3 +160,60 @@ def test_cli_search_falls_back_on_fingerprint_mismatch(monkeypatch, capsys, mini
     out = capsys.readouterr().out
     assert "## Architecture" in out
     assert "note:" in out and "stale" in out and "fingerprint mismatch" in out
+
+
+# ---------------------------------------------------------------------------
+# status — effective configuration + runtime state (issue #175).
+# ---------------------------------------------------------------------------
+
+
+def test_cli_status_reader_journey_with_lancedb(monkeypatch, capsys, minio_env):
+    """status explains a read-only S3 project: version, fingerprint, healthy lance."""
+    import json as _json
+
+    store, bucket, storage_options = minio_env
+    run_prefix = f"s3-it/{uuid.uuid4().hex}"
+    _RUN_PREFIXES.append(run_prefix)
+    manifest = _publish(store, bucket, storage_options, run_prefix, with_lance=True)
+
+    monkeypatch.setenv("LUMIO_RETRIEVAL_BACKEND", "lancedb")
+    monkeypatch.setenv("LUMIO_RETRIEVAL_MODE", "hybrid")
+
+    # Machine-readable assertions through the stable --json form.
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert cli.main(["status", f"s3://{bucket}/{run_prefix}", "--json"]) == 0
+    payload = _json.loads(buf.getvalue())
+    assert payload["role"] == "reader"
+    assert payload["config_source"] == "argument"
+    assert payload["published_version"] == manifest.version
+    assert payload["fingerprint"] == manifest.fingerprint
+    assert payload["retrieval_backend"] == "lancedb"
+    assert payload["retrieval_mode"] == "hybrid"
+    assert payload["lancedb_requested"] is True
+    assert payload["lancedb_healthy"] is True
+    assert payload["lancedb_fingerprint_matches"] is True
+    assert payload["validation_valid"] is True
+
+
+def test_cli_status_reader_falls_back_when_no_index_was_published(
+    monkeypatch, capsys, minio_env
+):
+    """A version published without lance: status reports the truthful fallback."""
+    store, bucket, storage_options = minio_env
+    run_prefix = f"s3-it/{uuid.uuid4().hex}"
+    _RUN_PREFIXES.append(run_prefix)
+    _publish(store, bucket, storage_options, run_prefix, with_lance=False)
+
+    monkeypatch.setenv("LUMIO_RETRIEVAL_BACKEND", "lancedb")
+    assert cli.main(["status", f"s3://{bucket}/{run_prefix}"]) == 0
+    out = capsys.readouterr().out
+    assert "role:                reader (read-only S3)".replace(" ", "") in out.replace(" ", "")
+    assert "reader" in out and "read-only S3" in out
+    assert "lancedb_healthy" in out
+    assert "false" in out
+    assert "missing" in out and "zero-index" in out
+    assert "publish-s3 --retrieval lancedb" in out

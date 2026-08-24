@@ -559,21 +559,16 @@ class S3Location:
 
     # -- derived graph -----------------------------------------------------
 
-    def load_or_derive_graph(self) -> GraphState:
-        """Return the Discovery Graph state for the resolved version.
+    def graph_state_with_source(self) -> tuple[GraphState, str]:
+        """Return the Discovery Graph state and its provenance label.
 
-        Loads the published MessagePack artifact when it is present, fresh
-        (fingerprint and extractor version match), and integrity-checked against
-        the manifest's ``derived_files`` digest; otherwise derives the same
-        adjacency deterministically in memory from the loaded Knowledge Base.
-        Never raises on a missing, stale, or corrupt artifact — the Discovery
-        Graph is derived state, never canonical content (ADR-0011, ADR-0013).
-
-        A coherently altered graph artifact (valid MessagePack, correct
-        fingerprint/extractor fields, but different edges) is rejected by the
-        manifest digest check and falls back to in-memory derivation, so a
-        reader can never observe a graph that disagrees with what the
-        publisher wrote.
+        The label is ``"published artifact"`` when the version's published
+        MessagePack graph artifact was loaded (present, manifest
+        digest-verified, fingerprint- and extractor-current) and ``"memory"``
+        when the same adjacency was derived in memory instead. The public
+        observability seam for ``lumio-wiki status`` (issue #175): the graph
+        is always complete and deterministic either way; the label discloses
+        which source served it, never a health verdict.
         """
         snapshot = self.resolve()
         version = self._resolve_version()
@@ -608,13 +603,32 @@ class S3Location:
                     and state.fingerprint_digest == fingerprint.digest
                     and state.extractor_version == EXTRACTOR_VERSION
                 ):
-                    return state
+                    return state, "published artifact"
 
-        return build_graph_state(
+        state = build_graph_state(
             snapshot.knowledge_base._knowledge_index(),
             fingerprint,
             EXTRACTOR_VERSION,
         )
+        return state, "memory"
+
+    def load_or_derive_graph(self) -> GraphState:
+        """Return the Discovery Graph state for the resolved version.
+
+        Loads the published MessagePack artifact when it is present, fresh
+        (fingerprint and extractor version match), and integrity-checked against
+        the manifest's ``derived_files`` digest; otherwise derives the same
+        adjacency deterministically in memory from the loaded Knowledge Base.
+        Never raises on a missing, stale, or corrupt artifact — the Discovery
+        Graph is derived state, never canonical content (ADR-0011, ADR-0013).
+
+        A coherently altered graph artifact (valid MessagePack, correct
+        fingerprint/extractor fields, but different edges) is rejected by the
+        manifest digest check and falls back to in-memory derivation, so a
+        reader can never observe a graph that disagrees with what the
+        publisher wrote.
+        """
+        return self.graph_state_with_source()[0]
 
 
 def open_s3_knowledge_base(
