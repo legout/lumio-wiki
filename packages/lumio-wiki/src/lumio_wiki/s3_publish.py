@@ -113,11 +113,15 @@ LANCE_COMPLETION_OBJECT = "completion.json"
 # (constructed e.g. from ``lumio_lancedb.remote_publication_builder``) and the
 # publisher calls it duck-typed.
 IndexBuilder = Callable[..., "RemoteIndexCompletion"]
-"""``index_builder(store=..., sidecar_prefix=..., pages=..., fingerprint=...)``.
+"""``index_builder(store=..., sidecar_prefix=..., kb=..., pages=..., fingerprint=...)``.
 
-Builds a remote LanceDB index under ``{prefix}/{version}/derived/lance/``,
-health-checks it through a fresh connection, and returns completion metadata.
-Any exception blocks activation."""
+Builds a remote LanceDB index under ``{prefix}/{version}/derived/lance/``
+(Evidence/page tables plus the ``entities``/``graph_edges`` graph projections
+when the builder supports them), health-checks it through a fresh connection,
+and returns completion metadata. Any exception blocks activation. The loaded
+Knowledge Base (``kb``) is passed so graph projections derive from the same
+fingerprinted snapshot; ``pages`` remains the flat page list for builders
+that only materialize Evidence tables."""
 
 ActivationHook = Callable[["PreparedVersion"], None]
 """Runs after the version is complete but before the pointer advances.
@@ -309,6 +313,7 @@ def publish_s3_version(
         completion = index_builder(
             store=store,
             sidecar_prefix=_join(clean_prefix, version, LANCE_DERIVED_DIR),
+            kb=kb,
             pages=list(kb.pages),
             fingerprint=fingerprint,
         )

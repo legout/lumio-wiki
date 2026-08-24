@@ -39,7 +39,6 @@ from lumio_wiki.embeddings import EmbeddingError  # noqa: E402
 from lumio_wiki.records import (  # noqa: E402
     CompiledPage,
     EmbeddingModelInfo,
-    Relationship,
     SourceFingerprint,
 )
 
@@ -49,12 +48,15 @@ def _pages() -> list[CompiledPage]:
         CompiledPage(
             path="overview.md",
             title="Overview",
+            id="entity:overview",
+            entity_types=["concept"],
             body="Lumio uses LanceDB for derived evidence retrieval.\n",
-            relationships=[Relationship(target="tech.md", type="depends-on")],
         ),
         CompiledPage(
             path="tech.md",
             title="Technology",
+            id="entity:technology",
+            entity_types=["concept"],
             body="Retrieval is backed by LanceDB full-text search.\n",
         ),
     ]
@@ -113,9 +115,7 @@ def remote_location():
     config, client_options, storage_options = _config_and_options()
     bucket = _os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-wiki-it")
     run_prefix = f"s3-it/{uuid.uuid4().hex}"
-    store = obstore.store.from_url(
-        f"s3://{bucket}", config=config, client_options=client_options
-    )
+    store = obstore.store.from_url(f"s3://{bucket}", config=config, client_options=client_options)
     lance_prefix = f"{run_prefix}/derived/lance"
     loc = RemoteIndexLocation(
         f"s3://{bucket}/{lance_prefix}",
@@ -185,12 +185,22 @@ def test_minio_remote_semantic_build_search_and_identity(remote_location):
     assert _load_model(loc) == embedder.model_info
 
     semantic = adapter.retrieve(
-        pages, "LanceDB", limit=5, index_dir=loc, mode="semantic",
-        embedder=embedder, score_threshold=0.0,
+        pages,
+        "LanceDB",
+        limit=5,
+        index_dir=loc,
+        mode="semantic",
+        embedder=embedder,
+        score_threshold=0.0,
     )
     hybrid = adapter.retrieve(
-        pages, "LanceDB", limit=5, index_dir=loc, mode="hybrid",
-        embedder=embedder, score_threshold=0.0,
+        pages,
+        "LanceDB",
+        limit=5,
+        index_dir=loc,
+        mode="hybrid",
+        embedder=embedder,
+        score_threshold=0.0,
     )
     assert isinstance(semantic, list)
     assert isinstance(hybrid, list)
@@ -204,7 +214,11 @@ def test_minio_remote_model_mismatch_is_rejected(remote_location):
 
     with pytest.raises(EmbeddingError):
         adapter.retrieve(
-            pages, "LanceDB", limit=5, index_dir=loc, mode="semantic",
+            pages,
+            "LanceDB",
+            limit=5,
+            index_dir=loc,
+            mode="semantic",
             embedder=_FakeEmbedder(name="model-b"),
         )
 
@@ -223,3 +237,44 @@ def test_minio_missing_remote_index_falls_back_to_zero_index(remote_location):
     results = adapter.retrieve(_pages(), "LanceDB", limit=5, index_dir=missing)
     assert results, "missing remote index must fall back to zero-index retrieval"
     assert results[0].trace.stages[0].name == "index-fallback"
+
+
+def test_minio_remote_graph_tables_build_load_and_parity(remote_location):
+    """Issue #171: graph projections build, load, and degrade remotely.
+
+    Builds ``entities``/``graph_edges`` under a unique remote prefix, loads
+    the accepted adjacency back, proves it equals the zero-index MessagePack
+    graph for the same fingerprint, and shows a stale fingerprint falls back
+    (``None``) — all through one immutable remote prefix, no local copy.
+    """
+    loc, store, prefix = remote_location
+    from lumio_lancedb import build_graph_tables, has_graph_tables, load_graph_state
+    from lumio_wiki.graph_state import build_graph_state
+    from lumio_wiki.knowledge_base import (
+        EXTRACTOR_VERSION,
+        fingerprint_sources,
+        load_knowledge_base,
+    )
+
+    kb, report = load_knowledge_base(ROOT / "tests" / "fixtures" / "categorized_kb")
+    assert report.is_valid
+
+    graph_prefix = f"{prefix}-graph"
+    graph_loc = RemoteIndexLocation(
+        f"s3://{_os.environ.get('LUMIO_S3_TEST_BUCKET', 'lumio-wiki-it')}/{graph_prefix}",
+        storage_options=loc.storage_options,
+        store=store,
+        sidecar_prefix=graph_prefix,
+    )
+    fp = fingerprint_sources(ROOT / "tests" / "fixtures" / "categorized_kb")
+    build_graph_tables(kb, graph_loc, fp)
+
+    assert has_graph_tables(graph_loc)
+
+    loaded = load_graph_state(graph_loc, fp)
+    zero_index = build_graph_state(kb._knowledge_index(), fp, EXTRACTOR_VERSION)
+    assert loaded == zero_index
+    assert loaded.edge_count >= 1  # the fixture's accepted Claim
+
+    # Stale fingerprint: truthful fallback, never a raise.
+    assert load_graph_state(graph_loc, SourceFingerprint(digest="0" * 64)) is None

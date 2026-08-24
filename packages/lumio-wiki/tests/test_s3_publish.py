@@ -546,7 +546,7 @@ def _fake_builder(fingerprint=None, model=None, tables=None, exc=None):
     override = fingerprint if isinstance(fingerprint, str) else None
     calls = []
 
-    def _builder(*, store, sidecar_prefix, pages, fingerprint):
+    def _builder(*, store, sidecar_prefix, pages, fingerprint, kb=None):
         calls.append(
             {"sidecar_prefix": sidecar_prefix, "pages": len(pages), "fingerprint": fingerprint}
         )

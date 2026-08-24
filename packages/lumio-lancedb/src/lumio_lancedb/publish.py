@@ -19,6 +19,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from lumio_lancedb.graph import (
+    ENTITY_TABLE_NAME,
+    GRAPH_EDGE_TABLE_NAME,
+    build_graph_tables,
+)
 from lumio_lancedb.index import (
     PAGE_TABLE_NAME,
     TABLE_NAME,
@@ -68,6 +73,7 @@ def remote_publication_builder(
         sidecar_prefix: str,
         pages: list,
         fingerprint: Any,
+        kb: Any = None,
     ) -> RemoteIndexCompletion:
         index_uri = f"{store_uri.rstrip('/')}/{sidecar_prefix.strip('/')}"
         location = RemoteIndexLocation(
@@ -78,14 +84,24 @@ def remote_publication_builder(
         )
         adapter = LanceDBRetrievalAdapter()
         adapter.build_index(list(pages), location, embedder=embedder, fingerprint=fingerprint)
+        # Graph projections (issue #171): materialize entities/graph_edges
+        # from the loaded, fingerprinted Knowledge Base snapshot the
+        # publisher validated — never from a partially read page list.
+        if kb is not None:
+            build_graph_tables(kb, location, fingerprint)
 
         # Health-check through a FRESH connection before reporting completion:
-        # the requested tables must exist and be row-countable (issue #163).
+        # every requested table must exist and be row-countable. The graph
+        # tables are requested whenever the publisher supplied the Knowledge
+        # Base, so a missing/incomplete graph projection blocks activation
+        # (issue #171: requested tables complete before activation).
         db = location.connect()
         present = set(db.list_tables().tables)
         required = {TABLE_NAME, PAGE_TABLE_NAME}
         if embedder is not None:
             required.add(VECTOR_TABLE_NAME)
+        if kb is not None:
+            required |= {ENTITY_TABLE_NAME, GRAPH_EDGE_TABLE_NAME}
         missing = required - present
         if missing:
             raise RuntimeError(

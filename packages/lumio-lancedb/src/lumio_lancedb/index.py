@@ -55,6 +55,7 @@ from lumio_wiki.fingerprint_store import (  # noqa: F401  (re-exported for Knowl
     load_stored_fingerprint,
     save_stored_fingerprint,
 )
+from lumio_wiki.knowledge_base import fingerprint_sources
 from lumio_wiki.records import (
     CompiledPage,
     EmbeddingModelInfo,
@@ -827,9 +828,17 @@ def build_lancedb_index(kb, index_dir, *, embedder: Embedder | None = None):
     a single call. Builds a local index through the Knowledge Base; for a
     remote (S3) index, construct a :class:`~lumio_lancedb.location.RemoteIndexLocation`
     and call :meth:`LanceDBRetrievalAdapter.build_index` directly.
+
+    Also materializes the disposable Entity/Claim graph projections
+    (``entities`` / ``graph_edges``, issue #171) beside the Evidence tables,
+    fingerprint-bound to the same Knowledge Base snapshot.
     """
-    return kb.build_index(
+    result = kb.build_index(
         index_dir,
         embedder=embedder,
         retrieval=LanceDBRetrievalAdapter(),
     )
+    from lumio_lancedb.graph import build_graph_tables
+
+    build_graph_tables(result, index_dir, fingerprint_sources(kb.root))
+    return result

@@ -30,7 +30,11 @@ if not _os.environ.get("LUMIO_S3_ENDPOINT"):  # pragma: no cover
         allow_module_level=True,
     )
 
-from lumio_lancedb import LanceDBRetrievalAdapter, RemoteIndexLocation, remote_publication_builder  # noqa: E402
+from lumio_lancedb import (  # noqa: E402
+    LanceDBRetrievalAdapter,
+    RemoteIndexLocation,
+    remote_publication_builder,
+)
 from lumio_wiki.knowledge_base import fingerprint_sources  # noqa: E402
 from lumio_wiki.s3_location import CURRENT_POINTER_OBJECT, S3Location, S3Pointer  # noqa: E402
 from lumio_wiki.s3_publish import (  # noqa: E402
@@ -73,9 +77,7 @@ def kb():
     config, client_options, storage_options = _config()
     bucket = _os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-wiki-it")
     prefix = f"pub-it/{uuid.uuid4().hex}"
-    store = obstore.store.from_url(
-        f"s3://{bucket}", config=config, client_options=client_options
-    )
+    store = obstore.store.from_url(f"s3://{bucket}", config=config, client_options=client_options)
 
     def builder():
         return remote_publication_builder(
@@ -119,7 +121,8 @@ def test_minio_publish_with_remote_lancedb_builds_healthchecks_and_activates(kb)
     assert completion["tables"]["pages"] > 0
     # The completion metadata is digest-protected in the manifest.
     entry = next(
-        f for f in manifest.derived_files
+        f
+        for f in manifest.derived_files
         if f.path == f"{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}"
     )
     import hashlib
@@ -137,9 +140,7 @@ def test_minio_publish_with_remote_lancedb_builds_healthchecks_and_activates(kb)
     adapter = LanceDBRetrievalAdapter(
         index_location=lance_loc, expected_fingerprint=snapshot.fingerprint
     )
-    results = adapter.retrieve(
-        snapshot.pages, "Lumio", limit=5, mode="lexical"
-    )
+    results = adapter.retrieve(snapshot.pages, "Lumio", limit=5, mode="lexical")
     assert results, "remote index retrieval must answer over the published snapshot"
     assert results[0].trace.stages[0].name != "index-fallback"
 
@@ -171,9 +172,7 @@ def test_minio_requested_lancedb_failure_blocks_activation(kb):
 def test_minio_rollback_to_a_lancedb_version_keeps_the_index_bound(kb):
     """Rollback re-activates a version whose lance index still serves."""
     store, prefix, builder, storage_options = kb
-    publish_s3_version(
-        store, prefix, source_root=VALID, version="v1", index_builder=builder()
-    )
+    publish_s3_version(store, prefix, source_root=VALID, version="v1", index_builder=builder())
     # v2 without lance stays valid (back-compat), then roll back to v1.
     publish_s3_version(
         store, prefix, source_root=VALID, version="v2", expected_pointer_version="v1"
@@ -196,3 +195,61 @@ def test_minio_rollback_to_a_lancedb_version_keeps_the_index_bound(kb):
     results = adapter.retrieve(snapshot.pages, "Lumio", limit=5, mode="lexical")
     assert results
     assert results[0].trace.stages[0].name != "index-fallback"
+
+
+def test_minio_publish_builds_graph_projections_and_reader_parity(kb):
+    """Issue #171: requested graph tables are complete before activation and
+    a Reader loads adjacency identical to the zero-index graph from the
+    version-pinned remote prefix (no managed local copy)."""
+    from lumio_lancedb import load_graph_state
+    from lumio_wiki.graph_state import build_graph_state
+    from lumio_wiki.knowledge_base import EXTRACTOR_VERSION
+
+    store, prefix, builder, storage_options = kb
+    root = ROOT / "tests" / "fixtures" / "categorized_kb"
+    manifest = publish_s3_version(
+        store, prefix, source_root=root, version="v1", index_builder=builder()
+    )
+    assert _pointer(store, prefix) == "v1"
+
+    # The completion metadata records healthy Entity + graph-edge tables.
+    import json
+
+    raw = obstore.get(store, f"{prefix}/v1/{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}")
+    completion_bytes = bytes(raw.bytes())
+    completion = json.loads(completion_bytes)
+    assert completion["tables"]["entities"] == 2
+    assert completion["tables"]["graph_edges"] == 1
+    # The manifest digest-protects the completion metadata.
+    entry = next(
+        f
+        for f in manifest.derived_files
+        if f.path == f"{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}"
+    )
+    import hashlib
+
+    assert entry.digest == hashlib.sha256(completion_bytes).hexdigest()
+
+    # A Reader bound to the immutable version prefix loads the SAME adjacency
+    # the zero-index MessagePack graph produces for this fingerprint.
+    snapshot = S3Location(store, prefix).resolve()
+    bucket = _os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-wiki-it")
+    lance_loc = RemoteIndexLocation(
+        f"s3://{bucket}/{prefix}/v1/{LANCE_DERIVED_DIR}",
+        storage_options=storage_options,
+        store=store,
+        sidecar_prefix=f"{prefix}/v1/{LANCE_DERIVED_DIR}",
+    )
+    loaded = load_graph_state(lance_loc, snapshot.fingerprint)
+    zero_index = build_graph_state(
+        snapshot.knowledge_base._knowledge_index(),
+        snapshot.fingerprint,
+        EXTRACTOR_VERSION,
+    )
+    assert loaded == zero_index
+    assert loaded.edge_count == 1  # the fixture's single accepted Claim
+
+    # Stale/mismatched fingerprint: disclosed fallback, never a raise.
+    from lumio_wiki.records import SourceFingerprint
+
+    assert load_graph_state(lance_loc, SourceFingerprint(digest="0" * 64)) is None

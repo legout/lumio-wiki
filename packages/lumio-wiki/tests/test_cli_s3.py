@@ -239,7 +239,7 @@ class _RecordingBuilder:
         self.exc = exc
         self.calls = []
 
-    def __call__(self, *, store, sidecar_prefix, pages, fingerprint):
+    def __call__(self, *, store, sidecar_prefix, pages, fingerprint, kb=None):
         self.calls.append((sidecar_prefix, len(pages), fingerprint.digest))
         if self.exc is not None:
             raise self.exc
