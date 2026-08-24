@@ -369,6 +369,34 @@ class Evidence(msgspec.Struct, frozen=True):
     text: str = ""
 
 
+class CitationOpenActions(msgspec.Struct, frozen=True):
+    """Labelled open actions for one cited Compiled Page (issue #177).
+
+    Purely additive citation/rendering metadata: it never replaces the
+    grounding fields on :class:`Citation` and every action defaults to
+    absent so existing constructors stay valid. Distinct origins stay
+    visibly distinct:
+
+    - ``open_command`` — the copyable CLI action for the Compiled Page;
+    - ``reader_url`` — optional browser URL, present ONLY when a validated
+      deployment Reader base URL is configured (never derived from S3
+      object locations);
+    - ``source_url`` — the authored external ``sources[].url`` when present;
+    - ``source_command`` — the explicit private-Source action. A private
+      Source Artifact is never surfaced as an implicit signed/public URL
+      (ADR-0020); its action is the explicit ``source inspect`` command.
+    """
+
+    page_title: str
+    page_path: str
+    entity_id: str | None = None
+    open_command: str = ""
+    reader_url: str | None = None
+    source_id: str | None = None
+    source_url: str | None = None
+    source_command: str = ""
+
+
 class Citation(msgspec.Struct, frozen=True):
     """Metadata that lets an answer point back to its source content.
 

@@ -58,10 +58,18 @@ from lumio_wiki import (
     validate,
     write_control_file,
 )
+from lumio_wiki.citation_actions import (
+    ReaderBaseURLError,
+    citation_open_actions,
+    normalize_reader_base_url,
+    render_open_actions,
+    source_action_lines,
+)
 from lumio_wiki.env_loader import (
     ARTIFACT_RETENTION_ENV_VAR,
     KB_PATH_ENV_VAR,
     PUBLISH_TO_ENV_VAR,
+    READER_BASE_URL_ENV_VAR,
     RETRIEVAL_BACKEND_ENV_VAR,
     RETRIEVAL_MODE_ENV_VAR,
     SOURCE_STORE_ENV_VAR,
@@ -436,7 +444,28 @@ def _index_fallback_note(results: list) -> str | None:
     return None
 
 
-def _print_page_search_results(results: list) -> None:
+def _reader_base_url() -> str | None:
+    """Resolve the optional Reader deployment base URL (issue #177).
+
+    Exported process value takes precedence over the project ``.env``
+    allowlist, mirroring the other Lumio configuration keys. An invalid value
+    is an actionable configuration error (exit 2), never silently degraded:
+    a misconfigured public-URL surface must be fixed, not half-emitted.
+    """
+    raw = os.environ.get(READER_BASE_URL_ENV_VAR) or load_project_config().get(
+        READER_BASE_URL_ENV_VAR
+    )
+    if not raw:
+        return None
+    try:
+        return normalize_reader_base_url(raw)
+    except ReaderBaseURLError as exc:
+        raise CliError(f"invalid {READER_BASE_URL_ENV_VAR}: {exc}") from exc
+
+
+def _print_page_search_results(
+    results: list, reader_base_url: str | None = None
+) -> None:
     """Print page-oriented lexical search results (the ``search`` output contract)."""
     if not results:
         print("No pages matched the query.")
@@ -456,14 +485,38 @@ def _print_page_search_results(results: list) -> None:
             print(f"matched: {', '.join(result.matched_fields)}")
         if result.snippet:
             print(f"snippet: {result.snippet}")
+        # Labelled open actions (issue #177): the copyable page command and,
+        # only when a Reader base URL is configured, the browser link.
+        for line in render_open_actions(
+            citation_open_actions(
+                page_title=page.title,
+                page_path=page.path,
+                entity_id=page.id or None,
+                reader_base_url=reader_base_url,
+            )
+        ):
+            print(line)
         print()
 
 
-def _print_evidence_results(results: list) -> None:
-    """Print citation-ready Evidence retrieval results (semantic/hybrid contract)."""
+def _print_evidence_results(
+    results: list,
+    *,
+    kb: KnowledgeBase | None = None,
+    reader_base_url: str | None = None,
+) -> None:
+    """Print citation-ready Evidence retrieval results (semantic/hybrid contract).
+
+    Issue #177 adds labelled open actions after the grounding lines: the
+    copyable ``lumio-wiki page`` command, the optional Reader browser URL,
+    and — when the KB is available to resolve the cited page's Sources — the
+    authored external Source URL plus the explicit private-Source inspect
+    command (never an implicit signed/public artifact URL, ADR-0020).
+    """
     if not results:
         print("No Evidence matched the query.")
         return
+    pages_by_path = {page.path: page for page in kb.pages} if kb is not None else {}
     for result in results:
         cite = result.citation
         print(f"## {cite.page_title}")
@@ -480,6 +533,24 @@ def _print_evidence_results(results: list) -> None:
             print(f"reason: {result.reason}")
         if getattr(result, "snippet", None):
             print(f"\n{result.snippet}\n")
+        cited_page = pages_by_path.get(cite.relative_path)
+        source_url = None
+        if cited_page is not None and source:
+            for page_source in cited_page.sources:
+                if page_source.id == source and page_source.url:
+                    source_url = page_source.url
+                    break
+        for line in render_open_actions(
+            citation_open_actions(
+                page_title=cite.page_title,
+                page_path=cite.relative_path,
+                entity_id=(cited_page.id or None) if cited_page is not None else None,
+                source_id=source,
+                source_url=source_url,
+                reader_base_url=reader_base_url,
+            )
+        ):
+            print(line)
         print()
 
 
@@ -879,6 +950,21 @@ automatically when no `<kb>` argument is given).{s3_config}
 4. `lumio-wiki related "<title>" --scope discovery` — related pages (canonical + extracted).
 5. `lumio-wiki paths "<src>" "<dst>"` — shortest directed path between two titles.
 
+### Open citations with labelled actions
+
+`search` and `page` label how to open each cited Compiled Page; reuse the
+labels in answers so every citation is actionable:
+
+- `open:` — copyable CLI action (`lumio-wiki page "<title>"`).
+- `web:` — browser Reading Room link; appears ONLY when a valid
+  `LUMIO_READER_BASE_URL` (http(s) origin) is configured in `.env`. Never
+  treat an S3/object-store URI as a document URL.
+- `source-url:` — authored external `sources[].url`, distinct from Compiled
+  Page links.
+- `source-artifact:` — explicit private-Source action
+  (`lumio-wiki source inspect --source-id <id>`); never an implicitly
+  generated signed/public URL (ADR-0020).
+
 ### Ingest (you are the Distiller)
 
 1. Author a Compiled Page (YAML frontmatter + Markdown body) that declares the
@@ -1184,6 +1270,7 @@ def _resolve_embedder(model: str | None):
 
 def _cmd_search(args: argparse.Namespace) -> int:
     value = str(args.path)
+    reader_base = _reader_base_url()
     if _is_object_store_uri(value):
         try:
             # Resolve the active S3 pointer exactly once and retain the
@@ -1191,7 +1278,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
             snapshot = _resolve_object_store_location(value).resolve()
         except KnowledgeBaseError as exc:
             raise CliError(f"could not resolve S3 Knowledge Base at {value}: {exc}") from exc
-        return _search_object_store(args, snapshot)
+        return _search_object_store(args, snapshot, reader_base_url=reader_base)
 
     kb = _open_read_kb(args.path)
     mode = _resolve_search_mode(args)
@@ -1199,7 +1286,10 @@ def _cmd_search(args: argparse.Namespace) -> int:
     # Default lexical path: zero-index, model-free, no derived index. Preserves
     # the original ``search`` behaviour and the offline invariant (PRD-0002:22).
     if mode == "lexical":
-        _print_page_search_results(kb.search_pages(args.query, limit=args.limit))
+        _print_page_search_results(
+            kb.search_pages(args.query, limit=args.limit),
+            reader_base_url=reader_base,
+        )
         return 0
 
     # semantic / hybrid — needs lumio-lancedb + an Embedder (ADR-0010, #75).
@@ -1227,11 +1317,13 @@ def _cmd_search(args: argparse.Namespace) -> int:
         mode=mode,
         embedder=embedder,
     )
-    _print_evidence_results(results)
+    _print_evidence_results(results, kb=kb, reader_base_url=reader_base)
     return 0
 
 
-def _search_object_store(args: argparse.Namespace, snapshot: Any) -> int:
+def _search_object_store(
+    args: argparse.Namespace, snapshot: Any, *, reader_base_url: str | None = None
+) -> int:
     """Search an S3 Published Version: zero-index, or bound remote LanceDB (#162).
 
     Backend and mode are separate choices: LanceDB BM25 may serve lexical
@@ -1247,7 +1339,8 @@ def _search_object_store(args: argparse.Namespace, snapshot: Any) -> int:
 
     if mode == "lexical" and backend == "zero-index":
         _print_page_search_results(
-            snapshot.knowledge_base.search_pages(args.query, limit=args.limit)
+            snapshot.knowledge_base.search_pages(args.query, limit=args.limit),
+            reader_base_url=reader_base_url,
         )
         return 0
 
@@ -1296,7 +1389,9 @@ def _search_object_store(args: argparse.Namespace, snapshot: Any) -> int:
     note = _index_fallback_note(results) or adapter.last_fallback_detail
     if note:
         print(f"note: {note}")
-    _print_evidence_results(results)
+    _print_evidence_results(
+        results, kb=snapshot.knowledge_base, reader_base_url=reader_base_url
+    )
     return 0
 
 
@@ -1341,6 +1436,25 @@ def _cmd_page(args: argparse.Namespace) -> int:
                     else f"{claim.value!r} ({claim.value_type})"
                 )
                 print(f"  - {claim.predicate}: {obj} [{claim.status}]")
+        # Labelled open actions (issue #177): the copyable page command, the
+        # optional Reader browser link, and per-Source labelled provenance —
+        # the authored external URL (when present) and the explicit private
+        # Source inspect command (never an implicit artifact URL, ADR-0020).
+        reader_base = _reader_base_url()
+        for line in render_open_actions(
+            citation_open_actions(
+                page_title=page.title,
+                page_path=page.path,
+                entity_id=page.id or None,
+                reader_base_url=reader_base,
+            )
+        ):
+            print(line)
+        for source in page.sources:
+            for line in source_action_lines(
+                source_id=source.id or None, source_url=source.url
+            ):
+                print(line)
         print()
         print(page.body)
     return 0

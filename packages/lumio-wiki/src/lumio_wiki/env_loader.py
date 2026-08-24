@@ -64,6 +64,13 @@ RETRIEVAL_BACKEND_ENV_VAR: Final[str] = "LUMIO_RETRIEVAL_BACKEND"
 #: Retrieval *mode* choice (``lexical``/``semantic``/``hybrid``).
 RETRIEVAL_MODE_ENV_VAR: Final[str] = "LUMIO_RETRIEVAL_MODE"
 
+#: Optional public Reader deployment base URL (issue #177). An ``http(s)``
+#: origin such as ``https://lumio.example.com``; when configured, CLI
+#: citation output labels browser links against it. Validated and normalized
+#: by :func:`lumio_wiki.citation_actions.normalize_reader_base_url`; never
+#: derived from S3 object locations.
+READER_BASE_URL_ENV_VAR: Final[str] = "LUMIO_READER_BASE_URL"
+
 #: S3-compatible connection settings. Deployment configuration: ``setup``
 #: never writes them, but they may be recorded in a project ``.env`` and are
 #: read with exported-process precedence.
@@ -85,6 +92,7 @@ ENV_ALLOWLIST: Final[frozenset[str]] = frozenset(
         RETRIEVAL_MODE_ENV_VAR,
         S3_REGION_ENV_VAR,
         S3_ENDPOINT_ENV_VAR,
+        READER_BASE_URL_ENV_VAR,
     }
 )
 

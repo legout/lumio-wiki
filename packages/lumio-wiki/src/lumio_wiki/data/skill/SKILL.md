@@ -142,6 +142,24 @@ If the selected Evidence does not support the question, report "not covered by
 this knowledge base" — do not fabricate, and do not let graph connectivity
 manufacture support (an Extracted Reference is topology, never Evidence).
 
+**Open citations with the labelled open actions.** Search and page output
+label how to open each cited Compiled Page, and the labels never lie about
+what a link is:
+
+- `open:` — the copyable CLI action, e.g. `lumio-wiki page "<title>"`.
+- `web:` — a browser Reading Room link, present ONLY when a valid
+  `LUMIO_READER_BASE_URL` (http(s) origin) is configured. Never treat an
+  S3/object-store URI as a document URL.
+- `source-url:` — the authored external `sources[].url`, when the page
+  declares one. Distinct from a Compiled Page link.
+- `source-artifact:` — the EXPLICIT private-Source action
+  (`lumio-wiki source inspect --source-id <id>`). A private Source Artifact
+  is never opened through an implicitly generated signed/public URL
+  (ADR-0020); request `source fetch`/`source link` explicitly when the user
+  authorizes it.
+
+Use these labels verbatim when telling the user how to open a cited page.
+
 ## Workflow: ingest (you are the Distiller)
 
 The managed host-Distiller mode binds the ORIGINAL raw Knowledge Source and
@@ -253,6 +271,4 @@ Restart the agent or start a new session after install/update.
   (+ an embedder) is installed. Install `lumio-lancedb` (or
   `lumio-lancedb[embeddings]`) to enable BM25, semantic, or hybrid ranking.
 - This skill does not bypass validation. Proposal-first is the default write
-  mode; validation always runs before publish.
-te
   mode; validation always runs before publish.
