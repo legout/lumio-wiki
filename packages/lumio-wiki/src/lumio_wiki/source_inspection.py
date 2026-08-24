@@ -106,28 +106,18 @@ def resolve_registry_binding(registry: SourceRegistry, source_id: str) -> Resolv
     )
 
 
-def resolve_manifest_binding(
+def read_binding_manifest(
     artifact_store: SourceArtifactStore,
     version: str,
-    source_id: str,
-) -> ResolvedSourceBinding:
-    """Resolve a source id through ONE Published Version's binding manifest.
+) -> SourceBindingManifest:
+    """Read and decode ONE Published Version's private binding manifest.
 
-    Used when ``--published-version`` is explicit or when the Knowledge Base
-    is an S3 Location whose active Published Version was resolved once. The
-    manifest is read from the private Source Artifact Store, so no manifest
-    means either the version does not exist or it predates artifact retention
-    — both are the historical-version-mismatch outcome, and neither ever
-    falls back to the registry's latest version (ADR-0020).
+    Maps store failures to the distinct #165 outcomes (access denied,
+    historical-version mismatch, corruption) exactly as
+    :func:`resolve_manifest_binding` does; callers that only need the entry
+    set (e.g. ``source resolve`` known-ids, issue #176) share this seam
+    instead of re-implementing the error mapping.
     """
-    from lumio_wiki.source_registry import _validate_source_id
-
-    # Boundary validation mirrors the registry: an invalid (possibly
-    # secret-bearing) id is rejected generically and never echoed.
-    try:
-        _validate_source_id(source_id)
-    except SourceRegistryError as exc:
-        raise SourceInspectionError(OUTCOME_ABSENT_BINDING, str(exc)) from exc
     try:
         raw = artifact_store.get_binding_manifest(version)
     except ArtifactAccessDenied as exc:
@@ -155,6 +145,32 @@ def resolve_manifest_binding(
             "the stored Source Binding Manifest does not match the requested "
             "published version",
         )
+    return manifest
+
+
+def resolve_manifest_binding(
+    artifact_store: SourceArtifactStore,
+    version: str,
+    source_id: str,
+) -> ResolvedSourceBinding:
+    """Resolve a source id through ONE Published Version's binding manifest.
+
+    Used when ``--published-version`` is explicit or when the Knowledge Base
+    is an S3 Location whose active Published Version was resolved once. The
+    manifest is read from the private Source Artifact Store, so no manifest
+    means either the version does not exist or it predates artifact retention
+    — both are the historical-version-mismatch outcome, and neither ever
+    falls back to the registry's latest version (ADR-0020).
+    """
+    from lumio_wiki.source_registry import _validate_source_id
+
+    # Boundary validation mirrors the registry: an invalid (possibly
+    # secret-bearing) id is rejected generically and never echoed.
+    try:
+        _validate_source_id(source_id)
+    except SourceRegistryError as exc:
+        raise SourceInspectionError(OUTCOME_ABSENT_BINDING, str(exc)) from exc
+    manifest = read_binding_manifest(artifact_store, version)
     for entry in manifest.entries:
         if entry.source_id == source_id:
             return ResolvedSourceBinding(
@@ -209,11 +225,9 @@ def parse_expires(value: str | None) -> timedelta:
             "invalid --expires value: use a duration like 30s, 5m, or 1h "
             "(bare numbers are minutes)"
         )
-    amount = int(match.group(1))
     unit = match.group(2) or "m"
-    seconds = amount * {"s": 1, "m": 60, "h": 3600}[unit]
     try:
-        duration = timedelta(seconds=seconds)
+        duration = timedelta(seconds=int(match.group(1)) * {"s": 1, "m": 60, "h": 3600}[unit])
     except OverflowError:
         # Arbitrarily long digit strings parse as huge ints; timedelta itself
         # overflows above ~8.64e13 seconds, so route that to the ceiling error.

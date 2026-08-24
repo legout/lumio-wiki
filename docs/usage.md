@@ -142,6 +142,7 @@ lumio-wiki publish <kb> <id>                 # publish a reviewed proposal
 lumio-wiki discard <kb> <id>                 # discard a proposal
 lumio-wiki cross-link <kb> [--stage]         # missing-link candidates (Extracted References); --stage repairs as links
 lumio-wiki source <kb> <list|retire|reactivate> --source-id <id>  # manage private Source lifecycle (ADR-0014)
+lumio-wiki source resolve <kb> "<query>" [--published-version <v>] [--json]  # resolve a Source ID, Entity ID, page title, alias, or path to ONE registered Source (identity + availability; bounded candidates; never a signed URL)
 lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]  # secret-free metadata for the exact bound Source Version (ADR-0020)
 lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>  # byte-exact original, digest/size re-verified (private, optional)
 lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]  # short-lived exact-object signed GET URL (bearer secret; 1 h max)

@@ -553,3 +553,88 @@ def test_minio_cli_unauthorized_credentials_get_distinct_access_denied(
         err = capsys.readouterr().err
         assert "access denied" in err, command
         assert artifact_prefix not in err
+
+
+def test_minio_cli_source_resolve_identity_and_denial(
+    tmp_path, prefixes, monkeypatch, capsys
+):
+    """`source resolve` over a real S3 binding manifest (issue #176).
+
+    Authorized: a page-title query resolves to the bound Source identity
+    with verified availability, and --json emits an agent-selectable result.
+    Unauthorized: the same command surfaces the distinct access-denied
+    outcome and discloses neither the private prefix nor artifact existence.
+    """
+    from lumio_wiki.cli import main
+
+    store, _, artifact_prefix = prefixes
+    _seed_v165_binding(store, artifact_prefix)
+    kb = tmp_path / "kb"
+    shutil.copytree(FIXTURES, kb)
+    (kb / "artifact_page.md").write_text(
+        "---\n"
+        'title: "MinIO Artifact Page"\n'
+        "aliases: []\n"
+        'tags: []\n'
+        'summary: "Authored from the minio-report Knowledge Source."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "internal"\n'
+        "sources:\n"
+        '  - id: "minio-report"\n'
+        '    title: "MinIO report source"\n'
+        "synthetic: false\n"
+        "---\n\n"
+        "# MinIO Artifact Page\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", f"s3://{_bucket()}/{artifact_prefix}")
+
+    # Authorized: resolve by page title through the v165 binding manifest.
+    rc = main(
+        [
+            "source", "resolve", str(kb),
+            "MinIO Artifact Page",
+            "--published-version", "v165",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "source_id:       minio-report" in out
+    assert "matched_by:      canonical-title" in out
+    assert "bound_to:        published version v165 (Source Binding Manifest)" in out
+    assert "availability:    retained (digest and size verified)" in out
+    assert "http" not in out  # a resolution never issues a signed URL
+
+    # Authorized: --json emits one machine-selectable object.
+    assert (
+        main(
+            [
+                "source", "resolve", str(kb),
+                "minio-report",
+                "--published-version", "v165",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == "resolved"
+    assert payload["source_id"] == "minio-report"
+
+    # Unauthorized (a credential denied the private prefix): distinct
+    # access-denied outcome; never absence, never a leaked object key, and
+    # never a disclosure of whether a private artifact exists.
+    monkeypatch.setenv("LUMIO_S3_ACCESS_KEY_ID", _os.environ["LUMIO_S3_ACCESS_KEY_ID"])
+    monkeypatch.setenv("LUMIO_S3_SECRET_ACCESS_KEY", "wrong-secret-on-purpose")
+    rc = main(
+        [
+            "source", "resolve", str(kb),
+            "MinIO Artifact Page",
+            "--published-version", "v165",
+        ]
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "access denied" in err
+    assert artifact_prefix not in err
+    assert "minio-report" not in err

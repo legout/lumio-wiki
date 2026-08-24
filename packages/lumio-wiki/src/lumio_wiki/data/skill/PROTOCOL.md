@@ -244,6 +244,7 @@ the agent or start a new session after install/update so discovery runs again.
 ## 12. Source Artifact inspection (authorized, not Evidence)
 
 ```
+lumio-wiki source resolve <kb> "<query>" [--published-version <v>] [--json]
 lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]
 lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>
 lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]
