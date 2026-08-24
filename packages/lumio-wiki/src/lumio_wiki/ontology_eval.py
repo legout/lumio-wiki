@@ -76,45 +76,13 @@ class _OntologyGoldSetYaml(msgspec.Struct, frozen=True):
     scope_separation: list[_ScopeSeparationRow] = msgspec.field(default_factory=list)
 
 
-class OntologyGoldSet:
-    """A versioned ontology gold set: expectations, never answers."""
-
-    def __init__(self, raw: _OntologyGoldSetYaml) -> None:
-        self._raw = raw
-
-    @property
-    def name(self) -> str:
-        return self._raw.name
-
-    @property
-    def entity_resolution(self) -> list[_EntityResolutionRow]:
-        return list(self._raw.entity_resolution)
-
-    @property
-    def title_recall(self) -> list[_TitleRecallRow]:
-        return list(self._raw.title_recall)
-
-    @property
-    def edge_traversal(self) -> list[_EdgeTraversalRow]:
-        return list(self._raw.edge_traversal)
-
-    @property
-    def scope_separation(self) -> list[_ScopeSeparationRow]:
-        return list(self._raw.scope_separation)
-
-    def size(self) -> int:
-        return (
-            len(self._raw.entity_resolution)
-            + len(self._raw.title_recall)
-            + len(self._raw.edge_traversal)
-            + len(self._raw.scope_separation)
-        )
+#: The public gold-set record: a frozen struct like every other Lumio record.
+OntologyGoldSet = _OntologyGoldSetYaml
 
 
 def load_ontology_gold_set(path: str | Path) -> OntologyGoldSet:
     """Load a YAML ontology gold set (four optional typed sections)."""
-    raw = msgspec.yaml.decode(Path(path).read_text(encoding="utf-8"), type=_OntologyGoldSetYaml)
-    return OntologyGoldSet(raw)
+    return msgspec.yaml.decode(Path(path).read_text(encoding="utf-8"), type=_OntologyGoldSetYaml)
 
 
 class AreaAggregate(msgspec.Struct, frozen=True):

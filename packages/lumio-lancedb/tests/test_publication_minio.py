@@ -199,10 +199,11 @@ def test_minio_rollback_to_a_lancedb_version_keeps_the_index_bound(kb):
     assert results[0].trace.stages[0].name != "index-fallback"
 
 
-def test_minio_publish_blocks_when_a_graph_table_is_missing(kb, monkeypatch):
-    """Issue #173: a missing graph-edge table blocks activation, the pointer
-    stays on the previous Published Version, and the failure names the exact
-    missing artifact."""
+@pytest.mark.parametrize("missing_table", ["entities", "graph_edges"])
+def test_minio_publish_blocks_when_a_graph_table_is_missing(kb, monkeypatch, missing_table):
+    """Issue #173: a missing Entity or graph-edge table blocks activation,
+    the pointer stays on the previous Published Version, and the failure
+    names the exact missing artifact."""
     import lumio_lancedb.publish as publish_module
 
     store, prefix, builder, _ = kb
@@ -214,10 +215,10 @@ def test_minio_publish_blocks_when_a_graph_table_is_missing(kb, monkeypatch):
 
     def _build_then_drop(build_kb, location, fingerprint):
         real_build(build_kb, location, fingerprint)
-        location.connect().drop_table("graph_edges")
+        location.connect().drop_table(missing_table)
 
     monkeypatch.setattr(publish_module, "build_graph_tables", _build_then_drop)
-    with pytest.raises(RuntimeError, match=r"missing table\(s\) graph_edges"):
+    with pytest.raises(RuntimeError, match=rf"missing table\(s\) {missing_table}"):
         publish_s3_version(
             store,
             prefix,
@@ -228,35 +229,6 @@ def test_minio_publish_blocks_when_a_graph_table_is_missing(kb, monkeypatch):
         )
     assert _pointer(store, prefix) == "v1"
     assert [c.version for c in list_cleanup_candidates(store, prefix)] == ["v2"]
-
-
-def test_minio_publish_blocks_when_entity_table_is_missing(kb, monkeypatch):
-    """Issue #173: the entities half of the graph projection is equally
-    required — its absence blocks activation and keeps v1 active."""
-    import lumio_lancedb.publish as publish_module
-
-    store, prefix, builder, _ = kb
-    root = ROOT / "tests" / "fixtures" / "categorized_kb"
-    publish_s3_version(store, prefix, source_root=root, version="v1", index_builder=builder())
-    assert _pointer(store, prefix) == "v1"
-
-    real_build = publish_module.build_graph_tables
-
-    def _build_then_drop(build_kb, location, fingerprint):
-        real_build(build_kb, location, fingerprint)
-        location.connect().drop_table("entities")
-
-    monkeypatch.setattr(publish_module, "build_graph_tables", _build_then_drop)
-    with pytest.raises(RuntimeError, match=r"missing table\(s\) entities"):
-        publish_s3_version(
-            store,
-            prefix,
-            source_root=root,
-            version="v2",
-            expected_pointer_version="v1",
-            index_builder=builder(),
-        )
-    assert _pointer(store, prefix) == "v1"
 
 
 def test_minio_publish_blocks_when_graph_fingerprint_mismatches(kb, monkeypatch):
@@ -288,6 +260,92 @@ def test_minio_publish_blocks_when_graph_fingerprint_mismatches(kb, monkeypatch)
         )
     assert _pointer(store, prefix) == "v1"
     assert [c.version for c in list_cleanup_candidates(store, prefix)] == ["v2"]
+
+
+def test_minio_published_corpus_traversal_parity(kb):
+    """Issue #173 AC1: one published fixture (the full ontology corpus)
+    produces identical accepted traversal topology and citation-ready
+    retrieval with and without LanceDB."""
+    from lumio_lancedb import load_graph_state
+    from lumio_wiki.graph_state import build_graph_state
+    from lumio_wiki.knowledge_base import EXTRACTOR_VERSION
+
+    store, prefix, builder, storage_options = kb
+    root = ROOT / "eval" / "ontology_corpus"
+    publish_s3_version(store, prefix, source_root=root, version="v1", index_builder=builder())
+    snapshot = S3Location(store, prefix).resolve()
+    bucket = _os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-wiki-it")
+    lance_loc = RemoteIndexLocation(
+        f"s3://{bucket}/{prefix}/v1/{LANCE_DERIVED_DIR}",
+        storage_options=storage_options,
+        store=store,
+        sidecar_prefix=f"{prefix}/v1/{LANCE_DERIVED_DIR}",
+    )
+
+    # Identical accepted traversal topology: the published LanceDB
+    # projection, the zero-index derivation, and the published MessagePack
+    # graph artifact all agree for this fingerprint.
+    from lumio_wiki.graph_state import GRAPH_ARTIFACT_FILENAME, deserialize_graph
+
+    lancedb_state = load_graph_state(lance_loc, snapshot.fingerprint)
+    assert lancedb_state is not None
+    zero_index = build_graph_state(
+        snapshot.knowledge_base._knowledge_index(),
+        snapshot.fingerprint,
+        EXTRACTOR_VERSION,
+    )
+    assert lancedb_state == zero_index
+    raw = obstore.get(store, f"{prefix}/v1/derived/{GRAPH_ARTIFACT_FILENAME}")
+    msgpack_state = deserialize_graph(bytes(raw.bytes()))
+    assert msgpack_state is not None, "published MessagePack graph must decode"
+    assert msgpack_state.fingerprint_digest == snapshot.fingerprint.digest
+    assert msgpack_state == zero_index
+
+    # Citation-ready traversal over the PUBLISHED version (zero-index,
+    # no LanceDB): accepted Claims only, superseded collapsed, disputed and
+    # discovery-only neighbours excluded from canonical scope.
+    published_kb = snapshot.knowledge_base
+    assert published_kb.related_pages("Lumio") == ["LanceDB", "obstore"]
+    assert published_kb.related_pages("Lumio", scope="discovery") == [
+        "Knowledge Graph", "LanceDB", "Sage Wiki", "obstore",
+    ]
+    results = published_kb.retrieve("deployable chat platform", limit=5)
+    assert results and results[0].evidence.page_title in {
+        "Lumio", "LanceDB", "Knowledge Graph", "obstore", "Sage Wiki",
+    }
+
+
+def test_minio_publish_blocks_when_tables_are_stale_under_current_sidecar(kb, monkeypatch):
+    """Issue #173 per-table provenance: graph tables recorded for a different
+    fingerprint are rejected even when the index sidecar is current."""
+    import lumio_lancedb.publish as publish_module
+    from lumio_lancedb.index import _save_fingerprint
+    from lumio_wiki.records import SourceFingerprint
+
+    store, prefix, builder, _ = kb
+    root = ROOT / "tests" / "fixtures" / "categorized_kb"
+    publish_s3_version(store, prefix, source_root=root, version="v1", index_builder=builder())
+    assert _pointer(store, prefix) == "v1"
+
+    real_build = publish_module.build_graph_tables
+
+    def _build_stale_then_refresh_sidecar(build_kb, location, fingerprint):
+        stale = SourceFingerprint(digest="0" * 64, sources=list(fingerprint.sources))
+        real_build(build_kb, location, stale)
+        # Repair the shared sidecar so only the per-table rows are stale.
+        _save_fingerprint(location, fingerprint)
+
+    monkeypatch.setattr(publish_module, "build_graph_tables", _build_stale_then_refresh_sidecar)
+    with pytest.raises(RuntimeError, match="built for a different fingerprint"):
+        publish_s3_version(
+            store,
+            prefix,
+            source_root=root,
+            version="v2",
+            expected_pointer_version="v1",
+            index_builder=builder(),
+        )
+    assert _pointer(store, prefix) == "v1"
 
 
 def test_minio_reader_falls_back_truthfully_when_graph_table_deleted(kb):

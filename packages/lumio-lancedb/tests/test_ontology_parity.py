@@ -82,6 +82,10 @@ def _zero_index_state(kb, tmp_path):
     )
     assert loaded is not None, "freshly materialized artifact must load"
     assert loaded == state, "MessagePack artifact must round-trip the derived state"
+    # The artifact SERVED through the public load-or-derive seam is the same
+    # state the traversal assertions run over (issue #173 parity chain).
+    served = kb.load_or_derive_graph(tmp_path / "derived")
+    assert served == state, "load_or_derive_graph must serve the artifact state"
     return state
 
 

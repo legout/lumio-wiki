@@ -124,6 +124,25 @@ python tools/validate_sources.py
 # 3. First run: create the Knowledge Base, write .env and AGENTS.md.
 lumio-wiki setup ./knowledge-base
 
+# 3b. Declare the KB-local ontology (the setup seed is deliberately empty;
+# Entity Types and Predicates are reviewed Maintainer content, ADR-0021).
+cat > knowledge-base/lumio.yaml <<'YAML'
+version: 2
+mode: "categorized"
+categories:
+  - name: references
+  - name: procedures
+  - name: entities
+  - name: concepts
+ontology:
+  entity_types:
+    reference: {}
+  predicates:
+    relates-to:
+      subject_types: [reference]
+      object_types: [reference]
+YAML
+
 # 4. (Optional) install the packaged Agent Skill for the chosen harness.
 bash tools/install_skill.sh            # defaults to pi
 bash tools/install_skill.sh claude-code
@@ -141,7 +160,10 @@ for src in sources/*; do
 lumio:
   artifact: compiled-page
   version: 1
+id: "entity:$sid"
 title: "$sid"
+entity_types:
+  - reference
 visibility: "public"
 category: "references"
 type: "$sid"
@@ -152,13 +174,17 @@ sources:
   - id: "$sid"
 summary: "Atlas Heatworks — $sid compiled page (issue #154 fixture)."
 durability_rationale: "Fictional reference: durable until the next controlled revision."
-relationships:
-  - target: "company-overview"
-    type: "relates-to"
+claims:
+  - id: "claim:$sid-relates-to-company-overview"
+    predicate: "relates-to"
+    object: "entity:company-overview"
+    status: "accepted"
+    evidence:
+      - section: "$sid"
 synthetic: true
 ---
 
-# $sid
+## $sid
 
 Compiled from $base. Marker text intentionally minimal; the example tests
 routing, validation, and retrieval, not content authoring.

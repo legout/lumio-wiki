@@ -80,6 +80,7 @@ def _entity_schema() -> pa.Schema:
             pa.field("redirect_to", pa.string()),
             pa.field("page_path", pa.string()),
             pa.field("search_text", pa.string()),
+            pa.field("fingerprint", pa.string()),
         ]
     )
 
@@ -117,6 +118,7 @@ def _graph_edge_schema() -> pa.Schema:
             pa.field("extractor_version", pa.string()),
             pa.field("scope", pa.string()),
             pa.field("search_text", pa.string()),
+            pa.field("fingerprint", pa.string()),
         ]
     )
 
@@ -140,8 +142,9 @@ def _literal_text(value: str | float | int | bool | None) -> str:
     return "" if value is None else str(value)
 
 
-def _entity_rows(kb: Any) -> list[dict]:
+def _entity_rows(kb: Any, fingerprint: SourceFingerprint) -> list[dict]:
     """One row per page-owning Entity plus one row per retired redirect."""
+    digest = fingerprint.digest
     rows: list[dict] = []
     for page in kb.pages:
         if not page.id:
@@ -157,6 +160,7 @@ def _entity_rows(kb: Any) -> list[dict]:
                 "redirect_to": "",
                 "page_path": page.path,
                 "search_text": _entity_search_text(page),
+                "fingerprint": digest,
             }
         )
     ontology = kb.control.ontology if kb.control is not None else None
@@ -171,13 +175,14 @@ def _entity_rows(kb: Any) -> list[dict]:
                 "redirect_to": redirect.to_id,
                 "page_path": "",
                 "search_text": redirect.from_id,
+                "fingerprint": digest,
             }
         )
     rows.sort(key=lambda row: row["entity_id"])
     return rows
 
 
-def _graph_edge_rows(kb: Any) -> list[dict]:
+def _graph_edge_rows(kb: Any, fingerprint: SourceFingerprint) -> list[dict]:
     """One row per Claim plus one row per Extracted Reference, deterministic.
 
     Claim rows exist for EVERY published Claim (accepted, disputed,
@@ -187,6 +192,7 @@ def _graph_edge_rows(kb: Any) -> list[dict]:
     in-memory ``GraphState`` carries (mirroring ``_KnowledgeIndex``).
     """
     index = kb._knowledge_index()
+    digest = fingerprint.digest
     rows: list[dict] = []
     for page in kb.pages:
         if not page.title:
@@ -201,6 +207,7 @@ def _graph_edge_rows(kb: Any) -> list[dict]:
             in_traversal = claim.status == CLAIM_STATUS_ACCEPTED and endpoint != ""
             rows.append(
                 {
+                    "fingerprint": digest,
                     "edge_id": claim.id,
                     "kind": GRAPH_EDGE_ORIGIN_CLAIM,
                     "subject": subject,
@@ -252,6 +259,7 @@ def _graph_edge_rows(kb: Any) -> list[dict]:
             seen[identity] = occurrence + 1
             rows.append(
                 {
+                    "fingerprint": digest,
                     "edge_id": f"ref:{edge.source_path}:{edge.line_start}:"
                     f"{edge.line_end}:{edge.endpoint}:{occurrence}",
                     "kind": GRAPH_EDGE_ORIGIN_EXTRACTED,
@@ -297,7 +305,7 @@ def build_graph_tables(
     index.prepare()
     db = index.connect()
 
-    entity_rows = _entity_rows(kb)
+    entity_rows = _entity_rows(kb, fingerprint)
     entities = db.create_table(
         ENTITY_TABLE_NAME,
         data=entity_rows,
@@ -310,7 +318,7 @@ def build_graph_tables(
         entities.create_index("entity_types", config=LabelList())
         entities.create_index("search_text", config=FTS())
 
-    edge_rows = _graph_edge_rows(kb)
+    edge_rows = _graph_edge_rows(kb, fingerprint)
     edges = db.create_table(
         GRAPH_EDGE_TABLE_NAME,
         data=edge_rows,
@@ -442,6 +450,16 @@ def load_graph_state(
             return None
         table = db.open_table(GRAPH_EDGE_TABLE_NAME)
         rows = table.to_arrow().to_pylist()
+        # Per-table provenance (issue #173): every row must be recorded for
+        # exactly the expected fingerprint. A table replaced or partially
+        # rebuilt under a current index sidecar is stale and never serves.
+        for row in rows:
+            if row.get("fingerprint") != expected_fingerprint.digest:
+                return None
+        entity_rows = db.open_table(ENTITY_TABLE_NAME).to_arrow().to_pylist()
+        for row in entity_rows:
+            if row.get("fingerprint") != expected_fingerprint.digest:
+                return None
 
         outgoing: dict[str, list[GraphEdge]] = {}
         incoming: dict[str, list[GraphEdge]] = {}

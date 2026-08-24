@@ -121,6 +121,18 @@ def remote_publication_builder(
                     f"projection fingerprint mismatch (recorded {recorded}, "
                     f"expected {fingerprint.digest})"
                 )
+            # Per-table provenance: each graph table records the fingerprint
+            # it was built for (issue #173). A table replaced or rebuilt
+            # under a current sidecar is stale and blocks activation.
+            for name in (ENTITY_TABLE_NAME, GRAPH_EDGE_TABLE_NAME):
+                head = db.open_table(name).head(1).to_pylist()
+                if head and head[0].get("fingerprint") != fingerprint.digest:
+                    raise RuntimeError(
+                        f"remote LanceDB index at {index_uri} is unhealthy: "
+                        f"table {name} was built for a different fingerprint "
+                        f"(row records {head[0].get('fingerprint')}, expected "
+                        f"{fingerprint.digest})"
+                    )
         try:
             tables = {name: int(db.open_table(name).count_rows()) for name in sorted(present)}
         except Exception as exc:
