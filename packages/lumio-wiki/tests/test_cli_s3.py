@@ -389,6 +389,8 @@ def test_lance_storage_options_read_project_env_file(tmp_path, monkeypatch):
     for key in (
         "LUMIO_S3_REGION",
         "LUMIO_S3_ENDPOINT",
+        "LUMIO_S3_ACCESS_KEY_ID",
+        "LUMIO_S3_SECRET_ACCESS_KEY",
         "AWS_REGION",
         "AWS_DEFAULT_REGION",
         "AWS_ENDPOINT_URL_S3",

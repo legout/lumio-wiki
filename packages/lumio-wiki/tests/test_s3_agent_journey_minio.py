@@ -88,6 +88,20 @@ def _root_store():
         pass
 
 
+def _hermetic_child_env() -> dict[str, str]:
+    """Hermetic child env: keep the MinIO ``LUMIO_S3_*`` deployment settings
+    the journey needs, but strip every other inherited ``LUMIO_*`` config
+    var — another suite's conftest (e.g. tests/conftest.py setting
+    ``LUMIO_KB_PATH`` to a fixture KB) must not redirect this journey.
+    Project configuration comes from the ``.env`` setup wrote (docstring).
+    """
+    return {
+        key: value
+        for key, value in _os.environ.items()
+        if not (key.startswith("LUMIO_") and not key.startswith("LUMIO_S3_"))
+    }
+
+
 def _run(
     *args: str,
     cwd: Path,
@@ -101,10 +115,12 @@ def _run(
     retrieval backend, source store) must come from the project ``.env``
     that ``setup`` wrote — exactly what a restarted harness session sees.
     """
+    if env is None:
+        env = _hermetic_child_env()
     result = subprocess.run(
         [sys.executable, "-m", "lumio_wiki.cli", *args],
         cwd=str(cwd),
-        env=env if env is not None else _os.environ.copy(),
+        env=env,
         capture_output=True,
         text=True,
         timeout=300,
@@ -119,7 +135,9 @@ def _run(
 def _authored_page(title: str, source_id: str, body: str) -> str:
     return (
         "---\n"
+        f'id: "entity:{source_id}"\n'
         f'title: "{title}"\n'
+        "entity_types:\n  - document\n"
         "aliases: []\n"
         'tags:\n  - "journey"\n'
         f'summary: "Authored from {source_id} for the S3 journey."\n'
@@ -131,7 +149,6 @@ def _authored_page(title: str, source_id: str, body: str) -> str:
         "sources:\n"
         f'  - id: "{source_id}"\n'
         f'    title: "{source_id} source"\n'
-        "relationships: []\n"
         "synthetic: false\n"
         "---\n\n"
         f"# {title}\n\n{body}\n"
@@ -188,6 +205,26 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     assert "source inspect" in agents_md
     # The Agent Skill is part of the journey install (project scope).
     assert (maintainer / ".agents" / "skills" / "lumio-wiki" / "SKILL.md").is_file()
+
+    # --- Journey step 2b: the Maintainer deliberately declares the KB-local
+    # ontology (the setup seed carries an empty ontology; Entity Types are
+    # reviewed content, ADR-0021). Authored pages carry `entity_types`.
+    (maintainer / "knowledge-base" / "lumio.yaml").write_text(
+        "version: 2\n"
+        'mode: "categorized"\n'
+        "categories:\n"
+        "  - name: concepts\n"
+        "  - name: entities\n"
+        "  - name: references\n"
+        "  - name: procedures\n"
+        "  - name: tables\n"
+        "  - name: datasets\n"
+        "  - name: synthesis\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    document: {}\n",
+        encoding="utf-8",
+    )
 
     # --- Journey step 3: a restarted harness (fresh subprocess) discovers the
     # KB and configuration without prior session context.
@@ -390,7 +427,7 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     assert "published version v1 (Source Binding Manifest)" in out
     # ...and the zero-index backend still serves Evidence from the same S3
     # Location without any index (offline/local behavior stays green).
-    zero_env = _os.environ.copy()
+    zero_env = _hermetic_child_env()
     zero_env["LUMIO_RETRIEVAL_BACKEND"] = "zero-index"
     out = _run("search", "handbook sensors", cwd=reader, env=zero_env).stdout
     assert "## Field Handbook Notes" in out

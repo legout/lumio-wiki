@@ -170,7 +170,6 @@ def _authored_page(source_id: str) -> str:
         "sources:\n"
         f'  - id: "{source_id}"\n'
         f'    title: "{source_id} source"\n'
-        "relationships: []\n"
         "synthetic: false\n"
         "---\n\n"
         "# MinIO Artifact Page\n\n"
