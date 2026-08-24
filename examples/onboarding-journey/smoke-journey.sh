@@ -184,8 +184,9 @@ PAGEEOF
 $LW ingest ./kb "$HERE/sources/support-runbook.md" \
   --compiled-page password-reset-page.md --source-id support-runbook-2026
 
-step "5. Proposal review: list -> validate -> publish"
+step "5. Proposal review: list -> inspect -> validate -> publish"
 PID=$($LW proposal list ./kb | awk '/staged/{print $1}')
+$LW proposal inspect ./kb "$PID" | tee /dev/stderr | grep -Eq 'affected_pages: +Password Reset Runbook'
 $LW proposal validate ./kb "$PID"
 $LW publish ./kb "$PID"
 
@@ -214,33 +215,35 @@ export LUMIO_S3_ALLOW_HTTP=${LUMIO_S3_ALLOW_HTTP:-}
 case "$LUMIO_S3_ENDPOINT" in
   http://*) export LUMIO_S3_ALLOW_HTTP=1 ;;
 esac
+# Bucket creation is a one-time operator step documented in the quickstart
+# (mc mb / aws s3api create-bucket). With no mc on PATH, verify the endpoint
+# is reachable through the same client the CLI uses; a missing bucket then
+# fails loudly at publish-s3 below with an actionable error.
 if command -v "${MC_BIN:-mc}" >/dev/null 2>&1; then
   "${MC_BIN:-mc}" alias set local "$LUMIO_S3_ENDPOINT" \
     "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" >/dev/null
   "${MC_BIN:-mc}" mb --ignore-existing "local/$BUCKET" >/dev/null
 else
-  # Fallback: create the bucket through obstore (same client the CLI uses).
   ${LUMIO_PYTHON:-python3} - "$BUCKET" <<'PYEOF'
 import os
 import sys
 
 import obstore
 
+endpoint = os.environ["LUMIO_S3_ENDPOINT"]
 config = {
     "aws_region": os.environ.get("LUMIO_S3_REGION", "us-east-1"),
-    "aws_endpoint": os.environ["LUMIO_S3_ENDPOINT"],
+    "aws_endpoint": endpoint,
     "aws_access_key_id": os.environ["AWS_ACCESS_KEY_ID"],
     "aws_secret_access_key": os.environ["AWS_SECRET_ACCESS_KEY"],
 }
-client = {"allow_http": True} if os.environ["LUMIO_S3_ENDPOINT"].startswith("http://") else {}
+client = {"allow_http": True} if endpoint.startswith("http://") else {}
 store = obstore.store.from_url(f"s3://{sys.argv[1]}", config=config, client_options=client)
 try:
-    obstore.head(store, "current.json")  # bucket exists if this does not raise NotFound
-except obstore.exceptions.NotFoundError:
-    pass
-except Exception:
-    sys.exit(f"FAIL: cannot reach bucket s3://{sys.argv[1]} at {os.environ['LUMIO_S3_ENDPOINT']}; "
-             "create it first (mc mb or aws s3api create-bucket)")
+    list(obstore.list(store, prefix="journey-reachability-check/"))
+except Exception as exc:
+    sys.exit(f"FAIL: cannot use bucket s3://{sys.argv[1]} at {endpoint}: {exc}; "
+             "create it with 'mc mb local/<bucket>' (see docs/quickstart.md Part 1)")
 PYEOF
 fi
 $LW publish-s3 --version v1

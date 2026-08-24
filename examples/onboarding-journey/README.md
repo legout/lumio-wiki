@@ -35,11 +35,13 @@ export AWS_REGION=us-east-1
 ```
 
 The bucket (`lumio-quickstart` by default, override with
-`LUMIO_S3_TEST_BUCKET`) is created when `mc` is on PATH; otherwise the script
-checks it is reachable through `obstore` (the same client the CLI uses) and
-tells you to create it otherwise. Each run publishes under a unique
-`helpdesk-kb/run-…` prefix because Published Versions are immutable and cannot
-be overwritten.
+`LUMIO_S3_TEST_BUCKET`) is created when `mc` is on PATH (the one-time operator
+step documented in the quickstart). Without `mc`, the script verifies the
+endpoint is reachable and the bucket usable through `obstore` (the same client
+the CLI uses); a missing bucket then fails at `publish-s3` with an actionable
+error — create it with `mc mb` or `aws s3api create-bucket` first. Each run
+publishes under a unique `helpdesk-kb/run-…` prefix because Published
+Versions are immutable and cannot be overwritten.
 
 When `lumio-wiki` is not on `PATH` (for example from a Lumio checkout), point
 the script at it:

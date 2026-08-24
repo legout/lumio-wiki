@@ -120,12 +120,12 @@ def test_quickstart_cites_registered_public_commands():
 
 def test_journey_commands_have_one_home_across_quickstart_script_and_example():
     """The quickstart, its scriptable twin, and the example README agree on
-    the journey's commands — the script follows the docs exactly."""
+    the journey's commands — the script follows the docs' review sequence
+    (list -> inspect -> validate -> publish), not a loose approximation."""
     quickstart = _collapse(QUICKSTART.read_text(encoding="utf-8"))
     script = SCRIPT.read_text(encoding="utf-8")
     example = EXAMPLE_README.read_text(encoding="utf-8")
     for journey in JOURNEY_COMMANDS:
-        head, sub = journey.split(maxsplit=1)
         assert journey in quickstart, f"quickstart must cite: {journey}"
         if journey in (
             "lumio-wiki --version",
@@ -133,8 +133,9 @@ def test_journey_commands_have_one_home_across_quickstart_script_and_example():
             "lumio-wiki rollback-s3",
             "lumio-wiki cleanup-s3",
         ):
-            continue  # informational pointers, not executed by the smoke script
-        assert sub.split()[0] in script or journey in script, (
+            continue  # informational pointers, documented but not scripted
+        head, sub = journey.split(maxsplit=1)
+        assert re.search(rf"\b{re.escape(sub.split()[0])}\b", script), (
             f"smoke journey must execute the documented command: {journey}"
         )
     assert "smoke-journey.sh" in quickstart, "quickstart must link its scriptable twin"

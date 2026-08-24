@@ -31,6 +31,8 @@ setup → status → ingest → proposal review → publish
 
 - Python **≥ 3.14** and a shell.
 - Docker (only for the local MinIO in Part 1).
+- `mc` (the MinIO client) or the AWS CLI for the one-time bucket creation in
+  Part 1.
 
 Install the portable foundation with the S3 extra, and — when you want the
 enhanced retrieval backend — the LanceDB adapter with its S3 extra:
@@ -309,7 +311,7 @@ inspection command, never an implicit URL:
 source-artifact: lumio-wiki source inspect --source-id support-runbook-2026
 ```
 
-Traverse the Knowledge Graph over the accepted Claim you seeded (add
+Traverse the Discovery Graph over the accepted Claim you seeded (add
 `--scope discovery` to include deterministic body-link Extracted References —
 topology only, never Evidence):
 
@@ -343,11 +345,13 @@ authorization:   granted (private registry view)
 
 `lumio-wiki source fetch ./kb --source-id support-runbook-2026` fails with an
 equally actionable message (naming `--source-store`) rather than substituting
-something else. To actually retain originals, re-run setup with
-`--source-store s3://<private-bucket>/prefix` (a private store, never part of
-the published Knowledge Base) before publishing — then `source fetch
---source-id support-runbook-2026 --output out.md` returns the byte-exact
-original.
+something else. Retention is **not retroactive**: raw bytes are retained at
+managed-ingest time, only when a store is already configured. To retain
+originals, configure the store when you set the project up — `lumio-wiki
+setup ./kb --publish-to s3://lumio-quickstart/helpdesk-kb --source-store
+s3://lumio-private-sources/helpdesk` (a **separate, non-public** bucket;
+retention is opt-in) — and re-ingest; `source fetch --source-id
+support-runbook-2026 --output out.md` then returns the byte-exact original.
 
 ## 9. Publish an immutable S3 version (zero-index)
 
@@ -439,7 +443,15 @@ error: semantic/hybrid search needs an embedder: install 'lumio-lancedb[embeddin
 
 Install `'lumio-lancedb[embeddings]'` (local sentence-transformers) or point
 `LUMIO_PROVIDER_*` at an OpenAI-compatible `/embeddings` endpoint to enable
-them. To revert a bad activation, `lumio-wiki rollback-s3
+them — `--mode semantic` and `--mode hybrid` are then two separately
+demonstrable rungs (the error text is identical until an embedder exists):
+
+```bash
+lumio-wiki search "reset link expiry" --mode semantic
+lumio-wiki search "reset link expiry" --mode hybrid
+```
+
+To revert a bad activation, `lumio-wiki rollback-s3
 s3://lumio-quickstart/helpdesk-kb --version v1 --expected-pointer-version v2`
 re-points to a prior complete version (never rebuilds it); `lumio-wiki
 cleanup-s3 s3://lumio-quickstart/helpdesk-kb` reports interrupted-build
@@ -516,4 +528,6 @@ Never point a Maintainer worktree at the S3 prefix as if it were a filesystem.
 - [`docs/chat-sources.md`](chat-sources.md) — private document chat in the web
   app.
 - [`examples/onboarding-journey/`](../examples/onboarding-journey/) — the
+  scriptable journey CI runs.
+journey/) — the
   scriptable journey CI runs.
