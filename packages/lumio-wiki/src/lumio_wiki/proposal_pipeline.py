@@ -157,51 +157,65 @@ def _retarget_claim_objects(data: dict, from_id: str, to_id: str) -> bool:
     return changed
 
 
-def _destination_matches(
-    dest: str, pages, source_dir: str
-) -> tuple[set[str], set[str]]:
-    """Return ``(any_matches, path_matches)`` of page titles for a link dest.
+def _classify_retired_link(
+    dest: str, pages, source_dir: str, retired_title: str
+) -> str | None:
+    """Classify a body-link destination against the retired page.
 
-    ``any_matches`` collects pages the destination matches by Canonical Title,
-    alias, or path stem (mirroring the resolver's lookup keys); path_matches``
-    is the subset matched by path stem only. Titles are the set identity
-    because CompiledPage records are unhashable; a valid Knowledge Base has
-    unique titles.
+    Mirrors the shared resolver's lookup precedence (Canonical Title, then
+    alias, then path stem) so "exactly resolved" means exactly what the
+    resolver means. Returns ``"title"``/``"alias"``/``"path"`` when the
+    destination resolves to exactly the retired page through that key
+    (repair it), ``"ambiguous"`` when it matches the retired page AND
+    another page through the same key (never guess — block the merge), or
+    ``None`` when it resolves elsewhere or not at all (leave it alone).
+    Titles are the set identity because CompiledPage records are unhashable;
+    a valid Knowledge Base has unique titles.
     """
     from lumio_wiki.knowledge_base import _destination_stem
 
     stem = _destination_stem(dest).casefold().lstrip("/")
     if not stem:
-        return set(), set()
-    any_matches: set[str] = set()
-    path_matches: set[str] = set()
+        return None
+    title_matches = {
+        page.title for page in pages if page.title and page.title.casefold() == stem
+    }
+    if title_matches:
+        if retired_title not in title_matches:
+            return None
+        # A unique Canonical-Title match wins over any alias or path match —
+        # exactly like the resolver — so a same-named alias on another page
+        # must not make this repair ambiguous. Case-colliding titles
+        # (``Beta``/``BETA``) casefold onto this one stem: never guess.
+        return "title" if len(title_matches) == 1 else "ambiguous"
+    alias_matches = {
+        page.title
+        for page in pages
+        for alias in page.aliases
+        if alias and alias.casefold() == stem
+    }
+    if alias_matches:
+        if retired_title not in alias_matches:
+            return None
+        return "alias" if len(alias_matches) == 1 else "ambiguous"
+    # Path stems, mirroring the resolver: source-dir-relative first, then
+    # global. Each lookup keys a unique page path, so a match is never
+    # ambiguous by itself.
+    by_path: dict[str, str] = {}
     for page in pages:
-        if page.title and page.title.casefold() == stem:
-            any_matches.add(page.title)
-        for alias in page.aliases:
-            if alias and alias.casefold() == stem:
-                any_matches.add(page.title)
         if page.path:
             pstem = page.path
             if pstem.lower().endswith(".md"):
                 pstem = pstem[: -len(".md")]
-            pstem = pstem.casefold()
-            if pstem == stem or (source_dir and pstem == f"{source_dir.casefold()}/{stem}"):
-                any_matches.add(page.title)
-                path_matches.add(page.title)
-    return any_matches, path_matches
-
-
-def _relative_link_path(surviving_path: str, source_dir: str) -> str:
-    """Return a link destination that resolves to the survivor from anywhere.
-
-    Root-absolute destinations (``/concepts/gamma.md``) resolve from every
-    source directory (the resolver strips the leading slash); parent-relative
-    ``../`` destinations are classified as escaping and never resolve, so
-    they are never produced. ``source_dir`` is accepted for signature parity
-    with future per-directory tuning and ignored.
-    """
-    return f"/{surviving_path}"
+            by_path.setdefault(pstem.casefold(), page.title)
+    target: str | None = None
+    if source_dir:
+        target = by_path.get(f"{source_dir.casefold()}/{stem}")
+    if target is None:
+        target = by_path.get(stem)
+    if target is None:
+        return None
+    return "path" if target == retired_title else None
 
 
 def _repair_body_links_for_merge(
@@ -216,13 +230,14 @@ def _repair_body_links_for_merge(
     """Rewrite exactly-resolved body links targeting the retired page (issue #169).
 
     A reviewed Entity Merge repairs exactly resolved links in the same
-    proposal (ADR-0021): every internal link whose destination resolves to
-    the retired page — and ONLY the retired page — is rewritten to target the
-    surviving page (wikilink/markdown-title links to the surviving Canonical
-    Title, path links to the surviving path relative to the source page). A
-    destination that matches the retired page AND at least one other page is
-    an AMBIGUOUS repair: it is never guessed, reported verbatim, and blocks
-    staging. Returns ``(rewritten_markdown, changed, ambiguous)``.
+    proposal (ADR-0021): every internal link that resolves — with the shared
+    resolver's precedence — to exactly the retired page is rewritten to
+    target the surviving page (wikilinks and title-resolved links to the
+    surviving Canonical Title, path-resolved links to a root-absolute
+    surviving path). A destination that matches the retired page AND another
+    page through the same resolution key is an AMBIGUOUS repair: it is never
+    guessed, reported verbatim, and blocks staging. Returns
+    ``(rewritten_markdown, changed, ambiguous)``.
     """
     from lumio_wiki.knowledge_base import _scan_body_links
 
@@ -233,24 +248,25 @@ def _repair_body_links_for_merge(
     # Split once: repairs shift no characters on their own line, so scan the
     # ORIGINAL body and apply one exact substring replacement per scanned link.
     for dest, line_start, line_end in _scan_body_links(markdown, body_start_line):
-        any_matches, path_matches = _destination_matches(dest, pages, source_dir)
-        if retired_title not in any_matches:
+        kind = _classify_retired_link(dest, pages, source_dir, retired_title)
+        if kind is None:
             continue
-        if len(any_matches) > 1:
+        if kind == "ambiguous":
             ambiguous.append(
-                f"{source_path}: line {line_start}: '{dest}' matches "
-                f"{sorted(any_matches)}; refusing to guess a repair target"
+                f"{source_path}: line {line_start}: '{dest}' matches the retired "
+                f"page and another page; refusing to guess a repair target"
             )
             continue
-        new_dest = surviving_path if retired_title in path_matches else surviving_title
-        rel = _relative_link_path(new_dest, source_dir) if retired_title in path_matches else new_dest
+        # Title/alias resolutions rewrite to the surviving Canonical Title;
+        # path resolutions rewrite to a root-absolute surviving path (which
+        # resolves from every source directory).
+        rel = surviving_path if kind == "path" else surviving_title
         lo = max(line_start - body_start_line, 0)
         hi = min(line_end - body_start_line, len(body_lines) - 1)
-        # Wikilinks always rewrite to the surviving Canonical Title (title
-        # resolution is unique); Markdown links rewrite to a root-absolute
-        # path when the retired page matched by path, else the surviving
-        # title. Delimiter-bounded patterns so a shared prefix (``[[beta``
-        # inside ``[[beta2]]``) can never be rewritten by accident.
+        # Wikilinks always rewrite to the surviving title; Markdown links use
+        # the resolution-derived destination. Delimiter-bounded patterns so a
+        # shared prefix (``[[beta`` inside ``[[beta2]]``) is never rewritten
+        # by accident.
         replacements = (
             (f"[[{dest}]]", f"[[{surviving_title}]]"),
             (f"[[{dest}|", f"[[{surviving_title}|"),

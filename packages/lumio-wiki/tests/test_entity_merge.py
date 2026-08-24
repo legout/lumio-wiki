@@ -38,7 +38,11 @@ from lumio_wiki.ingest import (
     SourceProvenance,
 )
 from lumio_wiki.knowledge_base import load_knowledge_base
-from lumio_wiki.proposal_pipeline import ProposalBlockedError, ProposalPipeline
+from lumio_wiki.proposal_pipeline import (
+    ProposalBlockedError,
+    ProposalPipeline,
+    ProposalPipelineError,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures (mirroring test_page_removal.py conventions)
@@ -360,16 +364,63 @@ def test_entity_merge_collision_blocks_publication(tmp_path):
 
 
 def test_entity_merge_ambiguous_link_repair_refuses_to_stage(tmp_path):
-    """A link matching the retired page AND another page is never guessed."""
-    root = _merge_kb(tmp_path)
-    # Zeta's alias collides with the retired page's Canonical Title, so the
-    # [[Beta]] link matches two pages: the repair is ambiguous.
-    _write(root, "concepts/zeta.md", _page("Zeta", aliases=["Beta"]))
+    """A link matching the retired page AND another page is never guessed.
+
+    The retired page ``Beta`` and a page titled ``BETA`` casefold onto one
+    stem, so a ``[[Beta]]`` link matches two pages through the SAME
+    resolution key (Canonical Title) — exactly the collision the shared
+    resolver drops as ambiguous. The repair must refuse rather than guess.
+    (A unique Canonical-Title match wins over aliases — mirroring the
+    resolver — so a mere alias collision with the retired TITLE is not
+    ambiguity and repairs by title.)
+    """
+    root = _categorized_kb(tmp_path)
+    _write(
+        root,
+        "concepts/alpha.md",
+        _page("Alpha", body="See [[Beta]]."),
+    )
+    _write(root, "concepts/beta.md", _page("Beta"))
+    # ``BETA`` is not an exact duplicate title (validation keys exact titles)
+    # but casefolds onto the same stem, so link resolution is ambiguous.
+    # Its Entity ID is hand-set so it does not slug-collide with ``entity:beta``.
+    _write(
+        root,
+        "concepts/zeta.md",
+        _page("BETA").replace('id: "entity:beta"', 'id: "entity:beta-shadow"'),
+    )
+    _write(root, "concepts/gamma.md", _page("Gamma"))
     _kb, pipeline = _pipeline(root, tmp_path)
 
-    with pytest.raises(Exception, match="ambiguous link repair"):
+    with pytest.raises(ProposalPipelineError, match="ambiguous link repair"):
         pipeline.propose_entity_merge("entity:beta", "entity:gamma")
     assert pipeline.list() == []  # nothing staged, nothing half-repaired
+
+
+def test_entity_merge_repairs_alias_links_and_prefers_title_over_alias(tmp_path):
+    """Exactly-resolved links repair even when another page shares an alias.
+
+    ``[[Beta]]`` resolves by the retired page's unique Canonical Title (the
+    resolver's first key), so Zeta's alias "Beta" cannot make it ambiguous:
+    the link repairs to the surviving title.
+    """
+    root = _categorized_kb(tmp_path)
+    _write(
+        root,
+        "concepts/alpha.md",
+        _page("Alpha", body="See [[Beta]]."),
+    )
+    _write(root, "concepts/beta.md", _page("Beta"))
+    _write(root, "concepts/zeta.md", _page("Zeta", aliases=["Beta"]))
+    _write(root, "concepts/gamma.md", _page("Gamma"))
+    _kb, pipeline = _pipeline(root, tmp_path)
+
+    proposal = pipeline.propose_entity_merge("entity:beta", "entity:gamma")
+    assert not proposal.blocked, proposal.validation_report
+    pipeline.publish(proposal.id)
+
+    alpha_markdown = (root / "concepts/alpha.md").read_text(encoding="utf-8")
+    assert "[[Gamma]]" in alpha_markdown and "[[Beta]]" not in alpha_markdown
 
 
 def test_entity_merge_invalid_resulting_ontology_blocks_publication(tmp_path):
@@ -438,11 +489,11 @@ def test_entity_merge_invalid_resulting_ontology_blocks_publication(tmp_path):
 def test_entity_merge_self_unknown_and_flat_refusals(tmp_path):
     root = _merge_kb(tmp_path)
     _kb, pipeline = _pipeline(root, tmp_path)
-    with pytest.raises(Exception, match="cannot merge an entity into itself"):
+    with pytest.raises(ProposalPipelineError, match="cannot merge an entity into itself"):
         pipeline.propose_entity_merge("entity:beta", "entity:beta")
-    with pytest.raises(Exception, match="no Compiled Page found for retired"):
+    with pytest.raises(ProposalPipelineError, match="no Compiled Page found for retired"):
         pipeline.propose_entity_merge("entity:nope", "entity:gamma")
-    with pytest.raises(Exception, match="no Compiled Page found for surviving"):
+    with pytest.raises(ProposalPipelineError, match="no Compiled Page found for surviving"):
         pipeline.propose_entity_merge("entity:beta", "entity:nope")
     # Legacy Flat Mode has no ontology redirects.
     flat = tmp_path / "flat"
@@ -470,7 +521,7 @@ def test_entity_merge_self_unknown_and_flat_refusals(tmp_path):
     flat_kb, report = load_knowledge_base(flat)
     assert report.is_valid, report
     flat_pipeline = ProposalPipeline(flat_kb, store=IngestStore(tmp_path / "flat-ingest"))
-    with pytest.raises(Exception, match="version-2 Knowledge Base with a Control File"):
+    with pytest.raises(ProposalPipelineError, match="version-2 Knowledge Base with a Control File"):
         flat_pipeline.propose_entity_merge("entity:a", "entity:b")
 
 

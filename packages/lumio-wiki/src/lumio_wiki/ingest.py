@@ -163,7 +163,12 @@ def claim_state_summary(claim: Claim) -> str:
         target = f"value={claim.value_type}:{claim.value}"
     else:
         target = "object=?"
-    return f"status={claim.status or '?'} {target} evidence={len(claim.evidence)}"
+    anchors = ",".join(
+        anchor.section if anchor.section is not None else f"L{anchor.line_start}-{anchor.line_end}"
+        for anchor in claim.evidence
+    )
+    evidence = f"[{anchors}]" if anchors else ""
+    return f"status={claim.status or '?'} {target} evidence={len(claim.evidence)}{evidence}"
 
 
 def compute_claim_changes(
@@ -204,7 +209,10 @@ def compute_claim_changes(
                     after=claim_state_summary(claim),
                 )
             )
-        elif claim_state_summary(existing) != claim_state_summary(claim):
+        elif existing != claim:
+            # Full-value comparison: predicate, object/literal, confidence,
+            # origin, validity bounds, and same-count evidence-anchor edits
+            # are all edits — a summary comparison would hide them.
             changes.append(
                 ClaimChange(
                     page_title=page_title,
