@@ -132,4 +132,5 @@ def test_workspace_ci_runs_package_and_application_consumer_suites():
         "tests/test_okf_import.py",
         "tests/test_okf_round_trip.py",
         "tests/test_okf_reject_unsafe.py",
+        "tests/test_onboarding_journey.py",
     ]

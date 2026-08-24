@@ -3,6 +3,13 @@
 How to use Lumio three ways: from the **CLI**, as a **Python library**, and
 inside a **coding-agent harness** (opencode, Claude Code, Codex, etc.).
 
+> New here? **[`docs/quickstart.md`](quickstart.md)** is the canonical
+> onboarding journey (issue #180): one linear path — Maintainer setup,
+> ontology starter, managed ingest, proposal review, S3 publication with and
+> without LanceDB, read-only Reader setup, retrieval, traversal, citation
+> opening, Source Artifact inspection — ending with a grounded agent answer.
+> This guide is the reference the journey links into.
+
 > Lumio ships as three progressively enhanced wheels. This guide uses
 > `lumio-wiki` (the portable, model-free foundation) unless noted — it works
 > everywhere with no model provider, no LanceDB, no web server.
