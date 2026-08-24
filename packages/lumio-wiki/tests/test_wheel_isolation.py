@@ -375,6 +375,21 @@ def test_init_then_health_succeeds_without_optionals(isolated_wheel_env: dict, t
     assert "pages:" in result.stdout
     assert "valid:" in result.stdout
 
+    # status explains the effective configuration from the isolated base
+    # install (issue #175): no S3 / LanceDB extras needed.
+    result = subprocess.run(
+        [str(script), "status", str(kb_root), "--json"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"status failed:\n{result.stderr}"
+    payload = json.loads(result.stdout)
+    assert payload["role"] == "maintainer"
+    assert payload["config_source"] == "argument"
+    assert payload["retrieval_backend"] == "zero-index"
+    assert payload["retrieval_mode"] == "lexical"
+    assert payload["lancedb_requested"] is False
+
 
 def test_doctor_runs_from_isolated_install(isolated_wheel_env: dict):
     """``doctor`` reports the install shape from the isolated wheel."""

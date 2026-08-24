@@ -156,6 +156,7 @@ lumio-wiki rollback-s3 <dest> --version <v>      # CAS-activate a prior complete
 lumio-wiki cleanup-s3 <dest>                     # report inactive incomplete version prefixes
                                                   #   (interrupted builds); deletes nothing
 lumio-wiki health <kb> [--rebuild]           # page counts, validation, Discovery Graph health
+lumio-wiki status [<kb>] [--json]            # effective config + retrieval state, one secret-free summary (#175)
 lumio-wiki eval <kb> [--gold-set <f>] [--semantic [--model <name>]] [--json]  # recall@k per retrieval stage (#138)
 lumio-wiki eval-ontology <kb> [--gold-set <f>] [--json]  # entity resolution / traversal / scope separation (#173)
 lumio-wiki doctor                            # install shape: version, optionals, skill location
@@ -592,6 +593,7 @@ automatically when no `\u003ckb\u003e` argument is given).
 
 - `lumio-wiki doctor` — version, detected extras, skill location.
 - `lumio-wiki health` — page counts, validation, Discovery Graph health.
+- `lumio-wiki status [<kb> | --json]` — effective configuration + retrieval state: project role, location and its configuration source, active Published Version (S3), retrieval backend/mode as separate fields, graph source, LanceDB health with fallback reasons, Source Artifact retention, validation, one next action (#175).
 - `lumio-wiki validate` — exit 0 if valid, 1 otherwise.
 ```
 
