@@ -157,41 +157,26 @@ def _reject_private_addresses(addresses: list[str]) -> None:
 
 
 def _is_private_address(address: str) -> bool:
+    """Reject every non-public-unicast address (fail closed).
+
+    Built on the stdlib ``ipaddress`` registry rather than hand-rolled CIDR
+    checks (standards review: hand-rolling missed TEST-NET 192.0.2.0/24,
+    benchmarking 198.18.0.0/15, documentation 2001:db8::/32, reserved
+    240.0.0.0/4, and others that can be internally routed). ``not is_global``
+    covers loopback/link-local/private/ULA/unspecified/reserved/special
+    ranges; multicast is explicitly rejected because some multicast space
+    reports ``is_global``; the deprecated IPv6 site-local prefix ``fec0::/10``
+    is not classified by ``ipaddress`` at all, so it is checked explicitly.
+    """
+    import ipaddress
+
     try:
-        packed = socket.inet_pton(socket.AF_INET6, address)
-    except OSError:
-        pass
-    else:
-        # Unwrap IPv4-mapped IPv6 (::ffff:a.b.c.d) so mapped forms can't
-        # bypass the IPv4 checks below.
-        if packed.startswith(b"\x00" * 10 + b"\xff\xff"):
-            packed4 = packed[12:]
-            address = socket.inet_ntop(socket.AF_INET, packed4)
-        else:
-            # IPv6: loopback ::1, link-local fe80::/10, unique-local fc00::/7,
-            # unspecified ::.
-            first = int.from_bytes(packed[:2], "big")
-            return (
-                packed == b"\x00" * 15 + b"\x01"
-                or (first & 0xFFC0) == 0xFE80
-                or (first & 0xFE00) == 0xFC00
-                or packed == b"\x00" * 16
-            )
-    try:
-        packed = socket.inet_aton(address)
-    except OSError:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
         return False  # not an IP literal; policy applied via resolution
-    octets = packed
-    first, second = octets[0], octets[1]
-    return (
-        first == 127  # loopback 127/8
-        or first == 10  # private 10/8
-        or first == 0  # unspecified 0/8
-        or (first == 172 and 16 <= second <= 31)  # private 172.16/12
-        or (first == 192 and second == 168)  # private 192.168/16
-        or (first == 169 and second == 254)  # link-local incl. cloud metadata
-        or (first == 100 and 64 <= second <= 127)  # CGNAT 100.64/10
-    )
+    if ip.version == 6 and ip in ipaddress.IPv6Network("fec0::/10"):
+        return True  # deprecated site-local — never routed publicly
+    return bool(ip.is_multicast or not ip.is_global)
 
 
 def _safe_filename(url: str, media_type: str) -> str:

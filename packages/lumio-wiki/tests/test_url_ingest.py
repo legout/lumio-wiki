@@ -87,6 +87,17 @@ def test_fetch_url_rejects_urls_without_host():
         "0.0.0.0",
         "fe80::1",
         "fd00::1",
+        # Standards-review additions: hand-rolled CIDR checks missed these
+        # non-global / multicast / site-local ranges (Python ipaddress
+        # classifies them all as not safe to dial).
+        "192.0.2.1",  # TEST-NET-1 (documentation)
+        "198.18.0.1",  # benchmarking
+        "2001:db8::1",  # IPv6 documentation
+        "240.0.0.1",  # reserved
+        "224.0.0.1",  # multicast (is_global alone would permit it)
+        "ff02::1",  # IPv6 multicast
+        "fec0::1",  # deprecated IPv6 site-local
+        "::ffff:10.0.0.1",  # IPv4-mapped private
     ],
 )
 def test_fetch_url_rejects_private_and_loopback_destinations(address, monkeypatch):

@@ -32,7 +32,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import lumio_wiki
 from lumio_wiki import (
@@ -1790,21 +1790,15 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             )
         except (ManagedIngestError, SourceRegistryError) as exc:
             raise CliError(str(exc), exit_code=1) from exc
-        print(f"Staged proposal {proposal.id}")
-        print(f"  status:         {proposal.status}")
-        print(f"  source_id:      {proposal.provenance.source_id}")
-        print(f"  content_type:    {proposal.provenance.content_type}")
-        print(f"  converted_by:   {proposal.provenance.converted_by}")
-        print(f"  source_hash:    {proposal.provenance.source_hash}")
-        print(f"  affected_pages: {', '.join(proposal.affected_pages) or '(none)'}")
-        print(f"  blocked:        {proposal.blocked}")
-        print()
-        print("Review with:")
-        print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
-        print(f"  lumio-wiki proposal validate {args.path} {proposal.id}")
-        if is_reviewable_proposal(proposal) and not proposal.blocked:
-            print(f"  lumio-wiki publish {args.path} {proposal.id}")
-        return 0
+        return _print_staged_proposal_summary(
+            proposal,
+            args.path,
+            rows=[
+                ("content_type:", proposal.provenance.content_type),
+                ("converted_by:", proposal.provenance.converted_by),
+                ("source_hash:", proposal.provenance.source_hash),
+            ],
+        )
 
     # Route through select_source_processor so text/Markdown uses the
     # dependency-free processor and document sources (PDF, image, DOCX, HTML,
@@ -1876,6 +1870,37 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     print(f"  lumio-wiki proposal validate {args.path} {proposal.id}")
     if is_reviewable_proposal(proposal) and not proposal.blocked:
         print(f"  lumio-wiki publish {args.path} {proposal.id}")
+    return 0
+
+
+def _print_staged_proposal_summary(
+    proposal, kb_path: str, rows: Sequence[tuple[str, object]] = ()
+) -> int:
+    """Print the shared managed-ingest staging summary + review guidance.
+
+    One printer for the managed branch of ``ingest`` (issue #149),
+    ``ingest-url``, and ``ingest-research`` (issue #178): identical status,
+    source-id, affected-pages, blocked, and inspect/validate/publish rows,
+    with per-command ``rows`` (``source_url``, ``consulted``, ...) inserted
+    after ``source_id``. ``content_type:`` keeps its historical 4-space
+    alignment (pinned by the #149 CLI output contract).
+    """
+    print(f"Staged proposal {proposal.id}")
+    print(f"  status:         {proposal.status}")
+    print(f"  source_id:      {proposal.provenance.source_id}")
+    for label, value in rows:
+        if label == "content_type:":
+            print(f"  content_type:    {value}")
+        else:
+            print(f"  {label:<16}{value}")
+    print(f"  affected_pages: {', '.join(proposal.affected_pages) or '(none)'}")
+    print(f"  blocked:        {proposal.blocked}")
+    print()
+    print("Review with:")
+    print(f"  lumio-wiki proposal inspect {kb_path} {proposal.id}")
+    print(f"  lumio-wiki proposal validate {kb_path} {proposal.id}")
+    if is_reviewable_proposal(proposal) and not proposal.blocked:
+        print(f"  lumio-wiki publish {kb_path} {proposal.id}")
     return 0
 
 
@@ -2058,19 +2083,16 @@ def _cmd_ingest_research(args: argparse.Namespace) -> int:
         )
     except (ManagedIngestError, SourceRegistryError) as exc:
         raise CliError(str(exc), exit_code=1) from exc
-    print(f"Staged proposal {proposal.id}")
-    print(f"  status:         {proposal.status}")
-    print(f"  source_id:      {proposal.provenance.source_id}")
-    print(f"  consulted:      {len(proposal.provenance.consulted_sources)} sources")
-    print(f"  affected_pages: {', '.join(proposal.affected_pages) or '(none)'}")
-    print(f"  blocked:        {proposal.blocked}")
-    print()
-    print("Review with:")
-    print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
-    print(f"  lumio-wiki proposal validate {args.path} {proposal.id}")
-    if is_reviewable_proposal(proposal) and not proposal.blocked:
-        print(f"  lumio-wiki publish {args.path} {proposal.id}")
-    return 0
+    return _print_staged_proposal_summary(
+        proposal,
+        args.path,
+        rows=[
+            (
+                "consulted:",
+                f"{len(proposal.provenance.consulted_sources)} sources",
+            )
+        ],
+    )
 
 
 def _proposal_pipeline(args: argparse.Namespace):
