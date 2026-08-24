@@ -1,0 +1,2 @@
+{"ts": "2026-08-24T14:00:00Z", "role": "user", "text": "What did we decide about retention?"}
+{"ts": "2026-08-24T14:05:00Z", "role": "assistant", "text": "Artifacts retain original bytes privately (ADR-0020)."}

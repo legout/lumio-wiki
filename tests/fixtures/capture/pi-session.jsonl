@@ -1,0 +1,2 @@
+{"ts": "2026-08-24T09:00:00Z", "role": "user", "text": "Why does the Reader return not covered for X?"}
+{"ts": "2026-08-24T09:02:00Z", "role": "assistant", "text": "Retrieval found no Evidence; guardrail worked as designed."}

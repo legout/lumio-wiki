@@ -1,0 +1,2 @@
+{"ts": "2026-08-24T11:00:00Z", "role": "user", "text": "Run the focused suite."}
+{"ts": "2026-08-24T11:10:00Z", "role": "assistant", "text": "uv run pytest -q tests/test_capture.py passed."}

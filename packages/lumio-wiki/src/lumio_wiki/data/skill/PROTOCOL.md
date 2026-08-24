@@ -179,6 +179,40 @@ the original bytes. Prints the proposal id, affected pages, blocked status,
 and blast radius. For PDF/DOCX/image sources, install `lumio-wiki[documents]`;
 for an unattended OpenAI-compatible Distiller, install `lumio-wiki[llm]`.
 
+### Capture a session or research result (explicit consent, preview-first)
+
+```
+lumio-wiki capture session <kb> --compiled-page <page.md> \
+  --manifest <capture.yaml> --source-id <id> [--transcript <path>] [--yes]
+```
+
+Explicitly capture the CURRENT coding-agent session or a research result as
+ONE reviewable proposal (issue #179). Rules:
+
+- Consent only. Invoke capture only when the user asked; never in the
+  background. Without `--yes` the command registers NOTHING and stages
+  NOTHING — it prints the preview (included sections, redaction counts) for
+  confirmation. Re-run with `--yes` to register and stage.
+- The `--compiled-page` must be declarative knowledge (decisions, verified
+  findings, commands/results, citations) and MUST declare the source id in
+  `sources[].id`. Raw transcript-shaped pages are refused.
+- The `--manifest` is bounded, vendor-neutral YAML: `client`, `project`,
+  `started_at`, `ended_at`, `transcript` (path or `sha256:<hex>` digest),
+  `artifacts`, `redactions` labels. It is private ingest provenance, stored
+  under the ingest store — never in the Knowledge Base root.
+- Secrets, credentials, signed URLs, private object keys, environment dumps,
+  and hidden model reasoning are redacted before staging and never reach
+  the page, the manifest record, logs, or output. A named transcript that is
+  missing is reported instead of fabricated; with no transcript the manifest
+  itself is registered as the private capture record.
+- Client adapters (Pi, Codex, Claude Code, Hermes) export through the SAME
+  manifest contract; unsupported clients write a manual manifest. The
+  transcript lives where each client keeps it (e.g. Pi session logs, Codex
+  rollout files, Claude Code transcript JSON, Hermes memories) — export or
+  reference it from `transcript`.
+- Capture never auto-publishes: review with `proposal inspect`/`validate`
+  and publish or discard explicitly, exactly like ingest.
+
 ## 8. Review proposals
 
 ```

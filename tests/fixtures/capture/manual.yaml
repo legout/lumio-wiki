@@ -1,0 +1,10 @@
+# Unsupported clients capture through a manual manifest: any non-empty
+# client label works; no export exists, so this manifest is itself the
+# private capture record registered under the source identity.
+client: manual
+project: research-notes
+started_at: "2026-08-24T15:00:00Z"
+ended_at: "2026-08-24T15:05:00Z"
+transcript: null
+artifacts: []
+redactions: []

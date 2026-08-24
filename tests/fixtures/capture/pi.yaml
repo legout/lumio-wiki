@@ -1,0 +1,9 @@
+client: pi
+project: lumio-reader
+started_at: "2026-08-24T09:00:00Z"
+ended_at: "2026-08-24T10:30:00Z"
+transcript: pi-session.jsonl
+artifacts:
+  - lumio-wiki-search-results.md
+redactions:
+  - oracle-a1 host IP

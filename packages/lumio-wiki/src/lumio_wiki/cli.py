@@ -1889,6 +1889,70 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_capture_session(args: argparse.Namespace) -> int:
+    """``capture session``: explicit, preview-first session capture (issue #179)."""
+    from lumio_wiki.capture import (
+        CaptureError,
+        capture_session,
+        format_capture_preview,
+        load_capture_manifest,
+    )
+
+    kb, _report = _load_kb(args.path)
+    if not args.compiled_page.is_file():
+        raise CliError(f"compiled-page file not found: {args.compiled_page}")
+    if not args.manifest.is_file():
+        raise CliError(f"capture manifest not found: {args.manifest}")
+    compiled_page = args.compiled_page.read_text(encoding="utf-8")
+    try:
+        manifest, manifest_bytes = load_capture_manifest(args.manifest)
+    except CaptureError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+
+    ingest_dir = _resolve_ingest_dir(args, kb.root)
+    ingest_dir.mkdir(parents=True, exist_ok=True)
+    store = IngestStore(ingest_dir)
+    pipeline = ProposalPipeline(kb, store=store)
+
+    try:
+        outcome = capture_session(
+            pipeline,
+            store,
+            compiled_page_markdown=compiled_page,
+            manifest=manifest,
+            manifest_bytes=manifest_bytes,
+            manifest_path=args.manifest,
+            source_id=args.source_id,
+            transcript_path=args.transcript,
+            confirmed=args.yes,
+        )
+    except CaptureError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+
+    print(format_capture_preview(outcome.preview))
+    print()
+    if outcome.proposal is None:
+        print("Preview only — nothing registered or staged.")
+        print(
+            "Re-run with --yes to register the capture source and stage the "
+            "proposal for review."
+        )
+        return 0
+    proposal = outcome.proposal
+    print(f"Staged proposal {proposal.id}")
+    print(f"  status:         {proposal.status}")
+    print(f"  source_id:      {proposal.provenance.source_id}")
+    print(f"  affected_pages: {', '.join(proposal.affected_pages) or '(none)'}")
+    print(f"  blocked:        {proposal.blocked}")
+    print()
+    print("Review with:")
+    print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
+    print(f"  lumio-wiki proposal validate {args.path} {proposal.id}")
+    if is_reviewable_proposal(proposal) and not proposal.blocked:
+        print(f"  lumio-wiki publish {args.path} {proposal.id}")
+    return 0
+
+
 def _proposal_pipeline(args: argparse.Namespace):
     """Load the KB and construct a ProposalPipeline over the resolved ingest store."""
     kb, _report = _load_kb(args.path)
@@ -4349,6 +4413,79 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ingest_dir_argument(ingest_parser)
     ingest_parser.set_defaults(func=_cmd_ingest)
+
+    # capture (nested) — explicit, preview-first session capture (issue #179)
+    capture_parser = subparsers.add_parser(
+        "capture",
+        help="Explicitly capture a session or research result for review.",
+        description=(
+            "Explicit, consent-only capture of a coding-agent session or "
+            "research result (issue #179). Preview first: without --yes "
+            "NOTHING is registered or staged. With --yes the original "
+            "transcript/export bytes (or the manifest itself when no "
+            "transcript is bound) are registered under the explicit source "
+            "identity and the redacted agent-authored Compiled Page is staged "
+            "as ONE reviewable Ingest Proposal through the same managed "
+            "host-Distiller contract as ingest --compiled-page. Secrets, "
+            "credentials, signed URLs, private object keys, environment "
+            "dumps, and hidden model reasoning are redacted before staging; "
+            "raw transcripts are refused; capture never publishes."
+        ),
+    )
+    capture_sub = capture_parser.add_subparsers(
+        dest="capture_command", required=True, metavar="<capture-command>"
+    )
+    capture_session_parser = capture_sub.add_parser(
+        "session",
+        help="Capture the current coding-agent session or a research result.",
+    )
+    _add_kb_argument(capture_session_parser)
+    _add_ingest_dir_argument(capture_session_parser)
+    capture_session_parser.add_argument(
+        "--compiled-page",
+        type=Path,
+        required=True,
+        help=(
+            "Agent-authored Compiled Page Markdown (declarative knowledge: "
+            "decisions, verified findings, commands/results, citations — not "
+            "a raw transcript). Must declare the source id in sources[].id."
+        ),
+    )
+    capture_session_parser.add_argument(
+        "--manifest",
+        type=Path,
+        required=True,
+        help=(
+            "Bounded capture manifest YAML: client, project, timestamp "
+            "range, transcript/export location or sha256:<hex> digest, "
+            "included artifact names, and explicit redactions. Private "
+            "ingest provenance — never published."
+        ),
+    )
+    capture_session_parser.add_argument(
+        "--source-id",
+        required=True,
+        help="Explicit, stable Knowledge Source identity (lowercase ASCII label).",
+    )
+    capture_session_parser.add_argument(
+        "--transcript",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the session transcript/export bytes (overrides the "
+            "manifest's transcript location; verified against a declared "
+            "sha256 digest)."
+        ),
+    )
+    capture_session_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help=(
+            "Explicit confirmation: register the capture source and stage "
+            "the proposal after printing the preview."
+        ),
+    )
+    capture_session_parser.set_defaults(func=_cmd_capture_session)
 
     # proposal (nested)
     proposal_parser = subparsers.add_parser(
