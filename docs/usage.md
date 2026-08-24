@@ -593,6 +593,7 @@ automatically when no `\u003ckb\u003e` argument is given).
 
 - `lumio-wiki doctor` — version, detected extras, skill location.
 - `lumio-wiki health` — page counts, validation, Discovery Graph health.
+- `lumio-wiki status [<kb> | --json]` — effective configuration + retrieval state: project role, location and its configuration source, active Published Version (S3), retrieval backend/mode as separate fields, graph source, LanceDB health with fallback reasons, Source Artifact retention, validation, one next action (#175).
 - `lumio-wiki validate` — exit 0 if valid, 1 otherwise.
 ```
 
@@ -749,11 +750,6 @@ lumio serve --port 8000
 ```
 
 Then open `http://localhost:8000/setup` to create the Owner account
-(first-run only). See the [README](../README.md) for Docker deployment,
-storage modes, and the full HTTP surface.
- See the [README](../README.md) for Docker deployment,
-storage modes, and the full HTTP surface.
-en open `http://localhost:8000/setup` to create the Owner account
 (first-run only). See the [README](../README.md) for Docker deployment,
 storage modes, and the full HTTP surface.
  See the [README](../README.md) for Docker deployment,

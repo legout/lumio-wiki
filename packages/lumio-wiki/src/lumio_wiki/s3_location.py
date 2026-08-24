@@ -559,19 +559,44 @@ class S3Location:
 
     # -- derived graph -----------------------------------------------------
 
-    def graph_state_with_source(self) -> tuple[GraphState, str]:
-        """Return the Discovery Graph state and its provenance label.
+    def _graph_version_for(self, snapshot: KnowledgeBaseSnapshot) -> str:
+        """Return the version label for an already-resolved ``snapshot``.
+
+        Never re-reads the activation pointer when the resolution already
+        carries the version: pinned Locations use their pin, and a Snapshot's
+        remote derived-index descriptor records the exact resolved version
+        (issue #175: one immutable resolution serves every status field).
+        """
+        if self._pinned_version is not None:
+            return self._pinned_version
+        descriptor = snapshot.remote_derived_index
+        if descriptor is not None:
+            return descriptor.version
+        return self._resolve_version()
+
+    def graph_state_with_source(
+        self, snapshot: KnowledgeBaseSnapshot | None = None
+    ) -> tuple[GraphState, str, str | None]:
+        """Return ``(graph state, source label, note)`` for the resolved version.
 
         The label is ``"published artifact"`` when the version's published
         MessagePack graph artifact was loaded (present, manifest
         digest-verified, fingerprint- and extractor-current) and ``"memory"``
-        when the same adjacency was derived in memory instead. The public
-        observability seam for ``lumio-wiki status`` (issue #175): the graph
-        is always complete and deterministic either way; the label discloses
-        which source served it, never a health verdict.
+        when the same adjacency was derived in memory instead; ``note`` is
+        ``None`` on the healthy path and otherwise names the truthful cause
+        (not published / unreadable / corrupt / stale) plus nothing else. The
+        public observability seam for ``lumio-wiki status`` (issue #175): the
+        graph is always complete and deterministic either way; the label
+        discloses which source served it, never a health verdict.
+
+        ``snapshot`` may be an already-resolved Snapshot from this Location so
+        one immutable resolution serves every field (a concurrent pointer
+        advance can never mix versions within one status call); when omitted,
+        the Location resolves once itself.
         """
-        snapshot = self.resolve()
-        version = self._resolve_version()
+        if snapshot is None:
+            snapshot = self.resolve()
+        version = self._graph_version_for(snapshot)
         fingerprint = snapshot.fingerprint
 
         # Read the manifest so we can integrity-check the graph artifact
@@ -584,33 +609,41 @@ class S3Location:
                 graph_meta = entry
                 break
 
-        key = _join(self._prefix, version, graph_rel)
-        try:
-            data = _get_bytes(self._store, key)
-        except KnowledgeBaseError:
-            data = None
-
-        if data is not None and graph_meta is not None:
-            # Integrity-check the artifact bytes against the manifest digest
-            # BEFORE trusting its embedded fields (ADR-0013).
-            if (
+        note: str | None = None
+        if graph_meta is None:
+            note = "published graph artifact not in the version manifest"
+        else:
+            key = _join(self._prefix, version, graph_rel)
+            data: bytes | None
+            try:
+                data = _get_bytes(self._store, key)
+            except KnowledgeBaseError:
+                data = None
+            if data is None:
+                note = "published graph artifact unreadable"
+            elif not (
                 len(data) == graph_meta.size
                 and hashlib.sha256(data).hexdigest() == graph_meta.digest
             ):
+                # Integrity-check the artifact bytes against the manifest
+                # digest BEFORE trusting its embedded fields (ADR-0013).
+                note = "published graph artifact corrupt (manifest digest mismatch)"
+            else:
                 state = deserialize_graph(data)
                 if (
                     state is not None
                     and state.fingerprint_digest == fingerprint.digest
                     and state.extractor_version == EXTRACTOR_VERSION
                 ):
-                    return state, "published artifact"
+                    return state, "published artifact", None
+                note = "published graph artifact stale (fingerprint or extractor mismatch)"
 
         state = build_graph_state(
             snapshot.knowledge_base._knowledge_index(),
             fingerprint,
             EXTRACTOR_VERSION,
         )
-        return state, "memory"
+        return state, "memory", note
 
     def load_or_derive_graph(self) -> GraphState:
         """Return the Discovery Graph state for the resolved version.

@@ -62,16 +62,17 @@ def isolated_project(tmp_path, monkeypatch):
 class _StubS3Location:
     """A stand-in S3 Location resolving to a prepared Snapshot."""
 
-    def __init__(self, snapshot, graph_source="published artifact", edges=2) -> None:
+    def __init__(self, snapshot, graph_source="published artifact", edges=2, note=None) -> None:
         self._snapshot = snapshot
         self._graph_source = graph_source
         self._edges = edges
+        self._note = note
 
     def resolve(self):
         return self._snapshot
 
-    def graph_state_with_source(self):
-        return SimpleNamespace(edge_count=self._edges), self._graph_source
+    def graph_state_with_source(self, snapshot=None):
+        return SimpleNamespace(edge_count=self._edges), self._graph_source, self._note
 
 
 def _reader_snapshot() -> KnowledgeBaseSnapshot:

@@ -42,7 +42,6 @@ from lumio_wiki import (
     IngestStore,
     KnowledgeBase,
     KnowledgeBaseError,
-    MaintenanceError,
     ManagedIngestError,
     PassthroughMarkdownDistiller,
     ProposalBlockedError,
@@ -1911,7 +1910,7 @@ def _cmd_merge_entity(args: argparse.Namespace) -> int:
         print(f"    retired:      {merge.retired_title}")
         print(f"    surviving:    {merge.surviving_title}")
     print(f"  repairs:        {len(proposal.proposed_pages)} dependent page(s)")
-    print(f"  redirect:       recorded in ontology.redirects on publish")
+    print("  redirect:       recorded in ontology.redirects on publish")
     print(f"  blocked:        {proposal.blocked}")
     print()
     print("Review with:")
@@ -2315,19 +2314,25 @@ def _resolve_location_with_source(
     )
 
 
+def _redact_location(value: str) -> str:
+    """Return a secret-free Knowledge Base location for output (issue #175).
+
+    Strips ``s3://user:pass@bucket/...`` userinfo the same way the S3
+    Location contract keeps credentials off Locations and manifests
+    (ADR-0013). A path or plain URI passes through unchanged.
+    """
+    if "://" not in value:
+        return value
+    scheme, rest = value.split("://", 1)
+    authority, slash, tail = rest.partition("/")
+    if "@" in authority:
+        authority = authority.split("@", 1)[1]
+    return f"{scheme}://{authority}{slash}{tail}" if slash else f"{scheme}://{authority}"
+
+
 def _artifact_retention_policy() -> str:
     """Return the effective Source Artifact retention policy label."""
-    value = os.environ.get(ARTIFACT_RETENTION_ENV_VAR) or load_project_config().get(
-        ARTIFACT_RETENTION_ENV_VAR
-    )
-    if value is None:
-        return "unset"
-    normalized = value.strip().lower()
-    if normalized not in {"required", "disabled"}:
-        raise CliError(
-            f"{ARTIFACT_RETENTION_ENV_VAR} must be 'required' or 'disabled', got {value!r}"
-        )
-    return normalized
+    return "required" if _artifact_retention_required() else "disabled"
 
 
 def _artifact_store_summary() -> tuple[str, bool | None]:
@@ -2409,7 +2414,7 @@ def _lancedb_status_fields(
             return fields
         location = module.LocalIndexLocation(index_dir)
 
-    fields["lancedb_index"] = location.describe
+    fields["lancedb_index"] = _redact_location(location.describe)
     healthy, matches, note = _probe_lancedb_index(module, location, fingerprint)
     fields["lancedb_healthy"] = healthy
     fields["lancedb_fingerprint_matches"] = matches
@@ -2438,7 +2443,7 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
 
     status: dict[str, Any] = {
         "role": "reader" if is_s3 else "maintainer",
-        "kb_location": location,
+        "kb_location": _redact_location(location),
         "config_source": source,
         "published_version": None,
         "fingerprint": None,
@@ -2448,6 +2453,7 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
         "graph_fresh": None,
         "graph_materialized": None,
         "graph_edges": None,
+        "graph_note": None,
         "lancedb_requested": False,
         "lancedb_available": None,
         "lancedb_healthy": None,
@@ -2468,7 +2474,8 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
     kb_root: Path | None = None
     if is_s3:
         try:
-            snapshot = _resolve_object_store_location(location).resolve()
+            kb_location = _resolve_object_store_location(location)
+            snapshot = kb_location.resolve()
         except KnowledgeBaseError as exc:
             raise CliError(f"could not resolve S3 Knowledge Base at {location}: {exc}") from exc
         descriptor = snapshot.remote_derived_index
@@ -2483,11 +2490,15 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
         status["validation_warnings"] = sum(
             1 for i in report.issues if i.severity == "warning"
         )
-        state, graph_source = snapshot.location.graph_state_with_source()
+        # One immutable resolution serves every field (issue #175): the
+        # already-resolved Snapshot is handed back to its Location so a
+        # concurrent pointer advance can never mix versions in one report.
+        state, graph_source, graph_note = kb_location.graph_state_with_source(snapshot)
         status["graph_source"] = graph_source
         status["graph_fresh"] = graph_source == "published artifact"
         status["graph_materialized"] = graph_source == "published artifact"
         status["graph_edges"] = state.edge_count
+        status["graph_note"] = graph_note
     else:
         kb, report = _load_kb(location)
         kb_root = Path(kb.root)
@@ -2518,10 +2529,16 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
             f"fix {status['validation_errors']} validation error(s): run "
             f"'lumio-wiki validate {location}'"
         )
-    elif not status["lancedb_available"]:
+    elif status["lancedb_requested"] and not status["lancedb_available"]:
         status["next_action"] = "install the retrieval adapter: pip install 'lumio-lancedb[s3]'"
     elif status["lancedb_fallback"] is not None:
         status["next_action"] = status["lancedb_fallback"]
+    elif status["graph_note"] is not None:
+        status["next_action"] = (
+            f"{status['graph_note']}; the Discovery Graph was derived in memory "
+            f"instead — republish the version ('lumio-wiki publish-s3') to "
+            f"refresh the published graph artifact"
+        )
     elif not is_s3 and not status["graph_fresh"]:
         status["next_action"] = (
             f"run 'lumio-wiki health {location} --rebuild' to materialize "
@@ -2544,10 +2561,8 @@ def _render_status(status: dict[str, Any]) -> str:
         value = status[key]
         if value is None:
             rendered = "(n/a)"
-        elif value is True:
-            rendered = "true"
-        elif value is False:
-            rendered = "false"
+        elif isinstance(value, bool):
+            rendered = "true" if value else "false"
         else:
             rendered = str(value)
         if key == "role":
@@ -2566,6 +2581,7 @@ def _render_status(status: dict[str, Any]) -> str:
         "graph_fresh",
         "graph_materialized",
         "graph_edges",
+        "graph_note",
         "lancedb_requested",
         "lancedb_available",
         "lancedb_healthy",
