@@ -81,14 +81,25 @@ from lumio_wiki.records import ValidationReport
 from lumio_wiki.source_inspection import (
     DEFAULT_LINK_EXPIRES,
     OUTCOME_ACCESS_DENIED,
+    OUTCOME_ABSENT_BINDING,
     OUTCOME_CORRUPTION,
+    OUTCOME_UNAVAILABLE,
     SourceInspectionError,
     fetch_verified_artifact,
     parse_expires,
+    read_binding_manifest,
     resolve_manifest_binding,
     resolve_registry_binding,
     safe_fetch_destination,
     validate_published_version,
+)
+from lumio_wiki.source_resolution import (
+    OUTCOME_AMBIGUOUS,
+    OUTCOME_RESOLVED,
+    OUTCOME_UNKNOWN,
+    SourceResolution,
+    resolve_source,
+    suggest_source_ids,
 )
 
 # Derived-state directory name inside a Knowledge Base root. Holds the
@@ -3335,12 +3346,53 @@ def _active_published_version(uri: str) -> str:
     return observation.version
 
 
-def _resolve_source_binding(args: argparse.Namespace):
-    """Resolve ONE exact Source Version for inspect/fetch/link.
+def _source_discovery_hint(
+    args: argparse.Namespace, source_id: str, version: str | None, artifact_store
+) -> str:
+    """Actionable discovery hint for a failed source-id lookup (issue #176).
+
+    Returns a bounded set of close registered Source IDs (the reader-trial
+    contract: the error points at the exact id or the exact command that
+    reveals it) or, when nothing is close, the one discovery command. Only
+    registered ids are ever echoed; the failed input is never repeated.
+    Best-effort by design: a hint failure can never mask the real error.
+    """
+    ids: set[str] = set()
+    try:
+        if version is not None:
+            if artifact_store is not None:
+                ids = {
+                    entry.source_id
+                    for entry in read_binding_manifest(artifact_store, version).entries
+                }
+        else:
+            kb, _report = _load_kb(args.path)
+            ingest_dir = _resolve_ingest_dir(args, kb.root)
+            ids = {item.source_id for item in IngestStore(ingest_dir).source_registry.list()}
+    except Exception:  # pragma: no cover - display-only fallback
+        ids = set()
+    suggestions = suggest_source_ids(ids, source_id)
+    if suggestions:
+        listed = ", ".join(suggestions)
+        return (
+            f"; close Knowledge Source ids: {listed} — inspect with "
+            "'lumio-wiki source inspect --source-id <id>', or resolve a page "
+            "title/alias/path with 'lumio-wiki source resolve <kb> \"<query>\"'"
+        )
+    return (
+        "; discover registered ids with 'lumio-wiki source list <kb>' or "
+        "resolve a page title/alias/path with 'lumio-wiki source resolve "
+        "<kb> \"<query>\"'"
+    )
+
+
+def _resolve_source_binding(args: argparse.Namespace, source_id: str):
+    """Resolve ONE exact Source Version for inspect/fetch/link/resolve.
 
     Returns ``(binding, artifact_store)`` where ``artifact_store`` may be
     ``None`` (retention not configured). Raises :class:`CliError` with the
-    distinct #165 outcomes via :class:`SourceInspectionError`.
+    distinct #165 outcomes via :class:`SourceInspectionError`; an unknown
+    source id carries a bounded discovery hint (issue #176).
     """
     version = getattr(args, "published_version", None)
     if version is None and _is_object_store_uri(str(args.path)):
@@ -3366,13 +3418,21 @@ def _resolve_source_binding(args: argparse.Namespace):
                     "--source-store <s3-uri|path>'",
                     exit_code=1,
                 )
-            return resolve_manifest_binding(artifact_store, version, args.source_id), artifact_store
+            return (
+                resolve_manifest_binding(artifact_store, version, source_id),
+                artifact_store,
+            )
         # Local worktree behavior: resolve through private registry state.
         kb, _report = _load_kb(args.path)
         ingest_dir = _resolve_ingest_dir(args, kb.root)
         registry = IngestStore(ingest_dir).source_registry
-        return resolve_registry_binding(registry, args.source_id), artifact_store
+        return resolve_registry_binding(registry, source_id), artifact_store
     except SourceInspectionError as exc:
+        if exc.outcome == OUTCOME_ABSENT_BINDING:
+            # Issue #176: the unknown-source error points at the exact close
+            # id or the exact discovery command — never an unbounded dump.
+            hint = _source_discovery_hint(args, source_id, version, artifact_store)
+            raise CliError(f"{exc}{hint}", exit_code=1) from exc
         raise CliError(str(exc), exit_code=1) from exc
 
 
@@ -3398,7 +3458,7 @@ def _binding_availability(artifact_store, binding) -> str:
 
 
 def _cmd_source_inspect(args: argparse.Namespace) -> int:
-    binding, artifact_store = _resolve_source_binding(args)
+    binding, artifact_store = _resolve_source_binding(args, args.source_id)
     availability = _binding_availability(artifact_store, binding)
     bound_to = (
         f"published version {binding.published_version} (Source Binding Manifest)"
@@ -3422,8 +3482,23 @@ def _cmd_source_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _source_not_retained_hint() -> str:
+    """The retention explanation appended to artifact-unavailable errors (#176).
+
+    The reader trial showed "artifact not retained" without the missing step:
+    artifacts enter the private store through managed ingest while a Source
+    Artifact Store is configured — the error must say so (issue #174).
+    """
+    return (
+        " — this Source Version was registered without artifact retention; "
+        "Source Artifacts are retained by managed ingest ('lumio-wiki ingest "
+        "<kb> <file> --compiled-page <page> --source-id <id>') while a Source "
+        "Artifact Store is configured"
+    )
+
+
 def _cmd_source_fetch(args: argparse.Namespace) -> int:
-    binding, artifact_store = _resolve_source_binding(args)
+    binding, artifact_store = _resolve_source_binding(args, args.source_id)
     if artifact_store is None:
         raise CliError(
             "no private Source Artifact Store is configured (LUMIO_SOURCE_STORE); "
@@ -3434,6 +3509,10 @@ def _cmd_source_fetch(args: argparse.Namespace) -> int:
     try:
         raw = fetch_verified_artifact(artifact_store, binding)
     except SourceInspectionError as exc:
+        if exc.outcome == OUTCOME_UNAVAILABLE:
+            # Issue #176: unavailable is a distinct outcome and explains the
+            # missing retention step instead of a bare "not retained".
+            raise CliError(f"{exc}{_source_not_retained_hint()}", exit_code=1) from exc
         raise CliError(str(exc), exit_code=1) from exc
     destination = safe_fetch_destination(Path(args.output), binding)
     try:
@@ -3450,7 +3529,7 @@ def _cmd_source_fetch(args: argparse.Namespace) -> int:
 def _cmd_source_link(args: argparse.Namespace) -> int:
     from lumio_wiki.artifact_store import ArtifactAccessDenied, SigningUnavailable
 
-    binding, artifact_store = _resolve_source_binding(args)
+    binding, artifact_store = _resolve_source_binding(args, args.source_id)
     if artifact_store is None:
         raise CliError(
             "no private Source Artifact Store is configured (LUMIO_SOURCE_STORE); "
@@ -3475,6 +3554,8 @@ def _cmd_source_link(args: argparse.Namespace) -> int:
     try:
         fetch_verified_artifact(artifact_store, binding)
     except SourceInspectionError as exc:
+        if exc.outcome == OUTCOME_UNAVAILABLE:
+            raise CliError(f"{exc}{_source_not_retained_hint()}", exit_code=1) from exc
         raise CliError(str(exc), exit_code=1) from exc
     try:
         url = artifact_store.signed_get_url(
@@ -3496,6 +3577,168 @@ def _cmd_source_link(args: argparse.Namespace) -> int:
         "object and the GET method"
     )
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Source identity resolution (issue #176, ADR-0020): `source resolve` maps a
+# Source ID, Entity ID, Canonical Page Title, alias, or page path to ONE
+# registered Knowledge Source when the mapping is unambiguous, and returns
+# identity + availability metadata. Ambiguity is truthful with bounded
+# candidates; unknown input carries bounded close ids or the exact discovery
+# command. It never issues a signed URL (that is `source link` only).
+# ---------------------------------------------------------------------------
+
+
+def _cmd_source_resolve(args: argparse.Namespace) -> int:
+    """Resolve one query to a registered Knowledge Source identity (#176)."""
+    # _open_read_kb handles BOTH a local worktree and an S3 Location URI
+    # (the active Published Version's pages) — page-identity resolution must
+    # work on a reader's S3 KB too, not just a local filesystem path.
+    kb = _open_read_kb(args.path)
+    version = getattr(args, "published_version", None)
+    if version is None and _is_object_store_uri(str(args.path)):
+        version = _active_published_version(str(args.path))
+    if version is not None:
+        try:
+            validate_published_version(version)
+        except ValueError as exc:
+            raise CliError(str(exc)) from None
+    artifact_store = _artifact_store_from_env()
+    known_ids: set[str] = set()
+    if version is not None:
+        if artifact_store is None:
+            raise CliError(
+                "no private Source Artifact Store is configured "
+                "(LUMIO_SOURCE_STORE); publication bindings are stored there "
+                "— record one with 'lumio-wiki setup --source-store "
+                "<s3-uri|path>'",
+                exit_code=1,
+            )
+        try:
+            known_ids = {
+                entry.source_id
+                for entry in read_binding_manifest(artifact_store, version).entries
+            }
+        except SourceInspectionError as exc:
+            raise CliError(str(exc), exit_code=1) from exc
+    else:
+        ingest_dir = _resolve_ingest_dir(args, kb.root)
+        known_ids = {
+            item.source_id for item in IngestStore(ingest_dir).source_registry.list()
+        }
+    resolution = resolve_source(kb.pages, known_ids, args.query)
+
+    if resolution.outcome != OUTCOME_RESOLVED or resolution.source_id is None:
+        return _report_unresolved_source(args, resolution)
+
+    # Identity resolved; report the SAME binding/availability surface inspect
+    # uses, through the same seams (never a signed URL — that is link only).
+    binding, artifact_store = _resolve_source_binding(args, resolution.source_id)
+    availability = _binding_availability(artifact_store, binding)
+    bound_to = (
+        f"published version {binding.published_version} (Source Binding Manifest)"
+        if binding.published_version is not None
+        else "current registry version (local worktree)"
+    )
+    authorization = (
+        "granted (private Source Artifact Store read verified)"
+        if artifact_store is not None
+        else "granted (private registry view)"
+    )
+    version_flag = (
+        f" --published-version {binding.published_version}"
+        if binding.published_version is not None
+        else ""
+    )
+    next_action = f"lumio-wiki source inspect --source-id {binding.source_id}{version_flag}"
+    if args.json:
+        payload = {
+            "outcome": OUTCOME_RESOLVED,
+            "source_id": binding.source_id,
+            "matched_by": resolution.matched_by,
+            "page": (
+                {"title": resolution.page.title, "path": resolution.page.path}
+                if resolution.page is not None
+                else None
+            ),
+            "content_hash": binding.content_hash[:12],
+            "filename": binding.filename,
+            "media_type": binding.content_type,
+            "size": binding.size,
+            "published_version": binding.published_version,
+            "bound_to": bound_to,
+            "availability": availability,
+            "authorization": authorization,
+            "next": next_action,
+        }
+        print(json.dumps(payload))
+        return 0
+    print(f"source_id:       {binding.source_id}")
+    print(f"matched_by:      {resolution.matched_by}")
+    if resolution.page is not None:
+        print(f"page:            {resolution.page.title} ({resolution.page.path})")
+    print(f"content_hash:    {binding.content_hash[:12]} (sha256, abbreviated)")
+    print(f"filename:        {binding.filename or '(none recorded)'}")
+    print(f"media_type:      {binding.content_type or '(none recorded)'}")
+    print(f"size:            {binding.size if binding.size is not None else '(unknown)'}")
+    print(f"bound_to:        {bound_to}")
+    print(f"availability:    {availability}")
+    print(f"authorization:   {authorization}")
+    print(f"next:            {next_action}")
+    return 0
+
+
+def _report_unresolved_source(args: argparse.Namespace, resolution: SourceResolution) -> int:
+    """Report an ambiguous/unknown resolution truthfully (issue #176).
+
+    ``--json`` emits one machine-readable object on stdout (exit 1) so an
+    agent can select the correct Source ID from the candidates; the human
+    mode raises the same content as an ordinary CLI error. The query itself
+    is never echoed back — only validated ids and public page metadata.
+    """
+    candidates = [
+        {
+            "source_id": candidate.source_id,
+            "page_title": candidate.page_title,
+            "page_path": candidate.page_path,
+        }
+        for candidate in resolution.candidates
+    ]
+    payload = {
+        "outcome": resolution.outcome,
+        "matched_by": resolution.matched_by or None,
+        "candidates": candidates,
+        "suggestions": resolution.suggestions,
+        "note": resolution.note or None,
+    }
+    if args.json:
+        print(json.dumps(payload))
+        return 1
+    lines: list[str] = []
+    if resolution.outcome == OUTCOME_AMBIGUOUS:
+        lines.append("ambiguous Source reference — no guess is made; candidates:")
+        for candidate in resolution.candidates:
+            lines.append(f"  {candidate.source_id} ({candidate.page_title}, {candidate.page_path})")
+        if resolution.note:
+            lines.append(resolution.note)
+        lines.append(
+            "disambiguate with 'lumio-wiki source inspect --source-id <id>'"
+        )
+    else:
+        lines.append("no Knowledge Source resolved for this query")
+        if resolution.note:
+            lines.append(resolution.note)
+        if resolution.suggestions:
+            # Issue #176: the bounded close-id set IS the pointer —
+            # never both the ids and a discovery command.
+            lines.append(
+                "close Knowledge Source ids: " + ", ".join(resolution.suggestions)
+            )
+        else:
+            lines.append(
+                "discover registered ids with 'lumio-wiki source list <kb>'"
+            )
+    raise CliError("\n".join(lines), exit_code=1)
 
 
 # ---------------------------------------------------------------------------
@@ -4662,6 +4905,40 @@ def build_parser() -> argparse.ArgumentParser:
     # read-only operations resolve ONE exact Source Version behind a source
     # id — never fetch-by-hash, never an object key, never a silent fallback
     # to the latest version when a binding is requested but absent.
+    source_resolve = source_sub.add_parser(
+        "resolve",
+        help="Resolve a query to ONE registered Knowledge Source identity.",
+        description=(
+            "Deterministically resolve a Source ID, Entity ID, Canonical Page "
+            "Title, alias, or page path to ONE registered Knowledge Source "
+            "when the mapping is unambiguous, and report identity and "
+            "availability metadata (issue #176). Ambiguity is reported "
+            "truthfully with bounded candidates — no guess is made; unknown "
+            "input returns a bounded set of close Source IDs or the exact "
+            "discovery command. Never issues a signed URL (that is "
+            "'source link' only)."
+        ),
+    )
+    _add_kb_argument(source_resolve)
+    _add_ingest_dir_argument(source_resolve)
+    source_resolve.add_argument(
+        "query",
+        type=str,
+        help="Source ID, Entity ID, page title, alias, or page path to resolve.",
+    )
+    source_resolve.add_argument(
+        "--published-version",
+        default=None,
+        metavar="VERSION",
+        help="Resolve against this Published Version's Source Binding Manifest.",
+    )
+    source_resolve.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a machine-readable JSON result an agent can select a Source ID from.",
+    )
+    source_resolve.set_defaults(func=_cmd_source_resolve)
+
     source_inspect = source_sub.add_parser(
         "inspect",
         help="Inspect the exact Source Version bound to a source id.",

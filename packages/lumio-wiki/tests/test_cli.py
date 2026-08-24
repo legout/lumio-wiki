@@ -377,7 +377,7 @@ def test_resolve_embedder_prefers_provider_over_local(
         data=[types.SimpleNamespace(embedding=[0.0] * 8, index=0)]
     )
     fake_openai = types.ModuleType("openai")
-    fake_openai.OpenAI = MagicMock(return_value=fake_client)
+    setattr(fake_openai, "OpenAI", MagicMock(return_value=fake_client))
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
 
     monkeypatch.setenv("LUMIO_PROVIDER_BASE_URL", "https://embed.example/v1")
@@ -2894,3 +2894,242 @@ def test_source_s3_uri_without_active_version_fails(
 
     assert main(["source", "inspect", "s3://bucket/kb", "--source-id", "policy"]) == 1
     assert "no active Published Version" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Source identity resolution (issue #176): `source resolve` maps a Source ID,
+# Entity ID, Canonical Page Title, alias, or page path to ONE registered
+# Knowledge Source; unknown input carries bounded close ids or the exact
+# discovery command; ambiguity is truthful — never a guess.
+# ---------------------------------------------------------------------------
+
+
+DUAL_SOURCE_PAGE_MD = textwrap.dedent(
+    """\
+    ---
+    title: "Dual Source Page"
+    aliases: []
+    tags: []
+    summary: "A page backed by two Knowledge Sources."
+    lifecycle: "approved"
+    visibility: "internal"
+    sources:
+      - id: "policy"
+        title: "Policy Knowledge Source"
+      - id: "atlas-heatworks-product-catalog"
+        title: "Atlas Catalog Knowledge Source"
+    synthetic: false
+    ---
+
+    # Dual Source Page
+
+    Backed by two Knowledge Sources for resolution tests.
+    """
+)
+
+
+def test_source_resolve_by_page_title_reports_identity_and_availability(
+    source_kb: Path, source_file: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _register_policy(source_kb, source_file) == 0
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    assert main(["source", "resolve", str(source_kb), "CLI Page"]) == 0
+    out = capsys.readouterr().out
+    assert "source_id:       policy" in out
+    assert "matched_by:      canonical-title" in out
+    assert "page:            CLI Page (cli_page.md)" in out
+    assert "availability:    not retained (no Source Artifact Store configured)" in out
+    assert "next:            lumio-wiki source inspect --source-id policy" in out
+
+
+def test_source_resolve_by_exact_source_id_emits_json(
+    source_kb: Path, source_file: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _register_policy(source_kb, source_file) == 0
+    capsys.readouterr()  # drain register output
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    assert main(["source", "resolve", str(source_kb), "policy", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == "resolved"
+    assert payload["source_id"] == "policy"
+    assert payload["matched_by"] == "source-id"
+    assert payload["availability"] == "not retained (no Source Artifact Store configured)"
+    # A resolved reference never carries a signed URL (that is link only).
+    assert "http" not in json.dumps(payload)
+
+
+def test_source_resolve_alias_and_path_surfaces(
+    source_kb: Path, source_file: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _register_policy(source_kb, source_file) == 0
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    assert main(["source", "resolve", str(source_kb), "cli_page.md"]) == 0
+    assert "matched_by:      path" in capsys.readouterr().out
+
+
+def test_source_resolve_unknown_query_points_to_close_ids_or_command(
+    source_kb: Path, source_file: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _register_policy(source_kb, source_file) == 0
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    # A title-shaped query for an unregistered source: the bounded close-id
+    # set IS the pointer (issue #176: ids OR one command — never both, never
+    # the raw query back).
+    rc = main(["source", "resolve", str(source_kb), "Policy Knowledge SourceX"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "close Knowledge Source ids: policy" in err
+    assert "Policy Knowledge SourceX" not in err
+
+    # A query with nothing close points at exactly ONE discovery command.
+    rc = main(["source", "resolve", str(source_kb), "something-unrelated"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "no Knowledge Source resolved" in err
+    assert "source list" in err
+    assert "source resolve" not in err
+
+
+def test_source_resolve_ambiguous_page_lists_bounded_candidates(
+    source_kb: Path, source_file: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _register_policy(source_kb, source_file) == 0
+    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    ingest.source_registry.register_source(
+        "atlas-heatworks-product-catalog", b"atlas bytes", filename="atlas.pdf"
+    )
+    (source_kb / "dual_page.md").write_text(DUAL_SOURCE_PAGE_MD, encoding="utf-8")
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    assert main(["source", "resolve", str(source_kb), "Dual Source Page"]) == 1
+    err = capsys.readouterr().err
+    assert "ambiguous Source reference" in err
+    assert "policy (Dual Source Page, dual_page.md)" in err
+    assert "atlas-heatworks-product-catalog (Dual Source Page, dual_page.md)" in err
+
+    # --json emits machine-selectable candidates on stdout with exit 1.
+    assert main(["source", "resolve", str(source_kb), "Dual Source Page", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == "ambiguous"
+    assert {candidate["source_id"] for candidate in payload["candidates"]} == {
+        "policy",
+        "atlas-heatworks-product-catalog",
+    }
+
+
+def test_source_resolve_title_shaped_query_without_page_yields_bounded_hint(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The reader-trial AC (#176): a failed lookup points at the exact id."""
+    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    ingest.source_registry.register_source(
+        "atlas-heatworks-product-catalog", b"atlas bytes", filename="atlas.pdf"
+    )
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    # No page carries this title: resolution is by exact surfaces only (no
+    # fuzzy id matching), but the unknown outcome's bounded hint names the
+    # exact registered id (the reader-trial contract).
+    rc = main(["source", "resolve", str(source_kb), "Atlas Heatworks Product Catalog"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "close Knowledge Source ids: atlas-heatworks-product-catalog" in err
+
+
+def test_source_resolve_published_version_resolves_manifest_binding(
+    source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store_root = tmp_path / "artifact-store"
+    store = _retained_policy_source(source_kb, store_root)
+    lw.write_binding_manifest(
+        store,
+        lw.SourceBindingManifest(
+            published_version="v2026",
+            fingerprint="fp",
+            created_at="2026-08-21T00:00:00Z",
+            entries=[
+                lw.SourceBindingEntry(
+                    page_title="CLI Page",
+                    source_id="policy",
+                    content_hash=lw.artifact_content_hash(INSPECTION_RAW),
+                    content_type="application/pdf",
+                    filename="policy.pdf",
+                    size=len(INSPECTION_RAW),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+
+    assert (
+        main(
+            [
+                "source",
+                "resolve",
+                str(source_kb),
+                "CLI Page",
+                "--published-version",
+                "v2026",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "source_id:       policy" in out
+    assert "bound_to:        published version v2026 (Source Binding Manifest)" in out
+    assert "availability:    retained (digest and size verified)" in out
+
+
+def test_source_inspect_unknown_id_error_names_close_id_and_command(
+    source_kb: Path, source_file: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #176 AC: the failed lookup error points at the exact id or command."""
+    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    ingest.source_registry.register_source(
+        "atlas-heatworks-product-catalog", b"atlas bytes", filename="atlas.pdf"
+    )
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    # A title-shaped --source-id (the reader-trial failure shape): the error
+    # names the close registered id (the bounded set is the pointer).
+    rc = main(
+        ["source", "inspect", str(source_kb), "--source-id", "Atlas Catalog Wrong"]
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "atlas-heatworks-product-catalog" in err
+    # An invalid/possibly secret-bearing id is never echoed back; nothing is
+    # close, so exactly ONE discovery command is named.
+    rc = main(["source", "inspect", str(source_kb), "--source-id", "token=abc"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "token=abc" not in err
+    assert "source list" in err
+
+
+def test_source_fetch_unavailable_artifact_error_explains_retention_step(
+    source_kb: Path, source_file: Path, tmp_path: Path, monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Issue #174/#176: unavailable explains retention; unknown does not reach fetch."""
+    # Registered but NOT retained: an empty store directory is configured.
+    ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
+    ingest.source_registry.register_source(
+        "policy", INSPECTION_RAW, filename="policy.pdf"
+    )
+    store_root = tmp_path / "artifact-store"
+    store_root.mkdir()
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+
+    out_file = tmp_path / "fetched.pdf"
+    rc = main(["source", "fetch", str(source_kb), "--source-id", "policy", "--output", str(out_file)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "without artifact retention" in err
+    assert "managed ingest" in err
+    assert not out_file.exists()
+

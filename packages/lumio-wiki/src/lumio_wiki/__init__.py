@@ -320,9 +320,25 @@ from lumio_wiki.source_inspection import (
     SourceInspectionError,
     fetch_verified_artifact,
     parse_expires,
+    read_binding_manifest,
     resolve_manifest_binding,
     resolve_registry_binding,
     safe_fetch_destination,
+)
+from lumio_wiki.source_resolution import (
+    MAX_SUGGESTIONS,
+    OUTCOME_AMBIGUOUS,
+    OUTCOME_RESOLVED,
+    OUTCOME_UNKNOWN,
+    SOURCE_MATCH_ALIAS,
+    SOURCE_MATCH_CANONICAL_TITLE,
+    SOURCE_MATCH_ENTITY_ID,
+    SOURCE_MATCH_PATH,
+    SOURCE_MATCH_SOURCE_ID,
+    SourceIdentity,
+    SourceResolution,
+    resolve_source,
+    suggest_source_ids,
 )
 from lumio_wiki.source_processor import (
     DOCUMENTS_EXTRA_HINT,
