@@ -46,12 +46,12 @@ supports the question.
 3. **Focused page read** — `lumio-wiki page <kb> "<title>"`. Read one page
    (frontmatter + body) to confirm it supports a claim before citing it.
 4. **Related-page lookup** — `lumio-wiki related <kb> "<title>" ...`. Bounded
-   neighbor expansion over canonical Relationships (plus Extracted References
+   neighbor expansion over accepted Claims (plus Extracted References
    with `--scope discovery`).
 5. **Bounded paths** — `lumio-wiki paths <kb> "<source>" "<target>" ...`.
    Shortest directed path between two titles, hop-bounded.
 
-Pass `--scope discovery` to traverse canonical Relationships PLUS Extracted
+Pass `--scope discovery` to traverse accepted Claims PLUS Extracted
 References (deterministic body-link topology). Pass `--trace` to `related` or
 `paths` for a truthful diagnostic line showing the exact scope, direction,
 bounds, outcome, and graph artifact freshness actually used.
@@ -134,7 +134,7 @@ lumio-wiki paths <kb> "<source>" "<target>" \
 `related` lists bounded Canonical Page Titles connected to a page.
 `paths` returns the shortest directed path between two titles, bounded by
 `--max-depth` hops. Use `--scope discovery` to include Extracted References
-alongside canonical Relationships, and `--trace` for a truthful diagnostic of
+alongside accepted Claims, and `--trace` for a truthful diagnostic of
 what the traversal actually used and found.
 
 ## 7. Ingest (host agent is the Distiller)

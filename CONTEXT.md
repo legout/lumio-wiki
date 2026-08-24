@@ -45,7 +45,7 @@ _Avoid_: input file, attachment.
 ### Identity and metadata
 
 **Canonical Page Title**:
-The unique title a Compiled Page is known by. Relationship targets refer to canonical titles.
+The unique title a Compiled Page is known by. A lookup label; semantic identity is the page's Entity ID.
 _Avoid_: page name, heading.
 
 **Alias**:
@@ -278,6 +278,29 @@ _Avoid_: operations cockpit, control center, debug dashboard.
 ### Platform capabilities
 
 These named capabilities are part of Lumio's ubiquitous language. Each is a seam, not a module dictate.
+
+**Core SDK**:
+The framework-independent boundary that owns loading, validating, indexing, and retrieving over a Knowledge Base. Every client (web, API, future CLI, local coding-agent adapter) calls the same Core SDK behavior.
+_Avoid_: the engine, the backend.
+
+**Agent Runtime**:
+The Lumio-owned loop that classifies a question, retrieves evidence via the Core SDK, calls the model, synthesizes a cited answer, exposes a trace, and refuses unsupported claims.
+_Avoid_: the LLM layer, the brain.
+
+**Chat Gateway**:
+The boundary that exposes chat to clients (native web API and a future OpenAI-compatible endpoint), enforcing auth, roles, and guardrails so no client bypasses the Agent Runtime.
+_Avoid_: the API, the endpoint.
+
+## Future extension
+
+**Connector**:
+A future adapter exposing knowledge or data from a non-Markdown source (table, database, data lake). Not part of the MVP. Retrieval results already allow non-Markdown evidence so connectors can be added without changing client contracts.
+_Avoid_: integration, plugin.
+
+**Dataset**:
+A future structured data source exposed through a Connector (tables, extracts, Parquet, data-lake artifacts). Query execution is post-MVP.
+_Avoid_: database (too narrow), table.
+abilities are part of Lumio's ubiquitous language. Each is a seam, not a module dictate.
 
 **Core SDK**:
 The framework-independent boundary that owns loading, validating, indexing, and retrieving over a Knowledge Base. Every client (web, API, future CLI, local coding-agent adapter) calls the same Core SDK behavior.

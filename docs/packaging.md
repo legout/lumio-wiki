@@ -38,12 +38,14 @@ Invariants (certified in `tests/test_workspace_certification.py`):
 
 The standalone, model-free LLM Wiki toolkit. Owns the canonical contracts:
 
-- Compiled Pages, Sources, Content Categories, typed Relationships, Evidence,
-  citations, Retrieval Results, Retrieval Traces, validation records.
+- Compiled Pages, Sources, Content Categories, the entity-claim ontology
+  (Entities, Claims, Predicates), Evidence, citations, Retrieval Results,
+  Retrieval Traces, validation records.
 - Knowledge Base loading, Control File handling, validation, fingerprinting,
   Navigation Indexes, Hot Index, Activity Log, OKF interchange.
-- Deterministic metadata/body search, typed-Relationship traversal, graph
-  paths, and the always-available zero-index retrieval implementation.
+- Deterministic metadata/body search, accepted-Claim graph traversal,
+  shortest paths, deterministic entity resolution, and the always-available
+  zero-index retrieval implementation.
 - Knowledge Sources, Source provenance, Proposed Pages, Ingest Proposals,
   blast radius, proposal persistence, review, validation, publication.
 - The `lumio-wiki` CLI (`init`, `validate`, `search`, `page`, `related`,

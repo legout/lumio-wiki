@@ -431,9 +431,17 @@ lockfile is a development convenience, not a public compatibility contract.
 
 ## What works today
 
-- **Core SDK** — load, validate, build lexical/frontmatter/graph index,
-  retrieve with citations + retrieval trace, source-fingerprint freshness,
-  Markdown export.
+- **Core SDK** — load, validate (entity-claim ontology against the Control
+  File), build lexical/frontmatter/graph index, retrieve with citations +
+  retrieval trace, source-fingerprint freshness, Markdown export.
+- **Entity-claim ontology** — one stable Entity per Compiled Page with
+  controlled Entity Types; evidence-bearing Claims (entity or typed-literal
+  objects, `accepted`/`disputed`/`superseded` lifecycle, inverse Predicates);
+  proposal-first Entity Merge with redirects; deterministic entity
+  resolution (exact ID, title, alias, or redirect); identical accepted
+  traversal topology from the zero-index MessagePack cache and optional
+  LanceDB projections; model-free evaluation (`lumio-wiki eval`,
+  `lumio-wiki eval-ontology`).
 - **Agent Runtime** — question classification, evidence retrieval, cited
   synthesis, refusal of unsupported claims, trace exposure.
 - **Chat Gateway + web UI** — first-run owner setup, login/logout, Reader chat,
@@ -498,3 +506,4 @@ Approved seams, **not yet implemented** (see PRD-0001 "Out of Scope" and
 - **Lost users/sessions after restart.** State lives in the container
   filesystem. Mount a volume and point the path variables (see
   [Deployment notes](#deployment-notes)).
+ployment-notes)).

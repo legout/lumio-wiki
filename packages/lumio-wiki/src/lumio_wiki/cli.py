@@ -898,7 +898,7 @@ automatically when no `<kb>` argument is given).{s3_config}
   canonical/discovery structural diagnostics with scope disclosure. Exit 1 if invalid.
 - `lumio-wiki cross-link` — missing-link candidates ranked by Discovery Graph
   impact. `--stage` repairs candidates as authored Markdown links (Extracted
-  References, Discovery Graph only); it never creates typed Relationships.
+  References, Discovery Graph only); it never creates typed Claims.
 - `lumio-wiki dream` — the Dream Cycle: read-only reflection (validation +
   health + structure + ranked candidates). Add `--stage [--limit N]` to stage
   the top repairs as ordinary Ingest Proposals for review. Add opt-in `--semantic`
@@ -2315,6 +2315,30 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_eval_ontology(args: argparse.Namespace) -> int:
+    from lumio_wiki import ontology_eval
+
+    kb = _open_read_kb(args.path)
+    if args.gold_set is None:
+        candidate = Path(kb.root) / "ontology_gold_set.yaml"
+        if candidate.exists():
+            gold_path = candidate
+        else:
+            raise CliError(
+                "no gold set provided. Pass --gold-set <file> (a YAML ontology gold "
+                "set) or place ontology_gold_set.yaml beside the Knowledge Base."
+            )
+    else:
+        gold_path = args.gold_set
+    gold = ontology_eval.load_ontology_gold_set(gold_path)
+    report = ontology_eval.evaluate_ontology(kb, gold)
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=False))
+    else:
+        print(report.to_table())
+    return 0 if report.all_pass else 1
+
+
 # ---------------------------------------------------------------------------
 # Maintainer workflows (ADR-0015): lint, cross-link, dream.
 # ---------------------------------------------------------------------------
@@ -3152,7 +3176,7 @@ def _add_graph_scope_arguments(parser: argparse.ArgumentParser) -> None:
         "--scope",
         choices=["canonical", "discovery"],
         default="canonical",
-        help="Graph scope: canonical Relationships only, or discovery (canonical + "
+        help="Graph scope: accepted Claims only (canonical), or discovery (canonical + "
         "Extracted References). Default: canonical.",
     )
     parser.add_argument(
@@ -3392,8 +3416,8 @@ def build_parser() -> argparse.ArgumentParser:
     related_parser = subparsers.add_parser(
         "related",
         help="List pages related to a Canonical Page Title.",
-        description="Traverse typed Relationships (and optionally Extracted References) "
-        "from a page title.",
+        description="Traverse accepted entity-to-entity Claims (and optionally Extracted "
+        "References) from a page title.",
     )
     _add_kb_argument(related_parser)
     related_parser.add_argument("title", type=str, help="Canonical Page Title.")
@@ -3401,7 +3425,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--relationship-type",
         type=str,
         default=None,
-        help="Restrict to a single Relationship type.",
+        help="Restrict to a single Claim Predicate ID.",
     )
     related_parser.add_argument(
         "--depth",
@@ -3761,7 +3785,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Stage an explicit, reviewed Page Removal proposal that excludes one "
             "Compiled Page from the next Published Version and repairs every "
-            "canonical Relationship that would otherwise become invalid in the "
+            "accepted Claim that would otherwise become invalid in the "
             "same proposal (issue #135)."
         ),
     )
@@ -3890,6 +3914,35 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     eval_parser.set_defaults(func=_cmd_eval)
+
+    ontology_eval_parser = subparsers.add_parser(
+        "eval-ontology",
+        help="Model-free evaluation of entity resolution, traversal, and scope separation.",
+        description=(
+            "Run a versioned ontology gold set through the public KnowledgeBase "
+            "seams and report exact match rates for entity resolution, "
+            "accepted-edge traversal, canonical/discovery scope separation, and "
+            "page-title recall. Model-free: no LLM-as-judge, no answer-quality or "
+            "entailment scoring. The report discloses corpus, mode, warm-up, and "
+            "fallback (issue #173). Exit 1 when any measured row fails."
+        ),
+    )
+    _add_kb_argument(ontology_eval_parser)
+    ontology_eval_parser.add_argument(
+        "--gold-set",
+        type=Path,
+        default=None,
+        help=(
+            "Ontology gold set YAML (four optional sections). Defaults to "
+            "<kb>/ontology_gold_set.yaml."
+        ),
+    )
+    ontology_eval_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a machine-readable JSON report instead of the metrics table.",
+    )
+    ontology_eval_parser.set_defaults(func=_cmd_eval_ontology)
 
     # lint
     lint_parser = subparsers.add_parser(

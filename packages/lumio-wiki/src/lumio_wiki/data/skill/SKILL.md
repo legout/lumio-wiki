@@ -4,8 +4,8 @@ description: >-
   Use when the user wants to build, search, ingest into, review, publish, or
   diagnose a portable Lumio Knowledge Base from a coding agent. Covers
   initializing a compiled Markdown Knowledge Base, lexical page search, reading Compiled
-  Pages by Canonical Page Title, typed Relationship traversal and shortest-path
-  lookup, text/Markdown ingestion into reviewable Ingest Proposals, proposal
+  Pages by Canonical Page Title, accepted-Claim graph traversal and shortest-path
+  lookup, deterministic entity resolution, text/Markdown ingestion into reviewable Ingest Proposals, proposal
   inspection/validation, publication and discard, Discovery Graph health, and
   install diagnostics. The host coding agent is the default Distiller — no
   model provider is required for base text/Markdown ingestion. Triggers
@@ -59,14 +59,17 @@ body), then bind it to the original source with
 
 The Knowledge Base is a local filesystem tree of compiled Markdown pages.
 A **Compiled Page** has YAML frontmatter (title, id, entity_types, aliases,
-tags, summary, lifecycle, visibility, sources, claims, synthetic) and a body. The
-**Canonical Page Title** is the unique title a page is known by. A typed
-**Relationship** is a reviewed semantic edge; an **Extracted Reference** is a
-deterministic non-canonical reference derived from a body link. An **Ingest
-Proposal** is a staged, reviewable set of proposed changes. Publication
-produces a **Published Version** and regenerates the reserved Navigation
-Index (`index.md`) and Hot Index (`hot.md`). See `CONTEXT.md` in the Lumio
-repository for the full glossary.
+tags, summary, lifecycle, visibility, sources, claims, synthetic) and a body,
+and declares exactly one stable **Entity** (its `id`; titles and paths are
+labels, never identity). A **Claim** is a reviewed, evidence-bearing
+proposition owned by its subject Entity's page (predicate + entity object or
+typed literal + `accepted`/`disputed`/`superseded` lifecycle); accepted
+entity-to-entity Claims form the canonical Knowledge Graph. An **Extracted
+Reference** is a deterministic non-canonical reference derived from a body
+link. An **Ingest Proposal** is a staged, reviewable set of proposed changes.
+Publication produces a **Published Version** and regenerates the reserved
+Navigation Index (`index.md`) and Hot Index (`hot.md`). See `CONTEXT.md` in
+the Lumio repository for the full glossary.
 
 ## Commands
 
@@ -129,7 +132,7 @@ soon as you have citation-ready Evidence that supports the question.
    [--trace]`. Shortest directed path, hop-bounded.
 
 Use `--scope discovery` to include Extracted References (deterministic body
-links) alongside canonical Relationships, and `--trace` on `related`/`paths`
+links) alongside accepted Claims, and `--trace` on `related`/`paths`
 for a truthful diagnostic of the scope, direction, bounds, and outcome
 actually used.
 
@@ -182,7 +185,7 @@ Knowledge Base connected:
 
 1. `lumio-wiki lint <kb>` — read-only QA. Check `valid`, validation
    errors/warnings, and the structural diagnostics for BOTH scopes
-   (canonical = reviewed Relationships; discovery = Relationships plus
+   (canonical = accepted Claims; discovery = Claims plus
    Extracted References). Exit 1 means fix pages before anything else.
 2. `lumio-wiki dream <kb>` — the reflection report: health, structure, and
    the missing-link candidates ranked by Discovery Graph impact (orphan
@@ -195,7 +198,7 @@ Knowledge Base connected:
 4. `lumio-wiki cross-link <kb>` is the focused variant when you only want
    the candidate list (or only link repairs, `--stage`). `cross-link --stage`
    only adds authored Markdown links (Extracted References, discovery-graph
-   topology) — it never creates a typed canonical Relationship.
+   topology) — it never creates a typed Claim.
 5. Canonical edges are accepted, evidence-bearing **Claims** authored directly
    in Compiled Page frontmatter and validated against the `lumio.yaml`
    ontology (ADR-0021). `cross-link --stage` never creates one.

@@ -1,0 +1,99 @@
+# Ontology gold set v1 — expectations over eval/ontology_corpus (issue #173).
+#
+# Four model-free areas, measured by `lumio-wiki eval-ontology`:
+#   entity_resolution — exact ID / title / alias / redirect surfaces
+#   title_recall      — every entity surface recalls its Canonical Page Title
+#   edge_traversal    — exact accepted-edge neighbourhoods per scope/direction
+#   scope_separation  — canonical vs discovery-only neighbours stay distinct
+#
+# Deterministic expectations, never answers: no LLM-as-judge, no answer-quality
+# or entailment scoring. Disputed/superseded Claims and Extracted References
+# never masquerade as accepted support.
+name: ontology-corpus-v1
+
+entity_resolution:
+  - name: "entity:lumio"
+    entity_id: "entity:lumio"
+    matched_by: "entity-id"
+  - name: "Lumio"
+    entity_id: "entity:lumio"
+    matched_by: "canonical-title"
+  - name: "Lumio Knowledge Platform"
+    entity_id: "entity:lumio"
+    matched_by: "alias"
+  - name: "entity:legacy-wiki" # retired by a reviewed Entity Merge
+    entity_id: "entity:sage-wiki"
+    matched_by: "redirect"
+  - name: "Lance Columnar Store"
+    entity_id: "entity:lancedb"
+    matched_by: "alias"
+  - name: "Sage"
+    entity_id: "entity:sage-wiki"
+    matched_by: "alias"
+
+title_recall:
+  - surface: "entity:lumio"
+    title: "Lumio"
+  - surface: "Lumio Knowledge Platform"
+    title: "Lumio"
+  - surface: "entity:legacy-wiki"
+    title: "Sage Wiki"
+  - surface: "Lance Columnar Store"
+    title: "LanceDB"
+  - surface: "Knowledge Graph"
+    title: "Knowledge Graph"
+
+edge_traversal:
+  # Accepted uses-only neighbourhood; superseded v1 claim collapses with v2.
+  - source: "Lumio"
+    scope: canonical
+    direction: outgoing
+    expect: ["LanceDB", "obstore"]
+  # Predicate filter and the inverse direction are both traversable.
+  - source: "Lumio"
+    scope: canonical
+    direction: outgoing
+    relationship_type: "uses"
+    expect: ["LanceDB", "obstore"]
+  - source: "Lumio"
+    scope: canonical
+    direction: outgoing
+    relationship_type: "replaces" # disputed: never traversed
+    expect: []
+  - source: "Lumio"
+    scope: canonical
+    direction: incoming
+    expect: ["LanceDB"] # the authored used-by Claim on LanceDB
+  - source: "LanceDB"
+    scope: canonical
+    direction: outgoing
+    relationship_type: "used-by"
+    expect: ["Lumio"]
+  # Discovery adds Extracted-Reference-only neighbours.
+  - source: "Lumio"
+    scope: discovery
+    direction: outgoing
+    expect: ["Knowledge Graph", "LanceDB", "Sage Wiki", "obstore"]
+  - source: "Sage Wiki"
+    scope: canonical
+    direction: both
+    expect: [] # its only claim edge is disputed
+  - source: "Sage Wiki"
+    scope: discovery
+    direction: outgoing
+    expect: ["Lumio"]
+  - source: "obstore"
+    scope: canonical
+    direction: incoming
+    expect: ["Lumio"] # canonical-only neighbour (no body link anywhere)
+
+scope_separation:
+  - source: "Lumio"
+    canonical: ["LanceDB", "obstore"]
+    discovery_only: ["Knowledge Graph", "Sage Wiki"]
+  - source: "LanceDB"
+    canonical: ["Lumio"]
+    discovery_only: []
+  - source: "Knowledge Graph"
+    canonical: []
+    discovery_only: ["Lumio"]

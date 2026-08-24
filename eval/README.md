@@ -14,8 +14,33 @@ eval/
   gold_set.yaml          # versioned gold set: ~50 queries → expected relevant Canonical Page Titles
   conftest.py            # shared fixtures (loads fixture_kb + gold_set)
   test_retrieval_eval_gate.py   # the CI gate (acceptance criteria AC1–AC3)
+  ontology_corpus/       # entity-claim ontology corpus (issue #173)
+  ontology_gold_set.yaml # ontology gold set (four typed sections)
+  test_ontology_eval_gate.py    # the ontology gate (issue #173)
   README.md              # this file
 ```
+
+## Ontology evaluation (issue #173)
+
+`eval-ontology` is the model-free gate for the entity-claim ontology. It runs
+`eval/ontology_gold_set.yaml` over `eval/ontology_corpus` — one behavioural
+corpus covering entity and literal Claims, an inverse Predicate pair,
+disputed/superseded lifecycle, discovery-only Extracted References, an Entity
+Merge redirect, and visibility classes — and reports **exact match rates**
+for four areas: entity resolution, page-title recall, accepted-edge
+traversal, and canonical/discovery scope separation. The report discloses
+corpus, mode, warm-up, and fallback, and never claims answer quality or
+entailment (no LLM-as-judge).
+
+```bash
+uv run pytest -q eval/test_ontology_eval_gate.py     # the CI gate
+uv run lumio-wiki eval-ontology eval/ontology_corpus --gold-set eval/ontology_gold_set.yaml
+uv run lumio-wiki eval-ontology eval/ontology_corpus --gold-set eval/ontology_gold_set.yaml --json
+```
+
+The same corpus drives `packages/lumio-lancedb/tests/test_ontology_parity.py`:
+the identical traversal/retrieval assertions run against the zero-index
+MessagePack projection and the LanceDB `entities`/`graph_edges` projections.
 
 The harness library itself lives in the `lumio-wiki` package:
 `lumio_wiki.retrieval_eval`.

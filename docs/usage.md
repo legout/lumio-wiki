@@ -157,6 +157,7 @@ lumio-wiki cleanup-s3 <dest>                     # report inactive incomplete ve
                                                   #   (interrupted builds); deletes nothing
 lumio-wiki health <kb> [--rebuild]           # page counts, validation, Discovery Graph health
 lumio-wiki eval <kb> [--gold-set <f>] [--semantic [--model <name>]] [--json]  # recall@k per retrieval stage (#138)
+lumio-wiki eval-ontology <kb> [--gold-set <f>] [--json]  # entity resolution / traversal / scope separation (#173)
 lumio-wiki doctor                            # install shape: version, optionals, skill location
 lumio-wiki skill install --scope user|project # explicit shared cross-client install
 lumio-wiki skill install --agent <name>       # compatibility fallback: pi, hermes, codex, claude-code
@@ -283,20 +284,21 @@ Trace:    search -> rank
 Citation: Technology Stack (technology.md)
 ```
 
-### Typed Relationship traversal and shortest paths
+### Entity and Claim traversal, shortest paths, resolution
 
 ```python
 from lumio_wiki import load_knowledge_base
 
 kb, report = load_knowledge_base("my-kb")
 
-# Related pages: canonical Relationships + Extracted References (--scope discovery)
+# Related pages: accepted Claims (canonical) + Extracted References (discovery)
 related = kb.related_pages(
     "Technology Stack",
-    scope="discovery",       # or "canonical"
+    scope="discovery",       # or "canonical" (accepted Claims only)
     direction="both",        # outgoing, incoming, or both
+    relationship_type="uses",  # optional: filter by Claim Predicate ID
 )
-# -> ['Architecture']
+# -> ['Architecture']   (Canonical Page Titles; identity is the Entity ID)
 
 # Shortest directed path between two titles
 path = kb.shortest_path(
@@ -305,7 +307,17 @@ path = kb.shortest_path(
     scope="discovery",
 )
 # -> ['Technology Stack', 'Architecture']
+
+# Deterministic entity resolution: exact ID, title, alias, or merge redirect
+resolution = kb.resolve_entity("entity:lumio")   # or a title / alias / retired ID
+print(resolution.entity.id, resolution.matched_by)
 ```
+
+Traversal is bounded and authorized: pass `candidate_titles` (the titles the
+caller may see) and authorization is applied **before** endpoint resolution
+and expansion. Only `accepted` entity-to-entity Claims traverse; `disputed`
+and `superseded` Claims and Extracted References never masquerade as
+accepted support (ADR-0021).
 
 ### Reading a page by Canonical Title or alias
 
@@ -358,7 +370,7 @@ else:
 Lumio can evaluate [myKG](https://github.com/SenolIsci/mykg) as an out-of-process,
 corpus-level extractor. This is an experiment harness, **not** a runtime
 integration: myKG is not a `lumio-wiki` dependency, its output is never
-canonical by itself, and every imported page or Relationship still passes
+canonical by itself, and every imported page or Claim still passes
 through Lumio's proposal and Maintainer-review gates.
 
 Before a real run, choose a private corpus, pin the myKG version and
@@ -462,6 +474,9 @@ from lumio_wiki import (
     RetrievalResult, Evidence, Citation, RetrievalTrace, TraceStage,
     PageSearchResult, Relationship, ExtractedReference,
     SourceFingerprint, GraphState,
+    # Entity-claim ontology (ADR-0021)
+    Entity, EntityTypeDefinition, Claim, ClaimEvidence, EntityRedirect,
+    EntityResolution, EntityResolutionCandidate,
     # Location seam
     KnowledgeBaseLocation, KnowledgeBaseSnapshot,
     FilesystemLocation, open_filesystem_knowledge_base,

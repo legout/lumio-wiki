@@ -188,7 +188,9 @@ example, but the field itself must be present.
 | Field                 | Required | Notes                                                                                                                                       |
 |-----------------------|----------|---------------------------------------------------------------------------------------------------------------------------------------------|
 | `lumio.artifact`      | yes      | Must be `compiled-page` and `lumio.version: 1`.                                                                                             |
-| `title`               | yes      | Canonical Page Title; used as the file name and the page identity.                                                                          |
+| `id`                  | yes      | Stable Entity ID (`entity:<slug>`); the page's semantic identity. Unique across the Knowledge Base.                                          |
+| `entity_types`        | yes      | Non-empty list of Entity Types declared in `knowledge-base/lumio.yaml` under `ontology.entity_types`.                                       |
+| `title`               | yes      | Canonical Page Title; the human-readable lookup surface.                                                                                    |
 | `visibility`          | yes      | `public` or `internal`; the example uses `public`.                                                                                          |
 | `category`            | yes      | Must be one of the configured Content Categories in `knowledge-base/lumio.yaml` (`references`, `procedures`, `entities`, `concepts`, ...). |
 | `type`                | yes      | Free-form short label; cannot be empty.                                                                                                     |
@@ -198,7 +200,7 @@ example, but the field itself must be present.
 | `sources`             | yes      | List of `id` entries; each `id` must match a registered Knowledge Source.                                                                   |
 | `summary`             | yes      | One-paragraph description; surfaced in `lumio-wiki search` results.                                                                        |
 | `durability_rationale`| yes      | Why this page is durable (long-lived, controlled, etc.). The Distiller never fabricates one.                                                |
-| `relationships`       | optional | List of `{target, type}` entries; allowed `type` values are `contradicts`, `derived-from`, `extends`, `implements`, `relates-to`, `replaces`, `uses`. Unknown types emit a warning but do not block. |
+| `claims`              | optional | Subject Claims: `id`, `predicate` (declared in `ontology.predicates`), `object` Entity ID or `value`+`value_type`, `status` (`accepted`/`disputed`/`superseded`), `evidence` anchors. Canonical edges are Claims — title-based `relationships` are gone (ADR-0021). |
 | `synthetic`           | optional | `true` for example / fixture content; required for pages that are not extracted from a source.                                             |
 
 `tools/install_skill.sh` is idempotent. The packaged skill discovers the KB

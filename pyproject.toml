@@ -27,6 +27,13 @@ dev = [
     "obstore>=0.11.0",
 ]
 
+[tool.pyright]
+# Point type checkers at the workspace venv (uv sync creates .venv with all
+# three members editable-installed). Without this, Pyright cannot resolve
+# msgspec/pytest/lumio_wiki and reports spurious missing-import errors.
+venvPath = "."
+venv = ".venv"
+
 [tool.pytest.ini_options]
 # Issue #138: the retrieval gold-set evaluation gate (``eval/``) is part of the
 # default suite so every run is a regression check for retrieval-touching

@@ -35,10 +35,12 @@ automatically when no `<kb>` argument is given).
   canonical/discovery structural diagnostics with scope disclosure. Exit 1 if invalid.
 - `lumio-wiki cross-link` — missing-link candidates ranked by Discovery Graph
   impact. `--stage` repairs candidates as authored Markdown links (Extracted
-  References, Discovery Graph only); it never creates typed Relationships.
-- `lumio-wiki relationship stage <source> <target> --type T` — stage a typed
-  canonical Relationship proposal (e.g. `--type uses`). Distinct from
-  `cross-link --stage`; reviewed through the same proposal pipeline.
+  References, Discovery Graph only); it never creates typed Claims.
+- Claim authoring — canonical edges are accepted, evidence-bearing Claims
+  authored directly in Compiled Page `claims:` frontmatter (predicate +
+  entity object or typed literal, validated against the `lumio.yaml`
+  ontology). Entity Merge is proposal-first: `lumio-wiki entity merge`
+  stages the reviewed merge with its full blast radius.
 - `lumio-wiki dream` — the Dream Cycle: read-only reflection (validation +
   health + structure + ranked candidates). Add `--stage [--limit N]` to stage
   the top repairs as ordinary Ingest Proposals for review. Add opt-in `--semantic`
