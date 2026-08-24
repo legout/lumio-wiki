@@ -199,6 +199,129 @@ def test_minio_rollback_to_a_lancedb_version_keeps_the_index_bound(kb):
     assert results[0].trace.stages[0].name != "index-fallback"
 
 
+def test_minio_publish_blocks_when_a_graph_table_is_missing(kb, monkeypatch):
+    """Issue #173: a missing graph-edge table blocks activation, the pointer
+    stays on the previous Published Version, and the failure names the exact
+    missing artifact."""
+    import lumio_lancedb.publish as publish_module
+
+    store, prefix, builder, _ = kb
+    root = ROOT / "tests" / "fixtures" / "categorized_kb"
+    publish_s3_version(store, prefix, source_root=root, version="v1", index_builder=builder())
+    assert _pointer(store, prefix) == "v1"
+
+    real_build = publish_module.build_graph_tables
+
+    def _build_then_drop(build_kb, location, fingerprint):
+        real_build(build_kb, location, fingerprint)
+        location.connect().drop_table("graph_edges")
+
+    monkeypatch.setattr(publish_module, "build_graph_tables", _build_then_drop)
+    with pytest.raises(RuntimeError, match=r"missing table\(s\) graph_edges"):
+        publish_s3_version(
+            store,
+            prefix,
+            source_root=root,
+            version="v2",
+            expected_pointer_version="v1",
+            index_builder=builder(),
+        )
+    assert _pointer(store, prefix) == "v1"
+    assert [c.version for c in list_cleanup_candidates(store, prefix)] == ["v2"]
+
+
+def test_minio_publish_blocks_when_entity_table_is_missing(kb, monkeypatch):
+    """Issue #173: the entities half of the graph projection is equally
+    required — its absence blocks activation and keeps v1 active."""
+    import lumio_lancedb.publish as publish_module
+
+    store, prefix, builder, _ = kb
+    root = ROOT / "tests" / "fixtures" / "categorized_kb"
+    publish_s3_version(store, prefix, source_root=root, version="v1", index_builder=builder())
+    assert _pointer(store, prefix) == "v1"
+
+    real_build = publish_module.build_graph_tables
+
+    def _build_then_drop(build_kb, location, fingerprint):
+        real_build(build_kb, location, fingerprint)
+        location.connect().drop_table("entities")
+
+    monkeypatch.setattr(publish_module, "build_graph_tables", _build_then_drop)
+    with pytest.raises(RuntimeError, match=r"missing table\(s\) entities"):
+        publish_s3_version(
+            store,
+            prefix,
+            source_root=root,
+            version="v2",
+            expected_pointer_version="v1",
+            index_builder=builder(),
+        )
+    assert _pointer(store, prefix) == "v1"
+
+
+def test_minio_publish_blocks_when_graph_fingerprint_mismatches(kb, monkeypatch):
+    """Issue #173: graph tables recorded for a different fingerprint are
+    stale artifacts — publication rejects them and keeps v1 active."""
+    import lumio_lancedb.publish as publish_module
+    from lumio_wiki.records import SourceFingerprint
+
+    store, prefix, builder, _ = kb
+    root = ROOT / "tests" / "fixtures" / "categorized_kb"
+    publish_s3_version(store, prefix, source_root=root, version="v1", index_builder=builder())
+    assert _pointer(store, prefix) == "v1"
+
+    real_build = publish_module.build_graph_tables
+
+    def _build_stale(build_kb, location, fingerprint):
+        stale = SourceFingerprint(digest="0" * 64, sources=list(fingerprint.sources))
+        real_build(build_kb, location, stale)
+
+    monkeypatch.setattr(publish_module, "build_graph_tables", _build_stale)
+    with pytest.raises(RuntimeError, match="fingerprint mismatch"):
+        publish_s3_version(
+            store,
+            prefix,
+            source_root=root,
+            version="v2",
+            expected_pointer_version="v1",
+            index_builder=builder(),
+        )
+    assert _pointer(store, prefix) == "v1"
+    assert [c.version for c in list_cleanup_candidates(store, prefix)] == ["v2"]
+
+
+def test_minio_reader_falls_back_truthfully_when_graph_table_deleted(kb):
+    """Issue #173: a graph-edge table corrupted after publication never
+    raises — the reader falls back to the zero-index graph truthfully."""
+    from lumio_lancedb import load_graph_state
+    from lumio_wiki.graph_state import build_graph_state
+    from lumio_wiki.knowledge_base import EXTRACTOR_VERSION
+
+    store, prefix, builder, storage_options = kb
+    root = ROOT / "tests" / "fixtures" / "categorized_kb"
+    publish_s3_version(store, prefix, source_root=root, version="v1", index_builder=builder())
+    snapshot = S3Location(store, prefix).resolve()
+    bucket = _os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-wiki-it")
+    lance_loc = RemoteIndexLocation(
+        f"s3://{bucket}/{prefix}/v1/{LANCE_DERIVED_DIR}",
+        storage_options=storage_options,
+        store=store,
+        sidecar_prefix=f"{prefix}/v1/{LANCE_DERIVED_DIR}",
+    )
+    assert load_graph_state(lance_loc, snapshot.fingerprint) is not None
+
+    # Corrupt the published projection: delete the graph_edges table in place.
+    lance_loc.connect().drop_table("graph_edges")
+    assert load_graph_state(lance_loc, snapshot.fingerprint) is None
+    # The zero-index graph over the same snapshot still answers.
+    zero_index = build_graph_state(
+        snapshot.knowledge_base._knowledge_index(),
+        snapshot.fingerprint,
+        EXTRACTOR_VERSION,
+    )
+    assert zero_index.edge_count >= 1
+
+
 def test_minio_publish_builds_graph_projections_and_reader_parity(kb):
     """Issue #171: requested graph tables are complete before activation and
     a Reader loads adjacency identical to the zero-index graph from the

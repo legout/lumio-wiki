@@ -1,0 +1,46 @@
+version: 2
+mode: "categorized"
+categories:
+  - name: concepts
+    description: "Core ideas and mental models."
+  - name: entities
+    description: "Named systems, libraries, and organizations."
+ontology:
+  entity_types:
+    software-system:
+      description: "A deployed software product or platform."
+    library:
+      description: "A reusable software library or dependency."
+    concept:
+      description: "A core idea or mental model."
+  predicates:
+    uses:
+      subject_types:
+        - software-system
+      object_types:
+        - library
+        - software-system
+      inverse: used-by
+      description: "The subject system depends on the object for a capability."
+    used-by:
+      subject_types:
+        - library
+        - software-system
+      object_types:
+        - software-system
+      inverse: uses
+      description: "Inverse of uses; the object depends on the subject."
+    replaces:
+      subject_types:
+        - software-system
+      object_types:
+        - software-system
+      description: "The subject supersedes the object system."
+    described-as:
+      literal_kind: string
+      description: "A reviewed literal description of the subject."
+    first-released:
+      literal_kind: number
+      description: "The calendar year the subject first shipped."
+  redirects:
+    entity:legacy-wiki: entity:sage-wiki

@@ -31,6 +31,7 @@ from lumio_lancedb.index import (
     TABLE_NAME,
     VECTOR_TABLE_NAME,
     LanceDBRetrievalAdapter,
+    _load_fingerprint,
 )
 from lumio_lancedb.location import RemoteIndexLocation
 
@@ -94,7 +95,10 @@ def remote_publication_builder(
         # every requested table must exist and be row-countable. The graph
         # tables are requested whenever the publisher supplied the Knowledge
         # Base, so a missing/incomplete graph projection blocks activation
-        # (issue #171: requested tables complete before activation).
+        # (issue #171: requested tables complete before activation). Graph
+        # health is fingerprint-bound (issue #173): a projection recorded for
+        # different content is stale and blocks activation like any other
+        # incomplete artifact.
         db = location.connect()
         present = set(db.list_tables().tables)
         required = {TABLE_NAME, PAGE_TABLE_NAME}
@@ -108,6 +112,15 @@ def remote_publication_builder(
                 f"remote LanceDB index at {index_uri} is unhealthy: missing "
                 f"table(s) {', '.join(sorted(missing))}"
             )
+        if kb is not None:
+            stored = _load_fingerprint(location)
+            if stored is None or stored.digest != fingerprint.digest:
+                recorded = stored.digest if stored is not None else "none"
+                raise RuntimeError(
+                    f"remote LanceDB index at {index_uri} is unhealthy: graph "
+                    f"projection fingerprint mismatch (recorded {recorded}, "
+                    f"expected {fingerprint.digest})"
+                )
         try:
             tables = {name: int(db.open_table(name).count_rows()) for name in sorted(present)}
         except Exception as exc:
