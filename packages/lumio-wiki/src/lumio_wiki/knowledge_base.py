@@ -615,12 +615,14 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             for edge in neighbors(current):
                 if relationship_type is not None and edge.predicate != relationship_type:
                     continue
-                if edge.endpoint in visited or edge.endpoint not in allowed:
+                if edge.endpoint == current or edge.endpoint not in allowed:
                     continue
                 edges_expanded += 1
                 if edges_expanded > max_edges:
                     frontier.clear()
                     break
+                if edge.endpoint in visited:
+                    continue
                 visited.add(edge.endpoint)
                 found.add(edge.endpoint)
                 frontier.append((edge.endpoint, depth + 1))
