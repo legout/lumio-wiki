@@ -42,6 +42,7 @@ from lumio_wiki.okf import (
     OkfProfile1Import,
 )
 from lumio_wiki.records import (
+    Claim,
     CompiledPage,
     ValidationIssue,
     ValidationReport,
@@ -122,6 +123,130 @@ class ProposedPage(msgspec.Struct, frozen=True):
     rename_from: str | None = None
 
 
+class ClaimChange(msgspec.Struct, frozen=True):
+    """One Claim-level before/after change disclosed for review (issue #169).
+
+    Compares the proposed Claims of one page against its existing published
+    Claims by Claim ID: ``added`` (new ID), ``removed`` (ID gone), ``status``
+    (lifecycle transition such as a dispute or supersession), or ``edited``
+    (any other field — object/value, evidence, predicate, validity, or
+    confidence). ``before``/``after`` are compact one-line summaries (never
+    full page bodies) rendering status, object/literal, and evidence count.
+    Proposed/rejected assertions stay in proposal state: they appear here
+    with their proposal-only ``status`` and are blocked from publication by
+    candidate validation (ADR-0021).
+    """
+
+    page_title: str
+    claim_id: str
+    predicate: str
+    change: str
+    before: str = ""
+    after: str = ""
+
+
+#: Claim-change kinds (issue #169).
+CLAIM_CHANGE_ADDED = "added"
+CLAIM_CHANGE_REMOVED = "removed"
+CLAIM_CHANGE_STATUS = "status"
+CLAIM_CHANGE_EDITED = "edited"
+CLAIM_CHANGE_KINDS = frozenset(
+    {CLAIM_CHANGE_ADDED, CLAIM_CHANGE_REMOVED, CLAIM_CHANGE_STATUS, CLAIM_CHANGE_EDITED}
+)
+
+
+def claim_state_summary(claim: Claim) -> str:
+    """Render one compact, body-free Claim summary for review disclosure."""
+    if claim.object is not None:
+        target = f"object={claim.object}"
+    elif claim.value is not None:
+        target = f"value={claim.value_type}:{claim.value}"
+    else:
+        target = "object=?"
+    return f"status={claim.status or '?'} {target} evidence={len(claim.evidence)}"
+
+
+def compute_claim_changes(
+    proposed_claims: list[Claim],
+    existing_claims: list[Claim],
+    page_title: str,
+) -> list[ClaimChange]:
+    """Diff proposed vs existing Claims of one page by Claim ID (issue #169).
+
+    Pure data: renders :class:`ClaimChange` records covering additions,
+    removals, lifecycle (status) transitions, and edits — the Claim-level
+    before/after surface proposal inspection reports without dumping full
+    page bodies.
+    """
+    existing_by_id = {claim.id: claim for claim in existing_claims}
+    proposed_by_id = {claim.id: claim for claim in proposed_claims}
+    changes: list[ClaimChange] = []
+    for claim in proposed_claims:
+        existing = existing_by_id.get(claim.id)
+        if existing is None:
+            changes.append(
+                ClaimChange(
+                    page_title=page_title,
+                    claim_id=claim.id,
+                    predicate=claim.predicate,
+                    change=CLAIM_CHANGE_ADDED,
+                    after=claim_state_summary(claim),
+                )
+            )
+        elif existing.status != claim.status:
+            changes.append(
+                ClaimChange(
+                    page_title=page_title,
+                    claim_id=claim.id,
+                    predicate=claim.predicate,
+                    change=CLAIM_CHANGE_STATUS,
+                    before=claim_state_summary(existing),
+                    after=claim_state_summary(claim),
+                )
+            )
+        elif claim_state_summary(existing) != claim_state_summary(claim):
+            changes.append(
+                ClaimChange(
+                    page_title=page_title,
+                    claim_id=claim.id,
+                    predicate=claim.predicate,
+                    change=CLAIM_CHANGE_EDITED,
+                    before=claim_state_summary(existing),
+                    after=claim_state_summary(claim),
+                )
+            )
+    for claim in existing_claims:
+        if claim.id not in proposed_by_id:
+            changes.append(
+                ClaimChange(
+                    page_title=page_title,
+                    claim_id=claim.id,
+                    predicate=claim.predicate,
+                    change=CLAIM_CHANGE_REMOVED,
+                    before=claim_state_summary(claim),
+                )
+            )
+    return changes
+
+
+class EntityMerge(msgspec.Struct, frozen=True):
+    """A reviewed Entity Merge (issue #169, ADR-0021).
+
+    An explicit, proposal-first mutation: the surviving Entity keeps its
+    stable ID and page; the retired Entity's page is excluded from the next
+    Published Version, every Claim targeting the retired ID is retargeted to
+    the surviving ID, exactly-resolved body links are repaired, and the
+    retired ID is recorded as an ontology redirect. Automatic or ambiguous
+    merges are forbidden — alias/vector/FTS similarity may surface merge
+    CANDIDATES but can never mutate a proposal by itself.
+    """
+
+    retired_entity_id: str
+    surviving_entity_id: str
+    retired_title: str
+    surviving_title: str
+
+
 class BlastRadius(msgspec.Struct, frozen=True):
     """Semantic blast-radius review of an Ingest Proposal.
 
@@ -130,7 +255,9 @@ class BlastRadius(msgspec.Struct, frozen=True):
     Base. Duplicate candidates are reported for human review; no automatic
     merging is performed. ``category_moves`` (issue #80) surfaces explicit
     Content Category / path relocations for review. ``renames`` (issue #140)
-    surfaces explicit title renames for review.
+    surfaces explicit title renames for review. ``claim_changes`` (issue
+    #169) surfaces Claim-level additions, edits, lifecycle transitions, and
+    removals — with compact before/after summaries, never full page bodies.
     """
 
     new_titles: list[str] = msgspec.field(default_factory=list)
@@ -144,6 +271,7 @@ class BlastRadius(msgspec.Struct, frozen=True):
     affected_backlinks: list[str] = msgspec.field(default_factory=list)
     category_moves: list[str] = msgspec.field(default_factory=list)
     renames: list[str] = msgspec.field(default_factory=list)
+    claim_changes: list[ClaimChange] = msgspec.field(default_factory=list)
 
 
 class SourceChangeImpact(msgspec.Struct, frozen=True):
@@ -317,6 +445,11 @@ class IngestProposal(msgspec.Struct, frozen=True):
     # validated, published, and discarded through this same pipeline.
     removed_pages: list[PageRemoval] = msgspec.field(default_factory=list)
     body_link_repairs: list[BodyLinkRepairCandidate] = msgspec.field(default_factory=list)
+    # issue #169: explicit, reviewed Entity Merges (ADR-0021). The retired
+    # Entity's page removal is declared in ``removed_pages``; ``entity_merges``
+    # discloses the merge itself (retired/surviving ids and titles) for
+    # inspection and the Activity Log.
+    entity_merges: list[EntityMerge] = msgspec.field(default_factory=list)
 
 
 class ExternalImportCategoryMapping(msgspec.Struct, frozen=True):
@@ -1193,6 +1326,7 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
     affected_backlinks: set[str] = set()
     category_moves: list[str] = []
     renames: list[str] = []
+    claim_changes: list[ClaimChange] = []
 
     proposed_titles: set[str] = set()
     proposed_aliases: set[str] = set()
@@ -1279,6 +1413,18 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
                     target = title_by_entity.get(claim.object, claim.object)
                     relationship_changes.append(f"{title}: +{claim.predicate} -> {target}")
 
+        # Claim-level before/after disclosure (issue #169): additions,
+        # edits, lifecycle transitions, and removals per page, with compact
+        # summaries — never full page bodies.
+        existing_page = existing_by_title.get(title)
+        claim_changes.extend(
+            compute_claim_changes(
+                claims,
+                existing_page.claims if existing_page is not None else [],
+                title,
+            )
+        )
+
         # Unresolved Claim objects (dangling Entity IDs).
         all_known_ids = set(title_by_entity) | proposed_entity_ids
         for claim in claims:
@@ -1305,6 +1451,7 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
             # those pages referenced the page under its prior identity.
             affected_backlinks.update(backlinks.get(rename_from, set()))
 
+    claim_changes.sort(key=lambda c: (c.page_title, c.claim_id, c.change))
     return BlastRadius(
         new_titles=new_titles,
         changed_titles=changed_titles,
@@ -1317,6 +1464,7 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
         affected_backlinks=sorted(affected_backlinks),
         category_moves=category_moves,
         renames=renames,
+        claim_changes=claim_changes,
     )
 
 

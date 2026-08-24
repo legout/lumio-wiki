@@ -16,13 +16,15 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import msgspec.yaml as yaml
 
 from lumio_wiki import publish_reserved_artifacts
 from lumio_wiki.ingest import (
     BodyLinkRepairCandidate,
+    ClaimChange,
+    EntityMerge,
     IngestProposal,
     IngestStore,
     PageRemoval,
@@ -46,7 +48,7 @@ from lumio_wiki.knowledge_base import (
 )
 from lumio_wiki.knowledge_base import _parse_frontmatter as parse_frontmatter
 from lumio_wiki.publish import apply_proposed_pages, validate_candidate_knowledge_base
-from lumio_wiki.records import ValidationReport
+from lumio_wiki.records import EntityRedirect, Ontology, ValidationReport
 from lumio_wiki.source_registry import (
     KnowledgeSource,
     PendingSourceTransition,
@@ -136,6 +138,133 @@ def _compute_removal_diff(
     if repair_diff:
         lines.append(repair_diff)
     return "\n".join(lines)
+
+
+def _retarget_claim_objects(data: dict, from_id: str, to_id: str) -> bool:
+    """Rewrite Claim objects pointing at ``from_id`` to ``to_id`` in place.
+
+    The reviewed Entity Merge repair (issue #169, ADR-0021): every Claim on a
+    page whose object Entity is being retired is retargeted to the surviving
+    Entity ID in the same proposal. Returns whether any Claim was rewritten.
+    """
+    claims = data.get("claims")
+    changed = False
+    if isinstance(claims, list):
+        for claim in claims:
+            if isinstance(claim, dict) and str(claim.get("object", "")).strip() == from_id:
+                claim["object"] = to_id
+                changed = True
+    return changed
+
+
+def _destination_matches(
+    dest: str, pages, source_dir: str
+) -> tuple[set[str], set[str]]:
+    """Return ``(any_matches, path_matches)`` of page titles for a link dest.
+
+    ``any_matches`` collects pages the destination matches by Canonical Title,
+    alias, or path stem (mirroring the resolver's lookup keys); path_matches``
+    is the subset matched by path stem only. Titles are the set identity
+    because CompiledPage records are unhashable; a valid Knowledge Base has
+    unique titles.
+    """
+    from lumio_wiki.knowledge_base import _destination_stem
+
+    stem = _destination_stem(dest).casefold().lstrip("/")
+    if not stem:
+        return set(), set()
+    any_matches: set[str] = set()
+    path_matches: set[str] = set()
+    for page in pages:
+        if page.title and page.title.casefold() == stem:
+            any_matches.add(page.title)
+        for alias in page.aliases:
+            if alias and alias.casefold() == stem:
+                any_matches.add(page.title)
+        if page.path:
+            pstem = page.path
+            if pstem.lower().endswith(".md"):
+                pstem = pstem[: -len(".md")]
+            pstem = pstem.casefold()
+            if pstem == stem or (source_dir and pstem == f"{source_dir.casefold()}/{stem}"):
+                any_matches.add(page.title)
+                path_matches.add(page.title)
+    return any_matches, path_matches
+
+
+def _relative_link_path(surviving_path: str, source_dir: str) -> str:
+    """Return a link destination that resolves to the survivor from anywhere.
+
+    Root-absolute destinations (``/concepts/gamma.md``) resolve from every
+    source directory (the resolver strips the leading slash); parent-relative
+    ``../`` destinations are classified as escaping and never resolve, so
+    they are never produced. ``source_dir`` is accepted for signature parity
+    with future per-directory tuning and ignored.
+    """
+    return f"/{surviving_path}"
+
+
+def _repair_body_links_for_merge(
+    markdown: str,
+    source_path: str,
+    body_start_line: int,
+    retired_title: str,
+    surviving_title: str,
+    surviving_path: str,
+    pages,
+) -> tuple[str, bool, list[str]]:
+    """Rewrite exactly-resolved body links targeting the retired page (issue #169).
+
+    A reviewed Entity Merge repairs exactly resolved links in the same
+    proposal (ADR-0021): every internal link whose destination resolves to
+    the retired page — and ONLY the retired page — is rewritten to target the
+    surviving page (wikilink/markdown-title links to the surviving Canonical
+    Title, path links to the surviving path relative to the source page). A
+    destination that matches the retired page AND at least one other page is
+    an AMBIGUOUS repair: it is never guessed, reported verbatim, and blocks
+    staging. Returns ``(rewritten_markdown, changed, ambiguous)``.
+    """
+    from lumio_wiki.knowledge_base import _scan_body_links
+
+    source_dir = str(PurePosixPath(source_path).parent) if "/" in source_path else ""
+    body_lines = markdown.splitlines(keepends=True)
+    ambiguous: list[str] = []
+    changed = False
+    # Split once: repairs shift no characters on their own line, so scan the
+    # ORIGINAL body and apply one exact substring replacement per scanned link.
+    for dest, line_start, line_end in _scan_body_links(markdown, body_start_line):
+        any_matches, path_matches = _destination_matches(dest, pages, source_dir)
+        if retired_title not in any_matches:
+            continue
+        if len(any_matches) > 1:
+            ambiguous.append(
+                f"{source_path}: line {line_start}: '{dest}' matches "
+                f"{sorted(any_matches)}; refusing to guess a repair target"
+            )
+            continue
+        new_dest = surviving_path if retired_title in path_matches else surviving_title
+        rel = _relative_link_path(new_dest, source_dir) if retired_title in path_matches else new_dest
+        lo = max(line_start - body_start_line, 0)
+        hi = min(line_end - body_start_line, len(body_lines) - 1)
+        # Wikilinks always rewrite to the surviving Canonical Title (title
+        # resolution is unique); Markdown links rewrite to a root-absolute
+        # path when the retired page matched by path, else the surviving
+        # title. Delimiter-bounded patterns so a shared prefix (``[[beta``
+        # inside ``[[beta2]]``) can never be rewritten by accident.
+        replacements = (
+            (f"[[{dest}]]", f"[[{surviving_title}]]"),
+            (f"[[{dest}|", f"[[{surviving_title}|"),
+            (f"]({dest})", f"]({rel})"),
+            (f"]({dest} ", f"]({rel} "),
+        )
+        for index in range(lo, hi + 1):
+            line = body_lines[index]
+            for old, new in replacements:
+                if old in line:
+                    body_lines[index] = line.replace(old, new, 1)
+                    changed = True
+                    break
+    return "".join(body_lines), changed, ambiguous
 
 
 class ProposalPipeline:
@@ -577,6 +706,249 @@ class ProposalPipeline:
             body_link_repairs=body_link_repairs,
         )
 
+    def propose_entity_merge(
+        self,
+        retired_entity_id: str,
+        surviving_entity_id: str,
+        *,
+        reason: str = "",
+    ) -> IngestProposal:
+        """Stage an explicit, reviewed Entity Merge proposal (issue #169).
+
+        One atomic proposal that retires one Entity: the surviving Entity
+        keeps its stable ID and page; the retired Entity's Claims migrate to
+        the surviving page; every Claim on any page whose object is the
+        retired ID is retargeted to the surviving ID; every exactly-resolved
+        body link targeting the retired page is repaired to the survivor; the
+        retired ID is recorded as an ontology redirect; and the retired page
+        is excluded from the next Published Version. Automatic or ambiguous
+        merges are forbidden (ADR-0021): alias/vector/FTS similarity may
+        surface merge CANDIDATES but never mutates a proposal — the
+        surviving Entity is always an explicit, reviewed choice.
+
+        Ambiguous link repair (a destination matching the retired page AND
+        another page) refuses to stage: it is never guessed. Merge
+        collisions (duplicate Claim IDs after migration), redirect cycles,
+        and any invalid resulting ontology are caught by the authoritative
+        candidate gate and block publication.
+        """
+        store = self._require_store()
+        proposal = self._assemble_entity_merge(
+            retired_entity_id, surviving_entity_id, reason=reason
+        )
+        store.save_proposal(proposal)
+        return store.get(proposal.id)
+
+    def _assemble_entity_merge(
+        self,
+        retired_entity_id: str,
+        surviving_entity_id: str,
+        *,
+        reason: str,
+    ) -> IngestProposal:
+        """Assemble an Entity Merge proposal without persisting it (#169)."""
+        retired_entity_id = retired_entity_id.strip()
+        surviving_entity_id = surviving_entity_id.strip()
+        if not retired_entity_id or not surviving_entity_id:
+            raise ProposalPipelineError("entity merge requires two Entity IDs")
+        if retired_entity_id == surviving_entity_id:
+            raise ProposalPipelineError("cannot merge an entity into itself")
+        control = getattr(self._kb, "control", None)
+        if control is None:
+            raise ProposalPipelineError(
+                "entity merge requires a version-2 Knowledge Base with a Control File "
+                "(Legacy Flat Mode has no ontology redirects)"
+            )
+        page_by_entity = {page.id: page for page in self._kb.pages if page.id}
+        retired_page = page_by_entity.get(retired_entity_id)
+        surviving_page = page_by_entity.get(surviving_entity_id)
+        if retired_page is None or not retired_page.path:
+            raise ProposalPipelineError(
+                f"no Compiled Page found for retired Entity {retired_entity_id!r}"
+            )
+        if surviving_page is None or not surviving_page.path:
+            raise ProposalPipelineError(
+                f"no Compiled Page found for surviving Entity {surviving_entity_id!r}"
+            )
+        retired_title = retired_page.title
+        surviving_title = surviving_page.title
+
+        try:
+            retired_markdown = (self._kb.root / retired_page.path).read_text(encoding="utf-8")
+            surviving_markdown = (self._kb.root / surviving_page.path).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ProposalPipelineError(f"could not read a merge page: {exc}") from exc
+
+        all_pages = [page for page in self._kb.pages if page.path]
+        ambiguous_links: list[str] = []
+        proposed_pages: list[ProposedPage] = []
+
+        def _merge_page_markdown(markdown: str, path: str) -> tuple[str, bool]:
+            """Retarget Claim objects + repair exactly-resolved body links."""
+            data, body, body_start = parse_frontmatter(markdown, Path(path))
+            claims_changed = _retarget_claim_objects(
+                data, retired_entity_id, surviving_entity_id
+            )
+            repaired_body, links_changed, ambiguous = _repair_body_links_for_merge(
+                body,
+                path,
+                body_start,
+                retired_title,
+                surviving_title,
+                surviving_page.path,
+                all_pages,
+            )
+            ambiguous_links.extend(ambiguous)
+            if not claims_changed and not links_changed:
+                return markdown, False
+            frontmatter = yaml.encode(data).decode("utf-8").strip()
+            return f"---\n{frontmatter}\n---\n{repaired_body}", True
+
+        # 1. Claim repair + body-link repair on every OTHER page. The
+        #    surviving page is assembled separately (it also absorbs the
+        #    retired Entity's Claims).
+        for page in all_pages:
+            if page.title in (retired_title, surviving_title):
+                continue
+            try:
+                markdown = (self._kb.root / page.path).read_text(encoding="utf-8")
+            except OSError:
+                continue
+            merged, changed = _merge_page_markdown(markdown, page.path)
+            if changed:
+                proposed_pages.append(
+                    ProposedPage(relative_path=page.path, title=page.title, markdown=merged)
+                )
+        if ambiguous_links:
+            raise ProposalPipelineError(
+                "ambiguous link repair blocks this entity merge "
+                "(never guessed; resolve the collision and retry): "
+                + "; ".join(ambiguous_links)
+            )
+
+        # 2. Surviving page revision: its own Claims (retargeted) plus the
+        #    retired page's Claims (retargeted), and its body links repaired.
+        #    A Claim ID that exists on both pages becomes a duplicate in the
+        #    candidate — the merge-collision gate blocks publication.
+        surviving_data, surviving_body, surviving_line = parse_frontmatter(
+            surviving_markdown, Path(surviving_page.path)
+        )
+        _retarget_claim_objects(surviving_data, retired_entity_id, surviving_entity_id)
+        merged_claims = list(surviving_data.get("claims") or [])
+        retired_data, _retired_body, _retired_line = parse_frontmatter(
+            retired_markdown, Path(retired_page.path)
+        )
+        if isinstance(retired_data.get("claims"), list):
+            _retarget_claim_objects(retired_data, retired_entity_id, surviving_entity_id)
+            merged_claims.extend(retired_data["claims"])
+        repaired_survivor_body, links_changed, ambiguous = _repair_body_links_for_merge(
+            surviving_body,
+            surviving_page.path,
+            surviving_line,
+            retired_title,
+            surviving_title,
+            surviving_page.path,
+            all_pages,
+        )
+        if ambiguous:
+            raise ProposalPipelineError(
+                "ambiguous link repair blocks this entity merge "
+                "(never guessed; resolve the collision and retry): "
+                + "; ".join(ambiguous)
+            )
+        if merged_claims:
+            surviving_data["claims"] = merged_claims
+        frontmatter = yaml.encode(surviving_data).decode("utf-8").strip()
+        merged_markdown = f"---\n{frontmatter}\n---\n{repaired_survivor_body}"
+        if merged_markdown != surviving_markdown:
+            proposed_pages.insert(
+                0,
+                ProposedPage(
+                    relative_path=surviving_page.path,
+                    title=surviving_title,
+                    markdown=merged_markdown,
+                ),
+            )
+
+        # 3. Control File: record the retired Entity ID as a redirect to the
+        #    surviving ID. A resulting redirect cycle or Claim-ID collision is
+        #    caught by the authoritative candidate gate below and blocks
+        #    publication.
+        ontology = control.ontology or Ontology()
+        redirects = [
+            redirect
+            for redirect in ontology.redirects
+            if redirect.from_id != retired_entity_id
+        ]
+        redirects.append(EntityRedirect(from_id=retired_entity_id, to_id=surviving_entity_id))
+        new_ontology = Ontology(
+            entity_types=ontology.entity_types,
+            predicates=ontology.predicates,
+            redirects=redirects,
+        )
+        # An unresolved Hot Index pin is a blocking validation error, so a pin
+        # on the retired title drops atomically with the merge (as in #135).
+        kept_pins = [
+            HotIndexPin(title=pin.title, note=pin.note)
+            for pin in control.hot_index
+            if pin.title != retired_title
+        ]
+        control_file = KnowledgeBaseControlFile(
+            version=control.version,
+            categories=list(control.categories),
+            hot_index=kept_pins,
+            mode=control.mode,
+            path=control.path,
+            ontology=new_ontology,
+        )
+
+        # Validate the merge + repairs as ONE candidate Knowledge Base.
+        page_validation = validate_candidate_knowledge_base(
+            proposed_pages,
+            self._kb.root,
+            removed_titles=[retired_title],
+            control_file=control_file,
+        )
+        validation_report = ValidationReport(issues=list(page_validation.issues))
+
+        existing_pages = _existing_page_markdown(self._kb)
+        diff = _compute_removal_diff(
+            retired_title, retired_page.path, retired_markdown, proposed_pages, existing_pages
+        )
+        blast_radius = compute_blast_radius(proposed_pages, self._kb)
+
+        removal = PageRemoval(
+            title=retired_title,
+            lost_support_reason=reason or f"merged into {surviving_title}",
+        )
+        entity_merge = EntityMerge(
+            retired_entity_id=retired_entity_id,
+            surviving_entity_id=surviving_entity_id,
+            retired_title=retired_title,
+            surviving_title=surviving_title,
+        )
+        provenance = SourceProvenance(
+            original_filename=None,
+            content_type=None,
+            converted_by="lumio-entity-merge",
+            origin="lumio:entity-merge",
+        )
+        return IngestProposal(
+            id=uuid.uuid4().hex,
+            status="staged",
+            created_at=datetime.now(UTC).isoformat(),
+            provenance=provenance,
+            proposed_pages=proposed_pages,
+            affected_pages=[page.title for page in proposed_pages],
+            diff=diff,
+            validation_report=validation_report,
+            blocked=not validation_report.is_valid,
+            blast_radius=blast_radius,
+            control_file=control_file,
+            removed_pages=[removal],
+            entity_merges=[entity_merge],
+        )
+
     def assemble(
         self,
         distilled_markdown: str,
@@ -738,15 +1110,30 @@ class ProposalPipeline:
         # portable Activity Log; legacy flat KBs do not. The entry records only
         # the removed Canonical Titles and operation — never Claim Lineage
         # (claim-level lineage is not modeled, ADR-0014).
-        if proposal.removed_pages and getattr(self._kb, "control", None) is not None:
-            append_activity_log_entry(
-                self._kb.root,
-                make_activity_log_entry(
-                    operation="page-removal",
-                    description="removed page(s): "
-                    + ", ".join(removal.title for removal in proposal.removed_pages),
-                ),
-            )
+        if getattr(self._kb, "control", None) is not None:
+            if proposal.entity_merges:
+                # issue #169: a reviewed Entity Merge logs its own transition
+                # (retired Entity -> surviving Entity), not a page-removal.
+                append_activity_log_entry(
+                    self._kb.root,
+                    make_activity_log_entry(
+                        operation="entity-merge",
+                        description="merged entity(s): "
+                        + ", ".join(
+                            f"{merge.retired_entity_id} -> {merge.surviving_entity_id}"
+                            for merge in proposal.entity_merges
+                        ),
+                    ),
+                )
+            elif proposal.removed_pages:
+                append_activity_log_entry(
+                    self._kb.root,
+                    make_activity_log_entry(
+                        operation="page-removal",
+                        description="removed page(s): "
+                        + ", ".join(removal.title for removal in proposal.removed_pages),
+                    ),
+                )
         published = self._store.publish(proposal_id)
         if published is None:
             raise ProposalPipelineError(f"proposal {proposal_id!r} was not publishable")

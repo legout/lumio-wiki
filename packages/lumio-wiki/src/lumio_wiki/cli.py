@@ -1691,8 +1691,15 @@ def _cmd_proposal_inspect(args: argparse.Namespace) -> int:
         br = proposal.blast_radius
         print(
             f"blast_radius:    new={len(br.new_titles)} changed={len(br.changed_titles)} "
-            f"dup_title={len(br.duplicate_title_risks)} moves={len(br.category_moves)}"
+            f"dup_title={len(br.duplicate_title_risks)} moves={len(br.category_moves)} "
+            f"claims={len(br.claim_changes)}"
         )
+    # issue #169: Entity Merge disclosure — retired/surviving Entity IDs and
+    # titles, so a Maintainer reviews the identity decision itself.
+    for merge in proposal.entity_merges:
+        print(f"entity_merge:    {merge.retired_entity_id} -> {merge.surviving_entity_id}")
+        print(f"  retired:       {merge.retired_title}")
+        print(f"  surviving:     {merge.surviving_title}")
     # issue #135: Page Removal disclosure (AC4) — removed titles, lost-support
     # reasons, affected notes, and location-bearing body-link repair candidates.
     for removal in proposal.removed_pages:
@@ -1706,6 +1713,18 @@ def _cmd_proposal_inspect(args: argparse.Namespace) -> int:
             f"body_link_repair: {candidate.source_title} -> {candidate.target_title} "
             f"({candidate.origin}, line {candidate.line_start}, {candidate.source_path})"
         )
+    # issue #169: Claim-level before/after changes — additions, edits,
+    # lifecycle (dispute/supersession) transitions, and removals with compact
+    # summaries; never full page bodies.
+    if proposal.blast_radius is not None and proposal.blast_radius.claim_changes:
+        print(f"claim_changes:   {len(proposal.blast_radius.claim_changes)}")
+        for change in proposal.blast_radius.claim_changes:
+            line = f"  {change.change:8} {change.claim_id} ({change.predicate})"
+            if change.before:
+                line += f"\n    before: {change.before}"
+            if change.after:
+                line += f"\n    after:  {change.after}"
+            print(line)
     print()
     print("Diff:")
     print(proposal.diff or "(no textual diff)")
@@ -1727,6 +1746,32 @@ def _cmd_remove_page(args: argparse.Namespace) -> int:
             print(f"  lost_support:   {removal.lost_support_reason}")
     print(f"  repairs:        {len(proposal.proposed_pages)} dependent page(s)")
     print(f"  body_links:     {len(proposal.body_link_repairs)} repair candidate(s)")
+    print(f"  blocked:        {proposal.blocked}")
+    print()
+    print("Review with:")
+    print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
+    if is_reviewable_proposal(proposal) and not proposal.blocked:
+        print(f"  lumio-wiki publish {args.path} {proposal.id}")
+    return 0
+
+
+def _cmd_merge_entity(args: argparse.Namespace) -> int:
+    """Stage an explicit, reviewed Entity Merge proposal (issue #169)."""
+    _kb, pipeline = _proposal_pipeline(args)
+    try:
+        proposal = pipeline.propose_entity_merge(
+            args.retired, args.survivor, reason=args.reason or ""
+        )
+    except ProposalPipelineError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    print(f"Staged proposal {proposal.id}")
+    print(f"  status:         {proposal.status}")
+    for merge in proposal.entity_merges:
+        print(f"  entity_merge:   {merge.retired_entity_id} -> {merge.surviving_entity_id}")
+        print(f"    retired:      {merge.retired_title}")
+        print(f"    surviving:    {merge.surviving_title}")
+    print(f"  repairs:        {len(proposal.proposed_pages)} dependent page(s)")
+    print(f"  redirect:       recorded in ontology.redirects on publish")
     print(f"  blocked:        {proposal.blocked}")
     print()
     print("Review with:")
@@ -3590,6 +3635,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ingest_dir_argument(remove_page_parser)
     remove_page_parser.set_defaults(func=_cmd_remove_page)
+
+    # merge-entity
+    merge_entity_parser = subparsers.add_parser(
+        "merge-entity",
+        help="Stage an explicit Entity Merge proposal.",
+        description=(
+            "Stage an explicit, reviewed Entity Merge proposal that retires one "
+            "Entity into a surviving Entity: the retired Entity's Claims migrate "
+            "to the surviving page, every Claim targeting the retired ID is "
+            "retargeted, exactly-resolved body links are repaired, and the retired "
+            "ID is recorded as an ontology redirect — all in one atomic proposal "
+            "(issue #169, ADR-0021). Automatic or ambiguous merges are blocked."
+        ),
+    )
+    _add_kb_argument(merge_entity_parser)
+    merge_entity_parser.add_argument(
+        "retired", type=str, help="Entity ID of the page being retired by the merge."
+    )
+    merge_entity_parser.add_argument(
+        "survivor", type=str, help="Entity ID of the surviving page that keeps its identity."
+    )
+    merge_entity_parser.add_argument(
+        "--reason",
+        type=str,
+        default="",
+        help="Maintainer rationale recorded on the page removal.",
+    )
+    _add_ingest_dir_argument(merge_entity_parser)
+    merge_entity_parser.set_defaults(func=_cmd_merge_entity)
 
     # health
     health_parser = subparsers.add_parser(
