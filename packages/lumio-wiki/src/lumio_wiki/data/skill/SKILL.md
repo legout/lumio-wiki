@@ -25,7 +25,9 @@ no LanceDB, no OpenAI client required for base behavior. This skill invokes
 only public CLI/Python behavior and never parses the private MessagePack
 Discovery Graph artifact — reach graph state through `related`, `paths`, and
 `health` only. Read the [detailed coding-agent protocol](PROTOCOL.md) only when
-the concise workflow below is insufficient.
+the concise workflow below is insufficient. The canonical tested onboarding
+journey (Maintainer setup → ingest → publish → S3 → read-only Reader) is
+`docs/quickstart.md` in the Lumio repository (issue #180).
 
 ## Setup
 
@@ -94,6 +96,9 @@ root directory in every command below.
 | `lumio-wiki proposal validate <kb> <id>` | Print the proposal's validation report. Exit 1 on errors. |
 | `lumio-wiki publish <kb> <id>` | Apply a proposal's pages to the KB root, regenerate reserved artifacts, mark it terminal. |
 | `lumio-wiki discard <kb> <id>` | Mark a reviewable proposal as discarded (terminal). |
+| `lumio-wiki publish-s3 <kb> [dest] --version <v> [--expected-pointer-version <v>] [--retrieval zero-index\|lancedb]` | Publish an immutable S3 Published Version (canonical content + Discovery Graph; `lancedb` also builds + health-checks a remote LanceDB index under the version's `derived/lance/` BEFORE the pointer advances). Destination defaults to `LUMIO_PUBLISH_TO` from `.env`. The `--expected-pointer-version` CAS guard refuses a stale advance. |
+| `lumio-wiki rollback-s3 <dest> --version <v> [--expected-pointer-version <v>]` | CAS-activate a prior complete version; never rebuilds it, stale rollback fails closed. |
+| `lumio-wiki cleanup-s3 <dest>` | Report inactive incomplete version prefixes (interrupted builds); deletes nothing. |
 | `lumio-wiki health <kb> [--rebuild]` | Page counts, validation status, Discovery Graph health + fingerprint. `--rebuild` materializes a fresh graph artifact (actionable recovery); a bad/missing artifact never blocks zero-index operation. |
 | `lumio-wiki lint <kb>` | Read-only cross-page QA report: validation, graph health, canonical/discovery structural diagnostics, scope disclosure. Exit 1 when invalid (ADR-0015). |
 | `lumio-wiki cross-link <kb> [--limit N] [--stage]` | Missing-link candidates ranked by Discovery Graph impact. `--stage` stages one reviewable repair proposal per top candidate; never direct-writes. |

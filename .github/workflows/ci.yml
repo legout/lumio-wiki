@@ -44,6 +44,52 @@ jobs:
           tests/test_okf_import.py
           tests/test_okf_round_trip.py
           tests/test_okf_reject_unsafe.py
+          tests/test_onboarding_journey.py
+
+  # Issue #180, AC6: run the canonical onboarding journey (docs/quickstart.md)
+  # against a real MinIO so the documented command sequence cannot drift from
+  # the CLI. The minioadmin values are MinIO's labelled local-test defaults on
+  # an ephemeral CI container — never real credentials.
+  onboarding-minio-journey:
+    runs-on: ubuntu-latest
+    services:
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      LUMIO_S3_ENDPOINT: http://localhost:9000
+      LUMIO_S3_ALLOW_HTTP: "1"
+      LUMIO_S3_REGION: us-east-1
+      LUMIO_S3_TEST_BUCKET: lumio-quickstart
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv lock --check
+      - run: uv sync --locked
+      # The smoke journey creates its dedicated bucket with `mc` when present
+      # (the same tool docs/quickstart.md uses); install it for the job.
+      - name: Install mc (bucket creation, as documented)
+        run: >
+          curl -sfL
+          https://dl.min.io/client/mc/release/linux-amd64/mc
+          -o /usr/local/bin/mc && chmod +x /usr/local/bin/mc
+      - name: Run the onboarding journey tests against MinIO
+        run: uv run --locked pytest -q tests/test_onboarding_journey.py
 
   isolated-lumio-wiki-wheel:
     runs-on: ubuntu-latest

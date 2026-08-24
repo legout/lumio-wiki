@@ -220,6 +220,16 @@ ontology:
 A mapping of Entity Type ID to an optional definition (`description`). Pages
 declare these IDs in `entity_types`. There is no type inheritance.
 
+A freshly initialized Knowledge Base (`lumio-wiki setup`/`init`) seeds a
+**valid-empty ontology**: the version-2 Control File is present with the
+category catalog, but `entity_types` and `predicates` are empty. That state is
+fully valid and sufficient **until the first page declares `entity_types` or
+`claims`** — from that moment validation requires every used type and
+predicate to be declared, because the vocabulary is KB-local content a
+Maintainer declares deliberately. A tested starter ontology (entity types +
+an inverse predicate pair + a literal predicate) lives in
+[`docs/quickstart.md`](quickstart.md) (issue #180).
+
 ### `ontology.predicates`
 
 A mapping of Predicate ID to a definition:

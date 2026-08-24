@@ -24,6 +24,7 @@ For the *why* and the vision, read the domain docs — this README documents
 ## Contents
 
 - [Quick start](#quick-start)
+  - [Canonical onboarding journey (MinIO → AWS)](#canonical-onboarding-journey-minio--aws)
   - [Operator / Owner — deploy with Docker](#operator--owner--deploy-with-docker)
   - [Reader / Maintainer — use the web app](#reader--maintainer--use-the-web-app)
   - [Developer — run locally](#developer--run-locally)
@@ -52,6 +53,17 @@ Lumio has four audiences. Pick yours.
 - **Reader / Maintainer** — ask questions, review ingest, publish (web UI).
 - **Developer** — extend the Core SDK, runtime, or app.
 - **Coding agent / library user** — install the portable Knowledge Base foundation.
+
+### Canonical onboarding journey (MinIO → AWS)
+
+New here? Follow **[docs/quickstart.md](docs/quickstart.md)** — the one
+certified onboarding journey from prerequisites to a grounded agent answer:
+local Maintainer setup, ontology starter, managed document ingest, proposal
+review, S3 publication with and without LanceDB (local MinIO, then the AWS
+variant), read-only Reader setup, retrieval modes, graph traversal, citation
+opening, and Source Artifact inspection. Its scriptable twin lives at
+[`examples/onboarding-journey/`](examples/onboarding-journey/) and CI runs it
+against MinIO so the docs cannot drift from the CLI.
 
 ### Operator / Owner — deploy with Docker
 

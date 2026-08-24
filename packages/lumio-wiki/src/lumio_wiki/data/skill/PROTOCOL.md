@@ -279,6 +279,29 @@ reserved Navigation Index and Hot Index, and marks the proposal terminal. It
 refuses to publish a blocked proposal (validation always runs first).
 `discard` marks a reviewable proposal as discarded.
 
+## 9b. Publish an immutable S3 Published Version
+
+```text
+lumio-wiki publish-s3 [kb] [dest] --version <v>
+              [--expected-pointer-version <v>] [--retrieval zero-index|lancedb]
+lumio-wiki rollback-s3 <dest> --version <v> [--expected-pointer-version <v>]
+lumio-wiki cleanup-s3 <dest>
+```
+
+Local authoring and remote reading are deliberately separate: you author,
+ingest, and publish in a local worktree; `publish-s3` writes ONE immutable
+version prefix (canonical content + Discovery Graph, optionally a remote
+LanceDB index built and health-checked under `derived/lance/` BEFORE
+activation) and then advances the tiny active pointer (`current.json`). The
+`--expected-pointer-version` compare-and-swap guard refuses a stale advance.
+Readers bind read-only with `setup --from <s3-uri>` — never point a worktree
+at the S3 prefix as a filesystem. A missing/unhealthy remote LanceDB index
+never breaks reads: `status` discloses the zero-index fallback and the exact
+repair command. `rollback-s3` CAS-activates a prior complete version (never
+rebuilds it); `cleanup-s3` reports interrupted-build residue and deletes
+nothing. The tested end-to-end journey (with and without LanceDB) is
+`docs/quickstart.md` (issue #180).
+
 ## 10. Health and graph recovery
 
 ```
