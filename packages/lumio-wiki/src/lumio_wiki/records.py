@@ -455,6 +455,23 @@ class GraphEdge(msgspec.Struct, frozen=True):
     line_end: int = 0
     extractor_version: str = ""
 
+    def reversed(self, endpoint: str) -> GraphEdge:
+        """Return the mirrored view of this edge pointing back at ``endpoint``.
+
+        Copies every origin/predicate/provenance field unchanged so the
+        incoming view is the exact reverse of the outgoing edge (issue #170).
+        """
+        return GraphEdge(
+            endpoint=endpoint,
+            predicate=self.predicate,
+            claim_id=self.claim_id,
+            origin=self.origin,
+            source_path=self.source_path,
+            line_start=self.line_start,
+            line_end=self.line_end,
+            extractor_version=self.extractor_version,
+        )
+
     @property
     def sort_key(self) -> tuple[str, str, str, str, str, int, int, str]:
         """Deterministic edge ordering key (endpoint, then origin metadata)."""

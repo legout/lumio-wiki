@@ -674,9 +674,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         title_of = self._knowledge_index().title_by_graph_key
 
         visited = set(source_keys)
-        queue: deque[tuple[str, list[str]]] = deque(
-            (seed, [seed]) for seed in sorted(source_keys)
-        )
+        queue: deque[tuple[str, list[str]]] = deque((seed, [seed]) for seed in sorted(source_keys))
         edges_expanded = 0
         while queue:
             current, path = queue.popleft()
@@ -721,9 +719,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             if title in index.graph_key_by_title
         )
 
-    def _authorized_seed_keys(
-        self, title_or_alias: str, candidate: frozenset[str]
-    ) -> list[str]:
+    def _authorized_seed_keys(self, title_or_alias: str, candidate: frozenset[str]) -> list[str]:
         """Resolve a Canonical Page Title or Alias to authorized seed keys.
 
         Resolution is a local lookup, not graph expansion. Authorization is
@@ -733,9 +729,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
         at the module edge, without making titles identity).
         """
         index = self._knowledge_index()
-        pages = index.by_title.get(title_or_alias) or index.by_alias.get(
-            title_or_alias, []
-        )
+        pages = index.by_title.get(title_or_alias) or index.by_alias.get(title_or_alias, [])
         keys: list[str] = []
         for page in pages:
             if page.title and page.title in candidate:
@@ -1066,9 +1060,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
                 edge_count=degree[k],
                 entity_id=k,
             )
-            for k in sorted(
-                nodes, key=lambda x: (-degree[x], title_of.get(x, x), x)
-            )
+            for k in sorted(nodes, key=lambda x: (-degree[x], title_of.get(x, x), x))
             if degree[k] > 0
         )[:max_sample]
 
@@ -2073,18 +2065,7 @@ class _KnowledgeIndex:
                 )
                 self.adjacency.setdefault(source_key, []).append(edge)
                 self.incoming.setdefault(edge.endpoint, []).append(
-                    GraphEdge(endpoint=source_key, **{
-                        field: getattr(edge, field)
-                        for field in (
-                            "predicate",
-                            "claim_id",
-                            "origin",
-                            "source_path",
-                            "line_start",
-                            "line_end",
-                            "extractor_version",
-                        )
-                    })
+                    edge.reversed(source_key)
                 )
         # Canonical adjacency is stored pre-sorted so graph traversal
         # iterates canonical edges deterministically without per-node
@@ -3503,9 +3484,7 @@ def _orphan_issues(pages: list[CompiledPage], index: _KnowledgeIndex) -> list[Va
         key = index.graph_key_by_title.get(title)
         if key is None:
             continue
-        has_canonical_inbound = any(
-            edge.endpoint != key for edge in index.incoming.get(key, [])
-        )
+        has_canonical_inbound = any(edge.endpoint != key for edge in index.incoming.get(key, []))
         has_discovery_inbound = any(
             edge.endpoint != key for edge in index.discovery_incoming.get(key, [])
         )

@@ -31,7 +31,14 @@ from typing import Protocol
 
 import msgpack
 
-from lumio_wiki.records import GraphEdge, GraphState, SourceFingerprint
+from lumio_wiki.records import (
+    GRAPH_EDGE_ORIGIN_CLAIM,
+    GRAPH_EDGE_ORIGIN_EXTRACTED,
+    GRAPH_EDGE_ORIGINS,
+    GraphEdge,
+    GraphState,
+    SourceFingerprint,
+)
 
 # The MessagePack artifact format version. Bumped to 2 with the Entity-ID
 # rebuild (issue #170): keys are Entity IDs and edges carry
@@ -84,14 +91,8 @@ def build_graph_state(
     returned state. ``edge_count`` counts outgoing discovery edges (incoming
     is the reverse view over the same edge set).
     """
-    outgoing = {
-        key: list(edges)
-        for key, edges in index.discovery_adjacency.items()
-    }
-    incoming = {
-        key: list(edges)
-        for key, edges in index.discovery_incoming.items()
-    }
+    outgoing = {key: list(edges) for key, edges in index.discovery_adjacency.items()}
+    incoming = {key: list(edges) for key, edges in index.discovery_incoming.items()}
     edge_count = sum(len(edges) for edges in outgoing.values())
     return GraphState(
         version=GRAPH_ARTIFACT_VERSION,
@@ -136,6 +137,35 @@ def serialize_graph(
     return msgpack.packb(payload, use_bin_type=True)
 
 
+def _decode_edge(values: dict[str, object]) -> GraphEdge | None:
+    """Validate one decoded edge's origin-variant semantics, or ``None``.
+
+    An edge must declare a known ``origin`` and honor its variant contract
+    (ADR-0021): an accepted-Claim edge carries a Claim ID and Predicate and
+    never masquerades as an Extracted Reference; an Extracted Reference edge
+    never carries Claim identity (it is not promoted) and carries source
+    provenance (non-empty path, 1-based bounded line range, extractor
+    version). Anything else is a corrupt/incompatible artifact.
+    """
+    origin = values["origin"]
+    if origin not in GRAPH_EDGE_ORIGINS:
+        return None
+    if origin == GRAPH_EDGE_ORIGIN_CLAIM:
+        if not values["claim_id"] or not values["predicate"]:
+            return None
+    elif origin == GRAPH_EDGE_ORIGIN_EXTRACTED:
+        if values["claim_id"] or values["predicate"]:
+            return None
+        if not values["source_path"] or not values["extractor_version"]:
+            return None
+        line_start, line_end = values["line_start"], values["line_end"]
+        if not isinstance(line_start, int) or not isinstance(line_end, int):
+            return None
+        if line_start < 1 or line_end < line_start:
+            return None
+    return GraphEdge(**values)  # type: ignore[arg-type]
+
+
 def _decode_adjacency(
     raw: object,
 ) -> dict[str, list[GraphEdge]] | None:
@@ -160,7 +190,10 @@ def _decode_adjacency(
                 elif not isinstance(value, str):
                     return None
                 values[field] = value
-            bucket.append(GraphEdge(**values))  # type: ignore[arg-type]
+            decoded = _decode_edge(values)
+            if decoded is None:
+                return None
+            bucket.append(decoded)
         result[key] = bucket
     return result
 
@@ -180,13 +213,7 @@ def _incoming_is_reverse_of_outgoing(
     expected: list[tuple[str, GraphEdge]] = []
     for src, edges in outgoing.items():
         for edge in edges:
-            expected.append(
-                (edge.endpoint, GraphEdge(endpoint=src, **{
-                    field: getattr(edge, field)
-                    for field in _EDGE_FIELDS
-                    if field != "endpoint"
-                }))
-            )
+            expected.append((edge.endpoint, edge.reversed(src)))
     expected_norm = sorted(expected, key=lambda pair: (pair[0], pair[1].sort_key))
     actual: list[tuple[str, GraphEdge]] = [
         (key, edge) for key, edges in incoming.items() for edge in edges
@@ -264,9 +291,7 @@ def write_graph_artifact(
     index_dir_path.mkdir(parents=True, exist_ok=True)
     target = index_dir_path / GRAPH_ARTIFACT_FILENAME
     data = serialize_graph(index, fingerprint, extractor_version)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(index_dir_path), prefix=".lumio-graph-", suffix=".tmp"
-    )
+    fd, tmp_name = tempfile.mkstemp(dir=str(index_dir_path), prefix=".lumio-graph-", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
@@ -310,3 +335,5 @@ def load_graph_artifact(
     if state.extractor_version != extractor_version:
         return None
     return state
+
+

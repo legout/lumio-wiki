@@ -384,6 +384,84 @@ def test_inconsistent_incoming_not_reverse_of_outgoing_rejected():
     assert deserialize_graph(bad) is None
 
 
+def _v2_edge(
+    endpoint: str = "entity:beta",
+    predicate: str = "uses",
+    claim_id: str = "claim:1",
+    origin: str = "claim",
+    source_path: str = "",
+    line_start: int = 0,
+    line_end: int = 0,
+    extractor_version: str = "",
+) -> list[object]:
+    return [endpoint, predicate, claim_id, origin, source_path, line_start, line_end, extractor_version]
+
+
+def _v2_payload(outgoing_edge: list[object]) -> dict[str, object]:
+    return {
+        "version": GRAPH_ARTIFACT_VERSION,
+        "fingerprint_digest": "abc",
+        "extractor_version": EXTRACTOR_VERSION,
+        "outgoing": {"entity:alpha": [outgoing_edge]},
+        "incoming": {
+            "entity:beta": [
+                _v2_edge(
+                    endpoint="entity:alpha",
+                    predicate=str(outgoing_edge[1]),
+                    claim_id=str(outgoing_edge[2]),
+                    origin=str(outgoing_edge[3]),
+                )
+            ]
+        },
+        "edge_count": 1,
+    }
+
+
+def test_unknown_edge_origin_rejected():
+    # A corrupt artifact whose edges decode type-wise but carry an origin
+    # outside GRAPH_EDGE_ORIGINS must not become live graph state (#170).
+    bad = msgpack.packb(_v2_payload(_v2_edge(origin="banana")), use_bin_type=True)
+    assert deserialize_graph(bad) is None
+
+
+def test_claim_edge_without_claim_identity_rejected():
+    bad = msgpack.packb(
+        _v2_payload(_v2_edge(claim_id="", predicate="")), use_bin_type=True
+    )
+    assert deserialize_graph(bad) is None
+
+
+def test_extracted_edge_with_claim_identity_rejected():
+    # An Extracted Reference never carries a Claim ID (never promoted).
+    bad = msgpack.packb(
+        _v2_payload(
+            _v2_edge(
+                predicate="uses",
+                claim_id="claim:1",
+                origin="extracted-reference",
+                source_path="alpha.md",
+                line_start=1,
+                line_end=1,
+                extractor_version=EXTRACTOR_VERSION,
+            )
+        ),
+        use_bin_type=True,
+    )
+    assert deserialize_graph(bad) is None
+
+
+def test_extracted_edge_without_provenance_rejected():
+    # An Extracted Reference must carry source path, 1-based bounded line
+    # range, and extractor version.
+    bad = msgpack.packb(
+        _v2_payload(
+            _v2_edge(origin="extracted-reference", source_path="", line_start=2, line_end=1)
+        ),
+        use_bin_type=True,
+    )
+    assert deserialize_graph(bad) is None
+
+
 def test_stray_incoming_entry_rejected():
     # outgoing is empty but incoming has a stray entry -> inconsistent.
     bad = msgpack.packb(
