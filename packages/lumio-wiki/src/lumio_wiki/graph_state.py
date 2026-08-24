@@ -44,12 +44,16 @@ from lumio_wiki.records import (
 )
 
 # The MessagePack artifact format version. Bumped to 2 with the Entity-ID
-# rebuild (issue #170): keys are Entity IDs and edges carry
-# (endpoint, predicate, claim_id, origin, source_path, line_start, line_end,
-# extractor_version) metadata, which a version-1 reader could misinterpret.
-# Bumped only when the serialized layout changes in a way an older reader
-# could misinterpret. Independent of the link-extractor version
-# (``EXTRACTOR_VERSION``), which tracks when the derived edge SET changes.
+# rebuild (issue #170): keys are Entity IDs and edges carry the nine-field
+# layout (endpoint, predicate, claim_id, origin, source_path, line_start,
+# line_end, extractor_version, scope), which a version-1 reader could
+# misinterpret. Both version 2 and the nine-field layout were introduced by
+# this unreleased change, so no version-2 artifact with a different edge
+# layout was ever published or cached; the bump keeps stale version-1
+# artifacts rebuilding. Bumped only when the serialized layout changes in a
+# way an older reader could misinterpret. Independent of the link-extractor
+# version (``EXTRACTOR_VERSION``), which tracks when the derived edge SET
+# changes.
 GRAPH_ARTIFACT_VERSION = 2
 
 # The artifact filename inside the configured derived index directory. Sits
@@ -346,5 +350,3 @@ def load_graph_artifact(
     if state.extractor_version != extractor_version:
         return None
     return state
-
-

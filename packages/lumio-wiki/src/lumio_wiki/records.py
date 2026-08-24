@@ -637,6 +637,11 @@ class StructuralGraphReport(msgspec.Struct, frozen=True):
     unresolved_references: tuple[UnresolvedReferenceGroup, ...] = ()
     inbound_orphan_sample_titles: tuple[str, ...] = ()
     outbound_orphan_sample_titles: tuple[str, ...] = ()
+    # Positional Entity-ID disclosure parallel to the orphan title samples
+    # (issue #170): diagnostics identity is Entity-based; titles remain the
+    # human-readable surface.
+    inbound_orphan_sample_entity_ids: tuple[str, ...] = ()
+    outbound_orphan_sample_entity_ids: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------

@@ -512,6 +512,35 @@ def test_extracted_reference_equivalent_to_relationship_dedups_in_traversal():
     assert kb.related_pages("Alpha", scope=GRAPH_SCOPE_DISCOVERY) == ["Beta"]
 
 
+def test_claim_and_reference_coexist_in_discovery_state():
+    # The TRAVERSAL dedup above must not come from edge loss: the discovery
+    # graph STATE retains BOTH edges — the accepted Claim with its identity
+    # and the Extracted Reference with its provenance (issue #170). This is
+    # the non-vacuous assertion behind the traversal-only test above.
+    source = _page(
+        "Alpha",
+        relationships=[Relationship(target="Beta", type="uses")],
+        body="[b](beta.md)\n",
+    )
+    beta = _page("Beta", path="beta.md")
+    kb = _kb([source, beta])
+
+    state = kb.load_or_derive_graph(Path("does-not-exist"))
+    edges = state.outgoing["entity:alpha"]
+    assert len(edges) == 2
+    claim_edge = next(e for e in edges if e.origin == GRAPH_EDGE_ORIGIN_CLAIM)
+    ref_edge = next(e for e in edges if e.origin == GRAPH_EDGE_ORIGIN_EXTRACTED)
+    assert claim_edge.predicate == "uses"
+    assert claim_edge.claim_id == "claim:alpha-beta-0"
+    assert claim_edge.scope == "canonical"
+    assert ref_edge.source_path == "alpha.md"
+    assert ref_edge.line_start == 1 and ref_edge.line_end == 1
+    assert ref_edge.claim_id == "" and ref_edge.predicate == ""
+    assert ref_edge.scope == "discovery"
+    # The incoming mirror carries both edges too.
+    assert len(state.incoming["entity:beta"]) == 2
+
+
 # ---------------------------------------------------------------------------
 # 6. No mutation, no promotion to Relationship.
 # ---------------------------------------------------------------------------

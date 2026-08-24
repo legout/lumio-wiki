@@ -435,9 +435,7 @@ def _v2_payload(outgoing_edge: list[object]) -> dict[str, object]:
 
 def test_valid_claim_edge_decodes():
     # A well-formed 9-field accepted-Claim edge decodes with its scope.
-    state = deserialize_graph(
-        msgpack.packb(_v2_payload(_v2_edge()), use_bin_type=True)
-    )
+    state = deserialize_graph(msgpack.packb(_v2_payload(_v2_edge()), use_bin_type=True))
     assert state is not None
     edge = state.outgoing["entity:alpha"][0]
     assert edge.scope == "canonical"
@@ -484,9 +482,7 @@ def test_extracted_edge_with_canonical_scope_rejected():
 
 
 def test_claim_edge_without_claim_identity_rejected():
-    bad = msgpack.packb(
-        _v2_payload(_v2_edge(claim_id="", predicate="")), use_bin_type=True
-    )
+    bad = msgpack.packb(_v2_payload(_v2_edge(claim_id="", predicate="")), use_bin_type=True)
     assert deserialize_graph(bad) is None
 
 

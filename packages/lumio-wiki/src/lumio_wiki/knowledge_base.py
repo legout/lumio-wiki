@@ -1038,6 +1038,12 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             outbound_orphan_sample_titles=tuple(
                 title_of.get(k, k) for k in outbound_orphans[:max_orphan_sample]
             ),
+            inbound_orphan_sample_entity_ids=tuple(
+                inbound_orphans[:max_orphan_sample]
+            ),
+            outbound_orphan_sample_entity_ids=tuple(
+                outbound_orphans[:max_orphan_sample]
+            ),
         )
 
     def _top_hubs(
@@ -2067,9 +2073,7 @@ class _KnowledgeIndex:
                     scope=GRAPH_EDGE_SCOPE_CANONICAL,
                 )
                 self.adjacency.setdefault(source_key, []).append(edge)
-                self.incoming.setdefault(edge.endpoint, []).append(
-                    edge.reversed(source_key)
-                )
+                self.incoming.setdefault(edge.endpoint, []).append(edge.reversed(source_key))
         # Canonical adjacency is stored pre-sorted so graph traversal
         # iterates canonical edges deterministically without per-node
         # materialization/sorting (ADR-0011, issue #106).
