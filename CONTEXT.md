@@ -156,6 +156,24 @@ provenance, affected pages, and a validation report. Reviewed and approved
 before publish.
 _Avoid_: change set, edit batch.
 
+**Capture**:
+An explicit, consent-only action that turns a current coding-agent session or
+research result into one reviewable Ingest Proposal: an agent-authored
+declarative Compiled Page plus a Capture Manifest, bound to the session
+transcript/export bytes (or the manifest itself when no transcript is bound)
+under an explicit source identity. Preview-first — nothing is registered or
+staged before confirmation — and it never publishes and never runs in the
+background.
+_Avoid_: session recording, background logging, auto-ingest.
+
+**Capture Manifest**:
+The bounded, vendor-neutral YAML record identifying a capture's client,
+project, timestamp range, transcript/export location or SHA-256 digest,
+included artifact names, and explicit redaction labels. Private ingest
+provenance, stored under the ingest store — never published; only the
+reviewed Compiled Page knowledge is.
+_Avoid_: session metadata export, transcript header.
+
 **Page Removal**:
 An explicit, reviewed Ingest Proposal mutation that excludes a Compiled Page
 from the next Published Version and repairs invalid canonical Relationships in

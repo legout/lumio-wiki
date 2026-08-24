@@ -1914,6 +1914,38 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
     store = IngestStore(ingest_dir)
     pipeline = ProposalPipeline(kb, store=store)
 
+    # Two-phase preview-first flow (issue #179 AC2): phase 1 computes and
+    # PRINTS the preview (sections + redaction counts) with nothing
+    # registered or staged; phase 2 — only under an explicit --yes — runs
+    # the same validated inputs again to register and stage. The preview is
+    # always on screen before any registration happens, even when --yes is
+    # given up front.
+    try:
+        preview_outcome = capture_session(
+            pipeline,
+            store,
+            compiled_page_markdown=compiled_page,
+            manifest=manifest,
+            manifest_bytes=manifest_bytes,
+            manifest_path=args.manifest,
+            source_id=args.source_id,
+            transcript_path=args.transcript,
+            confirmed=False,
+        )
+    except CaptureError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+
+    print(format_capture_preview(preview_outcome.preview))
+    print()
+
+    if not args.yes:
+        print("Preview only — nothing registered or staged.")
+        print(
+            "Re-run with --yes to register the capture source and stage the "
+            "proposal for review."
+        )
+        return 0
+
     try:
         outcome = capture_session(
             pipeline,
@@ -1924,21 +1956,15 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
             manifest_path=args.manifest,
             source_id=args.source_id,
             transcript_path=args.transcript,
-            confirmed=args.yes,
+            confirmed=True,
         )
     except CaptureError as exc:
         raise CliError(str(exc), exit_code=1) from exc
 
     print(format_capture_preview(outcome.preview))
-    print()
-    if outcome.proposal is None:
-        print("Preview only — nothing registered or staged.")
-        print(
-            "Re-run with --yes to register the capture source and stage the "
-            "proposal for review."
-        )
-        return 0
     proposal = outcome.proposal
+    if proposal is None:  # defensive: confirmed=True always stages or raises
+        raise CliError("capture confirmation did not stage a proposal", exit_code=1)
     print(f"Staged proposal {proposal.id}")
     print(f"  status:         {proposal.status}")
     print(f"  source_id:      {proposal.provenance.source_id}")

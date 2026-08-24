@@ -239,10 +239,14 @@ def test_session_page_with_chat_turns_is_refused(tmp_path: Path):
         )
 
 
-def test_two_turn_mentions_do_not_trigger_refusal():
-    # Below the 3-turn threshold: quoting one exchange inside declarative
-    # knowledge is legitimate.
-    assert len(detect_raw_transcript("assistant: said it works\nuser: ok")) < 3
+def test_single_turn_mention_does_not_trigger_refusal():
+    # One quoted turn inside declarative knowledge is legitimate; two or
+    # more bare chat-turn lines is transcript-shaped and refused.
+    assert len(detect_raw_transcript("assistant: said it works")) < 2
+
+
+def test_two_turn_page_is_refused_as_raw_transcript():
+    assert len(detect_raw_transcript("user: hi\nassistant: hello")) >= 2
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +409,7 @@ def test_secrets_never_reach_proposal_or_capture_record(tmp_path: Path):
     )
 
     proposal = outcome.proposal
+    assert proposal is not None
     markdown = proposal.proposed_pages[0].markdown
     assert "sk-ant-998877665544332211" not in markdown
     assert "X-Amz-Signature" not in markdown
@@ -512,6 +517,7 @@ def test_manual_manifest_without_transcript_registers_manifest_record(tmp_path: 
         confirmed=True,
     )
 
+    assert outcome.proposal is not None
     assert outcome.proposal.provenance.original_filename == "manual.yaml"
     assert outcome.proposal.provenance.content_type == "application/yaml"
 
@@ -558,6 +564,7 @@ def test_digest_only_manifest_reports_limitation_and_registers_manifest(tmp_path
     )
 
     assert any("digest only" in w for w in outcome.preview.warnings)
+    assert outcome.proposal is not None
     assert outcome.proposal.provenance.original_filename == manifest_path.name
 
 
@@ -724,9 +731,55 @@ def test_cli_yes_stages_reviewable_proposal(tmp_path: Path):
     assert code == 0
     assert "Staged proposal" in out
     assert "affected_pages: Session Findings" in out
+    # Preview prints BEFORE staging (issue #179 AC2 + Spec review): the
+    # sections list is on screen before any "Staged proposal" line, even
+    # when --yes is given up front.
+    assert out.index("sections:") < out.index("Staged proposal")
+    assert out.index("redactions applied:") < out.index("Staged proposal")
     store = IngestStore(kb_root / ".lumio" / "ingest")
     assert [s.source_id for s in store.source_registry.list()] == ["session-cli-yes"]
     assert len(store._cache) == 0  # proposals persist on disk, not in memory
+
+
+def test_cli_manifest_secret_fields_are_redacted_in_output(tmp_path: Path):
+    kb_root = tmp_path / "kb"
+    shutil.copytree(FIXTURES / "valid", kb_root)
+    page = tmp_path / "page.md"
+    page.write_text(_page("session-cli-mf-secret"))
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "client: pi\n"
+        "project: sk-ant-0123456789abcdef0123-leaked\n"
+        'started_at: "2026-08-24T09:00:00Z"\n'
+        "transcript: session.jsonl\n"
+        "artifacts: []\n"
+        "redactions: []\n"
+    )
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text('{"role":"user","text":"hi"}\n')
+
+    code, out = _run_cli(
+        tmp_path,
+        "capture",
+        "session",
+        kb_root,
+        "--compiled-page",
+        page,
+        "--manifest",
+        manifest,
+        "--source-id",
+        "session-cli-mf-secret",
+        "--transcript",
+        transcript,
+        "--yes",
+    )
+
+    assert code == 0
+    assert "sk-ant-" not in out
+    assert "[REDACTED]" in out
+    # The private capture record is redacted too.
+    record = (kb_root / ".lumio" / "ingest" / "captures" / "session-cli-mf-secret.json").read_text()
+    assert "sk-ant-" not in record
 
 
 def test_cli_secret_in_page_is_redacted_in_output(tmp_path: Path):

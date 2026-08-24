@@ -127,7 +127,7 @@ _TRANSCRIPT_TURN = re.compile(
     r"(?im)^[ \t]*(?:<\|(?:im_start|im_end)\|>"
     r"|user|human|assistant|system|claude|codex|gemini|gpt)\s*[:|>]"
 )
-_RAW_TRANSCRIPT_THRESHOLD = 3
+_RAW_TRANSCRIPT_THRESHOLD = 2
 
 _DIGEST_REFERENCE = re.compile(r"^sha256:([0-9a-f]{64})$")
 
@@ -429,6 +429,47 @@ def _write_capture_record(
     )
 
 
+def _redact_manifest(
+    manifest: CaptureManifest,
+) -> tuple[CaptureManifest, dict[str, int]]:
+    """Apply the redaction safety net to manifest field VALUES (issue #179).
+
+    Secrets never enter manifests, logs, or output: free-text manifest
+    values (project, transcript label, artifact names, redaction labels)
+    are redacted before they are persisted to the private capture record or
+    rendered in the preview. Structurally validated fields (client label,
+    ISO timestamps) need no redaction — they cannot carry secret shapes.
+    """
+
+    def red(value: str | None) -> str | None:
+        if value is None:
+            return None
+        return redact_capture_text(value)[0]
+
+    def red_str(value: str) -> str:
+        return redact_capture_text(value)[0]
+
+    counts: dict[str, int] = {}
+    for value in (manifest.project, manifest.transcript, *manifest.artifacts, *manifest.redactions):
+        _merged_counts(counts, redact_capture_text(value or "")[1])
+    safe = CaptureManifest(
+        client=manifest.client,
+        project=red(manifest.project),
+        started_at=manifest.started_at,
+        ended_at=manifest.ended_at,
+        transcript=red(manifest.transcript),
+        artifacts=[red_str(a) for a in manifest.artifacts],
+        redactions=[red_str(r) for r in manifest.redactions],
+    )
+    return safe, counts
+
+
+def _merged_counts(target: dict[str, int], extra: dict[str, int]) -> dict[str, int]:
+    for category, count in extra.items():
+        target[category] = target.get(category, 0) + count
+    return target
+
+
 def capture_session(
     pipeline,
     store,
@@ -446,7 +487,8 @@ def capture_session(
     With ``confirmed=False`` nothing is registered and nothing is staged:
     the returned outcome carries only the preview (included sections and
     redaction counts) for explicit confirmation. With ``confirmed=True`` the
-    original capture source bytes are registered under ``source_id`` and the
+    REDACTED capture source bytes (transcript, or the manifest itself when
+    no transcript is bound) are registered under ``source_id`` and the
     redacted Compiled Page is staged as a single reviewable proposal through
     the managed host-Distiller contract. Never publishes.
     """
@@ -456,9 +498,15 @@ def capture_session(
     if transcript_path is not None:
         transcript_path = Path(transcript_path)
 
-    # 1. Redaction safety net over the page BEFORE anything is registered or
-    #    staged: secrets and hidden reasoning never reach the proposal.
+    # 1. Redaction safety net over the page and the manifest field values
+    #    BEFORE anything is registered or staged: secrets and hidden
+    #    reasoning never reach the proposal, the capture record, or output.
+    #    ``safe_manifest`` is what gets persisted and printed; the original
+    #    manifest is used ONLY to resolve the transcript path (a path is
+    #    resolved from where the file actually is, then redacted in display).
     redacted_markdown, redaction_counts = redact_capture_text(compiled_page_markdown)
+    safe_manifest, manifest_counts = _redact_manifest(manifest)
+    _merged_counts(redaction_counts, manifest_counts)
 
     # 2. Raw transcripts are refused: capture is declarative knowledge.
     turns = detect_raw_transcript(redacted_markdown)
@@ -470,10 +518,11 @@ def capture_session(
             "transcript (issue #179)"
         )
 
-    # 3. Resolve the original capture source bytes (transcript, or the
-    #    manifest itself as the private record). Reports limitations; never
-    #    fabricates a transcript.
-    raw_bytes, transcript_digest, filename, content_type, transcript_warnings = (
+    # 3. Resolve the capture source bytes (transcript, or the manifest
+    #    itself as the private record). Reports limitations; never fabricates
+    #    a transcript. The returned bytes are REDACTED transcript bytes; the
+    #    registry hash and provenance cover exactly what is registered.
+    capture_source_bytes, transcript_digest, filename, content_type, transcript_warnings = (
         _resolve_transcript_bytes(
             manifest, manifest_path, manifest_bytes, transcript_path
         )
@@ -486,15 +535,15 @@ def capture_session(
     except ValueError as exc:  # ManagedIngestError: one capture contract error
         raise CaptureError(str(exc)) from exc
 
-    # 5. Preview. Without confirmation this is the end of the flow: no
-    #    registration, no staging, no capture record.
+    # 5. Preview (over the redacted manifest). Without confirmation this is
+    #    the end of the flow: no registration, no staging, no capture record.
     preview = build_capture_preview(
-        client=manifest.client,
-        project=manifest.project,
+        client=safe_manifest.client,
+        project=safe_manifest.project,
         source_id=source_id,
         redacted_markdown=redacted_markdown,
         redaction_counts=redaction_counts,
-        manifest=manifest,
+        manifest=safe_manifest,
         transcript_digest=transcript_digest,
         warnings=transcript_warnings,
     )
@@ -503,13 +552,13 @@ def capture_session(
 
     # 6. Confirmed: register + stage through the ONE managed contract.
     proposal = pipeline.managed_ingest(
-        raw_bytes,
+        capture_source_bytes,
         content_type,
         filename,
         source_id,
         redacted_markdown,
     )
-    _write_capture_record(store, source_id, manifest, transcript_digest)
+    _write_capture_record(store, source_id, safe_manifest, transcript_digest)
     return CaptureOutcome(preview=preview, proposal=proposal)
 
 
