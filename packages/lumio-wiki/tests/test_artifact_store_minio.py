@@ -25,8 +25,8 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 
-import msgspec
-import pytest
+import msgspec  # type: ignore[import-not-found]
+import pytest  # type: ignore[import-not-found]
 from lumio_wiki.artifact_store import (
     S3ArtifactStore,
     SourceBindingEntry,

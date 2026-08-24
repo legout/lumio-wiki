@@ -45,6 +45,10 @@ SOURCE_MATCH_PATH = "path"
 #: Bounded suggestion surface (issue #176: never dump unbounded registries).
 MAX_SUGGESTIONS = 8
 
+#: Bounded ambiguity surface (issue #176: a page may declare arbitrarily
+#: many sources; the candidate set is capped with a truthful truncation note).
+MAX_CANDIDATES = 8
+
 
 @dataclass(frozen=True)
 class SourceIdentity:
@@ -170,10 +174,27 @@ def _by_page_identity(pages: list[CompiledPage], query: str, known_ids) -> Sourc
                     "Knowledge Source or Published Version binding"
                 ),
             )
+        # Bounded ambiguity (issue #176): a page may declare arbitrarily many
+        # sources, so the candidate set is capped with a truthful truncation
+        # note — never an unbounded dump.
+        ordered: list[tuple[str, CompiledPage]] = []
+        seen: set[str] = set()
+        for source_id, page in declared:
+            if source_id not in seen:
+                seen.add(source_id)
+                ordered.append((source_id, page))
+        truncated_count = max(len(ordered) - MAX_CANDIDATES, 0)
+        note = (
+            f"{truncated_count} more declared source id(s) not shown — inspect "
+            "the matched page's sources frontmatter for the complete set"
+            if truncated_count
+            else ""
+        )
         return SourceResolution(
             outcome=OUTCOME_AMBIGUOUS,
             matched_by=matched_by,
-            candidates=[_identity(source_id, page) for source_id, page in declared],
+            candidates=[_identity(source_id, page) for source_id, page in ordered[:MAX_CANDIDATES]],
+            note=note,
         )
 
     def lookup(
@@ -232,36 +253,15 @@ def resolve_source(
         )
     result = _by_page_identity(pages, key, known)
     if result.outcome != OUTCOME_UNKNOWN:
-        # An exact page surface (title/alias/path/entity) is deterministic and
-        # outranks the display-form fallback below.
+        # An exact page surface (entity id/title/alias/path) is deterministic.
         return result
-    # A title-shaped query that normalizes to exactly one registered id is
-    # that Source's identity in display form ("Atlas Heatworks Product
-    # Catalog" ≡ ``atlas-heatworks-product-catalog``) — deterministic, never
-    # a guess. Colliding normalizations are a truthful ambiguity.
-    normalized_matches = sorted(
-        source_id for source_id in known if _normalize(source_id) == _normalize(key)
-    )
-    if len(normalized_matches) == 1:
+    # Bounded close-id suggestions for the discovery error (issue #176):
+    # the exact registered id or nothing — never an unbounded registry.
+    suggestions = suggest_source_ids(known, key)
+    if suggestions:
         return SourceResolution(
-            outcome=OUTCOME_RESOLVED,
-            source_id=normalized_matches[0],
-            matched_by=SOURCE_MATCH_SOURCE_ID,
+            outcome=OUTCOME_UNKNOWN,
+            suggestions=suggestions,
+            note=result.note,
         )
-    if len(normalized_matches) > 1:
-        return SourceResolution(
-            outcome=OUTCOME_AMBIGUOUS,
-            matched_by=SOURCE_MATCH_SOURCE_ID,
-            candidates=[SourceIdentity(source_id=sid) for sid in normalized_matches],
-        )
-    if not result.suggestions:
-        # Bounded close-id suggestions for the discovery error (issue #176):
-        # the exact registered id or nothing — never an unbounded registry.
-        suggestions = suggest_source_ids(known, key)
-        if suggestions:
-            return SourceResolution(
-                outcome=OUTCOME_UNKNOWN,
-                suggestions=suggestions,
-                note=result.note,
-            )
     return result

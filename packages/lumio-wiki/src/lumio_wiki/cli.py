@@ -3203,7 +3203,10 @@ def _cmd_source_link(args: argparse.Namespace) -> int:
 
 def _cmd_source_resolve(args: argparse.Namespace) -> int:
     """Resolve one query to a registered Knowledge Source identity (#176)."""
-    kb, _report = _load_kb(args.path)
+    # _open_read_kb handles BOTH a local worktree and an S3 Location URI
+    # (the active Published Version's pages) — page-identity resolution must
+    # work on a reader's S3 KB too, not just a local filesystem path.
+    kb = _open_read_kb(args.path)
     version = getattr(args, "published_version", None)
     if version is None and _is_object_store_uri(str(args.path)):
         version = _active_published_version(str(args.path))
@@ -3328,23 +3331,25 @@ def _report_unresolved_source(args: argparse.Namespace, resolution: SourceResolu
         lines.append("ambiguous Source reference — no guess is made; candidates:")
         for candidate in resolution.candidates:
             lines.append(f"  {candidate.source_id} ({candidate.page_title}, {candidate.page_path})")
+        if resolution.note:
+            lines.append(resolution.note)
         lines.append(
-            "disambiguate with 'lumio-wiki source inspect --source-id <id>' or "
-            "resolve a narrower page title/alias/path with 'lumio-wiki source "
-            "resolve <kb> \"<query>\"'"
+            "disambiguate with 'lumio-wiki source inspect --source-id <id>'"
         )
     else:
         lines.append("no Knowledge Source resolved for this query")
         if resolution.note:
             lines.append(resolution.note)
         if resolution.suggestions:
-            lines.append("close Knowledge Source ids: " + ", ".join(resolution.suggestions))
+            # Issue #176: the bounded close-id set IS the pointer —
+            # never both the ids and a discovery command.
+            lines.append(
+                "close Knowledge Source ids: " + ", ".join(resolution.suggestions)
+            )
         else:
-            lines.append("discover registered ids with 'lumio-wiki source list <kb>'")
-        lines.append(
-            "resolve a page title/alias/path with 'lumio-wiki source resolve "
-            "<kb> \"<query>\"'"
-        )
+            lines.append(
+                "discover registered ids with 'lumio-wiki source list <kb>'"
+            )
     raise CliError("\n".join(lines), exit_code=1)
 
 

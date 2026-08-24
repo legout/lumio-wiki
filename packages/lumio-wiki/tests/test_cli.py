@@ -2976,21 +2976,22 @@ def test_source_resolve_unknown_query_points_to_close_ids_or_command(
     assert _register_policy(source_kb, source_file) == 0
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
 
-    # A title-shaped query for an unregistered source: bounded suggestions
-    # carry the close registered id — never the raw query back.
+    # A title-shaped query for an unregistered source: the bounded close-id
+    # set IS the pointer (issue #176: ids OR one command — never both, never
+    # the raw query back).
     rc = main(["source", "resolve", str(source_kb), "Policy Knowledge SourceX"])
     assert rc == 1
     err = capsys.readouterr().err
-    assert "policy" in err
-    assert "source list" in err or "source resolve" in err
+    assert "close Knowledge Source ids: policy" in err
     assert "Policy Knowledge SourceX" not in err
 
-    # A query with nothing close points at the exact discovery command only.
+    # A query with nothing close points at exactly ONE discovery command.
     rc = main(["source", "resolve", str(source_kb), "something-unrelated"])
     assert rc == 1
     err = capsys.readouterr().err
     assert "no Knowledge Source resolved" in err
     assert "source list" in err
+    assert "source resolve" not in err
 
 
 def test_source_resolve_ambiguous_page_lists_bounded_candidates(
@@ -3020,21 +3021,23 @@ def test_source_resolve_ambiguous_page_lists_bounded_candidates(
     }
 
 
-def test_source_resolve_title_shaped_query_finds_registered_id(
+def test_source_resolve_title_shaped_query_without_page_yields_bounded_hint(
     source_kb: Path, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The reader-trial AC: a title-ish unknown id resolves to the exact id."""
+    """The reader-trial AC (#176): a failed lookup points at the exact id."""
     ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
     ingest.source_registry.register_source(
         "atlas-heatworks-product-catalog", b"atlas bytes", filename="atlas.pdf"
     )
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
 
-    assert (
-        main(["source", "resolve", str(source_kb), "Atlas Heatworks Product Catalog"]) == 0
-    )
-    out = capsys.readouterr().out
-    assert "source_id:       atlas-heatworks-product-catalog" in out
+    # No page carries this title: resolution is by exact surfaces only (no
+    # fuzzy id matching), but the unknown outcome's bounded hint names the
+    # exact registered id (the reader-trial contract).
+    rc = main(["source", "resolve", str(source_kb), "Atlas Heatworks Product Catalog"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "close Knowledge Source ids: atlas-heatworks-product-catalog" in err
 
 
 def test_source_resolve_published_version_resolves_manifest_binding(
@@ -3092,20 +3095,20 @@ def test_source_inspect_unknown_id_error_names_close_id_and_command(
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
 
     # A title-shaped --source-id (the reader-trial failure shape): the error
-    # names the close registered id and the exact discovery command.
+    # names the close registered id (the bounded set is the pointer).
     rc = main(
         ["source", "inspect", str(source_kb), "--source-id", "Atlas Catalog Wrong"]
     )
     assert rc == 1
     err = capsys.readouterr().err
     assert "atlas-heatworks-product-catalog" in err
-    assert "source resolve" in err
-    # An invalid/possibly secret-bearing id is never echoed back.
+    # An invalid/possibly secret-bearing id is never echoed back; nothing is
+    # close, so exactly ONE discovery command is named.
     rc = main(["source", "inspect", str(source_kb), "--source-id", "token=abc"])
     assert rc == 1
     err = capsys.readouterr().err
     assert "token=abc" not in err
-    assert "source resolve" in err or "source list" in err
+    assert "source list" in err
 
 
 def test_source_fetch_unavailable_artifact_error_explains_retention_step(
@@ -3129,3 +3132,4 @@ def test_source_fetch_unavailable_artifact_error_explains_retention_step(
     assert "without artifact retention" in err
     assert "managed ingest" in err
     assert not out_file.exists()
+

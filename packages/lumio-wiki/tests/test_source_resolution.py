@@ -168,6 +168,19 @@ def test_resolve_partially_registered_multi_source_page_stays_ambiguous():
     }
 
 
+def test_resolve_ambiguity_is_bounded_with_truthful_truncation_note():
+    # Issue #176: a page may declare arbitrarily many sources; the candidate
+    # set is capped and the truncation is disclosed — never an unbounded dump.
+    from lumio_wiki.source_resolution import MAX_CANDIDATES
+
+    many = [f"src-{i}" for i in range(MAX_CANDIDATES + 5)]
+    pages = [_page("Wide", "wide.md", many)]
+    result = resolve_source(pages, set(many), "Wide")
+    assert result.outcome == OUTCOME_AMBIGUOUS
+    assert len(result.candidates) == MAX_CANDIDATES
+    assert "5 more declared source id(s) not shown" in result.note
+
+
 def test_resolve_shared_alias_is_ambiguous():
     pages = [
         _page("One", "one.md", ["one-src"], aliases=["Nickname"]),
