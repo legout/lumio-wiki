@@ -36,6 +36,7 @@ import hashlib
 import http.client
 import socket
 import ssl
+import time
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
@@ -235,9 +236,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self._pinned_context = context
 
     def connect(self) -> None:  # pragma: no cover - exercised via local servers
-        raw = socket.create_connection(
-            (self._pinned_address, self.port), timeout=self.timeout
-        )
+        raw = socket.create_connection((self._pinned_address, self.port), timeout=self.timeout)
         self.sock = self._pinned_context.wrap_socket(raw, server_hostname=self._sni_host)
 
 
@@ -245,8 +244,13 @@ def _request_once(
     parsed: urllib.parse.ParseResult,
     address: str,
     policy: UrlFetchPolicy,
-) -> http.client.HTTPResponse:
-    """Issue ONE GET over a connection pinned to the validated address."""
+) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
+    """Issue ONE GET over a connection pinned to the validated address.
+
+    Returns the connection alongside the response so the caller can keep
+    shrinking the socket timeout against the per-hop deadline while reading
+    the body (a trickling peer cannot outlast the deadline).
+    """
     if parsed.scheme == "https":
         conn: http.client.HTTPConnection = _PinnedHTTPSConnection(
             address,
@@ -259,9 +263,7 @@ def _request_once(
         conn = http.client.HTTPConnection(
             address, port=parsed.port or 80, timeout=policy.timeout_seconds
         )
-    target = urllib.parse.urlunparse(
-        parsed._replace(scheme="", netloc="")
-    ) or "/"
+    target = urllib.parse.urlunparse(parsed._replace(scheme="", netloc="")) or "/"
     try:
         conn.request(
             "GET",
@@ -272,7 +274,7 @@ def _request_once(
                 "Accept": "*/*",
             },
         )
-        return conn.getresponse()
+        return conn, conn.getresponse()
     except Exception:
         conn.close()
         raise
@@ -295,34 +297,40 @@ def fetch_url(url: str, policy: UrlFetchPolicy | None = None) -> UrlFetchResult:
         _validate_no_credentials(parsed)
         if not parsed.hostname:
             raise UrlFetchError("URL has no host")
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError as exc:
+            # ``parsed.port`` raises for malformed/out-of-range ports.
+            raise UrlFetchError(f"invalid URL port: {exc}") from exc
         addresses = _resolve_addresses(parsed.hostname, port)
         if not addresses:
             raise UrlFetchError(f"host {parsed.hostname!r} resolved to no addresses")
         if not policy.allow_private_destinations:
             _reject_private_addresses(addresses)
 
+        # Per-hop END-TO-END deadline: connect, headers, and body must all
+        # complete within one timeout window, so a trickling peer cannot
+        # outlast per-read timeouts (spec: "bounded bytes/time/redirects").
+        deadline = time.monotonic() + policy.timeout_seconds
+        conn: http.client.HTTPConnection | None = None
         response: http.client.HTTPResponse | None = None
         try:
             for address in addresses:
                 try:
-                    response = _request_once(parsed, address, policy)
+                    conn, response = _request_once(parsed, address, policy)
                     break
                 except OSError:
+                    conn = None
                     continue  # try the next resolved address
-            if response is None:
+            if response is None or conn is None:
                 raise UrlFetchError(f"failed connecting to {parsed.hostname!r}")
             status = response.status
             if 300 <= status < 400:
                 location = response.headers.get("Location")
                 if not location:
-                    raise UrlFetchError(
-                        f"redirect status {status} without a Location header"
-                    )
+                    raise UrlFetchError(f"redirect status {status} without a Location header")
                 if redirects >= policy.max_redirects:
-                    raise UrlFetchError(
-                        f"exceeded {policy.max_redirects} redirects fetching {url}"
-                    )
+                    raise UrlFetchError(f"exceeded {policy.max_redirects} redirects fetching {url}")
                 current = urllib.parse.urljoin(current, location)
                 redirects += 1
                 continue
@@ -350,14 +358,22 @@ def fetch_url(url: str, policy: UrlFetchPolicy | None = None) -> UrlFetchResult:
             chunks: list[bytes] = []
             size = 0
             while True:
-                chunk = response.read(64 * 1024)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise UrlFetchError(
+                        f"exceeded the {policy.timeout_seconds}s deadline fetching {current}"
+                    )
+                if conn.sock is not None:
+                    # read1 performs at most ONE raw socket read, so bounding
+                    # the socket timeout here bounds the whole body by the
+                    # deadline — not by per-read timeouts.
+                    conn.sock.settimeout(remaining)
+                chunk = response.read1(64 * 1024)
                 if not chunk:
                     break
                 size += len(chunk)
                 if size > policy.max_bytes:
-                    raise UrlFetchError(
-                        f"response exceeds the {policy.max_bytes}-byte limit"
-                    )
+                    raise UrlFetchError(f"response exceeds the {policy.max_bytes}-byte limit")
                 chunks.append(chunk)
             body = b"".join(chunks)
             return UrlFetchResult(
@@ -370,6 +386,12 @@ def fetch_url(url: str, policy: UrlFetchPolicy | None = None) -> UrlFetchResult:
                 retrieved_at=datetime.now(UTC).isoformat(),
                 redirects=redirects,
             )
+        except OSError as exc:
+            # socket.timeout is a TimeoutError subclass; either way the hop
+            # failed within the bounded window.
+            raise UrlFetchError(f"failed fetching {current}: {exc}") from exc
         finally:
             if response is not None:
                 response.close()
+            if conn is not None:
+                conn.close()

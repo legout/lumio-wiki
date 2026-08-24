@@ -90,9 +90,7 @@ def test_fetch_url_rejects_urls_without_host():
     ],
 )
 def test_fetch_url_rejects_private_and_loopback_destinations(address, monkeypatch):
-    monkeypatch.setattr(
-        "lumio_wiki.url_fetch._resolve_addresses", lambda host, port: [address]
-    )
+    monkeypatch.setattr("lumio_wiki.url_fetch._resolve_addresses", lambda host, port: [address])
     with pytest.raises(UrlFetchError, match="private"):
         fetch_url("https://example.com/page", UrlFetchPolicy())
 
@@ -109,9 +107,7 @@ def test_fetch_url_rejects_when_any_resolved_address_is_private(monkeypatch):
 
 
 def test_fetch_url_allows_private_destinations_only_with_explicit_policy(monkeypatch):
-    monkeypatch.setattr(
-        "lumio_wiki.url_fetch._resolve_addresses", lambda host, port: ["127.0.0.1"]
-    )
+    monkeypatch.setattr("lumio_wiki.url_fetch._resolve_addresses", lambda host, port: ["127.0.0.1"])
     policy = UrlFetchPolicy(allow_private_destinations=True, allow_http=True)
     # A connection attempted against a non-listening port still proves the
     # policy gate passed: the failure is a connection failure, not a policy
@@ -227,12 +223,8 @@ def test_fetch_url_rejects_redirect_to_disallowed_scheme(local_server):
 
 
 def test_fetch_url_enforces_redirect_budget(local_server, monkeypatch):
-    monkeypatch.setattr(
-        "lumio_wiki.url_fetch.DEFAULT_MAX_REDIRECTS", DEFAULT_MAX_REDIRECTS
-    )
-    policy = UrlFetchPolicy(
-        allow_http=True, allow_private_destinations=True, max_redirects=0
-    )
+    monkeypatch.setattr("lumio_wiki.url_fetch.DEFAULT_MAX_REDIRECTS", DEFAULT_MAX_REDIRECTS)
+    policy = UrlFetchPolicy(allow_http=True, allow_private_destinations=True, max_redirects=0)
     with pytest.raises(UrlFetchError, match="redirect"):
         fetch_url(f"{local_server}/moved", policy)
 
@@ -487,8 +479,7 @@ def test_ingest_url_publishes_through_ordinary_pipeline(
     assert lw.validate(kb_root).is_valid
     # The published page is the AUTHORED Markdown, not fetched content.
     assert any(
-        "Agent-authored synthesis" in p.read_text(encoding="utf-8")
-        for p in kb_root.rglob("*.md")
+        "Agent-authored synthesis" in p.read_text(encoding="utf-8") for p in kb_root.rglob("*.md")
     )
 
 
@@ -514,9 +505,7 @@ def test_ingest_url_respects_max_bytes_flag(kb_root: Path, tmp_path: Path, local
     assert store.list() == []
 
 
-def test_proposal_inspect_shows_url_provenance(
-    kb_root: Path, tmp_path: Path, local_server, capsys
-):
+def test_proposal_inspect_shows_url_provenance(kb_root: Path, tmp_path: Path, local_server, capsys):
     page = _write_page(tmp_path, "example-page")
     assert (
         main(
@@ -613,9 +602,7 @@ def test_ingest_research_stages_report_with_consulted_provenance(
     assert "Research Notes Q3" in proposal.proposed_pages[0].markdown
 
 
-def test_ingest_research_publishes_through_ordinary_pipeline(
-    kb_root: Path, tmp_path: Path, capsys
-):
+def test_ingest_research_publishes_through_ordinary_pipeline(kb_root: Path, tmp_path: Path, capsys):
     report, manifest = _write_research(tmp_path)
     assert (
         main(
@@ -644,7 +631,7 @@ def test_ingest_research_publishes_through_ordinary_pipeline(
         "[]",  # no consulted sources recorded
         "- url: ftp://example.com/a\n  accessed_at: 2026-07-01T10:00:00+00:00\n",
         "- url: https://user:pass@example.com/a\n  accessed_at: 2026-07-01T10:00:00+00:00\n",
-        "- url: https://example.com/a\n  title: \"x\"\n  accessed_at: not-a-date\n",
+        '- url: https://example.com/a\n  title: "x"\n  accessed_at: not-a-date\n',
         "not: a: list\n",
     ],
 )
@@ -709,3 +696,72 @@ def test_proposal_inspect_lists_consulted_sources(kb_root: Path, tmp_path: Path,
     out = capsys.readouterr().out
     assert "https://example.com/a" in out
     assert "2026-07-01T10:00:00+00:00" in out
+
+
+# ---------------------------------------------------------------------------
+# Spec-review regression tests (issue #178): manifest completeness, malformed
+# URLs, and both-missing flags must fail closed with actionable errors.
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_url_malformed_port_fails_with_actionable_error(
+    kb_root: Path, tmp_path: Path, capsys
+):
+    page = _write_page(tmp_path, "example-page")
+    rc = main(
+        [
+            "ingest-url",
+            str(kb_root),
+            "https://example.com:not-a-port/page",
+            "--compiled-page",
+            str(page),
+            "--source-id",
+            "example-page",
+        ]
+    )
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "error:" in err  # actionable CliError, not a raw traceback
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    "manifest_text",
+    [
+        # title missing
+        "- url: https://example.com/a\n  accessed_at: 2026-07-01T10:00:00+00:00\n",
+        # accessed_at missing
+        '- url: https://example.com/a\n  title: "A"\n',
+        # no host
+        '- url: https:///path\n  title: "A"\n  accessed_at: 2026-07-01T10:00:00+00:00\n',
+    ],
+)
+def test_ingest_research_requires_complete_manifest_entries(
+    kb_root: Path, tmp_path: Path, manifest_text
+):
+    report, manifest = _write_research(tmp_path)
+    manifest.write_text(manifest_text, encoding="utf-8")
+    rc = main(
+        [
+            "ingest-research",
+            str(kb_root),
+            str(report),
+            "--manifest",
+            str(manifest),
+            "--source-id",
+            "research-q3",
+        ]
+    )
+    assert rc != 0
+    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
+    assert store.list() == []
+
+
+def test_ingest_url_with_neither_flag_fails_with_actionable_error(
+    kb_root: Path, tmp_path: Path, capsys
+):
+    rc = main(["ingest-url", str(kb_root), "https://example.com/page"])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "--compiled-page and --source-id are required together" in err
+    assert "Traceback" not in err

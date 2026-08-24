@@ -490,10 +490,15 @@ def test_minio_cli_source_link_downloads_same_digest_and_fetch_is_byte_exact(
 
     rc = main(
         [
-            "source", "link", str(kb),
-            "--source-id", "minio-report",
-            "--published-version", "v165",
-            "--expires", "30s",
+            "source",
+            "link",
+            str(kb),
+            "--source-id",
+            "minio-report",
+            "--published-version",
+            "v165",
+            "--expires",
+            "30s",
         ]
     )
     assert rc == 0
@@ -510,14 +515,18 @@ def test_minio_cli_source_link_downloads_same_digest_and_fetch_is_byte_exact(
     with pytest.raises(urllib.error.HTTPError):
         urllib.request.urlopen(url.replace(digest, "0" * 64), timeout=10)
 
-
     out_file = tmp_path / "fetched.pdf"
     rc = main(
         [
-            "source", "fetch", str(kb),
-            "--source-id", "minio-report",
-            "--published-version", "v165",
-            "--output", str(out_file),
+            "source",
+            "fetch",
+            str(kb),
+            "--source-id",
+            "minio-report",
+            "--published-version",
+            "v165",
+            "--output",
+            str(out_file),
         ]
     )
     assert rc == 0
@@ -542,9 +551,13 @@ def test_minio_cli_unauthorized_credentials_get_distinct_access_denied(
 
     for command in ("inspect", "fetch", "link"):
         argv = [
-            "source", command, str(kb),
-            "--source-id", "minio-report",
-            "--published-version", "v165",
+            "source",
+            command,
+            str(kb),
+            "--source-id",
+            "minio-report",
+            "--published-version",
+            "v165",
         ]
         if command == "fetch":
             argv += ["--output", str(tmp_path / "out.pdf")]
@@ -555,9 +568,7 @@ def test_minio_cli_unauthorized_credentials_get_distinct_access_denied(
         assert artifact_prefix not in err
 
 
-def test_minio_cli_source_resolve_identity_and_denial(
-    tmp_path, prefixes, monkeypatch, capsys
-):
+def test_minio_cli_source_resolve_identity_and_denial(tmp_path, prefixes, monkeypatch, capsys):
     """`source resolve` over a real S3 binding manifest (issue #176).
 
     Authorized: a page-title query resolves to the bound Source identity
@@ -575,7 +586,7 @@ def test_minio_cli_source_resolve_identity_and_denial(
         "---\n"
         'title: "MinIO Artifact Page"\n'
         "aliases: []\n"
-        'tags: []\n'
+        "tags: []\n"
         'summary: "Authored from the minio-report Knowledge Source."\n'
         'lifecycle: "approved"\n'
         'visibility: "internal"\n'
@@ -592,9 +603,12 @@ def test_minio_cli_source_resolve_identity_and_denial(
     # Authorized: resolve by page title through the v165 binding manifest.
     rc = main(
         [
-            "source", "resolve", str(kb),
+            "source",
+            "resolve",
+            str(kb),
             "MinIO Artifact Page",
-            "--published-version", "v165",
+            "--published-version",
+            "v165",
         ]
     )
     assert rc == 0
@@ -609,9 +623,12 @@ def test_minio_cli_source_resolve_identity_and_denial(
     assert (
         main(
             [
-                "source", "resolve", str(kb),
+                "source",
+                "resolve",
+                str(kb),
                 "minio-report",
-                "--published-version", "v165",
+                "--published-version",
+                "v165",
                 "--json",
             ]
         )
@@ -628,9 +645,12 @@ def test_minio_cli_source_resolve_identity_and_denial(
     monkeypatch.setenv("LUMIO_S3_SECRET_ACCESS_KEY", "wrong-secret-on-purpose")
     rc = main(
         [
-            "source", "resolve", str(kb),
+            "source",
+            "resolve",
+            str(kb),
             "MinIO Artifact Page",
-            "--published-version", "v165",
+            "--published-version",
+            "v165",
         ]
     )
     assert rc == 1

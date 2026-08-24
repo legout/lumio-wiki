@@ -1021,7 +1021,10 @@ def test_isolated_retrieval_ladder(isolated_wheel_env: dict, tmp_path: Path):
         "--trace",
     )
     # Stable Entity IDs ride along for machine consumers (issue #172).
-    assert "Lumio Overview (entity:lumio-overview) -> Architecture (entity:architecture) -> Technology Stack (entity:technology-stack)" in paths
+    assert (
+        "Lumio Overview (entity:lumio-overview) -> Architecture (entity:architecture) -> Technology Stack (entity:technology-stack)"
+        in paths
+    )
     assert "# trace:" in paths and "found=true" in paths and "hops=2" in paths
 
     index_dir = default_index_dir(kb)

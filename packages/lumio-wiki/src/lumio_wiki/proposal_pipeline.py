@@ -158,9 +158,7 @@ def _retarget_claim_objects(data: dict, from_id: str, to_id: str) -> bool:
     return changed
 
 
-def _classify_retired_link(
-    dest: str, pages, source_dir: str, retired_title: str
-) -> str | None:
+def _classify_retired_link(dest: str, pages, source_dir: str, retired_title: str) -> str | None:
     """Classify a body-link destination against the retired page.
 
     Mirrors the shared resolver's lookup precedence (Canonical Title, then
@@ -178,9 +176,7 @@ def _classify_retired_link(
     stem = _destination_stem(dest).casefold().lstrip("/")
     if not stem:
         return None
-    title_matches = {
-        page.title for page in pages if page.title and page.title.casefold() == stem
-    }
+    title_matches = {page.title for page in pages if page.title and page.title.casefold() == stem}
     if title_matches:
         if retired_title not in title_matches:
             return None
@@ -190,10 +186,7 @@ def _classify_retired_link(
         # (``Beta``/``BETA``) casefold onto this one stem: never guess.
         return "title" if len(title_matches) == 1 else "ambiguous"
     alias_matches = {
-        page.title
-        for page in pages
-        for alias in page.aliases
-        if alias and alias.casefold() == stem
+        page.title for page in pages for alias in page.aliases if alias and alias.casefold() == stem
     }
     if alias_matches:
         if retired_title not in alias_matches:
@@ -819,9 +812,7 @@ class ProposalPipeline:
         def _merge_page_markdown(markdown: str, path: str) -> tuple[str, bool]:
             """Retarget Claim objects + repair exactly-resolved body links."""
             data, body, body_start = parse_frontmatter(markdown, Path(path))
-            claims_changed = _retarget_claim_objects(
-                data, retired_entity_id, surviving_entity_id
-            )
+            claims_changed = _retarget_claim_objects(data, retired_entity_id, surviving_entity_id)
             repaired_body, links_changed, ambiguous = _repair_body_links_for_merge(
                 body,
                 path,
@@ -855,8 +846,7 @@ class ProposalPipeline:
         if ambiguous_links:
             raise ProposalPipelineError(
                 "ambiguous link repair blocks this entity merge "
-                "(never guessed; resolve the collision and retry): "
-                + "; ".join(ambiguous_links)
+                "(never guessed; resolve the collision and retry): " + "; ".join(ambiguous_links)
             )
 
         # 2. Surviving page revision: its own Claims (retargeted) plus the
@@ -886,8 +876,7 @@ class ProposalPipeline:
         if ambiguous:
             raise ProposalPipelineError(
                 "ambiguous link repair blocks this entity merge "
-                "(never guessed; resolve the collision and retry): "
-                + "; ".join(ambiguous)
+                "(never guessed; resolve the collision and retry): " + "; ".join(ambiguous)
             )
         if merged_claims:
             surviving_data["claims"] = merged_claims
@@ -909,9 +898,7 @@ class ProposalPipeline:
         #    publication.
         ontology = control.ontology or Ontology()
         redirects = [
-            redirect
-            for redirect in ontology.redirects
-            if redirect.from_id != retired_entity_id
+            redirect for redirect in ontology.redirects if redirect.from_id != retired_entity_id
         ]
         redirects.append(EntityRedirect(from_id=retired_entity_id, to_id=surviving_entity_id))
         new_ontology = Ontology(

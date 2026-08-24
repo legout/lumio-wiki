@@ -440,9 +440,7 @@ def _probe_lancedb_index(
                 )
         return True, fingerprint_matches, None
     except Exception as exc:  # transport/auth/corruption — degrade truthfully
-        return degraded(
-            f"LanceDB index unavailable at {describe} ({type(exc).__name__}: {exc})"
-        )
+        return degraded(f"LanceDB index unavailable at {describe} ({type(exc).__name__}: {exc})")
 
 
 def _remote_lance_page_search(
@@ -466,9 +464,7 @@ def _remote_lance_page_search(
         return snapshot.knowledge_base.search_pages(query, limit=limit), note
 
     try:
-        _healthy, _matches, note = _probe_lancedb_index(
-            module, location, snapshot.fingerprint
-        )
+        _healthy, _matches, note = _probe_lancedb_index(module, location, snapshot.fingerprint)
         if note is not None:
             return _fallback(note)
         results = module.search_pages(list(snapshot.pages), query, limit=limit, index_dir=location)
@@ -511,9 +507,7 @@ def _reader_base_url() -> str | None:
         raise CliError(f"invalid {READER_BASE_URL_ENV_VAR}: {exc}") from exc
 
 
-def _print_page_search_results(
-    results: list, reader_base_url: str | None = None
-) -> None:
+def _print_page_search_results(results: list, reader_base_url: str | None = None) -> None:
     """Print page-oriented lexical search results (the ``search`` output contract)."""
     if not results:
         print("No pages matched the query.")
@@ -1442,9 +1436,7 @@ def _search_object_store(
     note = _index_fallback_note(results) or adapter.last_fallback_detail
     if note:
         print(f"note: {note}")
-    _print_evidence_results(
-        results, kb=snapshot.knowledge_base, reader_base_url=reader_base_url
-    )
+    _print_evidence_results(results, kb=snapshot.knowledge_base, reader_base_url=reader_base_url)
     return 0
 
 
@@ -1494,14 +1486,10 @@ def _cmd_page(args: argparse.Namespace) -> int:
         # the authored external URL (when present) and the explicit private
         # Source inspect command (never an implicit artifact URL, ADR-0020).
         reader_base = _reader_base_url()
-        for line in render_open_actions(
-            page_open_actions(page, reader_base_url=reader_base)
-        ):
+        for line in render_open_actions(page_open_actions(page, reader_base_url=reader_base)):
             print(line)
         for source in page.sources:
-            for line in source_action_lines(
-                source_id=source.id or None, source_url=source.url
-            ):
+            for line in source_action_lines(source_id=source.id or None, source_url=source.url):
                 print(line)
         print()
         print(page.body)
@@ -1648,10 +1636,7 @@ def _print_entity_candidates(kb: KnowledgeBase, args: argparse.Namespace) -> Non
     from lumio_wiki import retrieval_eval
 
     if not retrieval_eval.lancedb_available():
-        raise CliError(
-            "--candidates needs lumio-lancedb; install with:  "
-            "pip install lumio-lancedb"
-        )
+        raise CliError("--candidates needs lumio-lancedb; install with:  pip install lumio-lancedb")
     module = importlib.import_module("lumio_lancedb")
     index_dir = args.index_dir or str(Path(args.path) / DERIVED_DIR_NAME / "lance")
     module.build_lancedb_index(kb, index_dir)
@@ -1906,11 +1891,13 @@ def _cmd_ingest_url(args: argparse.Namespace) -> int:
     pipeline.
     """
     kb, _report = _load_kb(args.path)
-    compiled_page: Path = args.compiled_page
-    source_id: str = args.source_id
-    if (compiled_page is None) != (source_id is None):
+    compiled_page: Path | None = args.compiled_page
+    source_id: str | None = args.source_id
+    # Both required together — including the both-missing case, which must
+    # produce an actionable CliError rather than a traceback on None.
+    if compiled_page is None or source_id is None:
         raise CliError(
-            "--compiled-page and --source-id must be supplied together (issue #178)."
+            "--compiled-page and --source-id are required together (issue #178)."
         )
     if not compiled_page.is_file():
         raise CliError(f"compiled-page file not found: {compiled_page}")
@@ -1994,6 +1981,15 @@ def _parse_research_manifest(path: Path) -> list:
     for i, entry in enumerate(data, start=1):
         if not isinstance(entry, dict) or "url" not in entry:
             raise CliError(f"manifest entry {i} must be a mapping with a 'url' key")
+        # issue #178 spec: an EXPLICIT manifest of consulted URLs/titles/
+        # access timestamps — every field is required so provenance is
+        # complete at staging time.
+        for field in ("url", "title", "accessed_at"):
+            if entry.get(field) in (None, ""):
+                raise CliError(
+                    f"manifest entry {i} is missing required field {field!r} "
+                    "(url, title, and accessed_at are all required)"
+                )
         url = str(entry["url"])
         try:
             _validate_scheme(url, allow_http=False)
@@ -2001,7 +1997,10 @@ def _parse_research_manifest(path: Path) -> list:
             raise CliError(f"manifest entry {i} URL is not acceptable: {exc}") from exc
         import urllib.parse
 
-        if urllib.parse.urlparse(url).username or urllib.parse.urlparse(url).password:
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.hostname:
+            raise CliError(f"manifest entry {i} URL has no host: {url!r}")
+        if parsed.username or parsed.password:
             raise CliError(
                 f"manifest entry {i} URL is credential-bearing; pass credentials "
                 "through the environment, not the URL"
@@ -2661,9 +2660,7 @@ def _artifact_store_summary() -> tuple[str, bool | None]:
     private (ADR-0020) and availability is never probed with credentials, so
     ``available`` stays ``None`` (not probed) rather than guessed.
     """
-    value = os.environ.get(SOURCE_STORE_ENV_VAR) or load_project_config().get(
-        SOURCE_STORE_ENV_VAR
-    )
+    value = os.environ.get(SOURCE_STORE_ENV_VAR) or load_project_config().get(SOURCE_STORE_ENV_VAR)
     if not value:
         return "none", None
     if _is_object_store_uri(value):
@@ -2803,12 +2800,8 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
         status["fingerprint"] = snapshot.fingerprint.digest
         report = snapshot.validation_report
         status["validation_valid"] = report.is_valid
-        status["validation_errors"] = sum(
-            1 for i in report.issues if i.severity == "error"
-        )
-        status["validation_warnings"] = sum(
-            1 for i in report.issues if i.severity == "warning"
-        )
+        status["validation_errors"] = sum(1 for i in report.issues if i.severity == "error")
+        status["validation_warnings"] = sum(1 for i in report.issues if i.severity == "warning")
         # One immutable resolution serves every field (issue #175): the
         # already-resolved Snapshot is handed back to its Location so a
         # concurrent pointer advance can never mix versions in one report.
@@ -2860,8 +2853,7 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
         )
     elif not is_s3 and not status["graph_fresh"]:
         status["next_action"] = (
-            f"run 'lumio-wiki health {location} --rebuild' to materialize "
-            f"the Discovery Graph"
+            f"run 'lumio-wiki health {location} --rebuild' to materialize the Discovery Graph"
         )
     else:
         status["next_action"] = "none required"
@@ -3690,7 +3682,7 @@ def _source_discovery_hint(
     return (
         "; discover registered ids with 'lumio-wiki source list <kb>' or "
         "resolve a page title/alias/path with 'lumio-wiki source resolve "
-        "<kb> \"<query>\"'"
+        '<kb> "<query>"\''
     )
 
 
@@ -3924,16 +3916,13 @@ def _cmd_source_resolve(args: argparse.Namespace) -> int:
             )
         try:
             known_ids = {
-                entry.source_id
-                for entry in read_binding_manifest(artifact_store, version).entries
+                entry.source_id for entry in read_binding_manifest(artifact_store, version).entries
             }
         except SourceInspectionError as exc:
             raise CliError(str(exc), exit_code=1) from exc
     else:
         ingest_dir = _resolve_ingest_dir(args, kb.root)
-        known_ids = {
-            item.source_id for item in IngestStore(ingest_dir).source_registry.list()
-        }
+        known_ids = {item.source_id for item in IngestStore(ingest_dir).source_registry.list()}
     resolution = resolve_source(kb.pages, known_ids, args.query)
 
     if resolution.outcome != OUTCOME_RESOLVED or resolution.source_id is None:
@@ -4029,9 +4018,7 @@ def _report_unresolved_source(args: argparse.Namespace, resolution: SourceResolu
             lines.append(f"  {candidate.source_id} ({candidate.page_title}, {candidate.page_path})")
         if resolution.note:
             lines.append(resolution.note)
-        lines.append(
-            "disambiguate with 'lumio-wiki source inspect --source-id <id>'"
-        )
+        lines.append("disambiguate with 'lumio-wiki source inspect --source-id <id>'")
     else:
         lines.append("no Knowledge Source resolved for this query")
         if resolution.note:
@@ -4039,13 +4026,9 @@ def _report_unresolved_source(args: argparse.Namespace, resolution: SourceResolu
         if resolution.suggestions:
             # Issue #176: the bounded close-id set IS the pointer —
             # never both the ids and a discovery command.
-            lines.append(
-                "close Knowledge Source ids: " + ", ".join(resolution.suggestions)
-            )
+            lines.append("close Knowledge Source ids: " + ", ".join(resolution.suggestions))
         else:
-            lines.append(
-                "discover registered ids with 'lumio-wiki source list <kb>'"
-            )
+            lines.append("discover registered ids with 'lumio-wiki source list <kb>'")
     raise CliError("\n".join(lines), exit_code=1)
 
 
@@ -4606,8 +4589,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-http",
         action="store_true",
         help=(
-            "Permit plain http:// URLs (intranet deployments). HTTPS remains "
-            "the default policy."
+            "Permit plain http:// URLs (intranet deployments). HTTPS remains the default policy."
         ),
     )
     ingest_url_parser.add_argument(
@@ -4643,10 +4625,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--manifest",
         type=Path,
         required=True,
-        help=(
-            "YAML manifest of consulted sources: a list of "
-            "{url, title, accessed_at} entries."
-        ),
+        help=("YAML manifest of consulted sources: a list of {url, title, accessed_at} entries."),
     )
     ingest_research_parser.add_argument(
         "--source-id",
