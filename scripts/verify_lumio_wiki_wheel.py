@@ -85,7 +85,7 @@ def main() -> int:
         item for item in app_requirements if item.startswith("lumio-wiki") and ";" not in item
     ]
     assert len(app_member) == 1, app_requirements
-    assert ">=0.1.1" in app_member[0] and "<0.2.0" in app_member[0]
+    assert ">=0.1.2" in app_member[0] and "<0.2.0" in app_member[0]
     assert all(importlib.util.find_spec(name) is None for name in FORBIDDEN)
     installed = {
         distribution.metadata["Name"].lower().replace("_", "-")

@@ -115,14 +115,15 @@ def test_export_graph_is_deterministic():
 
 
 def test_export_graph_matches_committed_gold_files():
-    """Gold-file contract: the categorized fixture's export is byte-stable.
+    """Gold-file contract over ``eval/fixture_kb`` (PRD-0005): byte-stable.
 
     The committed artifacts under ``tests/fixtures/graph_exchange/`` pin the
-    serialized shape; any intentional format change updates them deliberately
-    (``graph.json`` node fields are additive-only once shipped, PRD-0005).
+    serialized shape of the public authorized page set; any intentional format
+    change updates them deliberately (``graph.json`` node fields are
+    additive-only once shipped, PRD-0005).
     """
-    kb, _report = load_knowledge_base(CATEGORIZED_KB)
-    export = export_graph(select_export_pages(kb.pages, ExportVisibilityScope.ALL))
+    kb, _report = load_knowledge_base(EVAL_KB)
+    export = export_graph(select_export_pages(kb.pages, ExportVisibilityScope.PUBLIC))
 
     gold = FIXTURES / "graph_exchange"
     assert export.graph_json == (gold / "graph.json").read_text(encoding="utf-8")

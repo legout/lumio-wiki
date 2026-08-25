@@ -15,7 +15,7 @@ description: >-
 license: Apache 2.0
 metadata:
   distribution: lumio-wiki
-  version: "0.1.1"
+  version: "0.1.2"
 ---
 
 Manage a portable Lumio Knowledge Base from this coding agent. Every operation

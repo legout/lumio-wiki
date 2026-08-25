@@ -231,10 +231,10 @@ def test_built_wheels_declare_bounded_inter_member_ranges(built_wheels: dict[str
     """AC4: each built wheel's METADATA advertises bounded lumio-* ranges."""
     expected = {
         "lumio-wiki": {},
-        "lumio-lancedb": {"lumio-wiki": {">=0.1.1", "<0.2.0"}},
+        "lumio-lancedb": {"lumio-wiki": {">=0.1.2", "<0.2.0"}},
         "lumio": {
-            "lumio-wiki": {">=0.1.1", "<0.2.0"},
-            "lumio-lancedb": {">=0.1.1", "<0.2.0"},
+            "lumio-wiki": {">=0.1.2", "<0.2.0"},
+            "lumio-lancedb": {">=0.1.2", "<0.2.0"},
         },
     }
     for name, wheel in built_wheels.items():

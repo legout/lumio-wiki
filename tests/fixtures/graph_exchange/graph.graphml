@@ -10,27 +10,263 @@
   <ns0:key id="kind" for="edge" attr.name="kind" attr.type="string" />
   <ns0:key id="predicate" for="edge" attr.name="predicate" attr.type="string" />
   <ns0:graph id="lumio" edgedefault="directed">
-    <ns0:node id="entity:acme-corp">
-      <ns0:data key="label">Acme Corp</ns0:data>
-      <ns0:data key="title">Acme Corp</ns0:data>
-      <ns0:data key="path">entities/acme.md</ns0:data>
-      <ns0:data key="category">entities</ns0:data>
-      <ns0:data key="entity_types">organization</ns0:data>
-      <ns0:data key="tags">entity</ns0:data>
-      <ns0:data key="summary">A named organization tracked by the knowledge base.</ns0:data>
+    <ns0:node id="entity:access-control">
+      <ns0:data key="label">Access Control</ns0:data>
+      <ns0:data key="title">Access Control</ns0:data>
+      <ns0:data key="path">access_control.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Access Control synthetic fixture page for retrieval evaluation.</ns0:data>
     </ns0:node>
-    <ns0:node id="entity:lumio-overview">
-      <ns0:data key="label">Lumio Overview</ns0:data>
-      <ns0:data key="title">Lumio Overview</ns0:data>
-      <ns0:data key="path">concepts/overview.md</ns0:data>
-      <ns0:data key="category">concepts</ns0:data>
-      <ns0:data key="entity_types">concept</ns0:data>
-      <ns0:data key="tags">lumio, overview</ns0:data>
-      <ns0:data key="summary">A high-level introduction to Lumio.</ns0:data>
+    <ns0:node id="entity:audit-trail">
+      <ns0:data key="label">Audit Trail</ns0:data>
+      <ns0:data key="title">Audit Trail</ns0:data>
+      <ns0:data key="path">audit_trail.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Audit Trail synthetic fixture page for retrieval evaluation.</ns0:data>
     </ns0:node>
-    <ns0:edge id="e0" source="entity:lumio-overview" target="entity:acme-corp">
+    <ns0:node id="entity:batch-loader">
+      <ns0:data key="label">Batch Loader</ns0:data>
+      <ns0:data key="title">Batch Loader</ns0:data>
+      <ns0:data key="path">batch_loader.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Batch Loader synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:cold-tier">
+      <ns0:data key="label">Cold Tier</ns0:data>
+      <ns0:data key="title">Cold Tier</ns0:data>
+      <ns0:data key="path">cold_tier.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Cold Tier synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:data-model">
+      <ns0:data key="label">Data Model</ns0:data>
+      <ns0:data key="title">Data Model</ns0:data>
+      <ns0:data key="path">data_model.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Data Model synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:entity-schema">
+      <ns0:data key="label">Entity Schema</ns0:data>
+      <ns0:data key="title">Entity Schema</ns0:data>
+      <ns0:data key="path">entity_schema.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Entity Schema synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:event-schema">
+      <ns0:data key="label">Event Schema</ns0:data>
+      <ns0:data key="title">Event Schema</ns0:data>
+      <ns0:data key="path">event_schema.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Event Schema synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:failure-domains">
+      <ns0:data key="label">Failure Domains</ns0:data>
+      <ns0:data key="title">Failure Domains</ns0:data>
+      <ns0:data key="path">failure_domains.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Failure Domains synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:hot-cache">
+      <ns0:data key="label">Hot Cache</ns0:data>
+      <ns0:data key="title">Hot Cache</ns0:data>
+      <ns0:data key="path">hot_cache.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Hot Cache synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:ingestion-audit-log">
+      <ns0:data key="label">Ingestion Audit Log</ns0:data>
+      <ns0:data key="title">Ingestion Audit Log</ns0:data>
+      <ns0:data key="path">ingestion_audit_log.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Ingestion Audit Log synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:ingestion-pipeline">
+      <ns0:data key="label">Ingestion Pipeline</ns0:data>
+      <ns0:data key="title">Ingestion Pipeline</ns0:data>
+      <ns0:data key="path">ingestion_pipeline.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Ingestion Pipeline synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:modeling-glossary">
+      <ns0:data key="label">Modeling Glossary</ns0:data>
+      <ns0:data key="title">Modeling Glossary</ns0:data>
+      <ns0:data key="path">modeling_glossary.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Modeling Glossary synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:query-engine">
+      <ns0:data key="label">Query Engine</ns0:data>
+      <ns0:data key="title">Query Engine</ns0:data>
+      <ns0:data key="path">query_engine.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Query Engine synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:query-telemetry">
+      <ns0:data key="label">Query Telemetry</ns0:data>
+      <ns0:data key="title">Query Telemetry</ns0:data>
+      <ns0:data key="path">query_telemetry.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Query Telemetry synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:recovery-procedures">
+      <ns0:data key="label">Recovery Procedures</ns0:data>
+      <ns0:data key="title">Recovery Procedures</ns0:data>
+      <ns0:data key="path">recovery_procedures.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Recovery Procedures synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:reliability-dashboard">
+      <ns0:data key="label">Reliability Dashboard</ns0:data>
+      <ns0:data key="title">Reliability Dashboard</ns0:data>
+      <ns0:data key="path">reliability_dashboard.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Reliability Dashboard synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:reliability-engineering">
+      <ns0:data key="label">Reliability Engineering</ns0:data>
+      <ns0:data key="title">Reliability Engineering</ns0:data>
+      <ns0:data key="path">reliability_engineering.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Reliability Engineering synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:role-model">
+      <ns0:data key="label">Role Model</ns0:data>
+      <ns0:data key="title">Role Model</ns0:data>
+      <ns0:data key="path">role_model.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Role Model synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:security-bulletin">
+      <ns0:data key="label">Security Bulletin</ns0:data>
+      <ns0:data key="title">Security Bulletin</ns0:data>
+      <ns0:data key="path">security_bulletin.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Security Bulletin synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:sql-frontend">
+      <ns0:data key="label">SQL Frontend</ns0:data>
+      <ns0:data key="title">SQL Frontend</ns0:data>
+      <ns0:data key="path">sql_frontend.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">SQL Frontend synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:storage-architecture">
+      <ns0:data key="label">Storage Architecture</ns0:data>
+      <ns0:data key="title">Storage Architecture</ns0:data>
+      <ns0:data key="path">storage_architecture.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Storage Architecture synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:storage-billing">
+      <ns0:data key="label">Storage Billing</ns0:data>
+      <ns0:data key="title">Storage Billing</ns0:data>
+      <ns0:data key="path">storage_billing.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Storage Billing synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:stream-connector">
+      <ns0:data key="label">Stream Connector</ns0:data>
+      <ns0:data key="title">Stream Connector</ns0:data>
+      <ns0:data key="path">stream_connector.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Stream Connector synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:vector-index">
+      <ns0:data key="label">Vector Index</ns0:data>
+      <ns0:data key="title">Vector Index</ns0:data>
+      <ns0:data key="path">vector_index.md</ns0:data>
+      <ns0:data key="entity_types">system</ns0:data>
+      <ns0:data key="tags">fixture, retrieval-eval</ns0:data>
+      <ns0:data key="summary">Vector Index synthetic fixture page for retrieval evaluation.</ns0:data>
+    </ns0:node>
+    <ns0:edge id="e0" source="entity:access-control" target="entity:audit-trail">
       <ns0:data key="kind">relationship</ns0:data>
-      <ns0:data key="predicate">uses</ns0:data>
+      <ns0:data key="predicate">relates-to</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e1" source="entity:access-control" target="entity:role-model">
+      <ns0:data key="kind">reference</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e2" source="entity:access-control" target="entity:role-model">
+      <ns0:data key="kind">relationship</ns0:data>
+      <ns0:data key="predicate">relates-to</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e3" source="entity:data-model" target="entity:entity-schema">
+      <ns0:data key="kind">relationship</ns0:data>
+      <ns0:data key="predicate">relates-to</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e4" source="entity:data-model" target="entity:event-schema">
+      <ns0:data key="kind">reference</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e5" source="entity:data-model" target="entity:event-schema">
+      <ns0:data key="kind">relationship</ns0:data>
+      <ns0:data key="predicate">relates-to</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e6" source="entity:ingestion-pipeline" target="entity:batch-loader">
+      <ns0:data key="kind">reference</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e7" source="entity:ingestion-pipeline" target="entity:batch-loader">
+      <ns0:data key="kind">relationship</ns0:data>
+      <ns0:data key="predicate">relates-to</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e8" source="entity:ingestion-pipeline" target="entity:stream-connector">
+      <ns0:data key="kind">relationship</ns0:data>
+      <ns0:data key="predicate">relates-to</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e9" source="entity:query-engine" target="entity:sql-frontend">
+      <ns0:data key="kind">reference</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e10" source="entity:query-engine" target="entity:sql-frontend">
+      <ns0:data key="kind">relationship</ns0:data>
+      <ns0:data key="predicate">relates-to</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e11" source="entity:query-engine" target="entity:vector-index">
+      <ns0:data key="kind">relationship</ns0:data>
+      <ns0:data key="predicate">relates-to</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e12" source="entity:reliability-engineering" target="entity:failure-domains">
+      <ns0:data key="kind">reference</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e13" source="entity:reliability-engineering" target="entity:failure-domains">
+      <ns0:data key="kind">relationship</ns0:data>
+      <ns0:data key="predicate">relates-to</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e14" source="entity:reliability-engineering" target="entity:recovery-procedures">
+      <ns0:data key="kind">relationship</ns0:data>
+      <ns0:data key="predicate">relates-to</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e15" source="entity:storage-architecture" target="entity:cold-tier">
+      <ns0:data key="kind">reference</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e16" source="entity:storage-architecture" target="entity:cold-tier">
+      <ns0:data key="kind">relationship</ns0:data>
+      <ns0:data key="predicate">relates-to</ns0:data>
+    </ns0:edge>
+    <ns0:edge id="e17" source="entity:storage-architecture" target="entity:hot-cache">
+      <ns0:data key="kind">relationship</ns0:data>
+      <ns0:data key="predicate">relates-to</ns0:data>
     </ns0:edge>
   </ns0:graph>
 </ns0:graphml>

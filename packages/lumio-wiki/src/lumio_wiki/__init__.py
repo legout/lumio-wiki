@@ -680,4 +680,4 @@ __all__ = [
     "default_retrieval_adapter",
 ]
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
