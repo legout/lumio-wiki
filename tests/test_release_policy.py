@@ -126,3 +126,9 @@ def test_release_workflow_uses_tag_trusted_publishing_and_gated_promotion():
     for job in ("publish-testpypi", "promote-pypi"):
         permissions = jobs[job].get("permissions") or {}
         assert permissions.get("id-token") == "write", (job, permissions)
+
+    # Both wheel-fetch sites share the certified fetch/verify helper, so the
+    # TestPyPI verification and the PyPI promotion cannot drift apart.
+    fetch_script = ROOT / "scripts" / "fetch_verified_testpypi_wheels.sh"
+    assert fetch_script.is_file()
+    assert text.count("fetch_verified_testpypi_wheels.sh") >= 2
