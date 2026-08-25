@@ -90,6 +90,7 @@ from lumio_wiki.knowledge_base import (
     DEFAULT_GRAPH_MAX_EDGES,
     DEFAULT_GRAPH_MAX_RESULTS,
     NAV_INDEX_BASENAME,
+    due_review_pages,
     fingerprint_sources,
 )
 from lumio_wiki.records import ValidationReport
@@ -2967,6 +2968,7 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
         status["validation_valid"] = report.is_valid
         status["validation_errors"] = sum(1 for i in report.issues if i.severity == "error")
         status["validation_warnings"] = sum(1 for i in report.issues if i.severity == "warning")
+        status["review_due"] = len(due_review_pages(snapshot.knowledge_base.pages))
         # One immutable resolution serves every field (issue #175): the
         # already-resolved Snapshot is handed back to its Location so a
         # concurrent pointer advance can never mix versions in one report.
@@ -2984,6 +2986,7 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
         status["validation_valid"] = report.is_valid
         status["validation_errors"] = sum(1 for i in report.issues if i.severity == "error")
         status["validation_warnings"] = sum(1 for i in report.issues if i.severity == "warning")
+        status["review_due"] = len(due_review_pages(kb.pages))
         graph_health = kb.graph_health(default_index_dir(kb.root))
         status["graph_source"] = "artifact" if graph_health.graph_fresh else "memory"
         status["graph_fresh"] = graph_health.graph_fresh
@@ -3070,6 +3073,7 @@ def _render_status(status: dict[str, Any]) -> str:
         "validation_valid",
         "validation_errors",
         "validation_warnings",
+        "review_due",
         "next_action",
     )
     for key in order:
@@ -3371,6 +3375,9 @@ def _cmd_dream(args: argparse.Namespace) -> int:
     if report.ranked_candidates:
         print("top candidates (by Discovery Graph impact):")
         _print_ranked_candidates(report.ranked_candidates, args.limit)
+    print(f"due_for_review:     {report.due_count}")
+    for page in report.due_pages:
+        print(f"  - {page.path} (review_after {page.review_after}) title={page.title!r}")
     _print_validation_issues(lint.validation_report)
 
     if args.semantic:

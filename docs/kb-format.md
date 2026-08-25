@@ -78,6 +78,7 @@ surface (with `aliases`); traversal results are reported as titles.
 | `tags` | yes | list\[string\] | Non-empty. Controlled organization labels. |
 | `lifecycle` | yes | string | One of `draft`, `review`, `approved`, `deprecated`. |
 | `visibility` | yes | string | One of `public`, `internal`, `restricted`. |
+| `review_after` | no | date (ISO 8601) | Optional review schedule (ADR-0023). Due when `today >= review_after`; surfaced as advisory warnings in `validate`/`lint`/`dream`/`status`, never blocking. Absent means no freshness opinion. |
 | `aliases` | no | list\[string\] | Alternate lookup phrases. Each must be **unique across the Knowledge Base**. |
 | `summary` | no | string | Human-readable one-line summary. **Recommended for new pages** — cheap retrieval depends on it. |
 | `sources` | conditional | list\[mapping\] | **Required unless `synthetic: true`.** A non-synthetic page must declare at least one. |

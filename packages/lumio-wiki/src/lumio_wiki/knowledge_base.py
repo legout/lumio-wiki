@@ -557,9 +557,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
 
         alias_pages = [p for p in (index.by_alias.get(key) or []) if p.id]
         if len(alias_pages) == 1:
-            return EntityResolution(
-                entity=entity_of(alias_pages[0]), matched_by=ENTITY_MATCH_ALIAS
-            )
+            return EntityResolution(entity=entity_of(alias_pages[0]), matched_by=ENTITY_MATCH_ALIAS)
         if len(alias_pages) > 1:
             return EntityResolution(
                 matched_by=ENTITY_MATCH_ALIAS,
@@ -1153,12 +1151,8 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             outbound_orphan_sample_titles=tuple(
                 title_of.get(k, k) for k in outbound_orphans[:max_orphan_sample]
             ),
-            inbound_orphan_sample_entity_ids=tuple(
-                inbound_orphans[:max_orphan_sample]
-            ),
-            outbound_orphan_sample_entity_ids=tuple(
-                outbound_orphans[:max_orphan_sample]
-            ),
+            inbound_orphan_sample_entity_ids=tuple(inbound_orphans[:max_orphan_sample]),
+            outbound_orphan_sample_entity_ids=tuple(outbound_orphans[:max_orphan_sample]),
         )
 
     def _top_hubs(
@@ -2377,6 +2371,37 @@ def _as_string_list(value: Any) -> list[str]:
     return []
 
 
+def _as_review_after(value: Any, relative: str) -> tuple[str | None, list[ValidationIssue]]:
+    """Decode the optional ``review_after`` frontmatter field (ADR-0023).
+
+    YAML decodes a bare ISO 8601 date to a ``datetime.date``; a QUOTED date
+    (as rendered by OKF import and other double-quoting writers) stays a
+    string and is accepted when it parses as one. Anything else (a malformed
+    string, an integer, a full timestamp) is a blocking validation error.
+    Returns the canonical ``YYYY-MM-DD`` string (or ``None`` when the field
+    is absent) plus the structural issues for a malformed value.
+    """
+    if value is None:
+        return None, []
+    iso: str | None = None
+    if isinstance(value, _date_cls) and not isinstance(value, datetime):
+        iso = value.isoformat()
+    elif isinstance(value, str):
+        try:
+            iso = _date_cls.fromisoformat(value.strip()).isoformat()
+        except ValueError:
+            iso = None
+    if iso is not None:
+        return iso, []
+    return None, [
+        ValidationIssue(
+            file=relative,
+            field="review_after",
+            message=f"review_after must be an ISO 8601 date (YYYY-MM-DD), got {value!r}",
+        )
+    ]
+
+
 def _as_sources(value: Any) -> list[Source]:
     if not isinstance(value, list):
         return []
@@ -2673,6 +2698,7 @@ def _load_page(text: str, relative: str) -> tuple[CompiledPage, dict[str, Any]]:
     """
     data, body, body_start_line = _parse_frontmatter(text, Path(relative))
     claims, claim_issues = _as_claims(data.get("claims"), relative)
+    review_after, _review_issues = _as_review_after(data.get("review_after"), relative)
     page = CompiledPage(
         path=relative,
         title=str(data.get("title", "")),
@@ -2683,6 +2709,7 @@ def _load_page(text: str, relative: str) -> tuple[CompiledPage, dict[str, Any]]:
         summary=str(data["summary"]) if "summary" in data else None,
         lifecycle=str(data.get("lifecycle")) if "lifecycle" in data else None,
         visibility=str(data.get("visibility")) if "visibility" in data else None,
+        review_after=review_after,
         sources=_as_sources(data.get("sources")),
         claims=claims,
         synthetic=bool(data.get("synthetic", False)),
@@ -3344,6 +3371,33 @@ def _as_ontology(value: Any) -> tuple[Ontology, list[ValidationIssue]]:
     )
 
 
+def is_due_for_review(review_after: str | None, *, today: _date_cls | None = None) -> bool:
+    """Whether a page with ``review_after`` is due for review (ADR-0023).
+
+    Due means ``today >= review_after``; an absent field never carries a
+    freshness opinion. Expects the canonical ``YYYY-MM-DD`` string produced by
+    :func:`_as_review_after`. Advisory only — never blocks validation.
+    """
+    if review_after is None:
+        return False
+    return (today if today is not None else _date_cls.today()) >= _date_cls.fromisoformat(
+        review_after
+    )
+
+
+def due_review_pages(
+    pages: Sequence[CompiledPage], *, today: _date_cls | None = None
+) -> list[CompiledPage]:
+    """Return the pages due for review, most overdue first (ADR-0023).
+
+    Deterministic ranking: ascending ``review_after`` (the oldest review date
+    is the most overdue), then by path for stable ties. Model-free and
+    read-only; computed from the current date at call time.
+    """
+    due = [page for page in pages if is_due_for_review(page.review_after, today=today)]
+    return sorted(due, key=lambda page: (page.review_after or "", page.path))
+
+
 def _validate_page(
     page: CompiledPage, data: dict[str, Any], relative: str
 ) -> list[ValidationIssue]:
@@ -3390,6 +3444,23 @@ def _validate_page(
                 file=relative,
                 field="visibility",
                 message=f"invalid visibility value: {page.visibility}",
+            )
+        )
+
+    # Freshness (ADR-0023): a malformed review_after date blocks; a due page
+    # is advisory only — a warning that never fails validation.
+    _review_after, review_after_issues = _as_review_after(data.get("review_after"), relative)
+    page_issues.extend(review_after_issues)
+    if not review_after_issues and is_due_for_review(page.review_after):
+        page_issues.append(
+            ValidationIssue(
+                file=relative,
+                field="review_after",
+                message=(
+                    f"page is due for review (review_after {page.review_after} "
+                    "reached); re-review it or extend the date"
+                ),
+                severity="warning",
             )
         )
 
