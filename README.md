@@ -161,6 +161,10 @@ pip install lumio-lancedb                    # + enhanced BM25/semantic/hybrid r
 pip install lumio                            # the full deployable web application
 ```
 
+The wheels are published as one lockstep family from tagged commits; see the
+[release notes](docs/release-notes/) for what each version ships, the
+migration path from checkout installs, and known MVP limits.
+
 The base wheel depends only on `msgspec[yaml]` and `msgpack`; it does not
 install the web application, LanceDB/PyArrow, Stario/Piccolo, OpenAI,
 LiteParse, MarkItDown, or AnyDoc. Optional capabilities are described under
