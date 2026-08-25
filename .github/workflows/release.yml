@@ -1,0 +1,262 @@
+name: release
+
+# Issue #181: certified Lumio wheel releases. A pushed v*.*.* tag builds all
+# three inter-member wheels once from that exact commit, records their
+# SHA-256 hashes and SLSA build provenance, publishes them to TestPyPI,
+# verifies the documented installation journey against the TestPyPI
+# artifacts, and only then — behind a human-approved protected environment —
+# promotes the byte-identical wheels (hash-checked against the build record)
+# to PyPI.
+#
+# Credential model: trusted publishing (OIDC) only. No PyPI token is stored
+# in this repository or its environments, so ordinary CI, agents, forks, and
+# pull requests hold no release credential at all. Publishing jobs run only
+# in the protected `testpypi` / `pypi` environments; the `pypi` environment
+# requires reviewer approval, which is the issue #181 human gate. One-time
+# owner setup (trusted publishers, environment protection, tag protection)
+# is documented in docs/packaging.md under "Releases".
+#
+# Hardening (zizmor): every action is SHA-pinned, checkout never persists
+# credentials, and no job shares an Actions cache with PR-triggered
+# workflows (setup-uv's cache is explicitly disabled — its "auto" default
+# would restore entries written from pull requests into publishing builds).
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-wheels:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      - run: uv lock --check
+      - run: uv build --package lumio-wiki --wheel --out-dir dist
+      - run: uv build --package lumio-lancedb --wheel --out-dir dist
+      - run: uv build --package lumio --wheel --out-dir dist
+      - name: Assert all three wheels carry the tag version (lockstep policy)
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for member in lumio_wiki lumio_lancedb lumio; do
+            ls "dist/${member}-${version}-"*.whl > /dev/null
+          done
+          test "$(ls dist/*.whl | wc -l)" -eq 3
+      - name: Record wheel SHA-256 hashes
+        run: |
+          (cd dist && sha256sum *.whl > ../wheel-hashes.txt)
+          cat wheel-hashes.txt | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-wheels
+          path: |
+            dist/
+            wheel-hashes.txt
+          if-no-files-found: error
+      # SLSA build provenance bound to the tag commit (issue #181: the tag
+      # "builds all three wheels once and records hashes/provenance").
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: dist/*.whl
+
+  publish-testpypi:
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write # trusted publishing; no stored credential exists
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-wheels
+      - name: Verify artifact hashes before upload
+        run: |
+          (cd dist && sha256sum -c ../wheel-hashes.txt)
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          attestations: true
+          # Wheels were hash-verified before upload, so an index that already
+          # carries the identical file makes failed workflow re-runs safe.
+          skip-existing: true
+
+  verify-testpypi-wiki:
+    # Fresh-venv install by NAME (the documented pip command shape), then the
+    # isolation + packaged-skill + local library smoke against the TestPyPI
+    # install: proves the published wheel — not just the built one — carries
+    # the certified surface.
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-wheels
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      - name: Download the exact TestPyPI wheels and verify recorded hashes
+        run: >-
+          bash scripts/fetch_verified_testpypi_wheels.sh tp wheel-hashes.txt
+          "${GITHUB_REF_NAME#v}"
+      - name: Fresh-venv install by name from TestPyPI
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          uv venv --python 3.14 /tmp/wiki
+          uv pip install --python /tmp/wiki/bin/python \
+            --index-url https://test.pypi.org/simple/ \
+            --extra-index-url https://pypi.org/simple/ \
+            "lumio-wiki==$version"
+      - name: Package isolation + local library smoke (verify_lumio_wiki_wheel.py)
+        run: |
+          /tmp/wiki/bin/python scripts/verify_lumio_wiki_wheel.py \
+            tp/lumio_wiki-*.whl tp/lumio-*.whl \
+            tests/fixtures/valid tests/fixtures/categorized_kb
+      - name: Packaged Agent Skill matches the tagged contract byte-for-byte
+        run: |
+          skill=$(/tmp/wiki/bin/lumio-wiki skill path)
+          protocol=$(/tmp/wiki/bin/lumio-wiki skill protocol)
+          cmp "$skill" packages/lumio-wiki/src/lumio_wiki/data/skill/SKILL.md
+          cmp "$protocol" packages/lumio-wiki/src/lumio_wiki/data/skill/PROTOCOL.md
+          /tmp/wiki/bin/lumio-wiki doctor
+      - name: The documented heavy-extras command resolves from public indexes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          uv venv --python 3.14 /tmp/extras
+          uv pip install --python /tmp/extras/bin/python \
+            --index-url https://test.pypi.org/simple/ \
+            --extra-index-url https://pypi.org/simple/ \
+            "lumio-wiki[all]==$version"
+          /tmp/extras/bin/python -c "import liteparse, markitdown, openai"
+
+  verify-testpypi-minio:
+    # The canonical onboarding journey (docs/quickstart.md) against a real
+    # MinIO, installed from TestPyPI using the documented extras set: local
+    # Maintainer journey, S3 publication with and without LanceDB, remote
+    # LanceDB reader, and the expected zero-index fallback. The minioadmin
+    # values are MinIO's labelled local-test defaults on an ephemeral CI
+    # container — never real credentials.
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    services:
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      LUMIO_S3_ENDPOINT: http://localhost:9000
+      LUMIO_S3_ALLOW_HTTP: "1"
+      LUMIO_S3_REGION: us-east-1
+      LUMIO_S3_TEST_BUCKET: lumio-release
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      - name: Install the documented quickstart set from TestPyPI
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          uv venv --python 3.14 /tmp/journey
+          uv pip install --python /tmp/journey/bin/python \
+            --index-url https://test.pypi.org/simple/ \
+            --extra-index-url https://pypi.org/simple/ \
+            "lumio-wiki[s3]==$version" "lumio-lancedb[s3]==$version"
+      - name: Run the canonical onboarding journey from the installed wheels
+        env:
+          LUMIO_WIKI_BIN: /tmp/journey/bin/lumio-wiki
+          LUMIO_PYTHON: /tmp/journey/bin/python
+        run: bash examples/onboarding-journey/smoke-journey.sh
+
+  verify-testpypi-app:
+    # The assembled application installs by name from TestPyPI with its full
+    # dependency closure resolved from PyPI, exposes every member import and
+    # its console entry point, and reports the lockstep family version.
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      - name: Fresh-venv install of the full application from TestPyPI
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          uv venv --python 3.14 /tmp/app
+          uv pip install --python /tmp/app/bin/python \
+            --index-url https://test.pypi.org/simple/ \
+            --extra-index-url https://pypi.org/simple/ \
+            "lumio==$version"
+      - name: Assert imports, entry point, and lockstep versions
+        run: |
+          /tmp/app/bin/python -c "
+          import importlib.metadata as im
+          import lumio, lumio_wiki, lumio_lancedb
+          versions = {im.version(name) for name in ('lumio', 'lumio-wiki', 'lumio-lancedb')}
+          assert len(versions) == 1, versions
+          print('assembled TestPyPI install ok:', versions.pop())
+          "
+          /tmp/app/bin/lumio --help > /dev/null
+
+  promote-pypi:
+    # The issue #181 human gate: this job runs only after the `pypi`
+    # environment's required reviewers approve. It re-downloads the wheels
+    # TestPyPI is actually serving, proves they are byte-identical to the
+    # build record, and promotes those exact artifacts to PyPI.
+    needs: [verify-testpypi-wiki, verify-testpypi-minio, verify-testpypi-app]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # trusted publishing; no stored credential exists
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-wheels
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      - name: Re-download the TestPyPI wheels and prove byte identity
+        run: >-
+          bash scripts/fetch_verified_testpypi_wheels.sh tp wheel-hashes.txt
+          "${GITHUB_REF_NAME#v}"
+      - name: Publish the hash-verified artifacts to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: tp/
+          attestations: true
+          # The artifacts were hash-verified against the build record in the
+          # step above; skipping an already-published identical file makes a
+          # re-run after a partial failure safe.
+          skip-existing: true

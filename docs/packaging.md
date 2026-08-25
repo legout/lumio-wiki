@@ -188,6 +188,25 @@ Certified in `tests/test_adapter_selection_contract.py` and
   public contracts require bumping the upper bound in `lumio-lancedb` and
   `lumio` in the same change.
 
+### Pre-1.0 release policy (issue #181)
+
+The three distributions release as one **lockstep family**:
+
+- All members carry the **same version** at all times (certified by
+  `test_members_share_one_lockstep_version`). A release tag `vX.Y.Z` builds
+  all three wheels from that one commit; the release workflow refuses a tag
+  whose version does not match every member.
+- **`0.MINOR` is the compatibility family.** Breaking changes to any public
+  contract bump MINOR (and the inter-member upper bounds move in the same
+  change). PATCH releases are compatible fixes only — the family never mixes
+  a new member version with an older sibling.
+- **Partial upgrades fail at install time, actionably.** Because every
+  member-to-member range is bounded to the family (`>=X.Y.Z,<0.N+1.0`), a
+  family-crossing combination (e.g. `lumio==0.2.0` with
+  `lumio-wiki==0.1.1`) is rejected by `pip`/`uv` resolution with a conflict
+  naming both ranges — never a runtime failure. Certified by
+  `test_inter_member_bounds_track_the_released_family`.
+
 ## Agent Skills
 
 `lumio-wiki` ships a short coding-agent protocol and a packaged Agent Skill
@@ -268,6 +287,55 @@ CI certifies every release:
    fresh venv, and runs the full application suite plus the deployment
    smoke and the view smoke against the wheel-built product.
 5. The full application suite runs against the assembled `lumio` member.
+
+### Releases
+
+`release.yml` (issue #181) turns a pushed `vX.Y.Z` tag into a certified
+publication. One pipeline, no rebuilds:
+
+1. **Build once** — `build-wheels` builds all three wheels from the tagged
+   commit, asserts the lockstep version, records SHA-256 hashes (workflow
+   summary + artifact) and SLSA build provenance bound to the tag.
+2. **TestPyPI** — `publish-testpypi` uploads the hash-verified wheels via
+   trusted publishing.
+3. **Verify the journey** — fresh venvs install *by name* from TestPyPI
+   using the documented `pip install` command shapes:
+   - `verify-testpypi-wiki` — the isolation/packaged-skill/local-library
+     smoke (`scripts/verify_lumio_wiki_wheel.py`) plus
+     `lumio-wiki skill path`/`doctor` against the published wheel.
+   - `verify-testpypi-minio` — the canonical onboarding journey
+     (`examples/onboarding-journey/smoke-journey.sh`) against a real
+     MinIO: local Maintainer journey, S3 publication with and without
+     LanceDB, remote LanceDB reader, zero-index fallback.
+   - `verify-testpypi-app` — the assembled `lumio` application installs
+     with its full closure, imports all members, and exposes its entry
+     point.
+4. **Human-gated promotion** — `promote-pypi` runs only after the `pypi`
+   environment's required reviewers approve. It re-downloads the wheels
+   TestPyPI is actually serving, proves them byte-identical to the build
+   record (`sha256sum -c`), and promotes those exact artifacts to PyPI.
+
+**Credential model.** Trusted publishing (OIDC) only: no PyPI token is
+stored in the repository, its environments, or any workflow input, so
+ordinary CI, agents, forks, and pull requests hold no release credential at
+all. The workflow triggers only on tag push, publishes only from the
+protected `testpypi`/`pypi` environments, and shares no Actions cache with
+PR-triggered workflows.
+
+**One-time owner setup** (the issue #181 human gate):
+
+1. Configure **pending trusted publishers** for `lumio-wiki`,
+   `lumio-lancedb`, and `lumio` on both TestPyPI and PyPI, scoped to the
+   `legout/lumio` repository, workflow `release.yml`, and environment
+   names `testpypi` / `pypi`.
+2. Create GitHub environments **`testpypi`** (no approval required) and
+   **`pypi`** (required reviewers = repository owners; this approval is the
+   publication gate).
+3. Protect the `v*` tag pattern (admins/maintainers only) so only
+   authorized pushes can start a release.
+
+Release notes live in `docs/release-notes/` per published version
+(`v0.1.1.md` is the first).
 
 ## Issue graph certification (issue #104, AC7)
 
