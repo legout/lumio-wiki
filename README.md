@@ -14,6 +14,17 @@ OpenAI-compatible endpoint as trusted-network surfaces until hardened.
 For the *why* and the vision, read the domain docs — this README documents
 **what runs today**:
 
+> **Two trust models, one Knowledge Base.** Lumio serves the same compiled
+> Markdown Knowledge Base through two paths with deliberately different review
+> models. The **`lumio-wiki` CLI** (and the library behind it) has no accounts
+> or roles: a coding agent with filesystem access *is* the Distiller and
+> Maintainer — it authors Compiled Pages, stages Ingest Proposals, validates
+> them deterministically, and publishes, with no human step enforced. The
+> **web app** adds human governance over the same artifact: ingest and publish
+> are Maintainer-gated, and the Workshop exists so a person reviews proposals
+> before they reach Readers. Proposal-first is the shared seam; who reviews —
+> the agent itself or a human Maintainer — depends on which path you deploy.
+
 - [`CONTEXT.md`](CONTEXT.md) — ubiquitous language (glossary).
 - [`docs/prd/0001-knowledge-agent-platform.md`](docs/prd/0001-knowledge-agent-platform.md) — platform PRD.
 - [`docs/prd/0002-core-sdk.md`](docs/prd/0002-core-sdk.md) — Core SDK PRD.
