@@ -64,6 +64,10 @@ _Avoid_: status (overloaded).
 The access class of a Compiled Page: `public`, `internal`, or `restricted`. Lumio records it; the runtime enforces it.
 _Avoid_: permission, access level.
 
+**Review After**:
+The optional `review_after` date (ISO 8601) on a Compiled Page: the page is due for review once `today >= review_after`. Advisory everywhere, blocking nowhere; changing it is an ordinary reviewed page change.
+_Avoid_: stale_after (OKF exchange vocabulary), expiry, TTL.
+
 **Source**:
 A provenance reference on a Compiled Page (an identifier, a title, and an optional URL). Non-synthetic pages must have at least one.
 _Avoid_: reference, link.

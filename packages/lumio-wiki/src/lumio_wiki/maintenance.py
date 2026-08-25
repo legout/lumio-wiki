@@ -34,12 +34,14 @@ from lumio_wiki.knowledge_base import (
     KnowledgeBase,
     Relationship,
     ValidationReport,
+    due_review_pages,
     extract_references,
     load_knowledge_base,
 )
 from lumio_wiki.link_candidates import find_link_candidates
 from lumio_wiki.proposal_pipeline import ProposalPipeline
 from lumio_wiki.records import (
+    CompiledPage,
     ExtractedReference,
     GraphHealthReport,
     LinkCandidate,
@@ -351,13 +353,16 @@ class DreamReport:
     """The read-only reflection half of the Dream Cycle.
 
     Composes the authoritative validation status, the Discovery Graph health,
-    the structural topology diagnostics for BOTH scopes, and the missing-link
-    candidates ranked by Discovery Graph impact (issue #127). Read-only and
-    model-free: it never mutates Compiled Pages, graph state, or the store.
+    the structural topology diagnostics for BOTH scopes, the missing-link
+    candidates ranked by Discovery Graph impact (issue #127), and the pages
+    due for review by ``review_after`` (ADR-0023), most overdue first.
+    Read-only and model-free: it never mutates Compiled Pages, graph state,
+    or the store.
     """
 
     lint: LintReport
     ranked_candidates: tuple[RankedLinkCandidate, ...]
+    due_pages: tuple[CompiledPage, ...] = ()
 
     @property
     def is_valid(self) -> bool:
@@ -366,6 +371,10 @@ class DreamReport:
     @property
     def candidate_count(self) -> int:
         return len(self.ranked_candidates)
+
+    @property
+    def due_count(self) -> int:
+        return len(self.due_pages)
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,7 +408,10 @@ def run_dream_cycle(
     kb, _report = load_knowledge_base(kb_path)
     candidates = find_link_candidates(kb.pages)
     ranked = kb.rank_link_candidates_by_graph_impact(candidates)
-    return DreamReport(lint=lint, ranked_candidates=tuple(ranked))
+    due = due_review_pages(kb.pages)
+    return DreamReport(
+        lint=lint, ranked_candidates=tuple(ranked), due_pages=tuple(due)
+    )
 
 
 def stage_dream_repairs(

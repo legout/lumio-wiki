@@ -26,6 +26,7 @@ import hashlib
 import posixpath
 import re
 from collections.abc import Sequence
+from datetime import date as _date_cls, datetime as _datetime_cls
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -389,6 +390,10 @@ def _render_compiled_page_profile2(
         for tag in page.tags:
             lines.append(f"  - {_yaml_scalar(tag)}")
     lines.append(f"status: {_yaml_scalar(_okf_status_for_lifecycle(page.lifecycle))}")
+    if page.review_after is not None:
+        # ADR-0023: review_after maps losslessly onto the OKF v0.2
+        # standard ``stale_after`` freshness field at the Profile 2 boundary.
+        lines.append(f"stale_after: {_yaml_scalar(page.review_after)}")
     if page.sources:
         lines.append("sources:")
         for source in page.sources:
@@ -1343,6 +1348,58 @@ def _as_okf_v2_sources(
     return sources
 
 
+def _okf_stale_after_to_review_after(
+    rel: str,
+    value: Any,
+    diagnostics: list[OkfImportDiagnostic],
+) -> str | None:
+    """Map OKF v0.2 ``stale_after`` onto a proposed canonical ``review_after``.
+
+    ADR-0023: foreign freshness claims are reviewed, never silently trusted —
+    a valid ISO date becomes a PROPOSED ``review_after`` with an explicit
+    ``mapped`` diagnostic; anything else (malformed string, full timestamp)
+    stays non-canonical with the standard dropped notice.
+    """
+    if value is None:
+        return None
+    iso: str | None = None
+    if isinstance(value, _date_cls) and not isinstance(value, _datetime_cls):
+        iso = value.isoformat()
+    elif isinstance(value, str):
+        # A quoted YAML scalar stays a string; Lumio's own export double-quotes
+        # every scalar, so the round trip must accept both forms.
+        try:
+            iso = _date_cls.fromisoformat(value.strip()).isoformat()
+        except ValueError:
+            iso = None
+    if iso is not None:
+        diagnostics.append(
+            OkfImportDiagnostic(
+                path=rel,
+                kind="freshness",
+                severity="mapped",
+                message=(
+                    "OKF v0.2 'stale_after' mapped to proposed canonical "
+                    "'review_after'; the foreign freshness claim is reviewed, "
+                    "not silently trusted"
+                ),
+            )
+        )
+        return iso
+    diagnostics.append(
+        OkfImportDiagnostic(
+            path=rel,
+            kind="freshness",
+            severity="dropped",
+            message=(
+                "OKF v0.2 'stale_after' is recognized as freshness metadata "
+                "but is not a plain ISO 8601 date; dropped at canonicalization"
+            ),
+        )
+    )
+    return None
+
+
 def _diagnose_profile2_standard_fields(
     rel: str,
     data: dict[str, Any],
@@ -1372,18 +1429,6 @@ def _diagnose_profile2_standard_fields(
                     "OKF v0.2 'generated'/'verified' are recognized as trust "
                     "metadata but are not canonical Lumio approval; dropped at "
                     "canonicalization"
-                ),
-            )
-        )
-    if data.get("stale_after") is not None:
-        diagnostics.append(
-            OkfImportDiagnostic(
-                path=rel,
-                kind="freshness",
-                severity="dropped",
-                message=(
-                    "OKF v0.2 'stale_after' is recognized as freshness metadata "
-                    "but has no canonical Lumio field; dropped at canonicalization"
                 ),
             )
         )
@@ -1560,6 +1605,7 @@ def _render_canonical_page_markdown(
     synthetic: bool,
     sources: list[Source],
     body: str,
+    review_after: str | None = None,
 ) -> str:
     """Render canonical Lumio frontmatter plus the unchanged body.
 
@@ -1584,6 +1630,8 @@ def _render_canonical_page_markdown(
             lines.append(f"  - {_yaml_scalar(alias)}")
     lines.append(f"lifecycle: {_yaml_scalar(lifecycle)}")
     lines.append(f"visibility: {_yaml_scalar(visibility)}")
+    if review_after is not None:
+        lines.append(f"review_after: {_yaml_scalar(review_after)}")
     lines.append(f"synthetic: {'true' if synthetic else 'false'}")
     if sources:
         lines.append("sources:")
@@ -1803,7 +1851,13 @@ def _parse_okf_page(
     # canonicalization regardless of lumio classification.
     _diagnose_dropped_okf_fields(rel, data, diagnostics, parsing_policy)
     _diagnose_dropped_external_fields(rel, data, diagnostics, parsing_policy)
+    # ADR-0023: OKF v0.2 'stale_after' becomes a PROPOSED review_after with an
+    # explicit mapped diagnostic (never silently trusted) only in Profile 2.
+    review_after = None
     if parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2:
+        review_after = _okf_stale_after_to_review_after(
+            rel, data.get("stale_after"), diagnostics
+        )
         _diagnose_profile2_standard_fields(rel, data, body, diagnostics)
 
     # Broken internal body links are warnings and never Relationships (issue #70).
@@ -1819,6 +1873,7 @@ def _parse_okf_page(
         synthetic=synthetic,
         sources=sources,
         body=body,
+        review_after=review_after,
     )
     diagnostics.append(
         OkfImportDiagnostic(
