@@ -87,6 +87,37 @@ def test_review_after_datetime_is_rejected(tmp_path: Path):
     assert any(i.field == "review_after" for i in report.issues)
 
 
+def test_review_after_quoted_iso_string_decodes(tmp_path: Path):
+    """A quoted ISO date (as OKF import renders) decodes and stays advisory.
+
+    Regression for the Spec review finding: ``_render_canonical_page_markdown``
+    double-quotes every scalar, so an imported ``review_after`` arrives as a
+    YAML string. The canonical loader must accept it, not block it.
+    """
+    from lumio_wiki.knowledge_base import _load_page
+
+    root = _kb(tmp_path)
+    _set_review_after(root, "concepts/overview.md", '"2020-01-15"')
+    kb, report = load_knowledge_base(root)
+    page = kb.lookup_by_title("Lumio Overview")[0]
+    assert page.review_after == "2020-01-15"
+    # Due (past date) is still only a warning, never blocking.
+    assert report.is_valid
+    assert any(
+        i.file == "concepts/overview.md"
+        and i.field == "review_after"
+        and i.severity == "warning"
+        for i in report.issues
+    )
+    # The proposed-markdown path OKF import produces loads identically.
+    proposed, _data = _load_page(
+        '---\ntitle: "X"\ntags: [t]\nlifecycle: draft\nvisibility: internal\n'
+        'review_after: "2027-01-15"\nsynthetic: true\n---\n\n# X\n',
+        "x.md",
+    )
+    assert proposed.review_after == "2027-01-15"
+
+
 # ---------------------------------------------------------------------------
 # Boundary: due = today >= review_after.
 # ---------------------------------------------------------------------------

@@ -557,9 +557,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
 
         alias_pages = [p for p in (index.by_alias.get(key) or []) if p.id]
         if len(alias_pages) == 1:
-            return EntityResolution(
-                entity=entity_of(alias_pages[0]), matched_by=ENTITY_MATCH_ALIAS
-            )
+            return EntityResolution(entity=entity_of(alias_pages[0]), matched_by=ENTITY_MATCH_ALIAS)
         if len(alias_pages) > 1:
             return EntityResolution(
                 matched_by=ENTITY_MATCH_ALIAS,
@@ -1153,12 +1151,8 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
             outbound_orphan_sample_titles=tuple(
                 title_of.get(k, k) for k in outbound_orphans[:max_orphan_sample]
             ),
-            inbound_orphan_sample_entity_ids=tuple(
-                inbound_orphans[:max_orphan_sample]
-            ),
-            outbound_orphan_sample_entity_ids=tuple(
-                outbound_orphans[:max_orphan_sample]
-            ),
+            inbound_orphan_sample_entity_ids=tuple(inbound_orphans[:max_orphan_sample]),
+            outbound_orphan_sample_entity_ids=tuple(outbound_orphans[:max_orphan_sample]),
         )
 
     def _top_hubs(
@@ -2380,15 +2374,25 @@ def _as_string_list(value: Any) -> list[str]:
 def _as_review_after(value: Any, relative: str) -> tuple[str | None, list[ValidationIssue]]:
     """Decode the optional ``review_after`` frontmatter field (ADR-0023).
 
-    YAML decodes an ISO 8601 date to a ``datetime.date``; anything else (a
-    malformed string, an integer, a full timestamp) is a blocking validation
-    error. Returns the canonical ``YYYY-MM-DD`` string (or ``None`` when the
-    field is absent) plus the structural issues for a malformed value.
+    YAML decodes a bare ISO 8601 date to a ``datetime.date``; a QUOTED date
+    (as rendered by OKF import and other double-quoting writers) stays a
+    string and is accepted when it parses as one. Anything else (a malformed
+    string, an integer, a full timestamp) is a blocking validation error.
+    Returns the canonical ``YYYY-MM-DD`` string (or ``None`` when the field
+    is absent) plus the structural issues for a malformed value.
     """
     if value is None:
         return None, []
+    iso: str | None = None
     if isinstance(value, _date_cls) and not isinstance(value, datetime):
-        return value.isoformat(), []
+        iso = value.isoformat()
+    elif isinstance(value, str):
+        try:
+            iso = _date_cls.fromisoformat(value.strip()).isoformat()
+        except ValueError:
+            iso = None
+    if iso is not None:
+        return iso, []
     return None, [
         ValidationIssue(
             file=relative,
