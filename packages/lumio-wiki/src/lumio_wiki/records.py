@@ -268,6 +268,7 @@ class CompiledPage(msgspec.Struct, frozen=True):
     summary: str | None = None
     lifecycle: str | None = None
     visibility: str | None = None
+    review_after: str | None = None
     sources: list[Source] = msgspec.field(default_factory=list)
     claims: list[Claim] = msgspec.field(default_factory=list)
     synthetic: bool = False
