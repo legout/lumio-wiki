@@ -39,6 +39,8 @@ from lumio_wiki import (
     RETIREMENT_CANDIDATE_TRIGGERS,
     ControlFileError,
     Distiller,
+    ExportVisibilityScope,
+    GraphImportError,
     IngestStore,
     KnowledgeBase,
     KnowledgeBaseError,
@@ -49,10 +51,13 @@ from lumio_wiki import (
     ProposalPipelineError,
     SourceProvenance,
     SourceRegistryError,
+    export_graph,
     generate_hot_index,
     generate_navigation_indexes,
+    import_graph,
     is_reviewable_proposal,
     load_knowledge_base,
+    select_export_pages,
     seeded_control_file,
     validate,
     write_control_file,
@@ -2658,6 +2663,62 @@ def _cmd_discard(args: argparse.Namespace) -> int:
         )
         return 1
     print(f"Discarded proposal {discarded.id} (status={discarded.status}).")
+    return 0
+
+
+def _cmd_export_graph(args: argparse.Namespace) -> int:
+    """Write graph.json + graph.graphml over the authorized page set (issue #193)."""
+    kb, _report = _load_kb(args.path)
+    scope = ExportVisibilityScope((args.scope or "all").strip().lower())
+    authorized = select_export_pages(kb.pages, scope)
+    export = export_graph(authorized)
+    out_dir = Path(args.out_dir) if args.out_dir else Path("lumio-graph-export")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    graph_json_path = out_dir / "graph.json"
+    graphml_path = out_dir / "graph.graphml"
+    graph_json_path.write_text(export.graph_json, encoding="utf-8")
+    graphml_path.write_text(export.graphml, encoding="utf-8")
+    print(f"Graph export complete -> {out_dir}")
+    print(
+        f"  graph.json    — {export.node_count} nodes, "
+        f"{export.relationship_count} relationship + "
+        f"{export.reference_count} reference edges (NetworkX node_link)"
+    )
+    print(
+        f"  graph.graphml — {export.node_count} nodes, "
+        "same edge set (Gephi / yEd / Cytoscape)"
+    )
+    print(f"  scope: {scope.value} ({len(authorized)} of {len(kb.pages)} pages)")
+    return 0
+
+
+def _cmd_import_graph(args: argparse.Namespace) -> int:
+    """Stage stub Compiled Pages from a graph.json as one reviewable proposal."""
+    kb, _report = _load_kb(args.path)
+    ingest_dir = _resolve_ingest_dir(args, kb.root)
+    ingest_dir.mkdir(parents=True, exist_ok=True)
+    store = IngestStore(ingest_dir)
+    pipeline = ProposalPipeline(kb, store=store)
+    try:
+        proposal = import_graph(args.graph_file, kb)
+    except GraphImportError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    proposal = pipeline.stage(proposal)
+    print(f"Staged proposal {proposal.id}")
+    print("  converted_by:   graph-exchange")
+    print(f"  affected_pages: {', '.join(proposal.affected_pages) or '(none)'}")
+    print(f"  blocked:        {proposal.blocked}")
+    diagnostics = proposal.okf_diagnostics
+    if diagnostics:
+        print(f"  diagnostics:    {len(diagnostics)} (inspect for detail)")
+    if proposal.control_file is not None:
+        print("  control_file:   proposed Control File extension (review before publish)")
+    print()
+    print("Review with:")
+    print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
+    print(f"  lumio-wiki proposal validate {args.path} {proposal.id}")
+    if is_reviewable_proposal(proposal) and not proposal.blocked:
+        print(f"  lumio-wiki publish {args.path} {proposal.id}")
     return 0
 
 
@@ -5297,6 +5358,58 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ingest_dir_argument(dream_parser)
     dream_parser.set_defaults(func=_cmd_dream)
+
+    # export-graph (issue #193, ADR-0024)
+    export_graph_parser = subparsers.add_parser(
+        "export-graph",
+        help="Export the Discovery Graph to graph.json + graph.graphml.",
+        description=(
+            "Deterministic, structure-only graph exchange over the authorized "
+            "page set (ADR-0024): NetworkX node_link graph.json plus GraphML "
+            "for Gephi/yEd/Cytoscape. Nodes carry identity/title/category/"
+            "tags/summary only — never bodies or Sources. Content-bearing "
+            "exchange is the OKF export's job."
+        ),
+    )
+    _add_kb_argument(export_graph_parser)
+    export_graph_parser.add_argument(
+        "--scope",
+        type=str,
+        default="all",
+        choices=["public", "all"],
+        help=(
+            "Visibility scope: 'public' is the portable exchange boundary "
+            "(internal/restricted never enter the artifacts); 'all' is the "
+            "explicitly privileged local scope (default)."
+        ),
+    )
+    export_graph_parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Output directory (default: ./lumio-graph-export).",
+    )
+    export_graph_parser.set_defaults(func=_cmd_export_graph)
+
+    # import-graph (issue #193, ADR-0024)
+    import_graph_parser = subparsers.add_parser(
+        "import-graph",
+        help="Stage stub pages from a graph.json as one reviewable proposal.",
+        description=(
+            "Load a graph.json (Lumio or wiki-export lineage) and stage stub "
+            "Compiled Pages — frontmatter skeletons plus link structure, no "
+            "bodies — as ONE reviewable Ingest Proposal (ADR-0024). No "
+            "merge/skip/overwrite modes: review, validate, publish, or discard."
+        ),
+    )
+    _add_kb_argument(import_graph_parser)
+    import_graph_parser.add_argument(
+        "graph_file",
+        type=Path,
+        help="Path to the graph.json to import.",
+    )
+    _add_ingest_dir_argument(import_graph_parser)
+    import_graph_parser.set_defaults(func=_cmd_import_graph)
 
     # doctor
     doctor_parser = subparsers.add_parser(

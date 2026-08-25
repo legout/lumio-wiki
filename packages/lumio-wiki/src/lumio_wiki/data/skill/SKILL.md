@@ -108,6 +108,8 @@ root directory in every command below.
 | `lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>` | Byte-exact original Source Artifact to an explicit destination, digest and size re-verified (ADR-0020). A directory destination receives the safe filename. Content is not rendered or converted here. |
 | `lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]` | Explicit short-lived signed GET URL for ONE exact artifact when the store supports signing (S3 adapter). 5 min default, 1 h max; the URL is a bearer secret — never persist or log it. Prefer verified `fetch` (signed URLs can leak through conversation history). |
 | `lumio-wiki dream <kb> [--limit N] [--stage] [--semantic]` | Deterministic Dream Cycle reflection plus optional semantic review; `--semantic` requires the `[llm]` extra and remains proposal-first. |
+| `lumio-wiki export-graph <kb> [--scope public\|all] [--out-dir D]` | Structure-only graph exchange (ADR-0024): writes `graph.json` (NetworkX node_link) + `graph.graphml` over the authorized page set into `--out-dir` (default `./lumio-graph-export`). Nodes carry identity/title/category/tags/summary only — never bodies or Sources. `--scope public` is the portable boundary; default `all` is the privileged local scope. |
+| `lumio-wiki import-graph <kb> <graph.json>` | Load a graph.json (Lumio or wiki-export lineage) and stage stub Compiled Pages — frontmatter skeletons plus link structure, no bodies — as ONE reviewable Ingest Proposal. No merge/skip/overwrite modes; review replaces them. |
 | `lumio-wiki doctor` | Version, detected optional extras, and packaged skill location. |
 | `lumio-wiki skill path` | Absolute path of the packaged `SKILL.md` inside the installed wheel. |
 | `lumio-wiki skill protocol` | Absolute path of the packaged `PROTOCOL.md`. |
@@ -276,6 +278,32 @@ Knowledge Base connected:
 The same operations exist on the public Python surface
 (`lumio_wiki.run_lint`, `lumio_wiki.run_dream_cycle`,
 `lumio_wiki.stage_dream_repairs`, `lumio_wiki.stage_cross_link_proposal`).
+
+## Workflow: exchange (choose the right surface)
+
+Four exchange surfaces exist; pick by what must travel (ADR-0024):
+
+1. **Content-bearing, vault-to-vault or standards exchange** — OKF Profile 2
+   (`export --profile okf-2` in the Lumio web app). Full page bodies, Sources,
+   diagnostics, pinned versions. Use when the destination needs the actual
+   knowledge.
+2. **Structure-only analysis / visualization** — `lumio-wiki export-graph
+   <kb>`: `graph.json` loads in any NetworkX-aware Python tool;
+   `graph.graphml` loads in Gephi/yEd/Cytoscape. Edges are typed
+   Relationships and untyped Extracted References, marked by `kind`. No
+   bodies, Sources, or registry data ever travel.
+3. **Structure bootstrap from another tool's graph.json** —
+   `lumio-wiki import-graph <kb> <graph.json>` (accepts wiki-export
+   lineage): stages stub pages as ONE reviewable proposal. Structure
+   arrives; content does not. Then `proposal inspect` → `publish` or
+   `discard` as usual — never a blind merge/overwrite mode.
+4. **Content-bearing ingestion** — the ordinary `ingest` workflow (you are
+   the Distiller). Use for raw sources and authored pages.
+
+Visibility filtering on graph export is enforced, not disclosed:
+   `--scope public` can never leak an internal/restricted title, summary, or
+   edge. Use OKF or `--scope all` deliberately when privileged exchange is
+   intended. `graph.json` node fields are additive-only once shipped.
 
 ## Optional capabilities
 
