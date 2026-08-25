@@ -18,6 +18,16 @@ from lumio_wiki.graph_state import (
     GRAPH_ARTIFACT_FILENAME,
     GRAPH_ARTIFACT_VERSION,
 )
+from lumio_wiki.graph_exchange import (
+    EDGE_KIND_REFERENCE,
+    EDGE_KIND_RELATIONSHIP,
+    GRAPH_EXCHANGE_FORMAT,
+    GRAPH_EXCHANGE_VERSION,
+    GraphExchangeExport,
+    GraphImportError,
+    export_graph,
+    import_graph,
+)
 from lumio_wiki.ingest import (
     BlastRadius,
     BodyLinkRepairCandidate,
@@ -385,6 +395,8 @@ __all__ = [
     "CompiledPage",
     "CLAIM_ID_PREFIX",
     "ENTITY_ID_PREFIX",
+    "EDGE_KIND_REFERENCE",
+    "EDGE_KIND_RELATIONSHIP",
     "CLAIM_ORIGIN_AUTHORED",
     "CLAIM_ORIGIN_MIGRATED",
     "CLAIM_ORIGINS",
@@ -440,6 +452,8 @@ __all__ = [
     "FilesystemLocation",
     "GRAPH_ARTIFACT_FILENAME",
     "GRAPH_ARTIFACT_VERSION",
+    "GRAPH_EXCHANGE_FORMAT",
+    "GRAPH_EXCHANGE_VERSION",
     "GRAPH_SCOPE_CANONICAL",
     "GRAPH_SCOPE_DISCOVERY",
     "LINK_IMPACT_KIND_COMPONENT_JOIN",
@@ -451,8 +465,10 @@ __all__ = [
     "ManagedIngestError",
     "LINK_IMPACT_WEIGHT_FRAGILE_STRENGTHENING",
     "LINK_IMPACT_WEIGHT_ORPHAN_REPAIR",
+    "GraphExchangeExport",
     "GraphHealthReport",
     "GraphHub",
+    "GraphImportError",
     "GraphState",
     "HOT_INDEX_ARTIFACT",
     "HOT_INDEX_BASENAME",
@@ -602,6 +618,7 @@ __all__ = [
     "create_proposal_without_provider",
     "export_bundle",
     "due_review_pages",
+    "export_graph",
     "extract_references",
     "extend_control_file_categories",
     "find_link_candidates",
@@ -611,6 +628,7 @@ __all__ = [
     "generate_hot_index",
     "generate_navigation_indexes",
     "import_external_compiled_markdown",
+    "import_graph",
     "import_okf_profile1",
     "import_okf_profile2",
     "import_page_category",
@@ -662,4 +680,4 @@ __all__ = [
     "default_retrieval_adapter",
 ]
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"

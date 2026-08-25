@@ -30,15 +30,18 @@ import mimetypes
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import lumio_wiki
 from lumio_wiki import (
     RETIREMENT_CANDIDATE_TRIGGERS,
     ControlFileError,
     Distiller,
+    ExportVisibilityScope,
+    GraphImportError,
     IngestStore,
     KnowledgeBase,
     KnowledgeBaseError,
@@ -49,11 +52,14 @@ from lumio_wiki import (
     ProposalPipelineError,
     SourceProvenance,
     SourceRegistryError,
+    export_graph,
     generate_hot_index,
     generate_navigation_indexes,
+    import_graph,
     is_reviewable_proposal,
     load_knowledge_base,
     seeded_control_file,
+    select_export_pages,
     validate,
     write_control_file,
 )
@@ -79,11 +85,6 @@ from lumio_wiki.env_loader import (
     read_kb_path_from_env_file,
     resolve_env_value,
 )
-from lumio_wiki.url_fetch import (
-    DEFAULT_MAX_BYTES,
-    DEFAULT_MAX_REDIRECTS,
-    DEFAULT_TIMEOUT_SECONDS,
-)
 from lumio_wiki.knowledge_base import (
     DEFAULT_GRAPH_MAX_DEPTH,
     DEFAULT_GRAPH_MAX_EDGES,
@@ -95,8 +96,8 @@ from lumio_wiki.knowledge_base import (
 from lumio_wiki.records import ValidationReport
 from lumio_wiki.source_inspection import (
     DEFAULT_LINK_EXPIRES,
-    OUTCOME_ACCESS_DENIED,
     OUTCOME_ABSENT_BINDING,
+    OUTCOME_ACCESS_DENIED,
     OUTCOME_CORRUPTION,
     OUTCOME_UNAVAILABLE,
     SourceInspectionError,
@@ -111,10 +112,14 @@ from lumio_wiki.source_inspection import (
 from lumio_wiki.source_resolution import (
     OUTCOME_AMBIGUOUS,
     OUTCOME_RESOLVED,
-    OUTCOME_UNKNOWN,
     SourceResolution,
     resolve_source,
     suggest_source_ids,
+)
+from lumio_wiki.url_fetch import (
+    DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_REDIRECTS,
+    DEFAULT_TIMEOUT_SECONDS,
 )
 
 # Derived-state directory name inside a Knowledge Base root. Holds the
@@ -441,9 +446,7 @@ def _probe_lancedb_index(
                 )
         return True, fingerprint_matches, None
     except Exception as exc:  # transport/auth/corruption — degrade truthfully
-        return degraded(
-            f"LanceDB index unavailable at {describe} ({type(exc).__name__}: {exc})"
-        )
+        return degraded(f"LanceDB index unavailable at {describe} ({type(exc).__name__}: {exc})")
 
 
 def _remote_lance_page_search(
@@ -467,9 +470,7 @@ def _remote_lance_page_search(
         return snapshot.knowledge_base.search_pages(query, limit=limit), note
 
     try:
-        _healthy, _matches, note = _probe_lancedb_index(
-            module, location, snapshot.fingerprint
-        )
+        _healthy, _matches, note = _probe_lancedb_index(module, location, snapshot.fingerprint)
         if note is not None:
             return _fallback(note)
         results = module.search_pages(list(snapshot.pages), query, limit=limit, index_dir=location)
@@ -512,9 +513,7 @@ def _reader_base_url() -> str | None:
         raise CliError(f"invalid {READER_BASE_URL_ENV_VAR}: {exc}") from exc
 
 
-def _print_page_search_results(
-    results: list, reader_base_url: str | None = None
-) -> None:
+def _print_page_search_results(results: list, reader_base_url: str | None = None) -> None:
     """Print page-oriented lexical search results (the ``search`` output contract)."""
     if not results:
         print("No pages matched the query.")
@@ -1443,9 +1442,7 @@ def _search_object_store(
     note = _index_fallback_note(results) or adapter.last_fallback_detail
     if note:
         print(f"note: {note}")
-    _print_evidence_results(
-        results, kb=snapshot.knowledge_base, reader_base_url=reader_base_url
-    )
+    _print_evidence_results(results, kb=snapshot.knowledge_base, reader_base_url=reader_base_url)
     return 0
 
 
@@ -1495,14 +1492,10 @@ def _cmd_page(args: argparse.Namespace) -> int:
         # the authored external URL (when present) and the explicit private
         # Source inspect command (never an implicit artifact URL, ADR-0020).
         reader_base = _reader_base_url()
-        for line in render_open_actions(
-            page_open_actions(page, reader_base_url=reader_base)
-        ):
+        for line in render_open_actions(page_open_actions(page, reader_base_url=reader_base)):
             print(line)
         for source in page.sources:
-            for line in source_action_lines(
-                source_id=source.id or None, source_url=source.url
-            ):
+            for line in source_action_lines(source_id=source.id or None, source_url=source.url):
                 print(line)
         print()
         print(page.body)
@@ -1649,10 +1642,7 @@ def _print_entity_candidates(kb: KnowledgeBase, args: argparse.Namespace) -> Non
     from lumio_wiki import retrieval_eval
 
     if not retrieval_eval.lancedb_available():
-        raise CliError(
-            "--candidates needs lumio-lancedb; install with:  "
-            "pip install lumio-lancedb"
-        )
+        raise CliError("--candidates needs lumio-lancedb; install with:  pip install lumio-lancedb")
     module = importlib.import_module("lumio_lancedb")
     index_dir = args.index_dir or str(Path(args.path) / DERIVED_DIR_NAME / "lance")
     module.build_lancedb_index(kb, index_dir)
@@ -1940,10 +1930,7 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
 
     if not args.yes:
         print("Preview only — nothing registered or staged.")
-        print(
-            "Re-run with --yes to register the capture source and stage the "
-            "proposal for review."
-        )
+        print("Re-run with --yes to register the capture source and stage the proposal for review.")
         return 0
 
     try:
@@ -2027,9 +2014,7 @@ def _cmd_ingest_url(args: argparse.Namespace) -> int:
     # Both required together — including the both-missing case, which must
     # produce an actionable CliError rather than a traceback on None.
     if compiled_page is None or source_id is None:
-        raise CliError(
-            "--compiled-page and --source-id are required together (issue #178)."
-        )
+        raise CliError("--compiled-page and --source-id are required together (issue #178).")
     if not compiled_page.is_file():
         raise CliError(f"compiled-page file not found: {compiled_page}")
     authored_markdown = compiled_page.read_text(encoding="utf-8")
@@ -2199,8 +2184,6 @@ def _cmd_ingest_research(args: argparse.Namespace) -> int:
             )
         ],
     )
-
-
 
 
 def _proposal_pipeline(args: argparse.Namespace):
@@ -2662,6 +2645,59 @@ def _cmd_discard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_export_graph(args: argparse.Namespace) -> int:
+    """Write graph.json + graph.graphml over the authorized page set (issue #193)."""
+    kb, _report = _load_kb(args.path)
+    scope = ExportVisibilityScope((args.scope or "all").strip().lower())
+    authorized = select_export_pages(kb.pages, scope)
+    export = export_graph(authorized)
+    out_dir = Path(args.out_dir) if args.out_dir else Path("lumio-graph-export")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    graph_json_path = out_dir / "graph.json"
+    graphml_path = out_dir / "graph.graphml"
+    graph_json_path.write_text(export.graph_json, encoding="utf-8")
+    graphml_path.write_text(export.graphml, encoding="utf-8")
+    print(f"Graph export complete -> {out_dir}")
+    print(
+        f"  graph.json    — {export.node_count} nodes, "
+        f"{export.relationship_count} relationship + "
+        f"{export.reference_count} reference edges (NetworkX node_link)"
+    )
+    print(f"  graph.graphml — {export.node_count} nodes, same edge set (Gephi / yEd / Cytoscape)")
+    print(f"  scope: {scope.value} ({len(authorized)} of {len(kb.pages)} pages)")
+    return 0
+
+
+def _cmd_import_graph(args: argparse.Namespace) -> int:
+    """Stage stub Compiled Pages from a graph.json as one reviewable proposal."""
+    kb, _report = _load_kb(args.path)
+    ingest_dir = _resolve_ingest_dir(args, kb.root)
+    ingest_dir.mkdir(parents=True, exist_ok=True)
+    store = IngestStore(ingest_dir)
+    pipeline = ProposalPipeline(kb, store=store)
+    try:
+        proposal = import_graph(args.graph_file, kb)
+    except GraphImportError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    proposal = pipeline.stage(proposal)
+    print(f"Staged proposal {proposal.id}")
+    print("  converted_by:   graph-exchange")
+    print(f"  affected_pages: {', '.join(proposal.affected_pages) or '(none)'}")
+    print(f"  blocked:        {proposal.blocked}")
+    diagnostics = proposal.okf_diagnostics
+    if diagnostics:
+        print(f"  diagnostics:    {len(diagnostics)} (inspect for detail)")
+    if proposal.control_file is not None:
+        print("  control_file:   proposed Control File extension (review before publish)")
+    print()
+    print("Review with:")
+    print(f"  lumio-wiki proposal inspect {args.path} {proposal.id}")
+    print(f"  lumio-wiki proposal validate {args.path} {proposal.id}")
+    if is_reviewable_proposal(proposal) and not proposal.blocked:
+        print(f"  lumio-wiki publish {args.path} {proposal.id}")
+    return 0
+
+
 def _cmd_health(args: argparse.Namespace) -> int:
     report = validate(args.path)
     try:
@@ -2790,9 +2826,7 @@ def _artifact_store_summary() -> tuple[str, bool | None]:
     private (ADR-0020) and availability is never probed with credentials, so
     ``available`` stays ``None`` (not probed) rather than guessed.
     """
-    value = os.environ.get(SOURCE_STORE_ENV_VAR) or load_project_config().get(
-        SOURCE_STORE_ENV_VAR
-    )
+    value = os.environ.get(SOURCE_STORE_ENV_VAR) or load_project_config().get(SOURCE_STORE_ENV_VAR)
     if not value:
         return "none", None
     if _is_object_store_uri(value):
@@ -2932,12 +2966,8 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
         status["fingerprint"] = snapshot.fingerprint.digest
         report = snapshot.validation_report
         status["validation_valid"] = report.is_valid
-        status["validation_errors"] = sum(
-            1 for i in report.issues if i.severity == "error"
-        )
-        status["validation_warnings"] = sum(
-            1 for i in report.issues if i.severity == "warning"
-        )
+        status["validation_errors"] = sum(1 for i in report.issues if i.severity == "error")
+        status["validation_warnings"] = sum(1 for i in report.issues if i.severity == "warning")
         status["review_due"] = len(due_review_pages(snapshot.knowledge_base.pages))
         # One immutable resolution serves every field (issue #175): the
         # already-resolved Snapshot is handed back to its Location so a
@@ -2991,8 +3021,7 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
         )
     elif not is_s3 and not status["graph_fresh"]:
         status["next_action"] = (
-            f"run 'lumio-wiki health {location} --rebuild' to materialize "
-            f"the Discovery Graph"
+            f"run 'lumio-wiki health {location} --rebuild' to materialize the Discovery Graph"
         )
     else:
         status["next_action"] = "none required"
@@ -3825,7 +3854,7 @@ def _source_discovery_hint(
     return (
         "; discover registered ids with 'lumio-wiki source list <kb>' or "
         "resolve a page title/alias/path with 'lumio-wiki source resolve "
-        "<kb> \"<query>\"'"
+        '<kb> "<query>"\''
     )
 
 
@@ -4059,16 +4088,13 @@ def _cmd_source_resolve(args: argparse.Namespace) -> int:
             )
         try:
             known_ids = {
-                entry.source_id
-                for entry in read_binding_manifest(artifact_store, version).entries
+                entry.source_id for entry in read_binding_manifest(artifact_store, version).entries
             }
         except SourceInspectionError as exc:
             raise CliError(str(exc), exit_code=1) from exc
     else:
         ingest_dir = _resolve_ingest_dir(args, kb.root)
-        known_ids = {
-            item.source_id for item in IngestStore(ingest_dir).source_registry.list()
-        }
+        known_ids = {item.source_id for item in IngestStore(ingest_dir).source_registry.list()}
     resolution = resolve_source(kb.pages, known_ids, args.query)
 
     if resolution.outcome != OUTCOME_RESOLVED or resolution.source_id is None:
@@ -4164,9 +4190,7 @@ def _report_unresolved_source(args: argparse.Namespace, resolution: SourceResolu
             lines.append(f"  {candidate.source_id} ({candidate.page_title}, {candidate.page_path})")
         if resolution.note:
             lines.append(resolution.note)
-        lines.append(
-            "disambiguate with 'lumio-wiki source inspect --source-id <id>'"
-        )
+        lines.append("disambiguate with 'lumio-wiki source inspect --source-id <id>'")
     else:
         lines.append("no Knowledge Source resolved for this query")
         if resolution.note:
@@ -4174,13 +4198,9 @@ def _report_unresolved_source(args: argparse.Namespace, resolution: SourceResolu
         if resolution.suggestions:
             # Issue #176: the bounded close-id set IS the pointer —
             # never both the ids and a discovery command.
-            lines.append(
-                "close Knowledge Source ids: " + ", ".join(resolution.suggestions)
-            )
+            lines.append("close Knowledge Source ids: " + ", ".join(resolution.suggestions))
         else:
-            lines.append(
-                "discover registered ids with 'lumio-wiki source list <kb>'"
-            )
+            lines.append("discover registered ids with 'lumio-wiki source list <kb>'")
     raise CliError("\n".join(lines), exit_code=1)
 
 
@@ -5304,6 +5324,58 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ingest_dir_argument(dream_parser)
     dream_parser.set_defaults(func=_cmd_dream)
+
+    # export-graph (issue #193, ADR-0024)
+    export_graph_parser = subparsers.add_parser(
+        "export-graph",
+        help="Export the Discovery Graph to graph.json + graph.graphml.",
+        description=(
+            "Deterministic, structure-only graph exchange over the authorized "
+            "page set (ADR-0024): NetworkX node_link graph.json plus GraphML "
+            "for Gephi/yEd/Cytoscape. Nodes carry identity/title/category/"
+            "tags/summary only — never bodies or Sources. Content-bearing "
+            "exchange is the OKF export's job."
+        ),
+    )
+    _add_kb_argument(export_graph_parser)
+    export_graph_parser.add_argument(
+        "--scope",
+        type=str,
+        default="public",
+        choices=["public", "all"],
+        help=(
+            "Visibility scope: 'public' (default) is the portable exchange "
+            "boundary — internal/restricted pages never enter the artifacts; "
+            "'all' is the explicitly privileged scope for local analysis."
+        ),
+    )
+    export_graph_parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Output directory (default: ./lumio-graph-export).",
+    )
+    export_graph_parser.set_defaults(func=_cmd_export_graph)
+
+    # import-graph (issue #193, ADR-0024)
+    import_graph_parser = subparsers.add_parser(
+        "import-graph",
+        help="Stage stub pages from a graph.json as one reviewable proposal.",
+        description=(
+            "Load a graph.json (Lumio or wiki-export lineage) and stage stub "
+            "Compiled Pages — frontmatter skeletons plus link structure, no "
+            "bodies — as ONE reviewable Ingest Proposal (ADR-0024). No "
+            "merge/skip/overwrite modes: review, validate, publish, or discard."
+        ),
+    )
+    _add_kb_argument(import_graph_parser)
+    import_graph_parser.add_argument(
+        "graph_file",
+        type=Path,
+        help="Path to the graph.json to import.",
+    )
+    _add_ingest_dir_argument(import_graph_parser)
+    import_graph_parser.set_defaults(func=_cmd_import_graph)
 
     # doctor
     doctor_parser = subparsers.add_parser(

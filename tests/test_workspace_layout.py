@@ -50,7 +50,7 @@ def test_uv_workspace_root_is_coordination_only_with_three_members():
     lancedb_member = _toml(LANCEDB_MEMBER / "pyproject.toml")
     assert lancedb_member["project"]["name"] == "lumio-lancedb"
     assert lancedb_member["project"]["requires-python"] == ">=3.14"
-    assert "lumio-wiki>=0.1.1,<0.2.0" in lancedb_member["project"]["dependencies"]
+    assert "lumio-wiki>=0.1.2,<0.2.0" in lancedb_member["project"]["dependencies"]
     assert "lancedb>=0.34.0" in lancedb_member["project"]["dependencies"]
     assert "pyarrow>=24.0.0" in lancedb_member["project"]["dependencies"]
     # Torch stays out of the base adapter (ADR-0010): the embeddings extra is
@@ -73,8 +73,8 @@ def test_full_lumio_application_is_an_independently_buildable_member():
     # The full application depends explicitly on the standalone foundation and
     # the LanceDB adapter (ADR-0010). It selects retrieval through config/DI,
     # never importing adapter types in client code.
-    assert "lumio-wiki>=0.1.1,<0.2.0" in app["project"]["dependencies"]
-    assert "lumio-lancedb>=0.1.1,<0.2.0" in app["project"]["dependencies"]
+    assert "lumio-wiki>=0.1.2,<0.2.0" in app["project"]["dependencies"]
+    assert "lumio-lancedb>=0.1.2,<0.2.0" in app["project"]["dependencies"]
     # The backward-compatible CLI entry point survives the migration.
     assert app["project"]["scripts"]["lumio"] == "lumio.cli:main"
     assert app["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == [

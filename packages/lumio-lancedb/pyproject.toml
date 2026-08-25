@@ -1,10 +1,10 @@
 [project]
 name = "lumio-lancedb"
-version = "0.1.1"
+version = "0.1.2"
 description = "Optional LanceDB enhanced-retrieval adapter for the Lumio Knowledge Base."
 requires-python = ">=3.14"
 dependencies = [
-    "lumio-wiki>=0.1.1,<0.2.0",
+    "lumio-wiki>=0.1.2,<0.2.0",
     "lancedb>=0.34.0",
     "pyarrow>=24.0.0",
     "msgspec[yaml]>=0.21.1",

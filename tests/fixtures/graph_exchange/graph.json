@@ -1,0 +1,452 @@
+{
+  "directed": true,
+  "graph": {
+    "edge_count": 18,
+    "format": "lumio-graph-exchange",
+    "node_count": 24,
+    "version": 1
+  },
+  "links": [
+    {
+      "kind": "relationship",
+      "predicate": "relates-to",
+      "source": "entity:access-control",
+      "target": "entity:audit-trail"
+    },
+    {
+      "kind": "reference",
+      "source": "entity:access-control",
+      "target": "entity:role-model"
+    },
+    {
+      "kind": "relationship",
+      "predicate": "relates-to",
+      "source": "entity:access-control",
+      "target": "entity:role-model"
+    },
+    {
+      "kind": "relationship",
+      "predicate": "relates-to",
+      "source": "entity:data-model",
+      "target": "entity:entity-schema"
+    },
+    {
+      "kind": "reference",
+      "source": "entity:data-model",
+      "target": "entity:event-schema"
+    },
+    {
+      "kind": "relationship",
+      "predicate": "relates-to",
+      "source": "entity:data-model",
+      "target": "entity:event-schema"
+    },
+    {
+      "kind": "reference",
+      "source": "entity:ingestion-pipeline",
+      "target": "entity:batch-loader"
+    },
+    {
+      "kind": "relationship",
+      "predicate": "relates-to",
+      "source": "entity:ingestion-pipeline",
+      "target": "entity:batch-loader"
+    },
+    {
+      "kind": "relationship",
+      "predicate": "relates-to",
+      "source": "entity:ingestion-pipeline",
+      "target": "entity:stream-connector"
+    },
+    {
+      "kind": "reference",
+      "source": "entity:query-engine",
+      "target": "entity:sql-frontend"
+    },
+    {
+      "kind": "relationship",
+      "predicate": "relates-to",
+      "source": "entity:query-engine",
+      "target": "entity:sql-frontend"
+    },
+    {
+      "kind": "relationship",
+      "predicate": "relates-to",
+      "source": "entity:query-engine",
+      "target": "entity:vector-index"
+    },
+    {
+      "kind": "reference",
+      "source": "entity:reliability-engineering",
+      "target": "entity:failure-domains"
+    },
+    {
+      "kind": "relationship",
+      "predicate": "relates-to",
+      "source": "entity:reliability-engineering",
+      "target": "entity:failure-domains"
+    },
+    {
+      "kind": "relationship",
+      "predicate": "relates-to",
+      "source": "entity:reliability-engineering",
+      "target": "entity:recovery-procedures"
+    },
+    {
+      "kind": "reference",
+      "source": "entity:storage-architecture",
+      "target": "entity:cold-tier"
+    },
+    {
+      "kind": "relationship",
+      "predicate": "relates-to",
+      "source": "entity:storage-architecture",
+      "target": "entity:cold-tier"
+    },
+    {
+      "kind": "relationship",
+      "predicate": "relates-to",
+      "source": "entity:storage-architecture",
+      "target": "entity:hot-cache"
+    }
+  ],
+  "multigraph": false,
+  "nodes": [
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:access-control",
+      "label": "Access Control",
+      "path": "access_control.md",
+      "summary": "Access Control synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Access Control"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:audit-trail",
+      "label": "Audit Trail",
+      "path": "audit_trail.md",
+      "summary": "Audit Trail synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Audit Trail"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:batch-loader",
+      "label": "Batch Loader",
+      "path": "batch_loader.md",
+      "summary": "Batch Loader synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Batch Loader"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:cold-tier",
+      "label": "Cold Tier",
+      "path": "cold_tier.md",
+      "summary": "Cold Tier synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Cold Tier"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:data-model",
+      "label": "Data Model",
+      "path": "data_model.md",
+      "summary": "Data Model synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Data Model"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:entity-schema",
+      "label": "Entity Schema",
+      "path": "entity_schema.md",
+      "summary": "Entity Schema synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Entity Schema"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:event-schema",
+      "label": "Event Schema",
+      "path": "event_schema.md",
+      "summary": "Event Schema synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Event Schema"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:failure-domains",
+      "label": "Failure Domains",
+      "path": "failure_domains.md",
+      "summary": "Failure Domains synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Failure Domains"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:hot-cache",
+      "label": "Hot Cache",
+      "path": "hot_cache.md",
+      "summary": "Hot Cache synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Hot Cache"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:ingestion-audit-log",
+      "label": "Ingestion Audit Log",
+      "path": "ingestion_audit_log.md",
+      "summary": "Ingestion Audit Log synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Ingestion Audit Log"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:ingestion-pipeline",
+      "label": "Ingestion Pipeline",
+      "path": "ingestion_pipeline.md",
+      "summary": "Ingestion Pipeline synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Ingestion Pipeline"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:modeling-glossary",
+      "label": "Modeling Glossary",
+      "path": "modeling_glossary.md",
+      "summary": "Modeling Glossary synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Modeling Glossary"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:query-engine",
+      "label": "Query Engine",
+      "path": "query_engine.md",
+      "summary": "Query Engine synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Query Engine"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:query-telemetry",
+      "label": "Query Telemetry",
+      "path": "query_telemetry.md",
+      "summary": "Query Telemetry synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Query Telemetry"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:recovery-procedures",
+      "label": "Recovery Procedures",
+      "path": "recovery_procedures.md",
+      "summary": "Recovery Procedures synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Recovery Procedures"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:reliability-dashboard",
+      "label": "Reliability Dashboard",
+      "path": "reliability_dashboard.md",
+      "summary": "Reliability Dashboard synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Reliability Dashboard"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:reliability-engineering",
+      "label": "Reliability Engineering",
+      "path": "reliability_engineering.md",
+      "summary": "Reliability Engineering synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Reliability Engineering"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:role-model",
+      "label": "Role Model",
+      "path": "role_model.md",
+      "summary": "Role Model synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Role Model"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:security-bulletin",
+      "label": "Security Bulletin",
+      "path": "security_bulletin.md",
+      "summary": "Security Bulletin synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Security Bulletin"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:sql-frontend",
+      "label": "SQL Frontend",
+      "path": "sql_frontend.md",
+      "summary": "SQL Frontend synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "SQL Frontend"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:storage-architecture",
+      "label": "Storage Architecture",
+      "path": "storage_architecture.md",
+      "summary": "Storage Architecture synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Storage Architecture"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:storage-billing",
+      "label": "Storage Billing",
+      "path": "storage_billing.md",
+      "summary": "Storage Billing synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Storage Billing"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:stream-connector",
+      "label": "Stream Connector",
+      "path": "stream_connector.md",
+      "summary": "Stream Connector synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Stream Connector"
+    },
+    {
+      "entity_types": [
+        "system"
+      ],
+      "id": "entity:vector-index",
+      "label": "Vector Index",
+      "path": "vector_index.md",
+      "summary": "Vector Index synthetic fixture page for retrieval evaluation.",
+      "tags": [
+        "fixture",
+        "retrieval-eval"
+      ],
+      "title": "Vector Index"
+    }
+  ]
+}
