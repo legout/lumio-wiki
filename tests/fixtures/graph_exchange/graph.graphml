@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ns0:graphml xmlns:ns0="http://graphml.graphdrawing.org/xmlns">
+  <ns0:key id="label" for="node" attr.name="label" attr.type="string" />
+  <ns0:key id="title" for="node" attr.name="title" attr.type="string" />
+  <ns0:key id="path" for="node" attr.name="path" attr.type="string" />
+  <ns0:key id="category" for="node" attr.name="category" attr.type="string" />
+  <ns0:key id="entity_types" for="node" attr.name="entity_types" attr.type="string" />
+  <ns0:key id="tags" for="node" attr.name="tags" attr.type="string" />
+  <ns0:key id="summary" for="node" attr.name="summary" attr.type="string" />
+  <ns0:key id="kind" for="edge" attr.name="kind" attr.type="string" />
+  <ns0:key id="predicate" for="edge" attr.name="predicate" attr.type="string" />
+  <ns0:graph id="lumio" edgedefault="directed">
+    <ns0:node id="entity:acme-corp">
+      <ns0:data key="label">Acme Corp</ns0:data>
+      <ns0:data key="title">Acme Corp</ns0:data>
+      <ns0:data key="path">entities/acme.md</ns0:data>
+      <ns0:data key="category">entities</ns0:data>
+      <ns0:data key="entity_types">organization</ns0:data>
+      <ns0:data key="tags">entity</ns0:data>
+      <ns0:data key="summary">A named organization tracked by the knowledge base.</ns0:data>
+    </ns0:node>
+    <ns0:node id="entity:lumio-overview">
+      <ns0:data key="label">Lumio Overview</ns0:data>
+      <ns0:data key="title">Lumio Overview</ns0:data>
+      <ns0:data key="path">concepts/overview.md</ns0:data>
+      <ns0:data key="category">concepts</ns0:data>
+      <ns0:data key="entity_types">concept</ns0:data>
+      <ns0:data key="tags">lumio, overview</ns0:data>
+      <ns0:data key="summary">A high-level introduction to Lumio.</ns0:data>
+    </ns0:node>
+    <ns0:edge id="e0" source="entity:lumio-overview" target="entity:acme-corp">
+      <ns0:data key="kind">relationship</ns0:data>
+      <ns0:data key="predicate">uses</ns0:data>
+    </ns0:edge>
+  </ns0:graph>
+</ns0:graphml>

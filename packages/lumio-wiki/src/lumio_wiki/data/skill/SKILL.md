@@ -108,7 +108,7 @@ root directory in every command below.
 | `lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>` | Byte-exact original Source Artifact to an explicit destination, digest and size re-verified (ADR-0020). A directory destination receives the safe filename. Content is not rendered or converted here. |
 | `lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]` | Explicit short-lived signed GET URL for ONE exact artifact when the store supports signing (S3 adapter). 5 min default, 1 h max; the URL is a bearer secret — never persist or log it. Prefer verified `fetch` (signed URLs can leak through conversation history). |
 | `lumio-wiki dream <kb> [--limit N] [--stage] [--semantic]` | Deterministic Dream Cycle reflection plus optional semantic review; `--semantic` requires the `[llm]` extra and remains proposal-first. |
-| `lumio-wiki export-graph <kb> [--scope public\|all] [--out-dir D]` | Structure-only graph exchange (ADR-0024): writes `graph.json` (NetworkX node_link) + `graph.graphml` over the authorized page set into `--out-dir` (default `./lumio-graph-export`). Nodes carry identity/title/category/tags/summary only — never bodies or Sources. `--scope public` is the portable boundary; default `all` is the privileged local scope. |
+| `lumio-wiki export-graph <kb> [--scope public\|all] [--out-dir D]` | Structure-only graph exchange (ADR-0024): writes `graph.json` (NetworkX node_link) + `graph.graphml` over the authorized page set into `--out-dir` (default `./lumio-graph-export`). Nodes carry identity/title/category/tags/summary only — never bodies or Sources. Default `--scope public` is the enforced portable boundary (internal/restricted never enter the artifacts); `all` is the explicit privileged scope. |
 | `lumio-wiki import-graph <kb> <graph.json>` | Load a graph.json (Lumio or wiki-export lineage) and stage stub Compiled Pages — frontmatter skeletons plus link structure, no bodies — as ONE reviewable Ingest Proposal. No merge/skip/overwrite modes; review replaces them. |
 | `lumio-wiki doctor` | Version, detected optional extras, and packaged skill location. |
 | `lumio-wiki skill path` | Absolute path of the packaged `SKILL.md` inside the installed wheel. |
@@ -248,7 +248,6 @@ several consulted URLs, stage it as a bounded research bundle:
 timestamp; consulted URLs are provenance only and never become Claims,
 Citations, or Evidence. Clearly distinguish quoted passages from your own
 synthesis in the report body.
-
 
 ## Workflow: maintenance (you are the Maintainer)
 

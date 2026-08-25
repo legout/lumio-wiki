@@ -114,6 +114,34 @@ def test_export_graph_is_deterministic():
     assert export_a.graphml == export_b.graphml
 
 
+def test_export_graph_matches_committed_gold_files():
+    """Gold-file contract: the categorized fixture's export is byte-stable.
+
+    The committed artifacts under ``tests/fixtures/graph_exchange/`` pin the
+    serialized shape; any intentional format change updates them deliberately
+    (``graph.json`` node fields are additive-only once shipped, PRD-0005).
+    """
+    kb, _report = load_knowledge_base(CATEGORIZED_KB)
+    export = export_graph(select_export_pages(kb.pages, ExportVisibilityScope.ALL))
+
+    gold = FIXTURES / "graph_exchange"
+    assert export.graph_json == (gold / "graph.json").read_text(encoding="utf-8")
+    assert export.graphml == (gold / "graph.graphml").read_text(encoding="utf-8")
+
+
+def test_import_graph_stub_matches_committed_gold_markdown(tmp_path: Path):
+    """Gold-file contract: the foreign stub page renders byte-stable."""
+    graph_path = tmp_path / "foreign.json"
+    graph_path.write_text(json.dumps(WIKI_EXPORT_GRAPH), encoding="utf-8")
+    dest_kb, _report = load_knowledge_base(_fresh_categorized_kb(tmp_path / "dest"))
+    proposal = import_graph(graph_path, dest_kb)
+    assert not proposal.blocked
+
+    gold = (FIXTURES / "graph_exchange" / "transformers_stub.md").read_text(encoding="utf-8")
+    stub = next(p for p in proposal.proposed_pages if p.title == "Transformer Architecture")
+    assert stub.markdown == gold
+
+
 def test_export_graph_graphml_matches_json():
     """graph.graphml carries the same node/edge set for Gephi/yEd/Cytoscape."""
     export, payload = _export_eval_fixture()
@@ -356,15 +384,65 @@ def test_import_graph_rejects_malformed_input(tmp_path: Path):
         import_graph(bad_nodes, kb)
 
     no_id = tmp_path / "no_id.json"
-    no_id.write_text(
-        json.dumps({"nodes": [{"label": "No Id"}], "links": []}), encoding="utf-8"
-    )
+    no_id.write_text(json.dumps({"nodes": [{"label": "No Id"}], "links": []}), encoding="utf-8")
     with pytest.raises(GraphImportError):
         import_graph(no_id, kb)
 
     missing_file = tmp_path / "absent.json"
     with pytest.raises(GraphImportError):
         import_graph(missing_file, kb)
+
+
+def test_import_graph_rejects_duplicate_and_colliding_nodes(tmp_path: Path):
+    """Input-shape validation: duplicate ids and colliding paths never stage."""
+    kb, _report = load_knowledge_base(_fresh_categorized_kb(tmp_path / "dest"))
+
+    duplicate_id = tmp_path / "duplicate_id.json"
+    duplicate_id.write_text(
+        json.dumps({"nodes": [{"id": "a"}, {"id": "a"}], "links": []}),
+        encoding="utf-8",
+    )
+    with pytest.raises(GraphImportError, match="duplicate node id"):
+        import_graph(duplicate_id, kb)
+
+    colliding_paths = tmp_path / "colliding.json"
+    colliding_paths.write_text(
+        json.dumps(
+            {
+                "nodes": [
+                    {"id": "x", "path": "concepts/overview.md"},
+                    {"id": "y", "path": "concepts/overview.md"},
+                ],
+                "links": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(GraphImportError, match="same stub path"):
+        import_graph(colliding_paths, kb)
+
+
+def test_import_graph_diagnoses_malformed_link_endpoints(tmp_path: Path):
+    """Non-string link endpoints are diagnosed, never an uncaught crash."""
+    graph_path = tmp_path / "weird.json"
+    graph_path.write_text(
+        json.dumps(
+            {
+                "nodes": [{"id": "concepts/ok", "label": "Ok"}],
+                "links": [{"source": [], "target": "concepts/ok"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    kb, _report = load_knowledge_base(_fresh_categorized_kb(tmp_path / "dest"))
+
+    proposal = import_graph(graph_path, kb)
+
+    assert not proposal.blocked
+    assert any(
+        d.kind == "broken-link" and "malformed link entry" in d.message
+        for d in proposal.okf_diagnostics
+    )
 
 
 def test_import_graph_into_legacy_flat_mode(tmp_path: Path):
@@ -389,9 +467,7 @@ def test_import_graph_into_legacy_flat_mode(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_cli_export_graph_writes_both_artifacts(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
+def test_cli_export_graph_writes_both_artifacts(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     root = tmp_path / "kb"
     shutil.copytree(EVAL_KB, root)
     out_dir = tmp_path / "out"

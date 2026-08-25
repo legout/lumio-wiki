@@ -303,11 +303,17 @@ def _read_graph_document(graph_path: str | Path) -> tuple[dict[str, Any], bytes]
         raise GraphImportError(f"graph document has no 'nodes' array: {path}")
     if not isinstance(payload["nodes"], list):
         raise GraphImportError(f"graph document 'nodes' must be an array: {path}")
+    seen_node_ids: set[str] = set()
     for node in payload["nodes"]:
         if not isinstance(node, dict):
             raise GraphImportError(f"graph document node entries must be objects: {path}")
         if not isinstance(node.get("id"), str) or not node["id"].strip():
             raise GraphImportError(f"every graph node requires a non-empty string 'id': {path}")
+        if node["id"] in seen_node_ids:
+            raise GraphImportError(
+                f"graph document contains a duplicate node id: {node['id']!r} ({path})"
+            )
+        seen_node_ids.add(node["id"])
     return payload, raw
 
 
@@ -446,7 +452,14 @@ def import_graph(graph_path: str | Path, kb) -> IngestProposal:
         raise GraphImportError(f"graph document 'links' must be an array: {graph_path}")
 
     nodes: list[dict[str, Any]] = payload["nodes"]
-    path_by_id = {node["id"]: _stub_relative_path(node) for node in nodes}
+    path_by_id: dict[str, str] = {}
+    for node in nodes:
+        resolved = _stub_relative_path(node)
+        if resolved in path_by_id.values():
+            raise GraphImportError(
+                f"two graph nodes resolve to the same stub path: {resolved!r} (node {node['id']!r})"
+            )
+        path_by_id[node["id"]] = resolved
     title_by_id = {
         node["id"]: str(node.get("title") or node.get("label") or node["id"]) for node in nodes
     }
@@ -468,6 +481,19 @@ def import_graph(graph_path: str | Path, kb) -> IngestProposal:
             continue
         source_id = link.get("source")
         target_id = link.get("target")
+        if not isinstance(source_id, str) or not isinstance(target_id, str):
+            diagnostics.append(
+                OkfImportDiagnostic(
+                    path=str(graph_path),
+                    kind="broken-link",
+                    severity="warning",
+                    message=(
+                        f"malformed link entry skipped (source/target must be "
+                        f"strings, got source={source_id!r} target={target_id!r})"
+                    ),
+                )
+            )
+            continue
         if source_id not in path_by_id or target_id not in path_by_id:
             diagnostics.append(
                 OkfImportDiagnostic(
@@ -538,9 +564,7 @@ def import_graph(graph_path: str | Path, kb) -> IngestProposal:
         title = title_by_id[node_id]
         raw_tags = node.get("tags")
         tags = (
-            [str(tag) for tag in raw_tags if str(tag).strip()]
-            if isinstance(raw_tags, list)
-            else []
+            [str(tag) for tag in raw_tags if str(tag).strip()] if isinstance(raw_tags, list) else []
         )
         if not tags:
             tags = [STUB_ENTITY_TYPE]

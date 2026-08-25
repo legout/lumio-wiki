@@ -1,0 +1,49 @@
+{
+  "directed": true,
+  "graph": {
+    "edge_count": 1,
+    "format": "lumio-graph-exchange",
+    "node_count": 2,
+    "version": 1
+  },
+  "links": [
+    {
+      "kind": "relationship",
+      "predicate": "uses",
+      "source": "entity:lumio-overview",
+      "target": "entity:acme-corp"
+    }
+  ],
+  "multigraph": false,
+  "nodes": [
+    {
+      "category": "entities",
+      "entity_types": [
+        "organization"
+      ],
+      "id": "entity:acme-corp",
+      "label": "Acme Corp",
+      "path": "entities/acme.md",
+      "summary": "A named organization tracked by the knowledge base.",
+      "tags": [
+        "entity"
+      ],
+      "title": "Acme Corp"
+    },
+    {
+      "category": "concepts",
+      "entity_types": [
+        "concept"
+      ],
+      "id": "entity:lumio-overview",
+      "label": "Lumio Overview",
+      "path": "concepts/overview.md",
+      "summary": "A high-level introduction to Lumio.",
+      "tags": [
+        "lumio",
+        "overview"
+      ],
+      "title": "Lumio Overview"
+    }
+  ]
+}
