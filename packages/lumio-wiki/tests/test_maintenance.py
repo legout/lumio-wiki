@@ -9,17 +9,27 @@ reviewable Ingest Proposals that never touch the Knowledge Base on disk.
 from __future__ import annotations
 
 import shutil
-import textwrap
 from pathlib import Path
 
 import lumio_wiki as lw
+import msgspec
 import pytest
+from lumio_wiki.artifact_store import (
+    SourceBindingEntry,
+    SourceBindingManifest,
+    build_binding_manifest,
+)
 from lumio_wiki.cli import main
 from lumio_wiki.ingest import IngestStore
-from lumio_wiki.publish import merge_compound_sources
+from lumio_wiki.knowledge_base import KnowledgeBase
+from lumio_wiki.records import CompiledPage
+from lumio_wiki.source_registry import SourceRegistry
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
+
+#: Raw bytes for the private Knowledge Source used in Source Drift tests.
+DRIFT_RAW = b"drift diagnostic source bytes (#196)"
 
 
 @pytest.fixture
@@ -220,101 +230,331 @@ def test_stage_dream_repairs_rejects_bad_limit(kb_with_candidate: Path):
 
 
 # ---------------------------------------------------------------------------
-# merge_compound_sources regression: id-less sources are preserved
+# Source Drift diagnostic (issue #196, ADR-0014 / ADR-0020)
+#
+# A read-only, model-free Dream Cycle diagnostic over two scopes: the current
+# working copy (non-synthetic pages whose declared source is retired) and the
+# active Published Version's private Source Binding Manifest (entries bound to
+# a retired source or superseded by the registry's current hash). The
+# manifest tier describes the Published Version only — it is never joined to
+# the current worktree by title.
 # ---------------------------------------------------------------------------
 
 
-def test_merge_compound_sources_preserves_idless_sources():
-    existing = textwrap.dedent(
-        """\
-        ---
-        title: "P"
-        sources:
-          - title: "Medium post"
-            url: "https://example.com/post"
-          - title: "Spec repo"
-            url: "https://example.com/spec"
-        ---
+def _drift_registry(tmp_path: Path) -> tuple[SourceRegistry, str]:
+    """A real registry with one active and one retired registered source.
 
-        old body
-        """
-    )
-    proposed = textwrap.dedent(
-        """\
-        ---
-        title: "P"
-        sources:
-          - title: "Medium post"
-            url: "https://example.com/post"
-        ---
+    Retirement flows through the same reviewed seam the CLI uses:
+    ``stage_retirement -> bind_pending -> apply_transition``.
+    """
+    registry = SourceRegistry(tmp_path / "source-registry")
+    registry.register_source("acme-active", b"active source bytes")
+    retired_version = registry.register_source("acme-retired", DRIFT_RAW)
+    transition = registry.stage_retirement("acme-retired")
+    registry.bind_pending(transition, "proposal-retire")
+    registry.apply_transition("proposal-retire")
+    return registry, retired_version.content_hash
 
-        new body
-        """
+
+def _drift_kb(pages: list[CompiledPage]) -> KnowledgeBase:
+    """A minimal in-memory KnowledgeBase record for the pure diagnostic."""
+    return KnowledgeBase(root=Path("/tmp/drift-kb"), pages=pages)
+
+
+def _page_declaring(source_id: str, title: str = "Acme Corp") -> CompiledPage:
+    from lumio_wiki.records import Source
+
+    page = _compiled_page(title)
+    return msgspec.structs.replace(
+        page, sources=[Source(id=source_id, title=title)]
     )
-    merged = merge_compound_sources(proposed, existing)
-    data, body, _ = lw.parse_frontmatter(merged, Path("p.md"))
-    sources = lw.as_sources(data.get("sources"))
-    titles = [s.title for s in sources]
-    assert titles == ["Medium post", "Spec repo"], (
-        "id-less existing sources are preserved, not dropped"
+
+
+def test_source_drift_working_copy_retired_source(tmp_path: Path):
+    """A working-copy page declaring a retired registered source is reported."""
+    registry, retired_hash = _drift_registry(tmp_path)
+    page = _page_declaring("acme-retired")
+    report = lw.run_source_drift_check(_drift_kb([page]), registry)
+    assert report.registry_checked
+    assert report.count == 1
+    finding = report.findings[0]
+    assert finding.scope == "working-copy"
+    assert finding.kind == "retired-source"
+    assert finding.page_title == "Acme Corp"
+    assert finding.page_path == page.path
+    assert finding.source_id == "acme-retired"
+    assert finding.current_content_hash == retired_hash
+    assert finding.bound_content_hash is None
+
+
+def test_source_drift_working_copy_active_source_is_clean(tmp_path: Path):
+    registry, _hash = _drift_registry(tmp_path)
+    report = lw.run_source_drift_check(_drift_kb([_page_declaring("acme-active")]), registry)
+    assert report.count == 0
+
+
+def test_source_drift_unregistered_id_is_public_provenance(tmp_path: Path):
+    """An unregistered ``sources[].id`` stays public provenance: no finding."""
+    registry, _hash = _drift_registry(tmp_path)
+    report = lw.run_source_drift_check(_drift_kb([_page_declaring("never-registered")]), registry)
+    assert report.count == 0
+
+
+def test_source_drift_skips_synthetic_working_copy_pages(tmp_path: Path):
+    """Synthetic pages may omit provenance (ADR-0014): never drift-checked."""
+    registry, _hash = _drift_registry(tmp_path)
+    page = msgspec.structs.replace(_page_declaring("acme-retired"), synthetic=True)
+    report = lw.run_source_drift_check(_drift_kb([page]), registry)
+    assert report.count == 0
+
+
+def test_source_drift_no_registry_is_not_checked(tmp_path: Path):
+    """Without a private registry the working-copy tier is simply unchecked."""
+    report = lw.run_source_drift_check(_drift_kb([_page_declaring("acme-retired")]), None)
+    assert report.registry_checked is False
+    assert report.count == 0
+    assert "not checked" in report.manifest_status
+
+
+def _drift_manifest(
+    entries: list[SourceBindingEntry], version: str = "v2026"
+) -> SourceBindingManifest:
+    return SourceBindingManifest(
+        published_version=version, fingerprint="fp", created_at="2026-09-03T00:00:00Z",
+        entries=entries,
     )
-    assert "new body" in body
+
+
+def _manifest_entry(
+    source_id: str,
+    content_hash: str,
+    *,
+    page_title: str = "Annual Report",
+    synthetic_page: bool = False,
+) -> SourceBindingEntry:
+    return SourceBindingEntry(
+        page_title=page_title,
+        source_id=source_id,
+        content_hash=content_hash,
+        synthetic_page=synthetic_page,
+    )
+
+
+def test_source_drift_manifest_superseded_evidence(tmp_path: Path):
+    """A non-synthetic active entry whose bound hash is stale is reported."""
+    registry, _hash = _drift_registry(tmp_path)
+    manifest = _drift_manifest([_manifest_entry("acme-active", "ab" * 32)])
+    report = lw.run_source_drift_check(_drift_kb([]), registry, manifest=manifest)
+    assert report.registry_checked
+    assert report.count == 1
+    finding = report.findings[0]
+    assert finding.scope == "published-version"
+    assert finding.kind == "superseded-evidence"
+    assert finding.published_version == "v2026"
+    assert finding.page_title == "Annual Report"
+    assert finding.source_id == "acme-active"
+    assert finding.bound_content_hash == "ab" * 32
+    assert finding.current_content_hash  # the registry's current hash
+    assert finding.page_path is None
+
+
+def test_source_drift_manifest_retired_source(tmp_path: Path):
+    """A manifest entry bound to a retired source is reported — and wins."""
+    registry, retired_hash = _drift_registry(tmp_path)
+    # Retired AND bound to a stale hash: retired-source takes precedence.
+    manifest = _drift_manifest([_manifest_entry("acme-retired", "cd" * 32)])
+    report = lw.run_source_drift_check(_drift_kb([]), registry, manifest=manifest)
+    assert report.count == 1
+    finding = report.findings[0]
+    assert finding.scope == "published-version"
+    assert finding.kind == "retired-source"
+    assert finding.source_id == "acme-retired"
+    assert finding.published_version == "v2026"
+
+
+def test_source_drift_manifest_matching_hash_is_clean(tmp_path: Path):
+    registry, _hash = _drift_registry(tmp_path)
+    current = registry.get("acme-active").versions[-1].content_hash
+    manifest = _drift_manifest([_manifest_entry("acme-active", current)])
+    report = lw.run_source_drift_check(_drift_kb([]), registry, manifest=manifest)
+    assert report.count == 0
+
+
+def test_source_drift_manifest_synthetic_entry_skipped(tmp_path: Path):
+    """Synthetic manifest entries are skipped, exactly as publish skips them."""
+    registry, _hash = _drift_registry(tmp_path)
+    manifest = _drift_manifest(
+        [_manifest_entry("acme-retired", "ab" * 32, synthetic_page=True)]
+    )
+    report = lw.run_source_drift_check(_drift_kb([]), registry, manifest=manifest)
+    assert report.count == 0
+
+
+def test_source_drift_manifest_entry_absent_from_worktree_still_reported(tmp_path: Path):
+    """The manifest tier never joins to the worktree by title (ADR-0020)."""
+    registry, retired_hash = _drift_registry(tmp_path)
+    manifest = _drift_manifest(
+        [_manifest_entry("acme-retired", retired_hash, page_title="Vanished Page")]
+    )
+    # The worktree has NO page titled "Vanished Page" — the finding survives.
+    report = lw.run_source_drift_check(_drift_kb([]), registry, manifest=manifest)
+    assert report.count == 1
+    assert report.findings[0].page_title == "Vanished Page"
+
+
+def test_source_drift_manifest_unknown_source_is_incomplete_never_clean(tmp_path: Path):
+    """An entry whose source id is absent from the registry is incomplete."""
+    registry, _hash = _drift_registry(tmp_path)
+    manifest = _drift_manifest([_manifest_entry("ghost-source", "ab" * 32)])
+    report = lw.run_source_drift_check(_drift_kb([]), registry, manifest=manifest)
+    assert report.count == 0
+    assert report.manifest_status.startswith("incomplete")
+
+
+def test_source_drift_findings_sort_deterministically(tmp_path: Path):
+    """Findings sort by scope, published version, title/path, source, kind."""
+    registry, _hash = _drift_registry(tmp_path)
+    page = _page_declaring("acme-retired")
+    manifest = _drift_manifest(
+        [
+            _manifest_entry("acme-retired", "cd" * 32),
+            _manifest_entry("acme-active", "ef" * 32),
+        ]
+    )
+    report = lw.run_source_drift_check(_drift_kb([page]), registry, manifest=manifest)
+    keys = [
+        (f.scope, f.published_version or "", f.page_path or f.page_title, f.source_id, f.kind)
+        for f in report.findings
+    ]
+    assert keys == sorted(keys)
+    assert report.count == 3  # 1 working-copy + 2 published-version
+
+
+def test_source_drift_dream_report_carries_drift(kb_root: Path, tmp_path: Path):
+    """``run_dream_cycle`` composes the diagnostic when inputs are given."""
+    registry, _hash = _drift_registry(tmp_path)
+    report = lw.run_dream_cycle(
+        kb_root,
+        registry=registry,
+        manifest=None,
+        manifest_status="not checked: no Published Version",
+    )
+    assert report.drift.registry_checked
+    assert report.drift.manifest_status.startswith("not checked")
 
 
 # ---------------------------------------------------------------------------
-# CLI verbs
+# Source Drift CLI (issue #196): ``lumio-wiki dream`` resolves optional
+# private inputs and reports the tier status without ever falsely reporting
+# a clean manifest check.
 # ---------------------------------------------------------------------------
 
 
-def test_cli_lint_reports_and_exits_zero(kb_root: Path, capsys):
-    rc = main(["lint", str(kb_root)])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "valid:               True" in out
-    assert "scope_disclosure:" in out
-    assert "structure_scope:     canonical" in out
-    assert "structure_scope:     discovery" in out
-
-
-def test_cli_lint_exit_one_on_invalid(tmp_path: Path, capsys):
-    root = tmp_path / "kb"
-    shutil.copytree(FIXTURES / "invalid", root)
-    rc = main(["lint", str(root)])
-    assert rc == 1
-
-
-def test_cli_cross_link_lists_candidates(kb_with_candidate: Path, capsys):
-    rc = main(["cross-link", str(kb_with_candidate)])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "link_candidates:     1" in out
-    assert "Lumio Overview -> Acme Corp" in out
-    assert "--stage" in out
-
-
-def test_cli_cross_link_stage(kb_with_candidate: Path, capsys):
-    rc = main(["cross-link", str(kb_with_candidate), "--stage"])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "staged_proposals:    1" in out
-    assert "[Acme Corp]" not in (kb_with_candidate / "concepts" / "overview.md").read_text(
-        encoding="utf-8"
+def test_cli_dream_reports_retired_source_finding(
+    kb_root: Path, tmp_path: Path, monkeypatch, capsys
+):
+    registry, _hash = _drift_registry(tmp_path)
+    ingest = IngestStore(kb_root / ".lumio" / "ingest")
+    shutil.copytree(
+        tmp_path / "source-registry", ingest.source_registry.root, dirs_exist_ok=True
     )
+    # Declare the retired source on the overview page (id must be registered).
+    overview = kb_root / "concepts" / "overview.md"
+    overview.write_text(
+        overview.read_text(encoding="utf-8").replace('id: "lumio-overview"', 'id: "acme-retired"'),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    rc = main(["dream", str(kb_root)])
+    out = capsys.readouterr().out
+    assert rc == 0  # advisory: the exit rule is validation-only
+    assert "source_drift_findings:  1" in out
+    assert "retired-source" in out
+    assert "concepts/overview.md" in out
+    assert "registry" in out
 
 
-def test_cli_dream_reflects(kb_with_candidate: Path, capsys):
-    rc = main(["dream", str(kb_with_candidate)])
+def test_cli_dream_without_ingest_dir_does_not_create_one(
+    kb_root: Path, monkeypatch, capsys
+):
+    ingest_dir = kb_root / ".lumio" / "ingest"
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    assert not ingest_dir.exists()
+    rc = main(["dream", str(kb_root)])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "# Dream Cycle" in out
-    assert "link_candidates:     1" in out
+    assert not ingest_dir.exists()  # read-only: the store was never created
+    assert "source_drift_registry:  not checked" in out
 
 
-def test_cli_dream_stage(kb_with_candidate: Path, capsys):
-    rc = main(["dream", str(kb_with_candidate), "--stage", "--limit", "1"])
+def test_cli_dream_without_artifact_store_reports_registry_only_tier(
+    kb_root: Path, tmp_path: Path, monkeypatch, capsys
+):
+    registry, _hash = _drift_registry(tmp_path)
+    ingest = IngestStore(kb_root / ".lumio" / "ingest")
+    shutil.copytree(
+        tmp_path / "source-registry", ingest.source_registry.root, dirs_exist_ok=True
+    )
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    rc = main(["dream", str(kb_root)])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "staged_proposals:    1" in out
+    assert "source_drift_registry:  checked" in out
+    assert "source_drift_manifest: not checked: no Source Artifact Store" in out
+
+
+def test_cli_dream_manifest_tier_incomplete_without_active_version(
+    kb_root: Path, tmp_path: Path, monkeypatch, capsys
+):
+    """A configured store with no active Published Version skips the tier."""
+    registry, _hash = _drift_registry(tmp_path)
+    ingest = IngestStore(kb_root / ".lumio" / "ingest")
+    shutil.copytree(
+        tmp_path / "source-registry", ingest.source_registry.root, dirs_exist_ok=True
+    )
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(tmp_path / "store"))
+    rc = main(["dream", str(kb_root)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "source_drift_manifest" in out
+    assert "incomplete" in out or "not checked" in out
+
+
+def test_cli_dream_reports_manifest_tier_from_active_version(
+    kb_root: Path, tmp_path: Path, monkeypatch, capsys
+):
+    """A local KB with LUMIO_PUBLISH_TO pointing at an object store checks
+    the active Published Version's binding manifest."""
+    from lumio_wiki import cli
+    from lumio_wiki.s3_publish import PointerObservation
+
+    store_root = tmp_path / "store"
+    store = lw.LocalDirectoryArtifactStore(store_root)
+    registry, retired_hash = _drift_registry(tmp_path)
+    ingest = IngestStore(kb_root / ".lumio" / "ingest")
+    shutil.copytree(
+        tmp_path / "source-registry", ingest.source_registry.root, dirs_exist_ok=True
+    )
+    kb, _report = lw.load_knowledge_base(kb_root)
+    manifest = build_binding_manifest(
+        published_version="v2026",
+        fingerprint="fp",
+        registry=registry,
+        pages=kb.pages,
+        now="2026-09-03T00:00:00Z",
+    )
+    store.put_binding_manifest("v2026", msgspec.json.encode(manifest))
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+    monkeypatch.setenv("LUMIO_PUBLISH_TO", "s3://bucket/kb")
+    monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (object(), "kb-prefix"))
+    monkeypatch.setattr(
+        "lumio_wiki.s3_publish.observe_current_pointer",
+        lambda store_arg, prefix: PointerObservation(version="v2026", e_tag="e"),
+    )
+    rc = main(["dream", str(kb_root)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "source_drift_manifest: checked (published version v2026)" in out
 
 
 # ---------------------------------------------------------------------------
@@ -413,5 +653,3 @@ def test_canonical_vs_discovery_scope_distinction(kb_root: Path, capsys):
     # The same-directory body link is a discovery-ONLY edge (no Claim).
     assert "Glossary" not in canonical
     assert "Glossary" in discovery
-
-

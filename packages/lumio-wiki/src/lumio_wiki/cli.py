@@ -99,6 +99,7 @@ from lumio_wiki.source_inspection import (
     OUTCOME_ABSENT_BINDING,
     OUTCOME_ACCESS_DENIED,
     OUTCOME_CORRUPTION,
+    OUTCOME_HISTORICAL_VERSION_MISMATCH,
     OUTCOME_UNAVAILABLE,
     SourceInspectionError,
     fetch_verified_artifact,
@@ -3356,11 +3357,96 @@ def _print_semantic_findings(findings) -> None:
                 print(f"    summary: {finding.summary}")
 
 
+def _resolve_source_drift_inputs(
+    args: argparse.Namespace, kb: KnowledgeBase
+) -> tuple[Any, Any, str]:
+    """Resolve the optional private Source Drift inputs (issue #196).
+
+    Returns ``(registry, manifest, manifest_status)``. Read-only by
+    contract: the ingest directory is checked with ``exists()`` BEFORE any
+    store/registry construction (``SourceRegistry.__init__`` and
+    ``IngestStore`` both create directories), so a KB with no ingest
+    directory stays untouched and its registry tier reports unchecked. The
+    manifest tier inspects the active Published Version of an object-store
+    Knowledge Base Location, or of ``LUMIO_PUBLISH_TO`` when it is an
+    object-store URI; a missing destination, store, or pointer is an
+    explicit skipped-tier status, never an error. Failures map to bounded,
+    secret-free statuses — raw exception text, object keys, URLs, and
+    credentials are never printed.
+    """
+    registry: Any = None
+    manifest: Any = None
+    manifest_status = "not checked: no active Published Version binding manifest"
+
+    ingest_dir = _resolve_ingest_dir(args, kb.root)
+    if ingest_dir.exists():
+        registry = IngestStore(ingest_dir).source_registry
+    else:
+        manifest_status = "not checked: no ingest store (registry unchecked)"
+
+    artifact_store = None
+    try:
+        artifact_store = _artifact_store_from_env()
+    except CliError:
+        artifact_store = None
+        manifest_status = "not checked: no usable Source Artifact Store"
+    if artifact_store is None and "Source Artifact Store" not in manifest_status:
+        manifest_status = "not checked: no Source Artifact Store"
+
+    version: str | None = None
+    if artifact_store is not None:
+        if _is_object_store_uri(str(args.path)):
+            try:
+                version = _active_published_version(str(args.path))
+            except CliError:
+                version = None
+                manifest_status = "not checked: this Knowledge Base has no active Published Version"
+        else:
+            destination = load_project_config().get(PUBLISH_TO_ENV_VAR)
+            if destination is not None and _is_object_store_uri(destination):
+                try:
+                    version = _active_published_version(destination)
+                except CliError:
+                    version = None
+                    manifest_status = (
+                        "not checked: the configured destination has no active Published Version"
+                    )
+
+    if artifact_store is not None and version is not None:
+        from lumio_wiki.source_inspection import read_binding_manifest
+
+        try:
+            manifest = read_binding_manifest(artifact_store, version)
+            manifest_status = f"checked (published version {version})"
+        except SourceInspectionError as exc:
+            manifest = None
+            if exc.outcome == OUTCOME_HISTORICAL_VERSION_MISMATCH:
+                manifest_status = (
+                    "not checked: the active Published Version has no retained "
+                    "binding manifest"
+                )
+            elif exc.outcome == OUTCOME_ACCESS_DENIED:
+                manifest_status = "manifest check failed: access denied"
+            elif exc.outcome == OUTCOME_CORRUPTION:
+                manifest_status = "manifest check failed: corrupt manifest"
+            else:
+                manifest_status = "manifest check failed: unavailable"
+
+    return registry, manifest, manifest_status
+
+
 def _cmd_dream(args: argparse.Namespace) -> int:
     """Run deterministic reflection, then optional semantic review and staging."""
     kb, _load_report = _load_kb(args.path)
     index_dir = _resolve_index_dir(args, kb.root)
-    report = lumio_wiki.run_dream_cycle(args.path, index_dir=index_dir)
+    registry, manifest, manifest_status = _resolve_source_drift_inputs(args, kb)
+    report = lumio_wiki.run_dream_cycle(
+        args.path,
+        index_dir=index_dir,
+        registry=registry,
+        manifest=manifest,
+        manifest_status=manifest_status,
+    )
     lint = report.lint
     print("# Dream Cycle")
     print(f"path:                {lint.kb_path}")
@@ -3378,6 +3464,29 @@ def _cmd_dream(args: argparse.Namespace) -> int:
     print(f"due_for_review:     {report.due_count}")
     for page in report.due_pages:
         print(f"  - {page.path} (review_after {page.review_after}) title={page.title!r}")
+
+    drift = report.drift
+    print(f"source_drift_findings:  {drift.count}")
+    if registry is not None:
+        print("source_drift_registry:  checked")
+    else:
+        print("source_drift_registry:  not checked (no ingest store)")
+    print(f"source_drift_manifest: {drift.manifest_status}")
+    for finding in drift.findings:
+        if finding.scope == "working-copy":
+            path = f" ({finding.page_path})" if finding.page_path else ""
+            print(
+                f"  - {finding.kind}: {finding.page_title!r}{path} "
+                f"source={finding.source_id}"
+            )
+        else:
+            bound = finding.bound_content_hash or ""
+            current = finding.current_content_hash or ""
+            print(
+                f"  - {finding.kind}: {finding.page_title!r} "
+                f"(published version {finding.published_version}) "
+                f"source={finding.source_id} bound={bound[:12]} current={current[:12]}"
+            )
     _print_validation_issues(lint.validation_report)
 
     if args.semantic:
