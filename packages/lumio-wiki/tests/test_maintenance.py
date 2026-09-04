@@ -535,6 +535,19 @@ def test_cli_dream_without_ingest_dir_does_not_create_one(
     assert "source_drift_registry:  not checked" in out
 
 
+def test_cli_dream_file_ingest_root_is_bounded_and_secret_free(
+    kb_root: Path, tmp_path: Path, monkeypatch, capsys
+):
+    invalid = tmp_path / "private-ingest-path"
+    invalid.write_text("not a directory", encoding="utf-8")
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    assert main(["dream", str(kb_root), "--ingest-dir", str(invalid)]) == 0
+    captured = capsys.readouterr()
+    assert "source_drift_registry:  not checked" in captured.out
+    assert str(invalid) not in captured.out + captured.err
+
+
 def test_cli_dream_without_artifact_store_reports_registry_only_tier(
     kb_root: Path, tmp_path: Path, monkeypatch, capsys
 ):

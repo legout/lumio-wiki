@@ -3382,11 +3382,15 @@ def _resolve_source_drift_inputs(
     manifest_status = "not checked: no active Published Version binding manifest"
 
     ingest_dir = _resolve_ingest_dir(args, kb.root)
-    ingest_store = IngestStore(ingest_dir)
-    if ingest_store.root.exists():
-        registry = ingest_store.source_registry
-    else:
+    try:
+        ingest_store = IngestStore(ingest_dir)
+    except OSError:
         manifest_status = "not checked: no ingest store (registry unchecked)"
+    else:
+        if ingest_store.root.exists():
+            registry = ingest_store.source_registry
+        else:
+            manifest_status = "not checked: no ingest store (registry unchecked)"
 
     artifact_store = None
     try:
