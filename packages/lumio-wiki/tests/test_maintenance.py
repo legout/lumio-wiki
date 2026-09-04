@@ -9,6 +9,7 @@ reviewable Ingest Proposals that never touch the Knowledge Base on disk.
 from __future__ import annotations
 
 import shutil
+import textwrap
 from pathlib import Path
 
 import lumio_wiki as lw
@@ -22,6 +23,7 @@ from lumio_wiki.artifact_store import (
 from lumio_wiki.cli import main
 from lumio_wiki.ingest import IngestStore
 from lumio_wiki.knowledge_base import KnowledgeBase
+from lumio_wiki.publish import merge_compound_sources
 from lumio_wiki.records import CompiledPage
 from lumio_wiki.source_registry import SourceRegistry
 
@@ -411,6 +413,31 @@ def test_source_drift_manifest_unknown_source_is_incomplete_never_clean(tmp_path
     assert report.manifest_status.startswith("incomplete")
 
 
+def test_source_drift_incomplete_overrides_caller_checked_status(tmp_path: Path):
+    """Computed facts win: 'incomplete' overrides a caller 'checked' status."""
+    registry, _hash = _drift_registry(tmp_path)
+    manifest = _drift_manifest([_manifest_entry("ghost-source", "ab" * 32)])
+    report = lw.run_source_drift_check(
+        _drift_kb([]),
+        registry,
+        manifest=manifest,
+        manifest_status="checked (published version v1)",
+    )
+    assert report.manifest_status.startswith("incomplete")
+    assert not report.manifest_status.startswith("checked")
+
+
+def test_source_drift_no_registry_never_echoes_caller_checked_status(tmp_path: Path):
+    """registry is None + a caller 'checked' status is never echoed clean."""
+    report = lw.run_source_drift_check(
+        _drift_kb([]),
+        None,
+        manifest_status="checked (published version v1)",
+    )
+    assert report.registry_checked is False
+    assert report.manifest_status.startswith("not checked")
+
+
 def test_source_drift_findings_sort_deterministically(tmp_path: Path):
     """Findings sort by scope, published version, title/path, source, kind."""
     registry, _hash = _drift_registry(tmp_path)
@@ -555,6 +582,150 @@ def test_cli_dream_reports_manifest_tier_from_active_version(
     out = capsys.readouterr().out
     assert rc == 0
     assert "source_drift_manifest: checked (published version v2026)" in out
+
+
+def test_cli_dream_store_failure_is_bounded_and_secret_free(
+    kb_root: Path, tmp_path: Path, monkeypatch, capsys
+):
+    """An unreachable object store yields a bounded status, never a crash or
+    a leaked raw object key / endpoint URL (review finding, #196)."""
+    from lumio_wiki import cli
+    from lumio_wiki.knowledge_base import KnowledgeBaseError
+
+    store_root = tmp_path / "store"
+    lw.LocalDirectoryArtifactStore(store_root)
+    registry, _hash = _drift_registry(tmp_path)
+    ingest = IngestStore(kb_root / ".lumio" / "ingest")
+    shutil.copytree(
+        tmp_path / "source-registry", ingest.source_registry.root, dirs_exist_ok=True
+    )
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+    monkeypatch.setenv("LUMIO_PUBLISH_TO", "s3://bucket/kb")
+    monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (object(), "kb-prefix"))
+    monkeypatch.setattr(
+        "lumio_wiki.s3_publish.observe_current_pointer",
+        lambda store_arg, prefix: (_ for _ in ()).throw(
+            KnowledgeBaseError(
+                "could not read activation pointer 'private/prefix/current' at https://secret-endpoint"
+            )
+        ),
+    )
+    rc = main(["dream", str(kb_root)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "source_drift_manifest: manifest check failed: unavailable" in out
+    assert "secret-endpoint" not in out
+    assert "current" not in out.split("source_drift_manifest")[1].splitlines()[0]
+
+
+def test_cli_dream_missing_local_store_creates_nothing(kb_root, tmp_path, monkeypatch, capsys):
+    """A nonexistent local store path is never created by a read-only dream."""
+    registry, _hash = _drift_registry(tmp_path)
+    ingest = IngestStore(kb_root / ".lumio" / "ingest")
+    shutil.copytree(
+        tmp_path / "source-registry", ingest.source_registry.root, dirs_exist_ok=True
+    )
+    missing = tmp_path / "missing-store"
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(missing))
+    monkeypatch.delenv("LUMIO_PUBLISH_TO", raising=False)
+    rc = main(["dream", str(kb_root)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert not missing.exists()  # read-only: the store path was never created
+    assert "source_drift_manifest" in out
+
+
+def test_merge_compound_sources_preserves_idless_sources():
+    existing = textwrap.dedent(
+        """\
+        ---
+        title: "P"
+        sources:
+          - title: "Medium post"
+            url: "https://example.com/post"
+          - title: "Spec repo"
+            url: "https://example.com/spec"
+        ---
+
+        old body
+        """
+    )
+    proposed = textwrap.dedent(
+        """\
+        ---
+        title: "P"
+        sources:
+          - title: "Medium post"
+            url: "https://example.com/post"
+        ---
+
+        new body
+        """
+    )
+    merged = merge_compound_sources(proposed, existing)
+    data, body, _ = lw.parse_frontmatter(merged, Path("p.md"))
+    sources = lw.as_sources(data.get("sources"))
+    titles = [s.title for s in sources]
+    assert titles == ["Medium post", "Spec repo"], (
+        "id-less existing sources are preserved, not dropped"
+    )
+    assert "new body" in body
+
+
+# ---------------------------------------------------------------------------
+# CLI verbs
+# ---------------------------------------------------------------------------
+
+
+def test_cli_lint_reports_and_exits_zero(kb_root: Path, capsys):
+    rc = main(["lint", str(kb_root)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "valid:               True" in out
+    assert "scope_disclosure:" in out
+    assert "structure_scope:     canonical" in out
+    assert "structure_scope:     discovery" in out
+
+
+def test_cli_lint_exit_one_on_invalid(tmp_path: Path, capsys):
+    root = tmp_path / "kb"
+    shutil.copytree(FIXTURES / "invalid", root)
+    rc = main(["lint", str(root)])
+    assert rc == 1
+
+
+def test_cli_cross_link_lists_candidates(kb_with_candidate: Path, capsys):
+    rc = main(["cross-link", str(kb_with_candidate)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "link_candidates:     1" in out
+    assert "Lumio Overview -> Acme Corp" in out
+    assert "--stage" in out
+
+
+def test_cli_cross_link_stage(kb_with_candidate: Path, capsys):
+    rc = main(["cross-link", str(kb_with_candidate), "--stage"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "staged_proposals:    1" in out
+    assert "[Acme Corp]" not in (kb_with_candidate / "concepts" / "overview.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_cli_dream_reflects(kb_with_candidate: Path, capsys):
+    rc = main(["dream", str(kb_with_candidate)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "# Dream Cycle" in out
+    assert "link_candidates:     1" in out
+
+
+def test_cli_dream_stage(kb_with_candidate: Path, capsys):
+    rc = main(["dream", str(kb_with_candidate), "--stage", "--limit", "1"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "staged_proposals:    1" in out
 
 
 # ---------------------------------------------------------------------------
