@@ -1525,11 +1525,11 @@ class IngestStore:
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).resolve()
+        if self.root.exists() and not self.root.is_dir():
+            raise NotADirectoryError(self.root)
         self.raw_dir = self.root / "raw"
         self.proposals_dir = self.root / "proposals"
         self.source_registry = SourceRegistry(self.root / "source-registry")
-        self.raw_dir.mkdir(parents=True, exist_ok=True)
-        self.proposals_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, IngestProposal] = {}
 
     def _proposal_path(self, proposal_id: str) -> Path:
@@ -1549,6 +1549,7 @@ class IngestStore:
             if raw_path is not None
             else proposal
         )
+        self.proposals_dir.mkdir(parents=True, exist_ok=True)
         path = self._proposal_path(proposal.id)
         path.write_bytes(msgspec.json.encode(proposal_with_path))
         self._cache[proposal.id] = proposal_with_path

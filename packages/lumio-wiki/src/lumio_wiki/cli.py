@@ -2,8 +2,10 @@
 
 A coding agent initializes, inspects, retrieves from, ingests into, reviews,
 and publishes a Knowledge Base through this CLI without cloning the Lumio
-repository or importing the full web application. Every command calls the
-public :mod:`lumio_wiki` Python surface — no internal application modules.
+repository or importing the full web application. Most commands call the
+public :mod:`lumio_wiki` Python surface directly. Package-private loaded-state
+helpers let composed CLI commands retain one validated Knowledge Base view
+instead of reopening it.
 
 The dispatcher follows the same ``argparse`` + ``set_defaults(func=...)``
 convention the existing ``lumio`` CLI uses. Core operations (validate,
@@ -93,6 +95,11 @@ from lumio_wiki.knowledge_base import (
     NAV_INDEX_BASENAME,
     due_review_pages,
     fingerprint_sources,
+)
+from lumio_wiki.maintenance import (
+    _run_dream_cycle_loaded,
+    _run_lint_loaded,
+    _stage_ranked_link_candidates_loaded,
 )
 from lumio_wiki.records import ValidationReport
 from lumio_wiki.source_inspection import (
@@ -3239,9 +3246,9 @@ def _cmd_lint(args: argparse.Namespace) -> int:
     and the canonical/discovery structural diagnostics. Never writes; exits 1
     when the Knowledge Base is invalid.
     """
-    kb, _load_report = _load_kb(args.path)
+    kb, validation_report = _load_kb(args.path)
     index_dir = _resolve_index_dir(args, kb.root)
-    report = lumio_wiki.run_lint(args.path, index_dir=index_dir)
+    report = _run_lint_loaded(kb, validation_report, index_dir=index_dir)
     errors = [i for i in report.validation_report.issues if i.severity == "error"]
     warnings = [i for i in report.validation_report.issues if i.severity == "warning"]
     print(f"path:                {report.kb_path}")
@@ -3280,18 +3287,13 @@ def _stage_candidates(args: argparse.Namespace, kb, ranked, limit: int):
     """Stage one reviewable repair proposal per candidate, bounded by limit."""
     ingest_dir = _resolve_ingest_dir(args, kb.root)
     ingest_dir.mkdir(parents=True, exist_ok=True)
-    store = IngestStore(ingest_dir)
-    staged = []
-    skipped = []
-    # Intentional parallel structure with Dream Cycle's bounded stage-with-skip loop.
-    for entry in ranked[:limit]:
-        candidate = entry.candidate
-        try:
-            proposal = lumio_wiki.stage_cross_link_proposal(args.path, candidate, store=store)
-            staged.append(proposal)
-        except (lumio_wiki.MaintenanceError, OSError) as exc:
-            skipped.append((candidate, str(exc)))
-    return staged, skipped
+    result = _stage_ranked_link_candidates_loaded(
+        kb,
+        ranked,
+        store=IngestStore(ingest_dir),
+        limit=limit,
+    )
+    return result.staged, result.skipped
 
 
 def _print_staging_outcome(args, staged, skipped) -> None:
@@ -3365,49 +3367,45 @@ def _resolve_source_drift_inputs(
     """Resolve the optional private Source Drift inputs (issue #196).
 
     Returns ``(registry, manifest, manifest_status)``. Read-only by
-    contract: the ingest directory is checked with ``exists()`` BEFORE any
-    store/registry construction (``SourceRegistry.__init__`` and
-    ``IngestStore`` both create directories), and the local Source Artifact
-    Store path is existence-checked before the adapter is built (its
-    constructor mkdirs) — a KB with no local private state stays untouched
-    and its tiers report unchecked. The manifest tier inspects the active
-    Published Version of an object-store Knowledge Base Location, or of
-    ``LUMIO_PUBLISH_TO`` when it is an object-store URI; a missing
-    destination, store, or pointer is an explicit skipped-tier status, never
-    an error. Failures map to bounded, secret-free statuses — raw exception
-    text, object keys, URLs, and credentials are never printed.
+    contract: store construction never materializes state, and missing local
+    roots stay absent. The ingest-root existence check distinguishes an absent
+    registry tier from an empty existing one; the local Source Artifact Store
+    check likewise keeps its skipped-tier status truthful. The manifest tier
+    inspects the active Published Version of an object-store Knowledge Base
+    Location, or of ``LUMIO_PUBLISH_TO`` when it is an object-store URI; a
+    missing destination, store, or pointer is an explicit skipped-tier status,
+    never an error. Failures map to bounded, secret-free statuses — raw
+    exception text, object keys, URLs, and credentials are never printed.
     """
     registry: SourceRegistry | None = None
     manifest: SourceBindingManifest | None = None
     manifest_status = "not checked: no active Published Version binding manifest"
 
     ingest_dir = _resolve_ingest_dir(args, kb.root)
-    if ingest_dir.exists():
-        registry = IngestStore(ingest_dir).source_registry
-    else:
+    try:
+        ingest_store = IngestStore(ingest_dir)
+    except OSError:
         manifest_status = "not checked: no ingest store (registry unchecked)"
+    else:
+        if ingest_store.root.exists():
+            registry = ingest_store.source_registry
+        else:
+            manifest_status = "not checked: no ingest store (registry unchecked)"
 
     artifact_store = None
     try:
-        # Read-only contract (review finding, #196): the local-directory
-        # adapter's constructor mkdirs, so existence-check the resolved path
-        # first and treat a missing store like any other absent store. S3
-        # stores need no guard (object stores have no directories to create).
-        store_uri = os.environ.get(SOURCE_STORE_ENV_VAR) or load_project_config().get(
-            SOURCE_STORE_ENV_VAR
-        )
-        if store_uri and not _is_object_store_uri(store_uri):
-            store_path = Path(store_uri).expanduser()
-            if not store_path.is_absolute():
-                project = discover_kb_path_from_project_env()
-                base = Path(project).parent if project else Path.cwd()
-                store_path = (base / store_path).resolve()
-            if not store_path.exists():
-                raise CliError("Source Artifact Store path does not exist")
         artifact_store = _artifact_store_from_env()
     except CliError:
-        artifact_store = None
         manifest_status = "not checked: no usable Source Artifact Store"
+    if artifact_store is not None:
+        from lumio_wiki.artifact_store import LocalDirectoryArtifactStore
+
+        if (
+            isinstance(artifact_store, LocalDirectoryArtifactStore)
+            and not artifact_store.root.exists()
+        ):
+            artifact_store = None
+            manifest_status = "not checked: no usable Source Artifact Store"
     if artifact_store is None and "Source Artifact Store" not in manifest_status:
         manifest_status = "not checked: no Source Artifact Store"
 
@@ -3463,11 +3461,12 @@ def _resolve_source_drift_inputs(
 
 def _cmd_dream(args: argparse.Namespace) -> int:
     """Run deterministic reflection, then optional semantic review and staging."""
-    kb, _load_report = _load_kb(args.path)
+    kb, validation_report = _load_kb(args.path)
     index_dir = _resolve_index_dir(args, kb.root)
     registry, manifest, manifest_status = _resolve_source_drift_inputs(args, kb)
-    report = lumio_wiki.run_dream_cycle(
-        args.path,
+    report = _run_dream_cycle_loaded(
+        kb,
+        validation_report,
         index_dir=index_dir,
         registry=registry,
         manifest=manifest,

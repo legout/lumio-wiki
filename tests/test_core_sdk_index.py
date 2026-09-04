@@ -16,6 +16,7 @@ from lumio_wiki import (
     is_fresh,
     load_knowledge_base,
 )
+
 from tests.retrieval_testutil import build_lancedb_kb
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -84,6 +85,27 @@ def test_lookup_by_title():
     pages = kb.lookup_by_title("Architecture")
     assert len(pages) == 1
     assert pages[0].title == "Architecture"
+
+
+def test_loaded_knowledge_base_builds_derived_index_once(monkeypatch):
+    import lumio_wiki.knowledge_base as knowledge_base_module
+
+    kb, _ = load_knowledge_base(FIXTURES / "valid")
+    real_index = knowledge_base_module._KnowledgeIndex
+    build_count = 0
+
+    class CountingKnowledgeIndex(real_index):
+        def __init__(self, pages):
+            nonlocal build_count
+            build_count += 1
+            super().__init__(pages)
+
+    monkeypatch.setattr(knowledge_base_module, "_KnowledgeIndex", CountingKnowledgeIndex)
+
+    kb.lookup_by_title("Architecture")
+    kb.lookup_by_alias("Stack")
+
+    assert build_count == 1
 
 
 def test_lookup_by_alias():

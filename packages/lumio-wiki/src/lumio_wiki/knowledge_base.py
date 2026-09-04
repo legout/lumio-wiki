@@ -8,7 +8,9 @@ import tempfile
 import uuid
 from collections import deque
 from collections.abc import Iterable, Sequence
-from datetime import UTC, date as _date_cls, datetime
+from datetime import UTC, datetime
+from datetime import date as _date_cls
+from functools import cached_property
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple, Protocol
 from urllib.parse import quote
@@ -30,17 +32,24 @@ from lumio_wiki.graph_state import (
 )
 from lumio_wiki.page_search import search_pages as search_pages_over
 from lumio_wiki.records import (
-    CLAIM_STATUS_ACCEPTED,
     CLAIM_ORIGIN_AUTHORED,
     CLAIM_ORIGINS,
+    ENTITY_MATCH_ALIAS,
+    ENTITY_MATCH_CANONICAL_TITLE,
+    ENTITY_MATCH_ENTITY_ID,
+    ENTITY_MATCH_REDIRECT,
     EXTRACTOR_VERSION,
-    LITERAL_KINDS,
-    LITERAL_KIND_BOOLEAN,
-    LITERAL_KIND_NUMBER,
-    LITERAL_KIND_STRING,
+    GRAPH_EDGE_ORIGIN_CLAIM,
+    GRAPH_EDGE_ORIGIN_EXTRACTED,
+    GRAPH_EDGE_SCOPE_CANONICAL,
+    GRAPH_EDGE_SCOPE_DISCOVERY,
     LINK_IMPACT_KIND_COMPONENT_JOIN,
     LINK_IMPACT_KIND_FRAGILE_STRENGTHENING,
     LINK_IMPACT_KIND_ORPHAN_REPAIR,
+    LITERAL_KIND_BOOLEAN,
+    LITERAL_KIND_NUMBER,
+    LITERAL_KIND_STRING,
+    LITERAL_KINDS,
     PROPOSAL_ONLY_CLAIM_STATUSES,
     PUBLISHED_CLAIM_STATUSES,
     ActivityLogEntry,
@@ -48,19 +57,11 @@ from lumio_wiki.records import (
     ClaimEvidence,
     CompiledPage,
     ContentCategory,
-    ENTITY_MATCH_ALIAS,
-    ENTITY_MATCH_CANONICAL_TITLE,
-    ENTITY_MATCH_ENTITY_ID,
-    ENTITY_MATCH_REDIRECT,
     Entity,
     EntityRedirect,
     EntityResolution,
     EntityTypeDefinition,
     ExtractedReference,
-    GRAPH_EDGE_ORIGIN_CLAIM,
-    GRAPH_EDGE_ORIGIN_EXTRACTED,
-    GRAPH_EDGE_SCOPE_CANONICAL,
-    GRAPH_EDGE_SCOPE_DISCOVERY,
     GraphEdge,
     GraphHealthReport,
     GraphHub,
@@ -410,8 +411,8 @@ RESERVED_ARTIFACT_LABELS: dict[str, str] = {
 }
 
 
-class KnowledgeBase(msgspec.Struct, frozen=True):
-    """A loaded Knowledge Base."""
+class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
+    """A loaded Knowledge Base view; callers replace rather than mutate pages."""
 
     root: Path
     pages: list[CompiledPage] = msgspec.field(default_factory=list)
@@ -419,8 +420,12 @@ class KnowledgeBase(msgspec.Struct, frozen=True):
     control: KnowledgeBaseControlFile | None = None
     retrieval: Any | None = None
 
-    def _knowledge_index(self) -> _KnowledgeIndex:  # noqa: F821
+    @cached_property
+    def _cached_knowledge_index(self) -> _KnowledgeIndex:  # noqa: F821
         return _KnowledgeIndex(self.pages)
+
+    def _knowledge_index(self) -> _KnowledgeIndex:  # noqa: F821
+        return self._cached_knowledge_index
 
     def _retrieval_adapter(self) -> RetrievalAdapter:
         """Return the bound adapter, or the always-available zero-index default."""
@@ -3045,7 +3050,8 @@ def _ontology_issues(pages: list[CompiledPage], ontology: Ontology | None) -> li
                         message=(
                             f"claim {claim.id}: predicate {claim.predicate} requires a "
                             f"subject with one of types {sorted(definition.subject_types)} "
-                            f"(page has {sorted(page.entity_types) or 'no types'}) — domain violation"
+                            f"(page has {sorted(page.entity_types) or 'no types'}) — "
+                            "domain violation"
                         ),
                     )
                 )
