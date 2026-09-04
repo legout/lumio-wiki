@@ -209,8 +209,8 @@ class LocalDirectoryArtifactStore:
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
-        (self.root / "artifacts").mkdir(parents=True, exist_ok=True)
-        (self.root / "bindings").mkdir(parents=True, exist_ok=True)
+        if self.root.exists() and not self.root.is_dir():
+            raise NotADirectoryError(self.root)
 
     def _artifact_path(self, source_id: str, content_hash: str) -> Path:
         # source_id is a validated registry label (lowercase, no "/") and
@@ -303,7 +303,9 @@ class LocalDirectoryArtifactStore:
     def put_binding_manifest(self, version: str, manifest: bytes) -> None:
         if "/" in version or version in {"", ".", ".."}:
             raise ArtifactStoreError("invalid version label")
-        (self.root / "bindings" / f"{version}.json").write_bytes(manifest)
+        bindings = self.root / "bindings"
+        bindings.mkdir(parents=True, exist_ok=True)
+        (bindings / f"{version}.json").write_bytes(manifest)
 
     def get_binding_manifest(self, version: str) -> bytes:
         # Same label constraint as put_binding_manifest (defense in depth):

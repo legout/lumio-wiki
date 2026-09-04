@@ -268,7 +268,8 @@ class SourceRegistry:
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+        if self.root.exists() and not self.root.is_dir():
+            raise NotADirectoryError(self.root)
         self._path = self.root / "sources.json"
         self._state = self._read()
 
@@ -278,6 +279,7 @@ class SourceRegistry:
         return msgspec.json.decode(self._path.read_bytes(), type=_RegistryState)
 
     def _write(self) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
         temporary = self._path.with_suffix(".tmp")
         temporary.write_bytes(msgspec.json.encode(self._state))
         os.replace(temporary, self._path)

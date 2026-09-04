@@ -2,8 +2,10 @@
 
 A coding agent initializes, inspects, retrieves from, ingests into, reviews,
 and publishes a Knowledge Base through this CLI without cloning the Lumio
-repository or importing the full web application. Every command calls the
-public :mod:`lumio_wiki` Python surface — no internal application modules.
+repository or importing the full web application. Most commands call the
+public :mod:`lumio_wiki` Python surface directly. Package-private loaded-state
+helpers let composed CLI commands retain one validated Knowledge Base view
+instead of reopening it.
 
 The dispatcher follows the same ``argparse`` + ``set_defaults(func=...)``
 convention the existing ``lumio`` CLI uses. Core operations (validate,
@@ -63,6 +65,7 @@ from lumio_wiki import (
     validate,
     write_control_file,
 )
+from lumio_wiki.artifact_store import SourceBindingManifest
 from lumio_wiki.citation_actions import (
     ReaderBaseURLError,
     citation_open_actions,
@@ -93,12 +96,18 @@ from lumio_wiki.knowledge_base import (
     due_review_pages,
     fingerprint_sources,
 )
+from lumio_wiki.maintenance import (
+    _run_dream_cycle_loaded,
+    _run_lint_loaded,
+    _stage_ranked_link_candidates_loaded,
+)
 from lumio_wiki.records import ValidationReport
 from lumio_wiki.source_inspection import (
     DEFAULT_LINK_EXPIRES,
     OUTCOME_ABSENT_BINDING,
     OUTCOME_ACCESS_DENIED,
     OUTCOME_CORRUPTION,
+    OUTCOME_HISTORICAL_VERSION_MISMATCH,
     OUTCOME_UNAVAILABLE,
     SourceInspectionError,
     fetch_verified_artifact,
@@ -109,6 +118,7 @@ from lumio_wiki.source_inspection import (
     safe_fetch_destination,
     validate_published_version,
 )
+from lumio_wiki.source_registry import SourceRegistry
 from lumio_wiki.source_resolution import (
     OUTCOME_AMBIGUOUS,
     OUTCOME_RESOLVED,
@@ -3236,9 +3246,9 @@ def _cmd_lint(args: argparse.Namespace) -> int:
     and the canonical/discovery structural diagnostics. Never writes; exits 1
     when the Knowledge Base is invalid.
     """
-    kb, _load_report = _load_kb(args.path)
+    kb, validation_report = _load_kb(args.path)
     index_dir = _resolve_index_dir(args, kb.root)
-    report = lumio_wiki.run_lint(args.path, index_dir=index_dir)
+    report = _run_lint_loaded(kb, validation_report, index_dir=index_dir)
     errors = [i for i in report.validation_report.issues if i.severity == "error"]
     warnings = [i for i in report.validation_report.issues if i.severity == "warning"]
     print(f"path:                {report.kb_path}")
@@ -3277,18 +3287,13 @@ def _stage_candidates(args: argparse.Namespace, kb, ranked, limit: int):
     """Stage one reviewable repair proposal per candidate, bounded by limit."""
     ingest_dir = _resolve_ingest_dir(args, kb.root)
     ingest_dir.mkdir(parents=True, exist_ok=True)
-    store = IngestStore(ingest_dir)
-    staged = []
-    skipped = []
-    # Intentional parallel structure with Dream Cycle's bounded stage-with-skip loop.
-    for entry in ranked[:limit]:
-        candidate = entry.candidate
-        try:
-            proposal = lumio_wiki.stage_cross_link_proposal(args.path, candidate, store=store)
-            staged.append(proposal)
-        except (lumio_wiki.MaintenanceError, OSError) as exc:
-            skipped.append((candidate, str(exc)))
-    return staged, skipped
+    result = _stage_ranked_link_candidates_loaded(
+        kb,
+        ranked,
+        store=IngestStore(ingest_dir),
+        limit=limit,
+    )
+    return result.staged, result.skipped
 
 
 def _print_staging_outcome(args, staged, skipped) -> None:
@@ -3356,11 +3361,117 @@ def _print_semantic_findings(findings) -> None:
                 print(f"    summary: {finding.summary}")
 
 
+def _resolve_source_drift_inputs(
+    args: argparse.Namespace, kb: KnowledgeBase
+) -> tuple[SourceRegistry | None, SourceBindingManifest | None, str]:
+    """Resolve the optional private Source Drift inputs (issue #196).
+
+    Returns ``(registry, manifest, manifest_status)``. Read-only by
+    contract: store construction never materializes state, and missing local
+    roots stay absent. The ingest-root existence check distinguishes an absent
+    registry tier from an empty existing one; the local Source Artifact Store
+    check likewise keeps its skipped-tier status truthful. The manifest tier
+    inspects the active Published Version of an object-store Knowledge Base
+    Location, or of ``LUMIO_PUBLISH_TO`` when it is an object-store URI; a
+    missing destination, store, or pointer is an explicit skipped-tier status,
+    never an error. Failures map to bounded, secret-free statuses — raw
+    exception text, object keys, URLs, and credentials are never printed.
+    """
+    registry: SourceRegistry | None = None
+    manifest: SourceBindingManifest | None = None
+    manifest_status = "not checked: no active Published Version binding manifest"
+
+    ingest_dir = _resolve_ingest_dir(args, kb.root)
+    try:
+        ingest_store = IngestStore(ingest_dir)
+    except OSError:
+        manifest_status = "not checked: no ingest store (registry unchecked)"
+    else:
+        if ingest_store.root.exists():
+            registry = ingest_store.source_registry
+        else:
+            manifest_status = "not checked: no ingest store (registry unchecked)"
+
+    artifact_store = None
+    try:
+        artifact_store = _artifact_store_from_env()
+    except CliError:
+        manifest_status = "not checked: no usable Source Artifact Store"
+    if artifact_store is not None:
+        from lumio_wiki.artifact_store import LocalDirectoryArtifactStore
+
+        if (
+            isinstance(artifact_store, LocalDirectoryArtifactStore)
+            and not artifact_store.root.exists()
+        ):
+            artifact_store = None
+            manifest_status = "not checked: no usable Source Artifact Store"
+    if artifact_store is None and "Source Artifact Store" not in manifest_status:
+        manifest_status = "not checked: no Source Artifact Store"
+
+    version: str | None = None
+    if artifact_store is not None:
+        if _is_object_store_uri(str(args.path)):
+            try:
+                version = _active_published_version(str(args.path))
+            except CliError:
+                version = None
+                manifest_status = "not checked: this Knowledge Base has no active Published Version"
+            except KnowledgeBaseError:
+                # Store unreachable/malformed: bounded, secret-free — raw
+                # exception text may carry object keys and endpoint URLs.
+                version = None
+                manifest_status = "manifest check failed: unavailable"
+        else:
+            destination = load_project_config().get(PUBLISH_TO_ENV_VAR)
+            if destination is not None and _is_object_store_uri(destination):
+                try:
+                    version = _active_published_version(destination)
+                except CliError:
+                    version = None
+                    manifest_status = (
+                        "not checked: the configured destination has no active Published Version"
+                    )
+                except KnowledgeBaseError:
+                    version = None
+                    manifest_status = "manifest check failed: unavailable"
+
+    if artifact_store is not None and version is not None:
+        from lumio_wiki.source_inspection import read_binding_manifest
+
+        try:
+            manifest = read_binding_manifest(artifact_store, version)
+            manifest_status = f"checked (published version {version})"
+        except SourceInspectionError as exc:
+            manifest = None
+            if exc.outcome == OUTCOME_HISTORICAL_VERSION_MISMATCH:
+                manifest_status = (
+                    "not checked: the active Published Version has no retained "
+                    "binding manifest"
+                )
+            elif exc.outcome == OUTCOME_ACCESS_DENIED:
+                manifest_status = "manifest check failed: access denied"
+            elif exc.outcome == OUTCOME_CORRUPTION:
+                manifest_status = "manifest check failed: corrupt manifest"
+            else:
+                manifest_status = "manifest check failed: unavailable"
+
+    return registry, manifest, manifest_status
+
+
 def _cmd_dream(args: argparse.Namespace) -> int:
     """Run deterministic reflection, then optional semantic review and staging."""
-    kb, _load_report = _load_kb(args.path)
+    kb, validation_report = _load_kb(args.path)
     index_dir = _resolve_index_dir(args, kb.root)
-    report = lumio_wiki.run_dream_cycle(args.path, index_dir=index_dir)
+    registry, manifest, manifest_status = _resolve_source_drift_inputs(args, kb)
+    report = _run_dream_cycle_loaded(
+        kb,
+        validation_report,
+        index_dir=index_dir,
+        registry=registry,
+        manifest=manifest,
+        manifest_status=manifest_status,
+    )
     lint = report.lint
     print("# Dream Cycle")
     print(f"path:                {lint.kb_path}")
@@ -3378,6 +3489,29 @@ def _cmd_dream(args: argparse.Namespace) -> int:
     print(f"due_for_review:     {report.due_count}")
     for page in report.due_pages:
         print(f"  - {page.path} (review_after {page.review_after}) title={page.title!r}")
+
+    drift = report.drift
+    print(f"source_drift_findings:  {drift.count}")
+    if registry is not None:
+        print("source_drift_registry:  checked")
+    else:
+        print("source_drift_registry:  not checked (no ingest store)")
+    print(f"source_drift_manifest: {drift.manifest_status}")
+    for finding in drift.findings:
+        if finding.scope == "working-copy":
+            path = f" ({finding.page_path})" if finding.page_path else ""
+            print(
+                f"  - {finding.kind}: {finding.page_title!r}{path} "
+                f"source={finding.source_id}"
+            )
+        else:
+            bound = finding.bound_content_hash or ""
+            current = finding.current_content_hash or ""
+            print(
+                f"  - {finding.kind}: {finding.page_title!r} "
+                f"(published version {finding.published_version}) "
+                f"source={finding.source_id} bound={bound[:12]} current={current[:12]}"
+            )
     _print_validation_issues(lint.validation_report)
 
     if args.semantic:

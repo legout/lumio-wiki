@@ -230,6 +230,10 @@ _Avoid_: inferred link, auto-link.
 The periodic Maintainer maintenance pass over a living Knowledge Base: a deterministic, model-free core for read-only reflection (validation, health, structural diagnostics for both scopes, ranked Link Candidates), plus an explicit opt-in semantic layer (`--semantic`, requiring the `[llm]` extra) for findings such as contradictions and staleness. Every repair or semantic finding only stages an ordinary reviewable Ingest Proposal.
 _Avoid_: reflection loop, auto-fix, consolidation.
 
+**Source Drift**:
+A Maintainer-only, model-free, advisory Dream Cycle diagnostic that compares the private Knowledge Source Registry — and, when available, the active Published Version's Source Binding Manifest — against declared page provenance. It reports retired sources still declared or bound, and manifest entries superseded by the registry's current hash. It is never a gate, Reader warning, Claim lineage mechanism, or public artifact, and it never joins the manifest to the working copy by title.
+_Avoid_: source staleness check, lineage audit, drift gate.
+
 ### Platform roles and guardrails
 
 **Reader / Maintainer / Owner**:

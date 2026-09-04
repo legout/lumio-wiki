@@ -153,6 +153,8 @@ lumio-wiki proposal validate <kb> <id>       # validate a proposal
 lumio-wiki publish <kb> <id>                 # publish a reviewed proposal
 lumio-wiki discard <kb> <id>                 # discard a proposal
 lumio-wiki cross-link <kb> [--stage]         # missing-link candidates (Extracted References); --stage repairs as links
+lumio-wiki dream <kb> [--stage] [--semantic] # read-only Dream Cycle reflection; Source Drift diagnostics are
+                                             #   advisory (never staged, never blocking, no exit-code change)
 lumio-wiki source <kb> <list|retire|reactivate> --source-id <id>  # manage private Source lifecycle (ADR-0014)
 lumio-wiki source resolve <kb> "<query>" [--published-version <v>] [--json]  # resolve a Source ID, Entity ID, page title, alias, or path to ONE registered Source (identity + availability; bounded candidates; never a signed URL)
 lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]  # secret-free metadata for the exact bound Source Version (ADR-0020)
