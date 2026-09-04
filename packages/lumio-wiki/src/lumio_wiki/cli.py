@@ -63,6 +63,7 @@ from lumio_wiki import (
     validate,
     write_control_file,
 )
+from lumio_wiki.artifact_store import SourceBindingManifest
 from lumio_wiki.citation_actions import (
     ReaderBaseURLError,
     citation_open_actions,
@@ -110,6 +111,7 @@ from lumio_wiki.source_inspection import (
     safe_fetch_destination,
     validate_published_version,
 )
+from lumio_wiki.source_registry import SourceRegistry
 from lumio_wiki.source_resolution import (
     OUTCOME_AMBIGUOUS,
     OUTCOME_RESOLVED,
@@ -3359,23 +3361,24 @@ def _print_semantic_findings(findings) -> None:
 
 def _resolve_source_drift_inputs(
     args: argparse.Namespace, kb: KnowledgeBase
-) -> tuple[Any, Any, str]:
+) -> tuple[SourceRegistry | None, SourceBindingManifest | None, str]:
     """Resolve the optional private Source Drift inputs (issue #196).
 
     Returns ``(registry, manifest, manifest_status)``. Read-only by
     contract: the ingest directory is checked with ``exists()`` BEFORE any
     store/registry construction (``SourceRegistry.__init__`` and
-    ``IngestStore`` both create directories), so a KB with no ingest
-    directory stays untouched and its registry tier reports unchecked. The
-    manifest tier inspects the active Published Version of an object-store
-    Knowledge Base Location, or of ``LUMIO_PUBLISH_TO`` when it is an
-    object-store URI; a missing destination, store, or pointer is an
-    explicit skipped-tier status, never an error. Failures map to bounded,
-    secret-free statuses — raw exception text, object keys, URLs, and
-    credentials are never printed.
+    ``IngestStore`` both create directories), and the local Source Artifact
+    Store path is existence-checked before the adapter is built (its
+    constructor mkdirs) — a KB with no local private state stays untouched
+    and its tiers report unchecked. The manifest tier inspects the active
+    Published Version of an object-store Knowledge Base Location, or of
+    ``LUMIO_PUBLISH_TO`` when it is an object-store URI; a missing
+    destination, store, or pointer is an explicit skipped-tier status, never
+    an error. Failures map to bounded, secret-free statuses — raw exception
+    text, object keys, URLs, and credentials are never printed.
     """
-    registry: Any = None
-    manifest: Any = None
+    registry: SourceRegistry | None = None
+    manifest: SourceBindingManifest | None = None
     manifest_status = "not checked: no active Published Version binding manifest"
 
     ingest_dir = _resolve_ingest_dir(args, kb.root)
@@ -3386,6 +3389,21 @@ def _resolve_source_drift_inputs(
 
     artifact_store = None
     try:
+        # Read-only contract (review finding, #196): the local-directory
+        # adapter's constructor mkdirs, so existence-check the resolved path
+        # first and treat a missing store like any other absent store. S3
+        # stores need no guard (object stores have no directories to create).
+        store_uri = os.environ.get(SOURCE_STORE_ENV_VAR) or load_project_config().get(
+            SOURCE_STORE_ENV_VAR
+        )
+        if store_uri and not _is_object_store_uri(store_uri):
+            store_path = Path(store_uri).expanduser()
+            if not store_path.is_absolute():
+                project = discover_kb_path_from_project_env()
+                base = Path(project).parent if project else Path.cwd()
+                store_path = (base / store_path).resolve()
+            if not store_path.exists():
+                raise CliError("Source Artifact Store path does not exist")
         artifact_store = _artifact_store_from_env()
     except CliError:
         artifact_store = None
@@ -3401,6 +3419,11 @@ def _resolve_source_drift_inputs(
             except CliError:
                 version = None
                 manifest_status = "not checked: this Knowledge Base has no active Published Version"
+            except KnowledgeBaseError:
+                # Store unreachable/malformed: bounded, secret-free — raw
+                # exception text may carry object keys and endpoint URLs.
+                version = None
+                manifest_status = "manifest check failed: unavailable"
         else:
             destination = load_project_config().get(PUBLISH_TO_ENV_VAR)
             if destination is not None and _is_object_store_uri(destination):
@@ -3411,6 +3434,9 @@ def _resolve_source_drift_inputs(
                     manifest_status = (
                         "not checked: the configured destination has no active Published Version"
                     )
+                except KnowledgeBaseError:
+                    version = None
+                    manifest_status = "manifest check failed: unavailable"
 
     if artifact_store is not None and version is not None:
         from lumio_wiki.source_inspection import read_binding_manifest

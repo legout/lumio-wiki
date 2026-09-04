@@ -413,13 +413,18 @@ def run_source_drift_check(
     reportable (ADR-0020). A retired source takes precedence over a hash
     mismatch for the same entry.
     """
+    # Computed facts win: with no registry the working-copy tier never ran
+    # and the manifest was never compared, so a caller-passed status can
+    # never be echoed as a clean 'checked' result (review finding, #196).
     if registry is None:
         return SourceDriftReport(
             findings=(),
             registry_checked=False,
-            manifest_status=manifest_status
-            if manifest_status is not None
-            else "not checked: no private Source Registry",
+            manifest_status=(
+                manifest_status
+                if manifest_status is not None and "checked" not in manifest_status
+                else "not checked: no private Source Registry"
+            ),
         )
 
     status = {
@@ -476,11 +481,12 @@ def run_source_drift_check(
                 )
             )
 
+    # Computed facts win: 'incomplete' describes what the comparison found,
+    # so it always overrides a caller's clean 'checked' status (review
+    # finding, #196).
     if manifest_incomplete:
         resolved_status = (
             "incomplete: manifest references sources absent from the selected registry"
-            if manifest_status is None
-            else manifest_status
         )
     elif manifest_status is not None:
         resolved_status = manifest_status
