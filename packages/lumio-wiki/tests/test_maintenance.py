@@ -614,7 +614,7 @@ def test_cli_dream_store_failure_is_bounded_and_secret_free(
     from lumio_wiki.knowledge_base import KnowledgeBaseError
 
     store_root = tmp_path / "store"
-    lw.LocalDirectoryArtifactStore(store_root)
+    store_root.mkdir()
     registry, _hash = _drift_registry(tmp_path)
     ingest = IngestStore(kb_root / ".lumio" / "ingest")
     shutil.copytree(
@@ -637,6 +637,25 @@ def test_cli_dream_store_failure_is_bounded_and_secret_free(
     assert "source_drift_manifest: manifest check failed: unavailable" in out
     assert "secret-endpoint" not in out
     assert "current" not in out.split("source_drift_manifest")[1].splitlines()[0]
+
+
+@pytest.mark.parametrize(
+    "constructor", [IngestStore, SourceRegistry, lw.LocalDirectoryArtifactStore]
+)
+def test_store_construction_is_read_only(tmp_path: Path, constructor):
+    root = tmp_path / constructor.__name__
+    constructor(root)
+    assert not root.exists()
+
+
+@pytest.mark.parametrize(
+    "constructor", [IngestStore, SourceRegistry, lw.LocalDirectoryArtifactStore]
+)
+def test_store_construction_rejects_file_root(tmp_path: Path, constructor):
+    root = tmp_path / constructor.__name__
+    root.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(NotADirectoryError):
+        constructor(root)
 
 
 def test_cli_dream_missing_local_store_creates_nothing(kb_root, tmp_path, monkeypatch, capsys):
