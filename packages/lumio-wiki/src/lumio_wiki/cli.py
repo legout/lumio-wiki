@@ -2,8 +2,10 @@
 
 A coding agent initializes, inspects, retrieves from, ingests into, reviews,
 and publishes a Knowledge Base through this CLI without cloning the Lumio
-repository or importing the full web application. Every command calls the
-public :mod:`lumio_wiki` Python surface — no internal application modules.
+repository or importing the full web application. Most commands call the
+public :mod:`lumio_wiki` Python surface directly. Package-private loaded-state
+helpers let composed CLI commands retain one validated Knowledge Base view
+instead of reopening it.
 
 The dispatcher follows the same ``argparse`` + ``set_defaults(func=...)``
 convention the existing ``lumio`` CLI uses. Core operations (validate,
@@ -93,6 +95,11 @@ from lumio_wiki.knowledge_base import (
     NAV_INDEX_BASENAME,
     due_review_pages,
     fingerprint_sources,
+)
+from lumio_wiki.maintenance import (
+    _run_dream_cycle_loaded,
+    _run_lint_loaded,
+    _stage_ranked_link_candidates_loaded,
 )
 from lumio_wiki.records import ValidationReport
 from lumio_wiki.source_inspection import (
@@ -3239,9 +3246,9 @@ def _cmd_lint(args: argparse.Namespace) -> int:
     and the canonical/discovery structural diagnostics. Never writes; exits 1
     when the Knowledge Base is invalid.
     """
-    kb, _load_report = _load_kb(args.path)
+    kb, validation_report = _load_kb(args.path)
     index_dir = _resolve_index_dir(args, kb.root)
-    report = lumio_wiki.run_lint(args.path, index_dir=index_dir)
+    report = _run_lint_loaded(kb, validation_report, index_dir=index_dir)
     errors = [i for i in report.validation_report.issues if i.severity == "error"]
     warnings = [i for i in report.validation_report.issues if i.severity == "warning"]
     print(f"path:                {report.kb_path}")
@@ -3280,18 +3287,13 @@ def _stage_candidates(args: argparse.Namespace, kb, ranked, limit: int):
     """Stage one reviewable repair proposal per candidate, bounded by limit."""
     ingest_dir = _resolve_ingest_dir(args, kb.root)
     ingest_dir.mkdir(parents=True, exist_ok=True)
-    store = IngestStore(ingest_dir)
-    staged = []
-    skipped = []
-    # Intentional parallel structure with Dream Cycle's bounded stage-with-skip loop.
-    for entry in ranked[:limit]:
-        candidate = entry.candidate
-        try:
-            proposal = lumio_wiki.stage_cross_link_proposal(args.path, candidate, store=store)
-            staged.append(proposal)
-        except (lumio_wiki.MaintenanceError, OSError) as exc:
-            skipped.append((candidate, str(exc)))
-    return staged, skipped
+    result = _stage_ranked_link_candidates_loaded(
+        kb,
+        ranked,
+        store=IngestStore(ingest_dir),
+        limit=limit,
+    )
+    return result.staged, result.skipped
 
 
 def _print_staging_outcome(args, staged, skipped) -> None:
@@ -3463,11 +3465,12 @@ def _resolve_source_drift_inputs(
 
 def _cmd_dream(args: argparse.Namespace) -> int:
     """Run deterministic reflection, then optional semantic review and staging."""
-    kb, _load_report = _load_kb(args.path)
+    kb, validation_report = _load_kb(args.path)
     index_dir = _resolve_index_dir(args, kb.root)
     registry, manifest, manifest_status = _resolve_source_drift_inputs(args, kb)
-    report = lumio_wiki.run_dream_cycle(
-        args.path,
+    report = _run_dream_cycle_loaded(
+        kb,
+        validation_report,
         index_dir=index_dir,
         registry=registry,
         manifest=manifest,

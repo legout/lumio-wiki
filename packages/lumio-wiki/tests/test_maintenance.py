@@ -218,6 +218,27 @@ def test_run_dream_cycle_reflects_without_writing(kb_with_candidate: Path):
     assert before == after
 
 
+def test_cli_dream_with_staging_loads_knowledge_base_once(
+    kb_with_candidate: Path, monkeypatch
+):
+    import lumio_wiki.cli as cli_module
+    import lumio_wiki.maintenance as maintenance_module
+
+    real_load = maintenance_module.load_knowledge_base
+    load_count = 0
+
+    def counting_load(path):
+        nonlocal load_count
+        load_count += 1
+        return real_load(path)
+
+    monkeypatch.setattr(cli_module, "load_knowledge_base", counting_load)
+    monkeypatch.setattr(maintenance_module, "load_knowledge_base", counting_load)
+
+    assert main(["dream", str(kb_with_candidate), "--stage", "--limit", "1"]) == 0
+    assert load_count == 1
+
+
 def test_stage_dream_repairs_stages_bounded_proposals(kb_with_candidate: Path):
     result = lw.stage_dream_repairs(kb_with_candidate, store=_store(kb_with_candidate), limit=1)
     assert len(result.staged) == 1

@@ -22,6 +22,7 @@ application-layer role gate stays in ``lumio.skills``.
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -121,6 +122,38 @@ def _default_index_dir(kb_path: str | Path) -> Path:
     return Path(kb_path) / ".lumio" / "index"
 
 
+def _run_lint_loaded(
+    kb: KnowledgeBase,
+    validation_report: ValidationReport,
+    *,
+    index_dir: str | Path | None = None,
+) -> LintReport:
+    """Build a lint report from one loaded Knowledge Base view."""
+    derived_dir = Path(index_dir) if index_dir is not None else _default_index_dir(kb.root)
+    health = kb.graph_health(derived_dir)
+    canonical_structure = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
+    discovery_structure = kb.graph_diagnostics(scope=GRAPH_SCOPE_DISCOVERY)
+
+    extracted = extract_references(kb.pages)
+    canonical: list[Relationship] = []
+    for page in kb.pages:
+        canonical.extend(kb.related_from(page.title))
+
+    return LintReport(
+        kb_path=str(kb.root),
+        validation_report=validation_report,
+        graph_health=health,
+        extracted_references=tuple(extracted),
+        canonical_relationships=tuple(canonical),
+        canonical_scope=GRAPH_SCOPE_CANONICAL,
+        discovery_scope=GRAPH_SCOPE_DISCOVERY,
+        scope_disclosure=SCOPE_DISCLOSURE,
+        canonical_structure=canonical_structure,
+        discovery_structure=discovery_structure,
+        page_count=len(kb.pages),
+    )
+
+
 def run_lint(
     kb_path: str | Path,
     *,
@@ -139,29 +172,7 @@ def run_lint(
     materialized one.
     """
     kb, report = load_knowledge_base(kb_path)
-    derived_dir = Path(index_dir) if index_dir is not None else _default_index_dir(kb.root)
-    health = kb.graph_health(derived_dir)
-    canonical_structure = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
-    discovery_structure = kb.graph_diagnostics(scope=GRAPH_SCOPE_DISCOVERY)
-
-    extracted = extract_references(kb.pages)
-    canonical: list[Relationship] = []
-    for page in kb.pages:
-        canonical.extend(kb.related_from(page.title))
-
-    return LintReport(
-        kb_path=str(kb.root),
-        validation_report=report,
-        graph_health=health,
-        extracted_references=tuple(extracted),
-        canonical_relationships=tuple(canonical),
-        canonical_scope=GRAPH_SCOPE_CANONICAL,
-        discovery_scope=GRAPH_SCOPE_DISCOVERY,
-        scope_disclosure=SCOPE_DISCLOSURE,
-        canonical_structure=canonical_structure,
-        discovery_structure=discovery_structure,
-        page_count=len(kb.pages),
-    )
+    return _run_lint_loaded(kb, report, index_dir=index_dir)
 
 
 def find_link_candidates_for_kb(kb: KnowledgeBase) -> list[LinkCandidate]:
@@ -320,6 +331,22 @@ def _stage_revised_page(
     return pipeline.stage(proposal)
 
 
+def _stage_cross_link_proposal_loaded(
+    kb: KnowledgeBase,
+    candidate: LinkCandidate,
+    *,
+    store: IngestStore,
+) -> IngestProposal:
+    """Stage one cross-link proposal from a loaded Knowledge Base view."""
+    source_path = Path(kb.root) / candidate.source_path
+    page_markdown = source_path.read_text(encoding="utf-8")
+    repaired = mark_compound_revision(
+        repair_mention(page_markdown, candidate),
+        **_revision_routing_fields(kb, candidate.source_path),
+    )
+    return _stage_revised_page(kb, store, repaired, candidate.source_path)
+
+
 def stage_cross_link_proposal(
     kb_path: str | Path,
     candidate: LinkCandidate,
@@ -337,13 +364,7 @@ def stage_cross_link_proposal(
     (ADR-0011).
     """
     kb, _report = load_knowledge_base(kb_path)
-    source_path = Path(kb.root) / candidate.source_path
-    page_markdown = source_path.read_text(encoding="utf-8")
-    repaired = mark_compound_revision(
-        repair_mention(page_markdown, candidate),
-        **_revision_routing_fields(kb, candidate.source_path),
-    )
-    return _stage_revised_page(kb, store, repaired, candidate.source_path)
+    return _stage_cross_link_proposal_loaded(kb, candidate, store=store)
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +583,34 @@ class DreamStagingResult:
     skipped: tuple[tuple[LinkCandidate, str], ...] = ()
 
 
+def _run_dream_cycle_loaded(
+    kb: KnowledgeBase,
+    validation_report: ValidationReport,
+    *,
+    index_dir: str | Path | None = None,
+    registry: SourceRegistry | None = None,
+    manifest: SourceBindingManifest | None = None,
+    manifest_status: str | None = None,
+) -> DreamReport:
+    """Build one Dream report from a loaded Knowledge Base view."""
+    lint = _run_lint_loaded(kb, validation_report, index_dir=index_dir)
+    candidates = find_link_candidates(kb.pages)
+    ranked = kb.rank_link_candidates_by_graph_impact(candidates)
+    due = due_review_pages(kb.pages)
+    drift = run_source_drift_check(
+        kb,
+        registry,
+        manifest=manifest,
+        manifest_status=manifest_status,
+    )
+    return DreamReport(
+        lint=lint,
+        ranked_candidates=tuple(ranked),
+        due_pages=tuple(due),
+        drift=drift,
+    )
+
+
 def run_dream_cycle(
     kb_path: str | Path,
     *,
@@ -580,23 +629,34 @@ def run_dream_cycle(
     never infers a typed Relationship from a Markdown-link proposal
     (ADR-0011).
     """
-    lint = run_lint(kb_path, index_dir=index_dir)
-    kb, _report = load_knowledge_base(kb_path)
-    candidates = find_link_candidates(kb.pages)
-    ranked = kb.rank_link_candidates_by_graph_impact(candidates)
-    due = due_review_pages(kb.pages)
-    drift = run_source_drift_check(
+    kb, validation_report = load_knowledge_base(kb_path)
+    return _run_dream_cycle_loaded(
         kb,
-        registry,
+        validation_report,
+        index_dir=index_dir,
+        registry=registry,
         manifest=manifest,
         manifest_status=manifest_status,
     )
-    return DreamReport(
-        lint=lint,
-        ranked_candidates=tuple(ranked),
-        due_pages=tuple(due),
-        drift=drift,
-    )
+
+
+def _stage_ranked_link_candidates_loaded(
+    kb: KnowledgeBase,
+    ranked_candidates: Sequence[RankedLinkCandidate],
+    *,
+    store: IngestStore,
+    limit: int,
+) -> DreamStagingResult:
+    """Stage a bounded candidate sequence from one loaded Knowledge Base view."""
+    staged: list[IngestProposal] = []
+    skipped: list[tuple[LinkCandidate, str]] = []
+    for ranked in ranked_candidates[:limit]:
+        candidate = ranked.candidate
+        try:
+            staged.append(_stage_cross_link_proposal_loaded(kb, candidate, store=store))
+        except (MaintenanceError, OSError) as exc:
+            skipped.append((candidate, str(exc)))
+    return DreamStagingResult(staged=tuple(staged), skipped=tuple(skipped))
 
 
 def stage_dream_repairs(
@@ -619,22 +679,11 @@ def stage_dream_repairs(
     """
     if limit < 1:
         raise MaintenanceError("limit must be >= 1")
-    report = run_dream_cycle(kb_path, index_dir=index_dir)
-    kb, _load_report = load_knowledge_base(kb_path)
-
-    staged: list[IngestProposal] = []
-    skipped: list[tuple[LinkCandidate, str]] = []
-    # Intentional parallel structure with the CLI's bounded stage-with-skip loop.
-    for ranked in report.ranked_candidates[:limit]:
-        candidate = ranked.candidate
-        try:
-            source_path = Path(kb.root) / candidate.source_path
-            page_markdown = source_path.read_text(encoding="utf-8")
-            repaired = mark_compound_revision(
-                repair_mention(page_markdown, candidate),
-                **_revision_routing_fields(kb, candidate.source_path),
-            )
-            staged.append(_stage_revised_page(kb, store, repaired, candidate.source_path))
-        except (MaintenanceError, OSError) as exc:
-            skipped.append((candidate, str(exc)))
-    return DreamStagingResult(staged=tuple(staged), skipped=tuple(skipped))
+    kb, validation_report = load_knowledge_base(kb_path)
+    report = _run_dream_cycle_loaded(kb, validation_report, index_dir=index_dir)
+    return _stage_ranked_link_candidates_loaded(
+        kb,
+        report.ranked_candidates,
+        store=store,
+        limit=limit,
+    )
