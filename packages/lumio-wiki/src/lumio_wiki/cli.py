@@ -3660,6 +3660,8 @@ def _cmd_dream(args: argparse.Namespace) -> int:
         manifest_status=manifest_status,
         coverage_registry=coverage_registry,
         coverage_status=coverage_status,
+        impact_target=getattr(args, "impact", None),
+        impact_scope=getattr(args, "impact_scope", "canonical"),
     )
     lint = report.lint
     print("# Dream Cycle")
@@ -3678,6 +3680,49 @@ def _cmd_dream(args: argparse.Namespace) -> int:
     print(f"due_for_review:     {report.due_count}")
     for page in report.due_pages:
         print(f"  - {page.path} (review_after {page.review_after}) title={page.title!r}")
+
+    print(f"synthesis_candidates:    {report.synthesis_count}")
+    for candidate in report.synthesis_candidates:
+        signals = "; ".join(candidate.signals) or "none"
+        print(
+            f"  - {candidate.entity_a_id} + {candidate.entity_b_id} "
+            f"[rank={candidate.signals_rank}] {signals}"
+        )
+    if report.synthesis_candidates:
+        print(
+            "  Synthesis opportunities are advisory: author a synthetic Compiled Page "
+            "yourself and stage it through the ordinary ingest/proposal pipeline — "
+            "nothing is authored or staged automatically (ADR-0021)."
+        )
+
+    impact = report.impact
+    if impact is not None:
+        if not impact.found:
+            print(f"transitive_impact: not resolved ({impact.seed_title})")
+        else:
+            scope_note = ""
+            if impact.scope == "discovery":
+                scope_note = (
+                    " (discovery edges select pages to inspect; they are never Evidence)"
+                )
+            print(
+                f"transitive_impact: {impact.seed_title} "
+                f"(entity {impact.entity_id}, scope={impact.scope}){scope_note}"
+            )
+            print(f"direct_in:  {len(impact.direct_in)}")
+            for title in impact.direct_in:
+                print(f"  <- {title}")
+            print(f"direct_out: {len(impact.direct_out)}")
+            for title in impact.direct_out:
+                print(f"  -> {title}")
+            print(f"reachable_within_depth: {impact.reachable}")
+            for depth, group in enumerate(impact.pages_by_depth, start=1):
+                print(f"  depth {depth}: {', '.join(group)}")
+            if impact.truncated:
+                print(
+                    "  truncated: true (page budget reached; raise max_pages "
+                    "on the Python surface)"
+                )
 
     drift = report.drift
     print(f"source_drift_findings:  {drift.count}")
@@ -5745,6 +5790,26 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=25,
         help="Max pages sent to one semantic review batch (default: 25).",
+    )
+    dream_parser.add_argument(
+        "--impact",
+        default=None,
+        metavar="TITLE_OR_ENTITY",
+        help=(
+            "Also report the read-only transitive impact of ONE selected page/Entity "
+            "(Entity ID, Canonical Page Title, or alias). Advisory; no ranking of the "
+            "whole Knowledge Base."
+        ),
+    )
+    dream_parser.add_argument(
+        "--impact-scope",
+        choices=("canonical", "discovery"),
+        default="canonical",
+        help=(
+            "Graph scope for --impact: canonical (accepted Claims; supports "
+            "conclusions) or discovery (adds Extracted References; those edges only "
+            "select pages to inspect, never Evidence). Default: canonical."
+        ),
     )
     _add_ingest_dir_argument(dream_parser)
     dream_parser.set_defaults(func=_cmd_dream)
