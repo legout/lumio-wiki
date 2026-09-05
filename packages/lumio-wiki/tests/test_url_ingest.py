@@ -24,12 +24,14 @@ No external network is ever touched.
 from __future__ import annotations
 
 import hashlib
+import shutil
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import lumio_wiki as lw
 import pytest
-
+from lumio_wiki.cli import main
 from lumio_wiki.url_fetch import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_REDIRECTS,
@@ -255,11 +257,6 @@ def test_url_fetch_policy_defaults_are_bounded():
 # proposal pipeline (issue #178 interface + ACs).
 # ---------------------------------------------------------------------------
 
-import shutil
-
-import lumio_wiki as lw
-from lumio_wiki.cli import main
-
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures" / "valid"
 
@@ -422,7 +419,7 @@ def test_ingest_url_failed_fetch_stages_and_registers_nothing(
     assert rc != 0
     store = lw.IngestStore(kb_root / ".lumio" / "ingest")
     assert store.list() == []
-    with pytest.raises(Exception):
+    with pytest.raises(lw.SourceRegistryError):
         store.source_registry.get("example-page")
 
 

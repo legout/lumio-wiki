@@ -55,7 +55,7 @@ _OBJECT_STORE_URL_SCHEMES: frozenset[str] = frozenset(
 
 #: Characters that make a shell word safe to interpolate bare. A subset of
 #: ``shlex``-safe characters: no whitespace, no quoting, no expansion.
-_SHELL_SAFE_ARG_RE: "re.Pattern[str]" = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
+_SHELL_SAFE_ARG_RE: re.Pattern[str] = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
 
 
 def _shell_double_quoted(value: str) -> str:
@@ -158,7 +158,11 @@ def normalize_reader_base_url(raw: str) -> str:
             f"Reader base URL has an invalid port (got {value!r})"
         )
     # urlsplit keeps the case of the scheme; normalize it for joining.
-    normalized = value if parts.scheme.islower() else parts.scheme.lower() + value[len(parts.scheme) :]
+    normalized = (
+        value
+        if parts.scheme.islower()
+        else parts.scheme.lower() + value[len(parts.scheme) :]
+    )
     return normalized.rstrip("/")
 
 

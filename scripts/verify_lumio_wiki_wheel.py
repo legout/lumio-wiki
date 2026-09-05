@@ -102,8 +102,8 @@ def main() -> int:
     assert kb.fingerprint().digest == lumio_wiki.fingerprint_sources(valid_fixture).digest
     assert kb.search_pages("LanceDB")
     assert kb.lookup_by_title("Architecture")[0].body
-    assert kb.related_from("Lumio Overview")
-    assert kb.graph_path("Lumio Overview", "Technology Stack")
+    assert kb.related_from("Lumio Overview") == []
+    assert kb.graph_path("Lumio Overview", "Technology Stack") is None
     assert kb.retrieve("Lumio uses LanceDB", limit=2)
     health = kb.health_report()
     assert not health.broken_relationships
@@ -117,6 +117,13 @@ def main() -> int:
         categorized, categorized_report = lumio_wiki.load_knowledge_base(regenerated)
         assert categorized_report.is_valid
         assert categorized.control is not None
+        assert categorized.related_from("Lumio Overview") == [
+            lumio_wiki.Relationship(target="Acme Corp", type="uses")
+        ]
+        assert categorized.graph_path("Lumio Overview", "Acme Corp") == [
+            "Lumio Overview",
+            "Acme Corp",
+        ]
 
         entry = lumio_wiki.make_activity_log_entry(
             operation="verify",

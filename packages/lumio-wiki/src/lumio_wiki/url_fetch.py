@@ -39,7 +39,7 @@ import ssl
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 
 __all__ = [
     "DEFAULT_MAX_BYTES",

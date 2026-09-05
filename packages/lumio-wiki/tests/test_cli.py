@@ -377,7 +377,7 @@ def test_resolve_embedder_prefers_provider_over_local(
         data=[types.SimpleNamespace(embedding=[0.0] * 8, index=0)]
     )
     fake_openai = types.ModuleType("openai")
-    setattr(fake_openai, "OpenAI", MagicMock(return_value=fake_client))
+    fake_openai.__dict__["OpenAI"] = MagicMock(return_value=fake_client)
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
 
     monkeypatch.setenv("LUMIO_PROVIDER_BASE_URL", "https://embed.example/v1")
@@ -3126,7 +3126,17 @@ def test_source_fetch_unavailable_artifact_error_explains_retention_step(
     monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
 
     out_file = tmp_path / "fetched.pdf"
-    rc = main(["source", "fetch", str(source_kb), "--source-id", "policy", "--output", str(out_file)])
+    rc = main(
+        [
+            "source",
+            "fetch",
+            str(source_kb),
+            "--source-id",
+            "policy",
+            "--output",
+            str(out_file),
+        ]
+    )
     assert rc == 1
     err = capsys.readouterr().err
     assert "without artifact retention" in err

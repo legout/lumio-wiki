@@ -203,7 +203,10 @@ def test_available_chat_width_switches_sheet_at_fixed_viewport(lumio_server):
                 timeout=5_000,
             )
             assert page.evaluate("window.innerWidth") == _WIDE
-            assert page.locator(".chat__main").get_attribute("inert") is not None
+            page.wait_for_function(
+                "document.querySelector('.chat__main').hasAttribute('inert')",
+                timeout=5_000,
+            )
             assert "Technology Stack" in page.locator("#reading-room").inner_text()
 
             chat.evaluate("el => el.style.width = '1100px'")

@@ -30,9 +30,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 import lumio_wiki
+import pytest
 from lumio_wiki.knowledge_base import (
     GRAPH_SCOPE_CANONICAL,
     KnowledgeBaseError,
@@ -486,8 +485,21 @@ def test_object_range_violation_is_blocked(tmp_path):
     # so build a range violation with a predicate whose object_types exclude it.
     files = _valid_kb_files()
     files["lumio.yaml"] = _CONTROL_V2.replace(
-        "    uses:\n      subject_types:\n        - software-system\n      object_types:\n        - library\n        - software-system\n",
-        "    uses:\n      subject_types:\n        - software-system\n      object_types:\n        - library\n",
+        (
+            "    uses:\n"
+            "      subject_types:\n"
+            "        - software-system\n"
+            "      object_types:\n"
+            "        - library\n"
+            "        - software-system\n"
+        ),
+        (
+            "    uses:\n"
+            "      subject_types:\n"
+            "        - software-system\n"
+            "      object_types:\n"
+            "        - library\n"
+        ),
     )
     files["concepts/lumio.md"] = _entity_page(
         "Lumio",
@@ -590,7 +602,11 @@ def test_valid_redirect_chain_resolves(tmp_path):
     files = _valid_kb_files()
     files["lumio.yaml"] = _CONTROL_V2.replace(
         "  redirects:\n    entity:old-lumio: entity:lumio\n",
-        "  redirects:\n    entity:old-lumio: entity:mid-lumio\n    entity:mid-lumio: entity:lumio\n",
+        (
+            "  redirects:\n"
+            "    entity:old-lumio: entity:mid-lumio\n"
+            "    entity:mid-lumio: entity:lumio\n"
+        ),
     )
     root = _write_kb(tmp_path, files)
     _, report = load_knowledge_base(root)

@@ -20,7 +20,6 @@ Safety rules under test (issue #177, ADR-0020):
 from __future__ import annotations
 
 import pytest
-
 from lumio_wiki.citation_actions import (
     READER_PAGE_PATH_TEMPLATE,
     ReaderBaseURLError,
@@ -34,7 +33,6 @@ from lumio_wiki.citation_actions import (
     source_inspect_command,
 )
 from lumio_wiki.records import CitationOpenActions, CompiledPage, Source
-
 
 # ---------------------------------------------------------------------------
 # Reader route contract (shared with the full application)

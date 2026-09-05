@@ -545,7 +545,7 @@ class GraphEdge(msgspec.Struct, frozen=True):
     extractor_version: str = ""
     scope: str = GRAPH_EDGE_SCOPE_CANONICAL
 
-    def reversed(self, endpoint: str) -> GraphEdge:
+    def reversed(self, endpoint: str) -> "GraphEdge":
         """Return the mirrored view of this edge pointing back at ``endpoint``.
 
         Copies every origin/predicate/scope/provenance field unchanged so

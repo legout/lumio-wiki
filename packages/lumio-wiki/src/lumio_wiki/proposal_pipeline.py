@@ -24,7 +24,6 @@ import msgspec.yaml as yaml
 from lumio_wiki import publish_reserved_artifacts
 from lumio_wiki.ingest import (
     BodyLinkRepairCandidate,
-    ClaimChange,
     EntityMerge,
     IngestProposal,
     IngestStore,

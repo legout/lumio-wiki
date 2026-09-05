@@ -26,7 +26,8 @@ import hashlib
 import posixpath
 import re
 from collections.abc import Sequence
-from datetime import date as _date_cls, datetime as _datetime_cls
+from datetime import date as _date_cls
+from datetime import datetime as _datetime_cls
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -1805,7 +1806,6 @@ def _parse_okf_page(
             visibility = "internal"
             synthetic = False
             sources = okf_v2_sources
-            relationships = []
         if classification == "unsupported-profile":
             diagnostics.append(
                 OkfImportDiagnostic(

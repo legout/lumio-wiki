@@ -178,14 +178,22 @@ def _merge_kb(tmp_path: Path) -> Path:
     _write(
         root,
         "concepts/alpha.md",
-        _page("Alpha", body="See [[Beta]].", relationships=[{"target": "Beta", "type": "depends-on"}]),
+        _page(
+            "Alpha",
+            body="See [[Beta]].",
+            relationships=[{"target": "Beta", "type": "depends-on"}],
+        ),
     )
     _write(
         root,
         "concepts/beta.md",
         _page("Beta", relationships=[{"target": "Alpha", "type": "depends-on"}]),
     )
-    _write(root, "concepts/gamma.md", _page("Gamma", relationships=[{"target": "Alpha", "type": "see"}]))
+    _write(
+        root,
+        "concepts/gamma.md",
+        _page("Gamma", relationships=[{"target": "Alpha", "type": "see"}]),
+    )
     return root
 
 
@@ -778,7 +786,14 @@ def test_merge_entity_cli_blocked_merge_is_an_error(tmp_path, capsys):
     # stages BLOCKED; the CLI reports the block.
     root = _merge_kb(tmp_path)
     exit_code = main(
-        ["merge-entity", str(root), "entity:beta", "entity:nope", "--ingest-dir", str(tmp_path / "i")]
+        [
+            "merge-entity",
+            str(root),
+            "entity:beta",
+            "entity:nope",
+            "--ingest-dir",
+            str(tmp_path / "i"),
+        ]
     )
     captured = capsys.readouterr()
     assert exit_code == 1

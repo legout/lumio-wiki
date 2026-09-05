@@ -19,11 +19,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from lumio_wiki.cli import main
 from lumio_wiki.citation_actions import (
     citation_open_actions,
     render_open_actions,
 )
+from lumio_wiki.cli import main
 
 FIXTURES = Path(__file__).parents[3] / "tests" / "fixtures"
 
@@ -133,15 +133,9 @@ def test_page_keeps_existing_grounding_lines_stable(
 
 def _evidence_result(page_title: str, page_path: str, source_id: str | None):
     from lumio_wiki.evidence import retrieval_result_from_evidence
-    from lumio_wiki.records import CompiledPage, Evidence, RetrievalTrace
+    from lumio_wiki.records import Evidence, RetrievalTrace
 
     body = "Supporting passage for the citation."
-    page = CompiledPage(
-        path=page_path,
-        title=page_title,
-        body=body,
-        body_start_line=3,
-    )
     evidence = Evidence(
         id=f"{page_path}#L3-3",
         source_type="compiled_markdown",
