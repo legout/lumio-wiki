@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
+import msgspec
+
 from lumio_wiki.records import CompiledPage, PageSearchResult
 
 MAX_SEARCH_QUERY_LENGTH = 256
@@ -153,4 +155,14 @@ def search_pages(
         )
 
     ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
-    return [item[3] for item in ranked[:limit]]
+    kept = ranked[:limit]
+    if not kept:
+        return []
+    # Deterministic accounting: candidates inspected and results cut by the
+    # ``limit``. Stamped only on the returned entries so the payload the
+    # caller sees describes exactly this call.
+    dropped = max(len(ranked) - limit, 0)
+    return [
+        msgspec.structs.replace(item[3], candidates_seen=len(ranked), results_dropped=dropped)
+        for item in kept
+    ]

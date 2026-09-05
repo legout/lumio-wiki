@@ -18,6 +18,7 @@ from lumio_wiki.fingerprint_store import save_stored_fingerprint
 from lumio_wiki.page_search import normalize_search_query
 from lumio_wiki.records import (
     CompiledPage,
+    Evidence,
     RetrievalResult,
     RetrievalTrace,
     SourceFingerprint,
@@ -108,13 +109,7 @@ class ZeroIndexRetrieval:
         if not tokens or limit <= 0:
             return []
 
-        trace = RetrievalTrace(
-            stages=[
-                TraceStage("search", "zero-index lexical match over Compiled Pages"),
-                TraceStage("rank", "deterministic field-aware Evidence ranking"),
-            ]
-        )
-        scored: list[tuple[float, str, RetrievalResult]] = []
+        scored: list[tuple[float, str, Evidence, str | None]] = []
         for page in search_pages:
             for evidence, source in page_evidences(page):
                 haystack = f"{evidence.page_title}\n{evidence.text}"
@@ -130,18 +125,28 @@ class ZeroIndexRetrieval:
                 if any(t in title_folded for t in matching):
                     score += 2.0
                 score = round(score, 4)
-                scored.append(
-                    (
-                        score,
-                        evidence.id,
-                        retrieval_result_from_evidence(
-                            evidence,
-                            source=source,
-                            score=score,
-                            reason="zero-index lexical match",
-                            trace=trace,
-                        ),
-                    )
-                )
+                scored.append((score, evidence.id, evidence, source))
+        # One shared RetrievalTrace records the deterministic accounting for
+        # the whole pass: candidates the ranking inspected, results kept by
+        # the ``limit`` cut, and the difference dropped. Every result carries
+        # the same trace, so the counts are identical and truthful on each.
+        trace = RetrievalTrace(
+            stages=[
+                TraceStage("search", "zero-index lexical match over Compiled Pages"),
+                TraceStage("rank", "deterministic field-aware Evidence ranking"),
+            ],
+            candidates_seen=len(scored),
+            results_returned=min(len(scored), max(limit, 0)),
+            results_dropped=max(len(scored) - limit, 0),
+        )
         scored.sort(key=lambda item: (-item[0], item[1]))
-        return [item[2] for item in scored[:limit]]
+        return [
+            retrieval_result_from_evidence(
+                evidence,
+                source=source,
+                score=score,
+                reason="zero-index lexical match",
+                trace=trace,
+            )
+            for score, _id, evidence, source in scored[:limit]
+        ]

@@ -253,6 +253,26 @@ ONE reviewable proposal (issue #179). Rules:
   transcript lives where each client keeps it (e.g. Pi session logs, Codex
   rollout files, Claude Code transcript JSON, Hermes memories) — export or
   reference it from `transcript`.
+- For PAST sessions from Codex or Pi history, work discover → select →
+  export → distill → preview → explicit stage:
+
+  ```
+  lumio-wiki capture sessions --client codex|pi [--project PATH] \
+    [--since ISO] [--limit N] [--json]
+  lumio-wiki capture export --client codex|pi --session-id <id> \
+    --output <empty-dir>
+  ```
+
+  Both commands are READ-ONLY: they contact no Knowledge Base, register
+  nothing, stage nothing, publish nothing, and never print transcript
+  content. `sessions` lists stable session ids with the client's native
+  header id, start time, and project path only. `export` copies the
+  ORIGINAL transcript bytes (`transcript.jsonl`) plus a ready-made Capture
+  Manifest (`capture.yaml`, `transcript: transcript.jsonl` — sibling file
+  reference, no declared digest) into the empty output directory.
+  Then distill the exported material into a Compiled Page and stage it
+  through `capture session` (preview first, `--yes` only after the user
+  approves) — that preview/`--yes` path remains the ONLY KB write path.
 - Capture never auto-publishes: review with `proposal inspect`/`validate`
   and publish or discard explicitly, exactly like ingest.
 

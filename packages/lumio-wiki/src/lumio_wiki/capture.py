@@ -596,3 +596,309 @@ def format_capture_preview(preview: CapturePreview) -> str:
     for warning in preview.warnings:
         lines.append(f"note: {warning}")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# Read-only client session-history adapters (Codex, Pi).
+#
+# Discovery/export are READ-ONLY: they never register, stage, publish, or
+# print transcript content. Session IDs are stable (sha256-16 of client +
+# absolute transcript path), ordering is bounded and deterministic. Errors
+# name client and session id only — never path fragments from other
+# projects' history (secret-safe). Synthetic fixtures only in tests.
+# --------------------------------------------------------------------------
+
+ADAPTER_CLIENTS = ("codex", "pi")
+
+#: Default client history roots (relative to the user home), matching each
+#: client's documented session layout.
+_DEFAULT_ROOTS = {
+    "codex": ".codex/sessions",
+    "pi": ".pi/agent/sessions",
+}
+
+#: Discovery is bounded: at most this many session files are inspected per
+#: call so a huge history cannot make discovery unbounded.
+MAX_DISCOVERY_FILES = 5000
+
+
+class ClientSession(msgspec.Struct, frozen=True):
+    """One discovered client session (metadata only — never message text).
+
+    ``id`` is the stable adapter session id (sha256-16 of client + absolute
+    transcript path) — NOT the client's native header id, which is not
+    unique (Codex resume writes multiple rollout files sharing one
+    conversation id). ``native_id`` keeps the header id for display.
+    """
+
+    client: str
+    id: str
+    path: str
+    project: str | None = None
+    started_at: str | None = None
+    native_id: str | None = None
+
+
+class SessionExport(msgspec.Struct, frozen=True):
+    """Result of a read-only export: original bytes plus the Capture Manifest."""
+
+    session: ClientSession
+    transcript_path: str
+    transcript_digest: str
+    manifest: CaptureManifest
+    manifest_path: str
+    warnings: list[str] = msgspec.field(default_factory=list)
+
+
+def _session_id(client: str, path: Path) -> str:
+    """Stable session id: client + absolute transcript path, sha256-16."""
+    digest = hashlib.sha256(f"{client}|{path.resolve()}".encode()).hexdigest()
+    return digest[:16]
+
+
+def _jsonl_headers(path: Path, limit: int) -> list[dict]:
+    """Parse at most ``limit`` JSONL lines of ``path``; skip bad lines."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            headers: list[dict] = []
+            for _line in handle:
+                if len(headers) >= limit:
+                    break
+                try:
+                    decoded = json.loads(_line)
+                except ValueError:
+                    continue
+                if isinstance(decoded, dict):
+                    headers.append(decoded)
+            return headers
+    except OSError as exc:
+        raise CaptureError(f"client session file not readable: {path.name}") from exc
+
+
+def _discovered(
+    client: str,
+    root: Path,
+    files: list[Path],
+    project: str | None,
+    since: str | None,
+    limit: int | None,
+) -> list[ClientSession]:
+    """Shared bounded, deterministic discovery tail for all adapters."""
+    if since is not None:
+        since_dt = _parse_timestamp(since, "since")
+    else:
+        since_dt = None
+    if limit is not None and limit <= 0:
+        return []
+    sessions: list[ClientSession] = []
+    for path in sorted(files, key=lambda p: p.name):
+        info = _read_session_info(client, path)
+        if info is None:
+            continue
+        if project is not None and info.project != project:
+            continue
+        if (
+            since_dt is not None
+            and (
+                info.started_at is None
+                or _parse_timestamp(info.started_at, "started_at") < since_dt
+            )
+        ):
+            continue
+        sessions.append(info)
+        if limit is not None and len(sessions) >= limit:
+            break
+    return sessions
+
+
+def _read_session_info(client: str, path: Path) -> ClientSession | None:
+    """Read one session file's header metadata; None when unusable."""
+    if client == "pi":
+        header = next(
+            (
+                line
+                for line in _jsonl_headers(path, 4)
+                if line.get("type") == "session" and line.get("id")
+            ),
+            None,
+        )
+        if header is None:
+            return None
+    else:  # codex
+        meta = next(
+            (
+                line
+                for line in _jsonl_headers(path, 8)
+                if line.get("type") == "session_meta"
+            ),
+            None,
+        )
+        payload = meta.get("payload") if isinstance(meta, dict) else None
+        if not isinstance(payload, dict) or not payload.get("id"):
+            return None
+        header = payload
+    project = header.get("cwd")
+    started_at = None
+    if isinstance(header.get("timestamp"), str) and header["timestamp"]:
+        try:
+            # Malformed header timestamps skip the file (with --since a hard
+            # error would abort the whole listing; metadata-only discovery
+            # stays skip-tolerant like the other unusable-file cases).
+            started_at = str(header["timestamp"])
+            _parse_timestamp(started_at, "session header timestamp")
+        except CaptureError:
+            return None
+    return ClientSession(
+        client=client,
+        id=_session_id(client, path),
+        native_id=str(header["id"]),
+        path=str(path),
+        project=str(project) if isinstance(project, str) and project.strip() else None,
+        started_at=started_at,
+    )
+
+
+def discover_sessions(
+    client: str,
+    *,
+    root: str | Path | None = None,
+    project: str | None = None,
+    since: str | None = None,
+    limit: int | None = None,
+) -> list[ClientSession]:
+    """Discover sessions for ONE client under its history root (read-only).
+
+    ``root`` overrides the client's default history directory (defaults:
+    Codex ``~/.codex/sessions``, Pi ``~/.pi/agent/sessions``). Returns
+    sessions sorted by filename (chronological for both clients), bounded by
+    ``limit`` (0 returns nothing) and ``MAX_DISCOVERY_FILES`` inspected
+    files. Filtering is by header metadata only — message content is never
+    read here.
+    """
+    if client not in ADAPTER_CLIENTS:
+        raise CaptureError(
+            f"unsupported capture client {client!r} — adapters exist for: "
+            f"{', '.join(ADAPTER_CLIENTS)}"
+        )
+    root_path = Path(root) if root is not None else Path.home() / _DEFAULT_ROOTS[client]
+    files = [
+        path
+        for path in sorted(root_path.rglob("*.jsonl"), key=lambda p: str(p))
+        if path.is_file()
+    ][:MAX_DISCOVERY_FILES]
+    return _discovered(client, root_path, files, project, since, limit)
+
+
+def export_session(
+    client: str,
+    session_id: str,
+    output_dir: str | Path,
+    *,
+    root: str | Path | None = None,
+) -> SessionExport:
+    """Export ONE discovered session read-only (issue #179 contract).
+
+    Copies the ORIGINAL transcript bytes unchanged to
+    ``<output_dir>/transcript.jsonl`` and writes the existing bounded
+    ``CaptureManifest`` as ``<output_dir>/capture.yaml`` referencing the
+    sibling transcript file by name (``transcript: transcript.jsonl``). No
+    digest is declared here: ``capture session`` redacts transcript bytes
+    before hashing, so a digest over the ORIGINAL bytes would make staging
+    fail whenever redaction fires — and agent transcripts are exactly where
+    secrets live. The digest of the original bytes is returned on
+    :class:`SessionExport` for callers that want it. Registers nothing,
+    stages nothing, publishes nothing, and never prints transcript content.
+    """
+    if client not in ADAPTER_CLIENTS:
+        raise CaptureError(
+            f"unsupported capture client {client!r} — adapters exist for: "
+            f"{', '.join(ADAPTER_CLIENTS)}"
+        )
+    root_path = Path(root) if root is not None else Path.home() / _DEFAULT_ROOTS[client]
+    match = next(
+        (s for s in discover_sessions(client, root=root_path) if s.id == session_id),
+        None,
+    )
+    if match is None:
+        raise CaptureError(f"unknown {client} session id: {session_id}")
+    source = Path(match.path)
+    try:
+        raw = source.read_bytes()
+    except OSError as exc:
+        raise CaptureError(f"client session file not readable: {source.name}") from exc
+    if len(raw) > MAX_TRANSCRIPT_BYTES:
+        raise CaptureError(
+            f"client session exceeds {MAX_TRANSCRIPT_BYTES} bytes: {source.name}"
+        )
+    digest = hashlib.sha256(raw).hexdigest()
+
+    out = Path(output_dir)
+    if out.exists() and not out.is_dir():
+        raise CaptureError(
+            f"output path is a file, not a directory: {out.name} — "
+            "choose an output directory path"
+        )
+    if out.exists() and any(out.iterdir()):
+        raise CaptureError(
+            f"output directory not empty: {out.name} — choose an empty directory"
+        )
+    out.mkdir(parents=True, exist_ok=True)
+    transcript_path = out / "transcript.jsonl"
+    transcript_path.write_bytes(raw)
+
+    manifest = CaptureManifest(
+        client=client,
+        project=match.project,
+        started_at=match.started_at,
+        # Sibling file reference, not a declared digest: staging redacts the
+        # transcript before hashing, so a digest over the ORIGINAL bytes
+        # would make `capture session` refuse the very composition the
+        # skill teaches whenever redaction fires.
+        transcript="transcript.jsonl",
+        artifacts=["transcript.jsonl", "capture.yaml"],
+    )
+    manifest_bytes = msgspec.yaml.encode(manifest)
+    manifest_path = out / "capture.yaml"
+    manifest_path.write_bytes(manifest_bytes)
+    warnings = [
+        "original transcript bytes exported unredacted to a local directory; "
+        "redaction happens only at `capture session` staging time"
+    ]
+    return SessionExport(
+        session=match,
+        transcript_path=str(transcript_path),
+        transcript_digest=digest,
+        manifest=manifest,
+        manifest_path=str(manifest_path),
+        warnings=warnings,
+    )
+
+
+def format_sessions(sessions: list[ClientSession]) -> str:
+    """Render discovered sessions as stable text (metadata only, secret-free)."""
+    lines = [f"{len(sessions)} session(s):"] if sessions else ["0 session(s):"]
+    for s in sessions:
+        lines.append(
+            f"  - id: {s.id}  client: {s.client}  "
+            f"native id: {s.native_id or '(unknown)'}  "
+            f"started: {s.started_at or '(unknown)'}  project: {s.project or '(none)'}"
+        )
+    return "\n".join(lines)
+
+
+def format_session_export(result: SessionExport) -> str:
+    """Render an export result (paths + manifest facts; never transcript text)."""
+    lines = [
+        f"session:          {result.session.id}",
+        f"client:           {result.session.client}",
+        f"project:          {result.session.project or '(none)'}",
+        f"transcript:       {result.transcript_path}",
+        f"  sha256:         {result.transcript_digest[:12]}…",
+        f"manifest:         {result.manifest_path}",
+        f"  transcript ref: {result.manifest.transcript}",
+        "Next: author a Compiled Page over the exported material, then run "
+        "`lumio-wiki capture session` (preview first, --yes to stage).",
+    ]
+    for warning in result.warnings:
+        lines.append(f"note: {warning}")
+    return "\n".join(lines)

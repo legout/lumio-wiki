@@ -344,6 +344,13 @@ class RetrievalTrace(msgspec.Struct, frozen=True):
     """Structured explanation of the retrieval stages that produced a result."""
 
     stages: list[TraceStage] = msgspec.field(default_factory=list)
+    # Deterministic retrieval accounting (additive, zero by default):
+    # candidates the ranking pass inspected, results returned after the
+    # ``limit`` cut, and candidates dropped (threshold filtering and/or
+    # limit truncation).
+    candidates_seen: int = 0
+    results_returned: int = 0
+    results_dropped: int = 0
 
 
 class EmbeddingModelInfo(msgspec.Struct, frozen=True):
@@ -437,6 +444,11 @@ class PageSearchResult(msgspec.Struct, frozen=True):
     matched_fields: list[str] = msgspec.field(default_factory=list)
     matched_terms: list[str] = msgspec.field(default_factory=list)
     snippet: str = ""
+    # Deterministic retrieval accounting (additive, zero by default):
+    # candidates the ranking pass inspected and results cut by ``limit``.
+    # ``results_returned`` is ``len(list)`` and is not stored.
+    candidates_seen: int = 0
+    results_dropped: int = 0
 
 
 # ---------------------------------------------------------------------------

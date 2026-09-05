@@ -60,6 +60,7 @@ from lumio_wiki import (
     import_graph,
     is_reviewable_proposal,
     load_knowledge_base,
+    run_source_coverage_check,
     seeded_control_file,
     select_export_pages,
     validate,
@@ -521,6 +522,85 @@ def _reader_base_url() -> str | None:
         return normalize_reader_base_url(raw)
     except ReaderBaseURLError as exc:
         raise CliError(f"invalid {READER_BASE_URL_ENV_VAR}: {exc}") from exc
+
+
+def _retrieval_accounting(results: list) -> dict:
+    """Deterministic retrieval accounting read off the results.
+
+    Page-oriented results stamp ``candidates_seen`` / ``results_dropped`` as
+    fields; citation-ready Evidence results carry the same counts on their
+    Retrieval Trace. Both paths stamp every entry, so one result is enough;
+    ``results_returned`` is simply the number of results kept.
+    """
+
+    def _count(result: object, name: str) -> int:
+        value = getattr(result, name, None)
+        if value is None:
+            value = getattr(getattr(result, "trace", None), name, 0)
+        return int(value or 0)
+
+    return {
+        "candidates_seen": max((_count(r, "candidates_seen") for r in results), default=0),
+        "results_returned": len(results),
+        "results_dropped": max((_count(r, "results_dropped") for r in results), default=0),
+    }
+
+
+def _search_json(
+    args: argparse.Namespace,
+    results: list,
+    *,
+    kind: str,
+    note: str | None = None,
+) -> int:
+    """Render ``search`` output as one machine-readable JSON object.
+
+    Both result kinds (page-oriented lexical, citation-ready Evidence) render
+    from the SAME objects the human view receives — no second query, no second
+    shape — plus the deterministic retrieval accounting carried in the results.
+    ``note`` carries any degraded-service disclosure (e.g. the remote-index
+    zero-index fallback, ADR-0019) so ``--json`` consumers see what the human
+    ``note:`` line prints; ``None`` on the healthy path.
+    """
+    from lumio_wiki.records import PageSearchResult, RetrievalResult
+
+    entries: list[dict] = []
+    for result in results:
+        if isinstance(result, PageSearchResult):
+            page = result.page
+            entry = {
+                "title": page.title,
+                "path": page.path,
+                "entity_id": page.id or None,
+                "score": result.score,
+                "matched_fields": list(result.matched_fields),
+                "snippet": result.snippet,
+            }
+        elif isinstance(result, RetrievalResult):
+            cite = result.citation
+            entry = {
+                "title": cite.page_title,
+                "path": cite.relative_path,
+                "entity_id": None,
+                "score": result.score,
+                "reason": result.reason,
+                "snippet": result.snippet,
+                "source": getattr(cite, "source", None),
+                "line_start": getattr(cite, "line_start", None),
+                "line_end": getattr(cite, "line_end", None),
+            }
+        else:  # pragma: no cover - defensive; both kinds are handled above
+            raise CliError(f"unsupported search result kind: {type(result).__name__}")
+        entries.append(entry)
+    payload = {
+        "query": args.query,
+        "kind": kind,
+        "note": note,
+        **_retrieval_accounting(results),
+        "results": entries,
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
 
 
 def _print_page_search_results(results: list, reader_base_url: str | None = None) -> None:
@@ -1345,14 +1425,15 @@ def _cmd_search(args: argparse.Namespace) -> int:
 
     kb = _open_read_kb(args.path)
     mode = _resolve_search_mode(args)
+    as_json = getattr(args, "json", False)
 
     # Default lexical path: zero-index, model-free, no derived index. Preserves
     # the original ``search`` behaviour and the offline invariant (PRD-0002:22).
     if mode == "lexical":
-        _print_page_search_results(
-            kb.search_pages(args.query, limit=args.limit),
-            reader_base_url=reader_base,
-        )
+        results = kb.search_pages(args.query, limit=args.limit)
+        if as_json:
+            return _search_json(args, results, kind="page")
+        _print_page_search_results(results, reader_base_url=reader_base)
         return 0
 
     # semantic / hybrid — needs lumio-lancedb + an Embedder (ADR-0010, #75).
@@ -1380,6 +1461,8 @@ def _cmd_search(args: argparse.Namespace) -> int:
         mode=mode,
         embedder=embedder,
     )
+    if as_json:
+        return _search_json(args, results, kind="evidence")
     _print_evidence_results(results, kb=kb, reader_base_url=reader_base)
     return 0
 
@@ -1401,10 +1484,10 @@ def _search_object_store(
     mode = _resolve_search_mode(args)
 
     if mode == "lexical" and backend == "zero-index":
-        _print_page_search_results(
-            snapshot.knowledge_base.search_pages(args.query, limit=args.limit),
-            reader_base_url=reader_base_url,
-        )
+        results = snapshot.knowledge_base.search_pages(args.query, limit=args.limit)
+        if getattr(args, "json", False):
+            return _search_json(args, results, kind="page")
+        _print_page_search_results(results, reader_base_url=reader_base_url)
         return 0
 
     if backend != "lancedb":
@@ -1426,6 +1509,8 @@ def _search_object_store(
         results, note = _remote_lance_page_search(
             module, location, snapshot, args.query, args.limit
         )
+        if getattr(args, "json", False):
+            return _search_json(args, results, kind="page", note=note)
         if note:
             print(f"note: {note}")
         _print_page_search_results(results, reader_base_url=reader_base_url)
@@ -1450,6 +1535,8 @@ def _search_object_store(
         # silently degraded (issue #162).
         raise CliError(str(exc)) from exc
     note = _index_fallback_note(results) or adapter.last_fallback_detail
+    if getattr(args, "json", False):
+        return _search_json(args, results, kind="evidence", note=note)
     if note:
         print(f"note: {note}")
     _print_evidence_results(results, kb=snapshot.knowledge_base, reader_base_url=reader_base_url)
@@ -1973,6 +2060,59 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
     print(f"  lumio-wiki proposal validate {args.path} {proposal.id}")
     if is_reviewable_proposal(proposal) and not proposal.blocked:
         print(f"  lumio-wiki publish {args.path} {proposal.id}")
+    return 0
+
+
+def _cmd_capture_sessions(args: argparse.Namespace) -> int:
+    """``capture sessions``: read-only client session discovery (no KB, no KB writes)."""
+    from lumio_wiki.capture import CaptureError, discover_sessions, format_sessions
+
+    try:
+        sessions = discover_sessions(
+            args.client,
+            root=args.root,
+            project=args.project,
+            since=args.since,
+            limit=args.limit,
+        )
+    except CaptureError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    if args.json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "id": s.id,
+                        "native_id": s.native_id,
+                        "client": s.client,
+                        "project": s.project,
+                        "started_at": s.started_at,
+                        "path": s.path,
+                    }
+                    for s in sessions
+                ],
+                indent=2,
+            )
+        )
+    else:
+        print(format_sessions(sessions))
+    return 0
+
+
+def _cmd_capture_export(args: argparse.Namespace) -> int:
+    """``capture export``: read-only export of one session (no KB, no KB writes)."""
+    from lumio_wiki.capture import CaptureError, export_session, format_session_export
+
+    try:
+        result = export_session(
+            args.client,
+            args.session_id,
+            args.output,
+            root=args.root,
+        )
+    except CaptureError as exc:
+        raise CliError(str(exc), exit_code=1) from exc
+    print(format_session_export(result))
     return 0
 
 
@@ -3248,7 +3388,9 @@ def _cmd_lint(args: argparse.Namespace) -> int:
     """
     kb, validation_report = _load_kb(args.path)
     index_dir = _resolve_index_dir(args, kb.root)
+    coverage_registry, coverage_status = _source_coverage_registry(args, kb)
     report = _run_lint_loaded(kb, validation_report, index_dir=index_dir)
+    coverage = run_source_coverage_check(kb, coverage_registry, status=coverage_status)
     errors = [i for i in report.validation_report.issues if i.severity == "error"]
     warnings = [i for i in report.validation_report.issues if i.severity == "warning"]
     print(f"path:                {report.kb_path}")
@@ -3263,6 +3405,8 @@ def _cmd_lint(args: argparse.Namespace) -> int:
     _print_structure_summary(report.canonical_structure)
     _print_structure_summary(report.discovery_structure)
     print(f"scope_disclosure:    {report.scope_disclosure}")
+    print()
+    _print_source_coverage(coverage)
     _print_validation_issues(report.validation_report)
     return 0 if report.is_valid else 1
 
@@ -3459,11 +3603,54 @@ def _resolve_source_drift_inputs(
     return registry, manifest, manifest_status
 
 
+def _source_coverage_registry(args, kb: KnowledgeBase) -> tuple:
+    """Resolve the private Source Registry for the coverage diagnostic.
+
+    Bounded and lazy like the drift tier: a missing ingest store yields no
+    registry (advisory 'not checked'); a malformed one degrades to a fixed,
+    secret-free 'unavailable' advisory instead of crashing a read-only
+    command — construction of the registry eagerly decodes the store, so the
+    guard wraps construction itself. The broad catch is deliberate
+    (ponytail): untrusted private state, degraded advisory over a crash.
+    Read-only — nothing is created.
+    """
+    try:
+        ingest_store = IngestStore(_resolve_ingest_dir(args, kb.root))
+        if not ingest_store.root.exists():
+            return (None, "not checked: no ingest store")
+        return (ingest_store.source_registry, None)
+    except OSError:
+        return (None, "not checked: no ingest store")
+    except Exception:  # ponytail: broad — degraded advisory over a crash
+        return (None, "unavailable: registry could not be read")
+
+
+def _print_source_coverage(report) -> None:
+    """Render the bounded Source Coverage block shared by lint and dream."""
+    print(f"source_coverage_registered: {report.registered}")
+    print(f"source_coverage_referenced: {report.referenced}")
+    print(f"source_coverage_unreferenced: {report.unreferenced}")
+    if not report.registry_checked:
+        print(f"source_coverage_registry: {report.status}")
+        return
+    if report.sample:
+        print("source_coverage_sample:")
+        for source_id in report.sample:
+            print(f"  - {source_id}")
+    if report.truncated:
+        print(
+            "source_coverage_truncated: true "
+            f"({report.unreferenced - len(report.sample)} more not shown; "
+            "raise the sample limit on the Python surface)"
+        )
+
+
 def _cmd_dream(args: argparse.Namespace) -> int:
     """Run deterministic reflection, then optional semantic review and staging."""
     kb, validation_report = _load_kb(args.path)
     index_dir = _resolve_index_dir(args, kb.root)
     registry, manifest, manifest_status = _resolve_source_drift_inputs(args, kb)
+    coverage_registry, coverage_status = _source_coverage_registry(args, kb)
     report = _run_dream_cycle_loaded(
         kb,
         validation_report,
@@ -3471,6 +3658,8 @@ def _cmd_dream(args: argparse.Namespace) -> int:
         registry=registry,
         manifest=manifest,
         manifest_status=manifest_status,
+        coverage_registry=coverage_registry,
+        coverage_status=coverage_status,
     )
     lint = report.lint
     print("# Dream Cycle")
@@ -3512,6 +3701,8 @@ def _cmd_dream(args: argparse.Namespace) -> int:
                 f"(published version {finding.published_version}) "
                 f"source={finding.source_id} bound={bound[:12]} current={current[:12]}"
             )
+    print()
+    _print_source_coverage(report.coverage)
     _print_validation_issues(lint.validation_report)
 
     if args.semantic:
@@ -4628,6 +4819,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Derived LanceDB index dir for semantic/hybrid (default: <kb>/.lumio/lance).",
     )
+    search_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one machine-readable JSON object (results + retrieval accounting) "
+        "instead of the human-readable output.",
+    )
     search_parser.set_defaults(func=_cmd_search)
 
     # page
@@ -4909,6 +5106,98 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     capture_session_parser.set_defaults(func=_cmd_capture_session)
+
+    # capture sessions — read-only client history discovery (no KB contact)
+    capture_sessions_parser = capture_sub.add_parser(
+        "sessions",
+        help="Discover sessions for one client (read-only; registers nothing).",
+        description=(
+            "Read-only discovery of session history for ONE client (codex or "
+            "pi). Prints stable session ids, start times, and project paths "
+            "only — never transcript content. Nothing is registered, staged, "
+            "or published, and no Knowledge Base is contacted."
+        ),
+    )
+    capture_sessions_parser.add_argument(
+        "--client",
+        required=True,
+        choices=["codex", "pi"],
+        help="Client whose session history to discover.",
+    )
+    capture_sessions_parser.add_argument(
+        "--project",
+        default=None,
+        help="Only sessions whose recorded working directory equals PATH.",
+        metavar="PATH",
+    )
+    capture_sessions_parser.add_argument(
+        "--since",
+        default=None,
+        help="Only sessions started at or after this ISO-8601 timestamp.",
+    )
+    capture_sessions_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Return at most N sessions (deterministic chronological order).",
+    )
+    capture_sessions_parser.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help=(
+            "Session history root to scan (default: ~/.codex/sessions for "
+            "codex, ~/.pi/agent/sessions for pi)."
+        ),
+    )
+    capture_sessions_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of text.",
+    )
+    capture_sessions_parser.set_defaults(func=_cmd_capture_sessions)
+
+    # capture export — read-only export of one session (no KB contact)
+    capture_export_parser = capture_sub.add_parser(
+        "export",
+        help="Export one session's original bytes + capture manifest (read-only).",
+        description=(
+            "Export ONE discovered session read-only: the ORIGINAL transcript "
+            "bytes are copied unchanged into --output (transcript.jsonl) "
+            "together with a bounded Capture Manifest (capture.yaml) that "
+            "references them by sha256 digest. Nothing is registered, staged, "
+            "or published, and transcript content is never printed. Distill "
+            "the exported material into a Compiled Page and stage it through "
+            "`lumio-wiki capture session` (preview first, --yes to stage)."
+        ),
+    )
+    capture_export_parser.add_argument(
+        "--client",
+        required=True,
+        choices=["codex", "pi"],
+        help="Client whose session to export.",
+    )
+    capture_export_parser.add_argument(
+        "--session-id",
+        required=True,
+        help="Stable session id from `capture sessions`.",
+    )
+    capture_export_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Empty output directory for transcript.jsonl and capture.yaml.",
+    )
+    capture_export_parser.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help=(
+            "Session history root to scan (default: ~/.codex/sessions for "
+            "codex, ~/.pi/agent/sessions for pi)."
+        ),
+    )
+    capture_export_parser.set_defaults(func=_cmd_capture_export)
 
     # ingest-url (issue #178): safe, bounded, proposal-first URL ingestion.
     ingest_url_parser = subparsers.add_parser(
@@ -5395,6 +5684,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_kb_argument(lint_parser)
     _add_index_dir_argument(lint_parser)
+    _add_ingest_dir_argument(lint_parser)
     lint_parser.set_defaults(func=_cmd_lint)
 
     # cross-link

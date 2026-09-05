@@ -206,12 +206,18 @@ def search_pages(
             result.page.path.casefold(),
         )
     )
+    # Deterministic accounting: the BM25 candidate set inspected, results cut
+    # by ``limit``. Stamped on the returned entries only.
+    kept = results[:limit]
+    dropped = max(len(results) - limit, 0)
     return [
         msgspec.structs.replace(
             result,
             score=round(indexed_scores[result.page.path], 4),
+            candidates_seen=len(indexed_scores),
+            results_dropped=dropped,
         )
-        for result in results[:limit]
+        for result in kept
     ]
 
 
@@ -416,6 +422,21 @@ def search_lexical_index(
     search = _apply_eligible_filter(search, eligible_paths)
     rows = search.limit(limit).to_list()
 
+    # Deterministic accounting: the index holds one candidate per Evidence
+    # unit; ``candidates_seen`` is that total when eligibility was unrestricted
+    # (the prefilter applies inside the query) and ``results_dropped`` counts
+    # the candidates the ``limit`` cut.
+    candidates_seen = max(table.count_rows(), len(rows))
+    trace = RetrievalTrace(
+        stages=[
+            TraceStage("search", "LanceDB BM25 full-text search"),
+            TraceStage("rank", "ranked by BM25 score"),
+        ],
+        candidates_seen=candidates_seen,
+        results_returned=len(rows),
+        results_dropped=max(candidates_seen - len(rows), 0),
+    )
+
     return [
         _retrieval_result_from_row(
             row, score=row["_score"], reason="BM25 lexical match", trace=trace
@@ -533,19 +554,23 @@ def search_semantic_index(
         return []
 
     query = normalize_vector(query_vector)
-    fetch = min(table.count_rows(), max(limit * 4, limit))
+    total = table.count_rows()
+    fetch = min(total, max(limit * 4, limit))
     search = table.search(query).metric("cosine").select(_SEMANTIC_SELECT)
     search = _apply_eligible_filter(search, eligible_paths)
     rows = search.limit(fetch).to_list()
 
+    below_threshold = 0
     scored: list[tuple[float, dict]] = []
     for row in rows:
         similarity = 1.0 - float(row["_distance"])
         if similarity < score_threshold:
+            below_threshold += 1
             continue
         scored.append((similarity, row))
     # Deterministic re-rank: similarity desc, then evidence_id asc for stable ties.
     scored.sort(key=lambda item: (-item[0], item[1]["evidence_id"]))
+    kept_pre_limit = len(scored)
     scored = scored[:limit]
 
     trace = RetrievalTrace(
@@ -561,7 +586,12 @@ def search_semantic_index(
                 "threshold",
                 f"dropped candidates below similarity {score_threshold}",
             ),
-        ]
+        ],
+        # Deterministic accounting: the vector candidates inspected, results
+        # returned, and candidates dropped (below threshold or past ``limit``).
+        candidates_seen=len(rows),
+        results_returned=len(scored),
+        results_dropped=below_threshold + max(kept_pre_limit - limit, 0),
     )
     return [
         _retrieval_result_from_row(
@@ -610,7 +640,12 @@ def search_hybrid_index(
             TraceStage("semantic-search", "LanceDB cosine vector search"),
             TraceStage("fusion", f"reciprocal rank fusion (k={RRF_K})"),
             TraceStage("hybrid-rank", "fused deterministic ranking"),
-        ]
+        ],
+        # Deterministic accounting: the fused input candidates, the returned
+        # ranking, and the fused candidates cut by ``limit``.
+        candidates_seen=len(fused),
+        results_returned=min(len(fused), max(limit, 0)),
+        results_dropped=max(len(fused) - limit, 0),
     )
     ordered = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
     return [

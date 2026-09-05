@@ -339,3 +339,76 @@ def test_remote_unhealthy_index_records_error_in_trace():
     stage = results[0].trace.stages[0]
     assert stage.name == "index-fallback"
     assert "unavailable" in stage.detail
+
+
+# ---------------------------------------------------------------------------
+# Deterministic retrieval accounting (kanban t_e7c9cb77).
+# ---------------------------------------------------------------------------
+
+
+def test_lexical_trace_counts_are_consistent(tmp_path):
+    index_dir = tmp_path / "idx"
+    build_lexical_index(_pages(), index_dir)
+    results = search_lexical_index(index_dir, "LanceDB", limit=1)
+    assert len(results) == 1
+    trace = results[0].trace
+    assert trace.results_returned == 1
+    assert trace.candidates_seen >= trace.results_returned
+    assert trace.candidates_seen == trace.results_returned + trace.results_dropped
+
+
+def test_semantic_trace_counts_are_consistent(tmp_path):
+    index_dir = tmp_path / "idx"
+    embedder = _FakeEmbedder()
+    build_lexical_index(_pages(), index_dir)
+    build_semantic_index(_pages(), index_dir, embedder)
+    vec = embedder.embed(["LanceDB retrieval"])[0]
+    results = search_semantic_index(index_dir, vec, limit=1, score_threshold=0.0)
+    assert len(results) == 1
+    trace = results[0].trace
+    assert trace.candidates_seen >= trace.results_returned
+    assert trace.results_returned == 1
+    assert trace.candidates_seen == trace.results_returned + trace.results_dropped
+
+
+def test_semantic_trace_counts_when_limit_truncates_passed_results(tmp_path):
+    """Regression (review round 1, finding 1): when ``limit`` actually cuts
+    post-threshold results, the dropped count must include the truncation —
+    the identity holds exactly, not coincidentally. With the pre-fix ordering
+    bug (``scored = scored[:limit]`` before the trace literal) this shape
+    reports ``results_dropped`` without the truncated term: 8 != 2 + 0."""
+    pages = [
+        CompiledPage(
+            path=f"page{i}.md",
+            title=f"Page {i}",
+            body=f"LanceDB retrieval study {i}.\n",
+        )
+        for i in range(8)
+    ]
+    index_dir = tmp_path / "idx"
+    embedder = _FakeEmbedder()
+    build_lexical_index(pages, index_dir)
+    build_semantic_index(pages, index_dir, embedder)
+    vec = embedder.embed(["LanceDB retrieval"])[0]
+    # threshold -1.0 keeps every candidate so ``limit`` is the only dropper
+    # after ranking (hashed fake vectors score near zero, often negative).
+    results = search_semantic_index(index_dir, vec, limit=2, score_threshold=-1.0)
+    assert len(results) == 2
+    trace = results[0].trace
+    assert trace.candidates_seen == 8
+    assert trace.results_returned == 2
+    assert trace.results_dropped == 6
+    assert trace.candidates_seen == trace.results_returned + trace.results_dropped
+
+
+def test_hybrid_trace_counts_are_consistent(tmp_path):
+    index_dir = tmp_path / "idx"
+    embedder = _FakeEmbedder()
+    build_lexical_index(_pages(), index_dir)
+    build_semantic_index(_pages(), index_dir, embedder)
+    vec = embedder.embed(["LanceDB retrieval"])[0]
+    results = search_hybrid_index(index_dir, "LanceDB", vec, limit=1, score_threshold=0.0)
+    assert len(results) == 1
+    trace = results[0].trace
+    assert trace.candidates_seen >= trace.results_returned == 1
+    assert trace.candidates_seen == trace.results_returned + trace.results_dropped

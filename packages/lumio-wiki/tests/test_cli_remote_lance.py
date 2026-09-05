@@ -526,3 +526,89 @@ def test_no_managed_local_index_for_s3_semantic(monkeypatch, capsys, tmp_path):
     rc = cli.main(["search", "s3://bucket/kb", "architecture", "--mode", "lexical"])
     assert rc == 0
     assert not (tmp_path / ".lumio").exists()
+
+
+# ---------------------------------------------------------------------------
+# ``search --json`` over the S3 + LanceDB paths (kanban t_e7c9cb77).
+# ---------------------------------------------------------------------------
+
+
+def test_s3_lexical_json_emits_one_object_with_accounting(monkeypatch, capsys, tmp_path):
+    import json as jsonlib
+
+    from lumio_lancedb import LanceDBRetrievalAdapter, LocalIndexLocation
+
+    snapshot = _fixture_snapshot()
+    _route_s3(monkeypatch, _snapshot_with_descriptor(snapshot))
+    location = LocalIndexLocation(tmp_path / "lance")
+    LanceDBRetrievalAdapter().build_index(
+        list(snapshot.pages), location, fingerprint=snapshot.fingerprint
+    )
+    monkeypatch.setenv("LUMIO_RETRIEVAL_BACKEND", "lancedb")
+    monkeypatch.setattr(cli, "_bind_remote_lancedb", lambda s: (lumio_lancedb, location))
+
+    rc = cli.main(["search", "s3://bucket/kb", "architecture", "--json"])
+    assert rc == 0
+    data = jsonlib.loads(capsys.readouterr().out)
+    assert data["kind"] == "page"
+    assert data["results_returned"] == len(data["results"])
+    assert data["candidates_seen"] >= data["results_returned"]
+    assert data["candidates_seen"] == data["results_returned"] + data["results_dropped"]
+
+
+def test_s3_lexical_json_fallback_accounting_stays_zero_index_truthful(
+    monkeypatch, capsys, tmp_path
+):
+    """With --json the fallback is disclosed INSIDE the payload as a top-level
+    ``note`` (ADR-0019: the degrading path says so; the accounting counts
+    cannot distinguish a zero-index from a BM25 ranking), and stdout stays one
+    parseable JSON object."""
+    import json as jsonlib
+
+    from lumio_lancedb import LanceDBRetrievalAdapter, LocalIndexLocation
+
+    snapshot = _fixture_snapshot()
+    _route_s3(monkeypatch, _snapshot_with_descriptor(snapshot))
+    location = LocalIndexLocation(tmp_path / "incomplete")
+    LanceDBRetrievalAdapter().build_index(
+        list(snapshot.pages), location, fingerprint=snapshot.fingerprint
+    )
+    location.connect().drop_table(lumio_lancedb.PAGE_TABLE_NAME)
+    monkeypatch.setenv("LUMIO_RETRIEVAL_BACKEND", "lancedb")
+    monkeypatch.setattr(cli, "_bind_remote_lancedb", lambda s: (lumio_lancedb, location))
+
+    rc = cli.main(["search", "s3://bucket/kb", "architecture", "--json"])
+    assert rc == 0
+    data = jsonlib.loads(capsys.readouterr().out)
+    assert data["kind"] == "page"
+    assert data["results"]
+    assert data["candidates_seen"] == data["results_returned"] + data["results_dropped"]
+    note = data["note"]
+    assert note is not None
+    assert "zero-index" in note
+
+
+def test_semantic_remote_json_emits_evidence_kind(monkeypatch, capsys, tmp_path):
+    import json as jsonlib
+
+    from lumio_lancedb import LanceDBRetrievalAdapter, LocalIndexLocation
+
+    snapshot = _fixture_snapshot()
+    _route_s3(monkeypatch, _snapshot_with_descriptor(snapshot))
+    location = LocalIndexLocation(tmp_path / "lance")
+    embedder = _FakeEmbedder(name="sem-model")
+    LanceDBRetrievalAdapter().build_index(
+        list(snapshot.pages), location, embedder=embedder, fingerprint=snapshot.fingerprint
+    )
+    monkeypatch.setenv("LUMIO_RETRIEVAL_BACKEND", "lancedb")
+    monkeypatch.setattr(cli, "_bind_remote_lancedb", lambda s: (lumio_lancedb, location))
+    monkeypatch.setattr(
+        cli, "_resolve_embedder", lambda model=None: _FakeEmbedder(name="sem-model")
+    )
+
+    rc = cli.main(["search", "s3://bucket/kb", "architecture", "--mode", "semantic", "--json"])
+    assert rc == 0
+    data = jsonlib.loads(capsys.readouterr().out)
+    assert data["kind"] == "evidence"
+    assert data["results"]
+    assert data["candidates_seen"] == data["results_returned"] + data["results_dropped"]

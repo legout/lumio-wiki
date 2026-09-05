@@ -688,6 +688,171 @@ def test_cli_dream_missing_local_store_creates_nothing(kb_root, tmp_path, monkey
     assert "source_drift_manifest" in out
 
 
+# ---------------------------------------------------------------------------
+# Source Coverage (t_f703bd88): registered Sources no published page declares.
+#
+# A pure, bounded read-only report over the registry joined against the
+# loaded Knowledge Base: a Source identity that every published Compiled
+# Page's ``sources[].id`` join never reaches. Advisory only — never a
+# validation error, never a write.
+# ---------------------------------------------------------------------------
+
+
+def _coverage_registry(tmp_path: Path) -> SourceRegistry:
+    registry = SourceRegistry(tmp_path / "coverage-registry")
+    registry.register_source("supported-src", b"declared by a page")
+    registry.register_source("stranded-src", b"never distilled")
+    return registry
+
+
+def test_source_coverage_counts_registered_referenced_unreferenced(tmp_path: Path):
+    registry = _coverage_registry(tmp_path)
+    kb = _drift_kb([_page_declaring("supported-src")])
+    report = lw.run_source_coverage_check(kb, registry)
+    assert report.registry_checked
+    assert report.registered == 2
+    assert report.referenced == 1
+    assert report.unreferenced == 1
+    assert report.sample == ("stranded-src",)
+    assert report.truncated is False
+
+
+def test_source_coverage_sample_is_sorted_bounded_and_truncated(tmp_path: Path):
+    """Sample is stable (sorted), capped, and truncation is disclosed."""
+    registry = SourceRegistry(tmp_path / "coverage-registry")
+    for i in range(9):
+        registry.register_source(f"src-{i}", b"bytes")
+    report = lw.run_source_coverage_check(_drift_kb([]), registry, sample_limit=3)
+    assert report.registered == 9
+    assert report.unreferenced == 9
+    assert report.sample == ("src-0", "src-1", "src-2")
+    assert report.truncated is True
+
+
+def test_source_coverage_retired_sources_still_reported(tmp_path: Path):
+    """Retirement is lifecycle state, not distillation: still unreferenced."""
+    registry = _coverage_registry(tmp_path)
+    transition = registry.stage_retirement("stranded-src")
+    registry.bind_pending(transition, "proposal-retire")
+    registry.apply_transition("proposal-retire")
+    report = lw.run_source_coverage_check(
+        _drift_kb([_page_declaring("supported-src")]), registry
+    )
+    assert report.unreferenced == 1
+    assert report.sample == ("stranded-src",)
+
+
+def test_source_coverage_synthetic_pages_do_not_confer_support(tmp_path: Path):
+    """A synthetic page declaring the id never makes the source referenced."""
+    registry = _coverage_registry(tmp_path)
+    synthetic = msgspec.structs.replace(
+        _page_declaring("stranded-src"), synthetic=True
+    )
+    report = lw.run_source_coverage_check(
+        _drift_kb([_page_declaring("supported-src"), synthetic]), registry
+    )
+    assert report.unreferenced == 1
+    assert report.sample == ("stranded-src",)
+
+
+def test_source_coverage_no_registry_is_not_checked(tmp_path: Path):
+    report = lw.run_source_coverage_check(_drift_kb([]), None)
+    assert report.registry_checked is False
+    assert report.registered == 0
+    assert report.sample == ()
+    assert report.truncated is False
+    assert report.status == "not checked: no private Source Registry"
+
+
+def test_dream_report_carries_coverage(kb_root: Path, tmp_path: Path):
+    """``run_dream_cycle`` composes the coverage report when given inputs."""
+    registry = _coverage_registry(tmp_path)
+    report = lw.run_dream_cycle(kb_root, coverage_registry=registry)
+    assert report.coverage.registered == 2
+    assert report.coverage.unreferenced == 2  # the fixture KB declares no ids
+
+
+def test_cli_dream_reports_source_coverage(
+    kb_root: Path, tmp_path: Path, monkeypatch, capsys
+):
+    _coverage_registry(tmp_path)
+    ingest = IngestStore(kb_root / ".lumio" / "ingest")
+    shutil.copytree(
+        tmp_path / "coverage-registry", ingest.source_registry.root, dirs_exist_ok=True
+    )
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    rc = main(["dream", str(kb_root)])
+    out = capsys.readouterr().out
+    assert rc == 0  # advisory: the exit rule stays validation-only
+    assert "source_coverage_registered: 2" in out
+    assert "source_coverage_referenced: 0" in out
+    assert "source_coverage_unreferenced: 2" in out
+    assert "stranded-src" in out
+
+
+def test_cli_lint_reports_source_coverage(
+    kb_root: Path, tmp_path: Path, monkeypatch, capsys
+):
+    _coverage_registry(tmp_path)
+    ingest = IngestStore(kb_root / ".lumio" / "ingest")
+    shutil.copytree(
+        tmp_path / "coverage-registry", ingest.source_registry.root, dirs_exist_ok=True
+    )
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    rc = main(["lint", str(kb_root)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "source_coverage_registered: 2" in out
+    assert "source_coverage_unreferenced: 2" in out
+    assert "stranded-src" in out
+
+
+def test_cli_lint_without_ingest_dir_does_not_create_one(
+    kb_root: Path, monkeypatch, capsys
+):
+    ingest_dir = kb_root / ".lumio" / "ingest"
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+    assert not ingest_dir.exists()
+    rc = main(["lint", str(kb_root)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert not ingest_dir.exists()  # read-only: the store was never created
+    assert "source_coverage_registered: 0" in out
+    assert "source_coverage_unreferenced: 0" in out
+
+
+def test_cli_lint_file_ingest_root_is_bounded_and_secret_free(
+    kb_root: Path, tmp_path: Path, monkeypatch, capsys
+):
+    invalid = tmp_path / "private-ingest-path"
+    invalid.write_text("not a directory", encoding="utf-8")
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    assert main(["lint", str(kb_root), "--ingest-dir", str(invalid)]) == 0
+    captured = capsys.readouterr()
+    assert "source_coverage_registry: not checked" in captured.out
+    assert str(invalid) not in captured.out + captured.err
+
+
+def test_cli_lint_malformed_registry_is_bounded_and_secret_free(
+    kb_root: Path, tmp_path: Path, monkeypatch, capsys
+):
+    """A corrupt private registry degrades to a bounded advisory: no crash,
+    no raw file content echoed (secret-free by contract)."""
+    ingest_dir = kb_root / ".lumio" / "ingest"
+    ingest_dir.mkdir(parents=True)
+    (ingest_dir / "source-registry").mkdir()
+    (ingest_dir / "source-registry" / "sources.json").write_bytes(b"{not json at all")
+    monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
+
+    assert main(["lint", str(kb_root)]) == 0
+    captured = capsys.readouterr()
+    assert "source_coverage_registry: unavailable: registry could not be read" in (
+        captured.out
+    )
+    assert "not json" not in captured.out + captured.err
+
+
 def test_merge_compound_sources_preserves_idless_sources():
     existing = textwrap.dedent(
         """\

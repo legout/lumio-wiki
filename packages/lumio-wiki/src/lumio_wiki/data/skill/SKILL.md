@@ -85,7 +85,7 @@ root directory in every command below.
 | `lumio-wiki validate <kb>` | Load and validate every page, Control File, link, and reserved artifact. Exit 1 on errors. |
 | `lumio-wiki hot <kb>` | Render the Maintainer-pinned Hot Index (ladder 0). Curated entry pages. |
 | `lumio-wiki index <kb> [dir]` | Render the generated Navigation Index (ladder 1). Root catalog, or a directory's shallow index. |
-| `lumio-wiki search <kb> <query> [--limit N] [--mode lexical\|semantic\|hybrid] [--model M] [--index-dir D]` | Retrieve citation-ready Evidence. Default `--mode lexical` is deterministic zero-index (no index/model). `--mode semantic\|hybrid` add embedding-based retrieval; need `lumio-lancedb` + an embedder (`lumio-lancedb[embeddings]` or `LUMIO_PROVIDER_*`). |
+| `lumio-wiki search <kb> <query> [--limit N] [--mode lexical\|semantic\|hybrid] [--model M] [--index-dir D] [--json]` | Retrieve citation-ready Evidence. Default `--mode lexical` is deterministic zero-index (no index/model). `--mode semantic\|hybrid` add embedding-based retrieval; need `lumio-lancedb` + an embedder (`lumio-lancedb[embeddings]` or `LUMIO_PROVIDER_*`). `--json` emits one machine-readable object with retrieval accounting (`candidates_seen` / `results_returned` / `results_dropped`) — for other tools/scripts, not for your own reading. |
 | `lumio-wiki page <kb> <title>` | Read a Compiled Page by Canonical Page Title (falls back to alias). Prints frontmatter + body. |
 | `lumio-wiki related <kb> <title> [--relationship-type T] [--depth N] [--max-edges N] [--max-results N] [--scope canonical\|discovery] [--direction outgoing\|incoming\|both] [--trace]` | Bounded graph traversal of related Canonical Page Titles. |
 | `lumio-wiki paths <kb> <source> <target> [--scope canonical\|discovery] [--direction ...] [--max-depth N] [--max-edges N] [--trace]` | Shortest directed path between two titles, hop-bounded. |
@@ -100,14 +100,14 @@ root directory in every command below.
 | `lumio-wiki rollback-s3 <dest> --version <v> [--expected-pointer-version <v>]` | CAS-activate a prior complete version; never rebuilds it, stale rollback fails closed. |
 | `lumio-wiki cleanup-s3 <dest>` | Report inactive incomplete version prefixes (interrupted builds); deletes nothing. |
 | `lumio-wiki health <kb> [--rebuild]` | Page counts, validation status, Discovery Graph health + fingerprint. `--rebuild` materializes a fresh graph artifact (actionable recovery); a bad/missing artifact never blocks zero-index operation. |
-| `lumio-wiki lint <kb>` | Read-only cross-page QA report: validation, graph health, canonical/discovery structural diagnostics, scope disclosure. Exit 1 when invalid (ADR-0015). |
+| `lumio-wiki lint <kb>` | Read-only cross-page QA report: validation, graph health, canonical/discovery structural diagnostics, scope disclosure, and Source Coverage (registered Sources no page declares — advisory counts plus a bounded sample). Exit 1 when invalid (ADR-0015). |
 | `lumio-wiki cross-link <kb> [--limit N] [--stage]` | Missing-link candidates ranked by Discovery Graph impact. `--stage` stages one reviewable repair proposal per top candidate; never direct-writes. |
 | `lumio-wiki source <kb> <register\|list\|retire\|reactivate> --source-id <id>` | Manage private Knowledge Source lifecycle state (ADR-0014). Explicit `retire`/`reactivate` stage ordinary reviewable proposals; `list` reports identities/status without disclosing raw bytes. |
 | `lumio-wiki source resolve <kb> "<query>" [--published-version <v>] [--json]` | Resolve a Source ID, Entity ID, Canonical Page Title, alias, or page path to ONE registered Knowledge Source when unambiguous (identity + availability; exit 1 with bounded candidates on ambiguity, bounded close ids or the exact discovery command on unknown). Never a signed URL — that is `source link` only. |
 | `lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]` | Secret-free metadata for the ONE exact Source Version bound to the id: safe filename, media type, size, digest abbreviation, publication binding, verified availability, authorization outcome (ADR-0020). Local worktrees resolve the registry's current version; S3 KBs / `--published-version` resolve the private Source Binding Manifest — never a silent fallback to the latest version. Raw Source Artifacts are optional (retention is disabled by default) and private; inspection is authorized provenance review, not Evidence and not claim-level lineage. |
 | `lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>` | Byte-exact original Source Artifact to an explicit destination, digest and size re-verified (ADR-0020). A directory destination receives the safe filename. Content is not rendered or converted here. |
 | `lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]` | Explicit short-lived signed GET URL for ONE exact artifact when the store supports signing (S3 adapter). 5 min default, 1 h max; the URL is a bearer secret — never persist or log it. Prefer verified `fetch` (signed URLs can leak through conversation history). |
-| `lumio-wiki dream <kb> [--limit N] [--stage] [--semantic]` | Deterministic Dream Cycle reflection plus optional semantic review; `--semantic` requires the `[llm]` extra and remains proposal-first. |
+| `lumio-wiki dream <kb> [--limit N] [--stage] [--semantic]` | Deterministic Dream Cycle reflection (health, structure, ranked link candidates, due pages, Source Drift, Source Coverage) plus optional semantic review; `--semantic` requires the `[llm]` extra and remains proposal-first. |
 | `lumio-wiki export-graph <kb> [--scope public\|all] [--out-dir D]` | Structure-only graph exchange (ADR-0024): writes `graph.json` (NetworkX node_link) + `graph.graphml` over the authorized page set into `--out-dir` (default `./lumio-graph-export`). Nodes carry identity/title/category/tags/summary only — never bodies or Sources. Default `--scope public` is the enforced portable boundary (internal/restricted never enter the artifacts); `all` is the explicit privileged scope. |
 | `lumio-wiki import-graph <kb> <graph.json>` | Load a graph.json (Lumio or wiki-export lineage) and stage stub Compiled Pages — frontmatter skeletons plus link structure, no bodies — as ONE reviewable Ingest Proposal. No merge/skip/overwrite modes; review replaces them. |
 | `lumio-wiki doctor` | Version, detected optional extras, and packaged skill location. |
@@ -130,7 +130,9 @@ soon as you have citation-ready Evidence that supports the question.
 2. **Deterministic search** — `lumio-wiki search <kb> "<query>"`. Zero-index
    lexical search; no external index. Add `--mode semantic` or `--mode hybrid`
    (needs `lumio-lancedb` + an embedder) as an escalation rung when lexical
-   surface matching is insufficient.
+   surface matching is insufficient. `--json` is for machine consumers only
+   (other tools, scripts); read the human output yourself — you already parse
+   it natively, and `--json` would waste tokens re-encoding what you can see.
 3. **Focused page read** — `lumio-wiki page <kb> "<title>"`. Read one page to
    confirm it supports a claim and copy the exact passage.
 4. **Related-page lookup** — `lumio-wiki related <kb> "<title>" [--scope
@@ -231,6 +233,35 @@ invoke it in the background, and never capture without the user's ask.
    the page, the manifest record, or output. A named transcript that is
    missing is reported, never fabricated. Capture never auto-publishes.
 
+### Capturing a PAST session from client history (Codex / Pi adapters)
+
+To capture a session that a client already stored on disk (not the current
+one), work through discover → select → export → distill → preview → explicit
+stage:
+
+1. **Discover** (read-only, no KB contact):
+   `lumio-wiki capture sessions --client codex|pi [--project PATH]
+   [--since ISO] [--limit N] [--json]`. Lists stable session ids, start
+   times, and project paths only — never transcript content.
+2. **Select** one session id.
+3. **Export** (read-only):
+   `lumio-wiki capture export --client codex|pi --session-id <id>
+   --output <empty-dir>`. Copies the ORIGINAL transcript bytes
+   (transcript.jsonl) plus a ready-made Capture Manifest (capture.yaml,
+   `transcript: transcript.jsonl`) into the output directory. Session ids
+   are stable sha256-16 ids derived from the session file (a client's
+   native header id can repeat across resume files and is listed as
+   `native_id` only). Nothing is registered, staged, published, or
+   printed.
+4. **Distill**: author the Compiled Page from the exported material exactly
+   as in step 1 above (declarative knowledge only), declaring the source id.
+5. **Preview**: run `capture session` WITHOUT `--yes`, using the exported
+   capture.yaml as `--manifest` and `--transcript <output>/transcript.jsonl`.
+6. **Explicit stage**: only after the user approves, re-run with `--yes`.
+
+The `capture session` preview/`--yes` path remains the ONLY KB write path;
+`sessions` and `export` never touch a Knowledge Base.
+
 **URLs** (issue #178): when the source is a web page, use
 `lumio-wiki ingest-url <kb> <url> --compiled-page <page.md> --source-id <id>`.
 The fetch is bounded and fail-closed (HTTPS only by default; private,
@@ -261,16 +292,24 @@ Knowledge Base connected:
 2. `lumio-wiki dream <kb>` — the reflection report: health, structure, and
    the missing-link candidates ranked by Discovery Graph impact (orphan
    repair, component join, fragile-connection strengthening).
-3. `lumio-wiki dream <kb> --stage [--limit N]` — stage the top repairs as
+3. Close the ingest loop with Source Coverage and Source Drift (both
+   advisory, never validation errors): `source_coverage_*` counts report
+   registered Knowledge Sources that NO published page declares in
+   `sources[].id` (abandoned or incomplete distillation), with a bounded
+   sample and a truncation flag; `source_drift_*` findings report declared
+   sources that drifted from the private registry. Distill stranded sources
+   through the normal proposal pipeline, or retire them via
+   `source retire` if they will never contribute.
+4. `lumio-wiki dream <kb> --stage [--limit N]` — stage the top repairs as
    ordinary reviewable Ingest Proposals. Nothing direct-writes: review with
    `proposal inspect`, then `publish` or `discard` as usual.
    Add opt-in `--semantic` (requires the `[llm]` extra) to stage semantic
    findings through the same proposal-first path.
-4. `lumio-wiki cross-link <kb>` is the focused variant when you only want
+5. `lumio-wiki cross-link <kb>` is the focused variant when you only want
    the candidate list (or only link repairs, `--stage`). `cross-link --stage`
    only adds authored Markdown links (Extracted References, discovery-graph
    topology) — it never creates a typed Claim.
-5. Canonical edges are accepted, evidence-bearing **Claims** authored directly
+6. Canonical edges are accepted, evidence-bearing **Claims** authored directly
    in Compiled Page frontmatter and validated against the `lumio.yaml`
    ontology (ADR-0021). `cross-link --stage` never creates one.
 

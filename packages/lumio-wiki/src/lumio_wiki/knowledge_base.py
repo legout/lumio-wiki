@@ -1533,7 +1533,14 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
             snippet=result.snippet,
             score=result.score,
             reason=result.reason,
-            trace=RetrievalTrace(stages=[*stages, *result.trace.stages]),
+            trace=RetrievalTrace(
+                stages=[*stages, *result.trace.stages],
+                # Deterministic accounting belongs to the adapter's ranking
+                # pass and is preserved verbatim through composition.
+                candidates_seen=result.trace.candidates_seen,
+                results_returned=result.trace.results_returned,
+                results_dropped=result.trace.results_dropped,
+            ),
         )
 
     def retrieve(

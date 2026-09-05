@@ -534,6 +534,100 @@ def run_source_drift_check(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class SourceCoverageReport:
+    """Registered Sources no published Compiled Page declares (t_f703bd88).
+
+    The bounded, advisory companion to Source Drift: the working-copy tier
+    of the drift check asks "is every declared source healthy?", this asks
+    "does every registered source support knowledge?". ``sample`` carries a
+    stable (sorted) bounded sample of unreferenced ids and ``truncated`` is
+    true whenever ``sample`` is shorter than the unreferenced count.
+    """
+
+    registered: int = 0
+    referenced: int = 0
+    unreferenced: int = 0
+    sample: tuple[str, ...] = ()
+    truncated: bool = False
+    registry_checked: bool = False
+    status: str = "not checked: no private Source Registry"
+
+    @property
+    def has_unreferenced(self) -> bool:
+        return self.unreferenced > 0
+
+
+#: Default cap on the unreferenced-ids sample carried on a
+#: :class:`SourceCoverageReport`.
+SOURCE_COVERAGE_SAMPLE_LIMIT = 10
+
+
+def _read_registry_sources(
+    registry: SourceRegistry,
+) -> tuple[dict[str, str], str | None]:
+    """Return ``{source_id: status}`` from the registry, or a bounded failure.
+
+    The failure reason is a fixed, secret-free advisory string: raw exception
+    text from a malformed private store is never echoed. The broad catch is
+    deliberate (ponytail): the store is untrusted private state, and an
+    advisory report must degrade instead of crashing. Bounded by design.
+    """
+    try:
+        return {s.source_id: s.status for s in registry.list()}, None
+    except Exception:  # ponytail: broad — degraded advisory over a crash
+        return {}, "unavailable: registry could not be read"
+
+
+def run_source_coverage_check(
+    kb: KnowledgeBase,
+    registry: SourceRegistry | None,
+    *,
+    status: str | None = None,
+    sample_limit: int = SOURCE_COVERAGE_SAMPLE_LIMIT,
+) -> SourceCoverageReport:
+    """Join the Source Registry against what published pages declare.
+
+    Pure and I/O-free: everything is passed in, nothing is read. A source is
+    ``referenced`` when any current non-synthetic page declares its id in
+    ``sources[].id`` — matching the drift check's support rule; synthetic
+    pages (which may omit provenance, ADR-0014) never confer support.
+    Retirement is lifecycle state, not distillation: a retired source still
+    counts as unreferenced. Never a validation error; advisory by contract.
+
+    ``status`` discloses why the registry tier was skipped when the caller
+    already knows (the CLI resolver passes a fixed reason when no registry
+    could be resolved); it is honored only when ``registry`` is None.
+    """
+    if registry is None:
+        return SourceCoverageReport(
+            status=status or "not checked: no private Source Registry"
+        )
+    sources, error = _read_registry_sources(registry)
+    if error is not None:
+        return SourceCoverageReport(registry_checked=False, status=error)
+
+    referenced: set[str] = set()
+    for page in kb.pages:
+        if getattr(page, "synthetic", False):
+            continue
+        for source in page.sources:
+            if source.id in sources:
+                referenced.add(source.id)
+
+    unreferenced_ids = sorted(set(sources) - referenced)
+    sample = tuple(unreferenced_ids[:sample_limit])
+    return SourceCoverageReport(
+        registered=len(sources),
+        referenced=len(referenced),
+        unreferenced=len(unreferenced_ids),
+        sample=sample,
+        truncated=len(unreferenced_ids) > len(sample),
+        registry_checked=True,
+        status=f"checked ({len(sources)} registered source(s))",
+    )
+
+
 # ---------------------------------------------------------------------------
 # The Dream Cycle (ADR-0015): reflect, then optionally stage repairs.
 # ---------------------------------------------------------------------------
@@ -555,6 +649,7 @@ class DreamReport:
     ranked_candidates: tuple[RankedLinkCandidate, ...]
     due_pages: tuple[CompiledPage, ...] = ()
     drift: SourceDriftReport = SourceDriftReport()
+    coverage: SourceCoverageReport = SourceCoverageReport()
 
     @property
     def is_valid(self) -> bool:
@@ -591,6 +686,8 @@ def _run_dream_cycle_loaded(
     registry: SourceRegistry | None = None,
     manifest: SourceBindingManifest | None = None,
     manifest_status: str | None = None,
+    coverage_registry: SourceRegistry | None = None,
+    coverage_status: str | None = None,
 ) -> DreamReport:
     """Build one Dream report from a loaded Knowledge Base view."""
     lint = _run_lint_loaded(kb, validation_report, index_dir=index_dir)
@@ -603,11 +700,13 @@ def _run_dream_cycle_loaded(
         manifest=manifest,
         manifest_status=manifest_status,
     )
+    coverage = run_source_coverage_check(kb, coverage_registry, status=coverage_status)
     return DreamReport(
         lint=lint,
         ranked_candidates=tuple(ranked),
         due_pages=tuple(due),
         drift=drift,
+        coverage=coverage,
     )
 
 
@@ -618,14 +717,17 @@ def run_dream_cycle(
     registry: SourceRegistry | None = None,
     manifest: SourceBindingManifest | None = None,
     manifest_status: str | None = None,
+    coverage_registry: SourceRegistry | None = None,
+    coverage_status: str | None = None,
 ) -> DreamReport:
     """Run the read-only Dream Cycle reflection over a Knowledge Base.
 
     Composes ``run_lint`` (validation + health + structural diagnostics for
     both scopes) with the deterministic link-candidate finder, ranked by
-    Discovery Graph impact, the ``review_after`` due pages, and the Source
+    Discovery Graph impact, the ``review_after`` due pages, the Source
     Drift diagnostic when the optional private inputs are provided
-    (issue #196). Model-free; never writes. The ranking is advisory: it
+    (issue #196), and the Source Coverage report when a registry is provided
+    (t_f703bd88). Model-free; never writes. The ranking is advisory: it
     never infers a typed Relationship from a Markdown-link proposal
     (ADR-0011).
     """
@@ -637,6 +739,8 @@ def run_dream_cycle(
         registry=registry,
         manifest=manifest,
         manifest_status=manifest_status,
+        coverage_registry=coverage_registry,
+        coverage_status=coverage_status,
     )
 
 
