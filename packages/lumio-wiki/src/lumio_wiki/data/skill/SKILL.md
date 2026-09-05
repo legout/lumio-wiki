@@ -107,7 +107,7 @@ root directory in every command below.
 | `lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]` | Secret-free metadata for the ONE exact Source Version bound to the id: safe filename, media type, size, digest abbreviation, publication binding, verified availability, authorization outcome (ADR-0020). Local worktrees resolve the registry's current version; S3 KBs / `--published-version` resolve the private Source Binding Manifest — never a silent fallback to the latest version. Raw Source Artifacts are optional (retention is disabled by default) and private; inspection is authorized provenance review, not Evidence and not claim-level lineage. |
 | `lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>` | Byte-exact original Source Artifact to an explicit destination, digest and size re-verified (ADR-0020). A directory destination receives the safe filename. Content is not rendered or converted here. |
 | `lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]` | Explicit short-lived signed GET URL for ONE exact artifact when the store supports signing (S3 adapter). 5 min default, 1 h max; the URL is a bearer secret — never persist or log it. Prefer verified `fetch` (signed URLs can leak through conversation history). |
-| `lumio-wiki dream <kb> [--limit N] [--stage] [--semantic]` | Deterministic Dream Cycle reflection (health, structure, ranked link candidates, due pages, Source Drift, Source Coverage) plus optional semantic review; `--semantic` requires the `[llm]` extra and remains proposal-first. |
+| `lumio-wiki dream <kb> [--limit N] [--stage] [--semantic]` | Deterministic Dream Cycle reflection (health, structure, ranked link candidates, due pages, Source Drift, Source Coverage) plus optional semantic review; `--semantic` requires the `[llm]` extra and remains proposal-first. `duplicate_candidates` lists read-only possible-duplicate Entity pairs (shared alias/title or same-type title-token overlap) — advisory only. |
 | `lumio-wiki export-graph <kb> [--scope public\|all] [--out-dir D]` | Structure-only graph exchange (ADR-0024): writes `graph.json` (NetworkX node_link) + `graph.graphml` over the authorized page set into `--out-dir` (default `./lumio-graph-export`). Nodes carry identity/title/category/tags/summary only — never bodies or Sources. Default `--scope public` is the enforced portable boundary (internal/restricted never enter the artifacts); `all` is the explicit privileged scope. |
 | `lumio-wiki import-graph <kb> <graph.json>` | Load a graph.json (Lumio or wiki-export lineage) and stage stub Compiled Pages — frontmatter skeletons plus link structure, no bodies — as ONE reviewable Ingest Proposal. No merge/skip/overwrite modes; review replaces them. |
 | `lumio-wiki doctor` | Version, detected optional extras, and packaged skill location. |
@@ -300,16 +300,24 @@ Knowledge Base connected:
    sources that drifted from the private registry. Distill stranded sources
    through the normal proposal pipeline, or retire them via
    `source retire` if they will never contribute.
-4. `lumio-wiki dream <kb> --stage [--limit N]` — stage the top repairs as
+4. Route duplicate-identity candidates: `duplicate_candidates` in the dream
+   report lists read-only possible-duplicate Entity pairs (shared alias,
+   shared Canonical Page Title, or same-type title-token overlap), bounded
+   and ranked strongest-first. For each pair you review and agree is one
+   Entity, use the EXISTING explicit merge path —
+   `lumio-wiki merge-entity <kb> <retired-entity-id> <surviving-entity-id>
+   --ingest-dir <dir>` — which stages one reviewable proposal. Candidates
+   are advisory: nothing merges or stages automatically (ADR-0021).
+5. `lumio-wiki dream <kb> --stage [--limit N]` — stage the top repairs as
    ordinary reviewable Ingest Proposals. Nothing direct-writes: review with
    `proposal inspect`, then `publish` or `discard` as usual.
    Add opt-in `--semantic` (requires the `[llm]` extra) to stage semantic
    findings through the same proposal-first path.
-5. `lumio-wiki cross-link <kb>` is the focused variant when you only want
+6. `lumio-wiki cross-link <kb>` is the focused variant when you only want
    the candidate list (or only link repairs, `--stage`). `cross-link --stage`
    only adds authored Markdown links (Extracted References, discovery-graph
    topology) — it never creates a typed Claim.
-6. Canonical edges are accepted, evidence-bearing **Claims** authored directly
+7. Canonical edges are accepted, evidence-bearing **Claims** authored directly
    in Compiled Page frontmatter and validated against the `lumio.yaml`
    ontology (ADR-0021). `cross-link --stage` never creates one.
 

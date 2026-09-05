@@ -45,6 +45,7 @@ from lumio_wiki.link_candidates import find_link_candidates
 from lumio_wiki.proposal_pipeline import ProposalPipeline
 from lumio_wiki.records import (
     CompiledPage,
+    Entity,
     ExtractedReference,
     GraphHealthReport,
     LinkCandidate,
@@ -368,6 +369,123 @@ def stage_cross_link_proposal(
 
 
 # ---------------------------------------------------------------------------
+# Duplicate-identity candidates (t_3327f75e): read-only possible-duplicate
+# Entity candidates for the Dream report. Advisory always: the explicit
+# Entity Merge proposal stays the ONLY mutation path (ADR-0021 forbids
+# automatic merging; issue #172 keeps resolution review-only).
+# ---------------------------------------------------------------------------
+
+#: Default bound on duplicate-identity candidates carried on a DreamReport.
+DUPLICATE_CANDIDATE_LIMIT = 10
+
+#: Signal tiers, strongest last (the tier value). ``signals_rank`` carries the
+#: tier of the strongest signal on a candidate.
+SIGNAL_TOKEN_OVERLAP = 1
+SIGNAL_SHARED_ALIAS = 2
+SIGNAL_SHARED_CANONICAL_TITLE = 3
+
+#: Token-overlap alone never crosses an Entity Type boundary; exact surfaces
+#: (aliases, titles) do.
+_TOKEN_OVERLAP_NEEDS_SAME_TYPE = SIGNAL_TOKEN_OVERLAP
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateEntityCandidate:
+    """One read-only possible-duplicate Entity pair for the Dream report.
+
+    ``signals`` explains EXACTLY why the pair was emitted (one deterministic
+    surface match per entry); ``signals_rank`` is the tier of the strongest
+    signal. Advisory always: reviewing a candidate routes to the existing
+    explicit ``merge-entity`` preview/proposal — nothing merges or stages.
+    """
+
+    retired_entity_id: str
+    surviving_entity_id: str
+    signals: tuple[str, ...]
+    signals_rank: int
+
+
+def _title_tokens(title: str) -> frozenset[str]:
+    """Lowercase ASCII word tokens of a title (deterministic, no deps)."""
+    tokens: list[str] = []
+    token: list[str] = []
+    for char in title.lower():
+        if char.isascii() and char.isalnum():
+            token.append(char)
+        elif token:
+            tokens.append("".join(token))
+            token = []
+    if token:
+        tokens.append("".join(token))
+    return frozenset(tokens)
+
+
+def find_duplicate_entity_candidates(
+    pages: Sequence[CompiledPage],
+) -> list[DuplicateEntityCandidate]:
+    """Rank possible-duplicate Entity pairs from exact identity surfaces.
+
+    Pure and I/O-free. Two DISTINCT Entities become one candidate when their
+    identity surfaces collide: a shared alias (strong), a shared Canonical
+    Page Title (strongest — a validation error, but an invalid KB must still
+    be reportable), or a same-type title token-overlap of at least half the
+    smaller title (weakest). Legacy Flat Mode pages (no Entity ID) and
+    synthetic pages never enter the comparison. Deterministically ordered:
+    strongest rank first, then Entity IDs.
+    """
+    entities = [
+        Entity(
+            id=page.id,
+            entity_types=list(page.entity_types),
+            title=page.title,
+            aliases=list(page.aliases),
+            path=page.path,
+        )
+        for page in pages
+        if page.id and not page.synthetic
+    ]
+    found: list[DuplicateEntityCandidate] = []
+    for i, a in enumerate(entities):
+        for b in entities[i + 1 :]:
+            if a.id == b.id:
+                continue  # invalid duplicate IDs are a validation error, never a self-merge
+            signals: list[str] = []
+            rank = 0
+            if a.title and a.title == b.title:
+                signals.append(f"shared-canonical-title: {a.title}")
+                rank = SIGNAL_SHARED_CANONICAL_TITLE
+            for alias in sorted(set(a.aliases) & set(b.aliases)):
+                if alias:
+                    signals.append(f"shared-alias: {alias}")
+                    rank = max(rank, SIGNAL_SHARED_ALIAS)
+            a_tokens, b_tokens = _title_tokens(a.title), _title_tokens(b.title)
+            if a_tokens and b_tokens:
+                overlap = a_tokens & b_tokens
+                if overlap and len(overlap) * 2 >= min(len(a_tokens), len(b_tokens)):
+                    joined = " ".join(sorted(overlap))
+                    same_type = bool(set(a.entity_types) & set(b.entity_types))
+                    if rank or same_type:
+                        signals.append(f"token-overlap: {joined}")
+                        rank = max(rank, SIGNAL_TOKEN_OVERLAP)
+            if not signals:
+                continue
+            first, second = sorted((a.id, b.id))
+            found.append(
+                DuplicateEntityCandidate(
+                    retired_entity_id=first,
+                    surviving_entity_id=second,
+                    signals=tuple(signals),
+                    signals_rank=rank,
+                )
+            )
+    found.sort(
+        key=lambda c: (-c.signals_rank, c.retired_entity_id, c.surviving_entity_id)
+    )
+    return found
+
+
+
+# ---------------------------------------------------------------------------
 # Source Drift (issue #196, ADR-0014 / ADR-0020): the read-only comparison
 # between private source state and what currently supports published or
 # working-copy knowledge.
@@ -650,6 +768,10 @@ class DreamReport:
     due_pages: tuple[CompiledPage, ...] = ()
     drift: SourceDriftReport = SourceDriftReport()
     coverage: SourceCoverageReport = SourceCoverageReport()
+    #: Read-only possible-duplicate Entity pairs, bounded and stably ranked
+    #: (t_3327f75e). Advisory: routing to the explicit Entity Merge proposal
+    #: is a Maintainer decision, never an automatic step.
+    duplicate_candidates: tuple[DuplicateEntityCandidate, ...] = ()
 
     @property
     def is_valid(self) -> bool:
@@ -662,6 +784,10 @@ class DreamReport:
     @property
     def due_count(self) -> int:
         return len(self.due_pages)
+
+    @property
+    def duplicate_count(self) -> int:
+        return len(self.duplicate_candidates)
 
 
 @dataclass(frozen=True, slots=True)
@@ -701,12 +827,14 @@ def _run_dream_cycle_loaded(
         manifest_status=manifest_status,
     )
     coverage = run_source_coverage_check(kb, coverage_registry, status=coverage_status)
+    duplicates = find_duplicate_entity_candidates(kb.pages)[:DUPLICATE_CANDIDATE_LIMIT]
     return DreamReport(
         lint=lint,
         ranked_candidates=tuple(ranked),
         due_pages=tuple(due),
         drift=drift,
         coverage=coverage,
+        duplicate_candidates=tuple(duplicates),
     )
 
 

@@ -3679,6 +3679,21 @@ def _cmd_dream(args: argparse.Namespace) -> int:
     for page in report.due_pages:
         print(f"  - {page.path} (review_after {page.review_after}) title={page.title!r}")
 
+    print(f"duplicate_candidates:    {report.duplicate_count}")
+    for candidate in report.duplicate_candidates:
+        signals = "; ".join(candidate.signals) or "none"
+        print(
+            f"  - {candidate.retired_entity_id} <- {candidate.surviving_entity_id} "
+            f"[rank={candidate.signals_rank}] {signals}"
+        )
+    if report.duplicate_candidates:
+        print(
+            "  Route reviewed pairs to the explicit merge path: "
+            "`lumio-wiki merge-entity <kb> <retired-entity-id> <surviving-entity-id> "
+            "--ingest-dir <dir>`. Candidates are advisory; nothing merges or stages "
+            "automatically (ADR-0021)."
+        )
+
     drift = report.drift
     print(f"source_drift_findings:  {drift.count}")
     if registry is not None:
