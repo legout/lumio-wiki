@@ -99,6 +99,7 @@ root directory in every command below.
 | `lumio-wiki publish-s3 <kb> [dest] --version <v> [--expected-pointer-version <v>] [--retrieval zero-index\|lancedb]` | Publish an immutable S3 Published Version (canonical content + Discovery Graph; `lancedb` also builds + health-checks a remote LanceDB index under the version's `derived/lance/` BEFORE the pointer advances). Destination defaults to `LUMIO_PUBLISH_TO` from `.env`. The `--expected-pointer-version` CAS guard refuses a stale advance. |
 | `lumio-wiki rollback-s3 <dest> --version <v> [--expected-pointer-version <v>]` | CAS-activate a prior complete version; never rebuilds it, stale rollback fails closed. |
 | `lumio-wiki cleanup-s3 <dest>` | Report inactive incomplete version prefixes (interrupted builds); deletes nothing. |
+| `lumio-wiki diff-s3 <dest> --from <v> --to <v> [--json]` | Read-only delta between two immutable Published Versions: added/removed/changed Compiled Pages (paths, titles) and Source identities, plus lifecycle/visibility transitions when recorded. `--json` emits one machine-readable object. Writes nothing. |
 | `lumio-wiki health <kb> [--rebuild]` | Page counts, validation status, Discovery Graph health + fingerprint. `--rebuild` materializes a fresh graph artifact (actionable recovery); a bad/missing artifact never blocks zero-index operation. |
 | `lumio-wiki lint <kb>` | Read-only cross-page QA report: validation, graph health, canonical/discovery structural diagnostics, scope disclosure, and Source Coverage (registered Sources no page declares — advisory counts plus a bounded sample). Exit 1 when invalid (ADR-0015). |
 | `lumio-wiki cross-link <kb> [--limit N] [--stage]` | Missing-link candidates ranked by Discovery Graph impact. `--stage` stages one reviewable repair proposal per top candidate; never direct-writes. |
@@ -316,6 +317,26 @@ Knowledge Base connected:
 The same operations exist on the public Python surface
 (`lumio_wiki.run_lint`, `lumio_wiki.run_dream_cycle`,
 `lumio_wiki.stage_dream_repairs`, `lumio_wiki.stage_cross_link_proposal`).
+
+## Workflow: change review between Published Versions
+
+Before updating a downstream consumer (or answering "what changed since the
+version I read?"), diff the two immutable versions read-only:
+
+1. `lumio-wiki diff-s3 <dest> --from <v1> --to <v2>` — the deterministic
+   delta: added/removed/changed Compiled Pages (by path, with title and
+   lifecycle/visibility transitions when recorded) and added/removed Source
+   identities. No manifest is mutated and nothing is published; any two
+   complete versions can be compared, not just the active one. Use `--json`
+   only when feeding another tool.
+2. Read the actual content of the changed pages in the TO version
+   (`lumio-wiki page <kb> "<title>"`) before stating what a change MEANS.
+   The diff names identities and transitions; it never summarizes prose.
+3. Turn the delta into prose FOR THE USER in your reply (e.g. "v3 adds two
+   pages and marks 'Acme Corp' deprecated"). Do not write a digest file, a
+   changelog page, or an activity log into the Knowledge Base — immutable
+   versions ARE the audit trail (ADR-0022), and change reports stay in the
+   conversation that requested them.
 
 ## Workflow: exchange (choose the right surface)
 
