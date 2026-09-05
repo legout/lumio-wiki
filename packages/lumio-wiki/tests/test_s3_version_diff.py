@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import msgspec
 import pytest
+from lumio_wiki.knowledge_base import KnowledgeBaseError
 from lumio_wiki.s3_version_diff import compare_published_versions
 
 INDEX_MD = "---\nlumio:\n  artifact: navigation-index\n  version: 1\n---\n\n# index\n"
@@ -55,7 +56,9 @@ def test_no_changes_for_identical_content():
 
 def test_added_removed_changed_pages():
     v1 = _content(_page("a.md", "Alpha"), _page("b.md", "Beta", body="One."))
-    v2 = _content(_page("a.md", "Alpha"), _page("b.md", "Beta", body="Two."), _page("c.md", "Gamma"))
+    v2 = _content(
+        _page("a.md", "Alpha"), _page("b.md", "Beta", body="Two."), _page("c.md", "Gamma")
+    )
     report = compare_published_versions("v1", "v2", v1, v2)
     assert report.added_pages == ("pages/2.md",)
     assert report.removed_pages == ()
@@ -123,7 +126,7 @@ def test_control_file_change_is_ignored_as_non_markdown():
 def test_unparseable_markdown_fails_closed():
     v1 = _content(_page("a.md", "Alpha"))
     v2 = {**v1, "pages/1.md": b"---\nnot: [valid\n"}
-    with pytest.raises(Exception):
+    with pytest.raises(KnowledgeBaseError):
         compare_published_versions("v1", "v2", v1, v2)
 
 

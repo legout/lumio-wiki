@@ -298,6 +298,11 @@ from lumio_wiki.s3_publish import (
     publish_s3_version,
     rollback_s3_version,
 )
+from lumio_wiki.s3_version_diff import (
+    PageChange,
+    PublishedVersionDiff,
+    compare_published_versions,
+)
 from lumio_wiki.retrieval import (
     RetrievalAdapter,
     ZeroIndexRetrieval,
@@ -685,6 +690,9 @@ __all__ = [
     "open_filesystem_knowledge_base",
     "open_knowledge_base",
     "open_s3_knowledge_base",
+    "compare_published_versions",
+    "PublishedVersionDiff",
+    "PageChange",
     "parse_frontmatter",
     "publish_hot_index",
     "publish_navigation_indexes",
