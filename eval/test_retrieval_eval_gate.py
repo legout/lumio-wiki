@@ -42,7 +42,6 @@ def test_ac1_base_layer_is_deterministic(fixture_kb, gold_set):
     report_b = ev.evaluate(fixture_kb, gold_set, stages=base_stages, ks=K)
     assert report_a.to_dict() == report_b.to_dict()
 
-
     # No embedder, no index_dir required to construct or call these stages.
 
 
@@ -143,9 +142,7 @@ def test_lancedb_stages_available_and_measured(lancedb_report):
 
 def test_lancedb_semantic_catches_synonym_paraphrase(lancedb_report):
     """The deterministic embedder's synonym map lifts semantic recall for the paraphrase probes."""
-    probe = next(
-        q for q in lancedb_report.queries if q.query == "onboarding pipeline"
-    )
+    probe = next(q for q in lancedb_report.queries if q.query == "onboarding pipeline")
     sem = probe.per_stage["lancedb-semantic"].recall_by_k[5]
     assert sem > 0.0, "synonym-collapsed semantic stage must recall the ingestion cluster"
 
