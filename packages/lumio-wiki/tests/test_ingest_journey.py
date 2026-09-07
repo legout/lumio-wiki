@@ -298,6 +298,180 @@ def test_move_from_directory_source_is_rejected_before_any_write(tmp_path: Path)
     )
 
 
+def test_move_source_owned_by_another_page_or_control_file_is_rejected(tmp_path: Path):
+    # Review-fix regression (Plan 02 / P2, review v3 blocker 1): the move
+    # branch accepted ANY existing non-directory move_from_path, wrote the
+    # target, and then unlinked the "source" — so a new "Hijacker" page
+    # "moving from overview.md" validated, created hijacker.md, and DELETED
+    # the existing Lumio Overview page (an undeclared removal); the Control
+    # File was equally within reach. An EXISTING move source must be the
+    # recorded path of the proposed page's own title (title/path identity
+    # map); anything else — another page's file, lumio.yaml, any untracked
+    # file — is rejected at resolution time, BEFORE any byte is written.
+    kb = _kb(tmp_path)
+    overview = kb.root / "overview.md"
+    original = overview.read_text(encoding="utf-8")
+    hijacker = lw.ProposedPage(
+        relative_path="hijacker.md",
+        title="Hijacker",
+        markdown=_probe_markdown("Hijacker", "hijacker-move-review-fix"),
+        move_from_path="overview.md",
+    )
+
+    with pytest.raises(DestinationConflict) as live:
+        lw.apply_proposed_pages([hijacker], kb.root)
+    # Nothing written, nothing removed: overview.md is intact, no hijacker.md.
+    assert overview.read_text(encoding="utf-8") == original
+    assert not (kb.root / "hijacker.md").exists()
+
+    # Candidate validation returns the SAME blocking destination issue.
+    report = lw.validate_candidate_knowledge_base([hijacker], kb.root)
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].message == str(live.value)
+    assert "overview.md" in issues[0].message
+    assert "Lumio Overview" in issues[0].message
+
+    # The Control File is not a page, so no title owns it: a move source of
+    # lumio.yaml is rejected too, and the Control File survives untouched.
+    control = kb.root / "lumio.yaml"
+    lw.write_control_file(kb.root, lw.KnowledgeBaseControlFile(version=1))
+    assert control.is_file()
+    control_original = control.read_text(encoding="utf-8")
+    thief = lw.ProposedPage(
+        relative_path="thief.md",
+        title="Thief",
+        markdown=_probe_markdown("Thief", "thief-move-review-fix"),
+        move_from_path="lumio.yaml",
+    )
+    with pytest.raises(DestinationConflict):
+        lw.apply_proposed_pages([thief], kb.root)
+    assert control.read_text(encoding="utf-8") == control_original
+    assert not (kb.root / "thief.md").exists()
+
+
+def test_valid_move_of_owned_source_and_missing_source_still_behave(tmp_path: Path):
+    # Positive control for the move-source preflight: the new ownership and
+    # type guards must not disturb legitimate moves. An explicit move whose
+    # source IS the recorded path of the proposed title relocates the page
+    # atomically (target written, source unlinked) and candidate validation
+    # accepts it; a move whose source is MISSING stays tolerated (target
+    # written, nothing to unlink), exactly as before.
+    kb = _kb(tmp_path)
+    page = lw.ProposedPage(
+        relative_path="moved/architecture.md",
+        title="Architecture",
+        markdown=_probe_markdown("Architecture", "arch-move-review-fix"),
+        move_from_path="architecture.md",
+    )
+    report = lw.validate_candidate_knowledge_base([page], kb.root)
+    assert report.is_valid, report
+
+    lw.apply_proposed_pages([page], kb.root)
+    assert not (kb.root / "architecture.md").exists()
+    assert (kb.root / "moved/architecture.md").is_file()
+
+    fresh = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-ghost-move-review-fix"),
+        move_from_path="ghost/missing.md",
+    )
+    lw.apply_proposed_pages([fresh], kb.root)
+    assert (kb.root / "fresh.md").is_file()
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="requires Unix domain sockets")
+def test_move_source_socket_is_rejected_with_candidate_parity(tmp_path: Path):
+    # Review-fix regression (Plan 02 / P2, review v3 blocker 2): the move
+    # branch only rejected DIRECTORY sources, so an existing move source that
+    # was a special file (a Unix socket) slipped through resolution; candidate
+    # validation then died with a raw ``shutil.Error`` from ``copytree`` (the
+    # socket cannot be copied) while live apply wrote the target and UNLINKED
+    # the socket. Move sources are now preflighted with the same nonblocking
+    # type probe as occupants — only a regular, readable file may be moved —
+    # so the DestinationConflict raises before any write/unlink, and candidate
+    # validation returns the SAME blocking destination issue instead of a
+    # copytree failure.
+    kb = _kb(tmp_path)
+    socket_path = kb.root / "source.sock"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(socket_path))
+    try:
+        page = lw.ProposedPage(
+            relative_path="moved.md",
+            title="Moved",
+            markdown=_probe_markdown("Moved", "moved-socket-review-fix"),
+            move_from_path="source.sock",
+        )
+        with pytest.raises(DestinationConflict) as live:
+            lw.apply_proposed_pages([page], kb.root)
+        report = lw.validate_candidate_knowledge_base([page], kb.root)
+        # No target write, no source unlink: the socket survives untouched.
+        assert not (kb.root / "moved.md").exists()
+        assert socket_path.is_socket()
+    finally:
+        sock.close()
+        socket_path.unlink(missing_ok=True)
+
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].message == str(live.value)
+    assert "source.sock" in issues[0].message
+    assert "special file" in issues[0].message
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFOs")
+def test_move_source_fifo_is_rejected_without_opening_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Review-fix regression (Plan 02 / P2, review v3 blocker 2): a FIFO move
+    # source used to pass the directory-only move guard. The preflight now
+    # types the source with a nonblocking stat FIRST and rejects every
+    # non-regular special file, so a FIFO source is never opened (an open(2)
+    # on a FIFO blocks until a writer appears and would hang the suite), live
+    # apply raises DestinationConflict before any write/unlink, and candidate
+    # validation aggregates the same blocking destination issue. The guarded
+    # Path.open below turns a regression back into a fast failure instead of
+    # a hung suite.
+    kb = _kb(tmp_path)
+    fifo_path = kb.root / "source.fifo"
+    os.mkfifo(fifo_path)
+    real_open = Path.open
+
+    def _never_open_the_fifo(self, *args, **kwargs):
+        if self == fifo_path:
+            raise AssertionError("the preflight must never open a FIFO move source")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _never_open_the_fifo)
+    page = lw.ProposedPage(
+        relative_path="moved.md",
+        title="Moved",
+        markdown=_probe_markdown("Moved", "moved-fifo-review-fix"),
+        move_from_path="source.fifo",
+    )
+
+    with pytest.raises(DestinationConflict) as live:
+        lw.apply_proposed_pages([page], kb.root)
+    report = lw.validate_candidate_knowledge_base([page], kb.root)
+
+    # The FIFO source was never opened, never removed, and the target was
+    # never written.
+    assert fifo_path.is_fifo()
+    assert not (kb.root / "moved.md").exists()
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].message == str(live.value)
+    assert "special file" in issues[0].message
+
+
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="requires Unix domain sockets")
 def test_candidate_validation_reports_socket_occupant_like_live_apply(tmp_path: Path):
     # Review-fix regression (Plan 02 / P2): candidate validation used to copy

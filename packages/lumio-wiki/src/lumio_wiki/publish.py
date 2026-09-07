@@ -22,8 +22,13 @@ special-file occupants (FIFOs, sockets, devices — typed with a nonblocking
 proposed destination, move source, removal target, or the Control File
 destination, an unusable Control File destination (an existing directory
 at ``lumio.yaml``), escaping paths, compound-fallback collisions, and move
-sources that are directories (unremovable after the write) are rejected up
-front. The candidate gate resolves against the REAL root before its
+sources that are not safely removable — an existing directory (unremovable
+after the write), a special file (FIFO, socket, device — typed with the same
+nonblocking ``stat`` probe so a FIFO source is never opened), an unreadable
+file, or a file that is not the recorded path of the proposed page's own
+title (a different page's file, the Control File, or any untracked file, so
+a move can never delete content the proposal does not own) — are rejected
+up front. The candidate gate resolves against the REAL root before its
 throwaway copy is made, so an occupant ``copytree`` could never get past
 still produces the same destination issue as live apply. There is no
 automatic suffix allocation and no removal that was not declared.
@@ -132,6 +137,32 @@ def _checked_relative_path(root: Path, relative_path: str, *, page_title: str) -
     return target.relative_to(root).as_posix()
 
 
+def _special_or_unreadable_reason(target: Path) -> str | None:
+    """Return why ``target`` must not be opened or removed, or ``None``.
+
+    A nonblocking ``stat`` type probe runs FIRST: ``stat(2)`` never opens the
+    file, so a FIFO (or socket) is classified without ever being opened — an
+    ``open(2)`` on a FIFO blocks until a writer appears, which would hang the
+    preflight. Only a regular file is then probe-opened to check readability
+    honestly (``os.access`` lies when running as root). Returns ``"special"``
+    for a non-regular file (FIFO, socket, device), ``"unreadable"`` for a
+    file that cannot be stat'ed or read, and ``None`` for a regular readable
+    file (B01).
+    """
+    try:
+        mode = os.stat(target).st_mode
+    except OSError:
+        return "unreadable"
+    if not stat.S_ISREG(mode):
+        return "special"
+    try:
+        with target.open("rb"):
+            pass
+    except OSError:
+        return "unreadable"
+    return None
+
+
 def _reject_occupied_target(
     root: Path,
     relative_path: str,
@@ -162,39 +193,24 @@ def _reject_occupied_target(
             f"and must not be replaced: {relative_path}",
             file=relative_path,
         )
-    try:
-        # Nonblocking type probe FIRST: stat(2) never opens the occupant, so
-        # a FIFO occupant cannot hang the preflight the way the readability
-        # open(2) below would (a FIFO's read side blocks until a writer
-        # appears). Only a regular file is ever opened afterwards, so the
-        # probe can neither block on a FIFO nor side-effect a device or
-        # socket (B01).
-        occupant_mode = os.stat(target).st_mode
-    except OSError as exc:
+    # The occupant is typed and readability-probed through the shared
+    # nonblocking probe: stat(2) never opens the occupant, so a FIFO cannot
+    # hang the preflight the way a readability open(2) would, and only a
+    # regular file is ever opened (B01).
+    reason = _special_or_unreadable_reason(target)
+    if reason == "unreadable":
         raise DestinationConflict(
             f"Proposed page {page_title!r} destination is an unreadable file "
             f"that must not be overwritten: {relative_path}",
             file=relative_path,
-        ) from exc
-    if not stat.S_ISREG(occupant_mode):
+        )
+    if reason == "special":
         raise DestinationConflict(
             f"Proposed page {page_title!r} destination is occupied by an "
             f"unreadable special file that must not be opened or overwritten: "
             f"{relative_path}",
             file=relative_path,
         )
-    try:
-        # Probe readability honestly: os.access lies when running as root, and
-        # an occupant we cannot read is one we must not overwrite (B01). Only
-        # reached for regular files, so the open can never block.
-        with target.open("rb"):
-            pass
-    except OSError as exc:
-        raise DestinationConflict(
-            f"Proposed page {page_title!r} destination is an unreadable file "
-            f"that must not be overwritten: {relative_path}",
-            file=relative_path,
-        ) from exc
     occupant = title_by_path.get(relative_path)
     if occupant is not None and occupant == revising:
         # Occupied by the very page this write revises at its recorded path.
@@ -242,9 +258,14 @@ def _resolve_proposed_destinations(
     - two pages resolving to the same destination within one proposal are a
       duplicate-target conflict (no last-writer-wins);
     - every destination must resolve inside the working directory;
-    - a move source must be a removable file (a directory source would leave
-      the target written and the move half-done when the post-write unlink
-      raises).
+    - an EXISTING move source must be a removable, regular, readable file AND
+      the recorded path of the proposed page's own title: a directory source
+      (unremovable after the write), a special file (FIFO, socket, device —
+      probed with a nonblocking ``stat`` so a FIFO source is never opened),
+      an unreadable file, or a file owned by a different page or untracked
+      (the Control File included) is rejected, so a move can never delete
+      content the proposal does not own; a MISSING source stays tolerated
+      (the move writes the target and removes nothing).
 
     ``force_compound`` forces the compound branch for every proposed page:
     the public compound-revision writer (:func:`apply_compound_revision`) is
@@ -281,7 +302,8 @@ def _resolve_proposed_destinations(
             # (issue #80, P1.2) is reused as the occupancy rule for the move.
             source_relative = _checked_relative_path(root, move_from, page_title=title)
             target_relative = _checked_relative_path(root, page.relative_path, page_title=title)
-            if (root / source_relative).is_dir():
+            source = root / source_relative
+            if source.is_dir():
                 # unlink(2) removes directory entries, never directories: a
                 # directory source cannot be removed after the target is
                 # written, so accepting it would strand a half-done move (the
@@ -293,6 +315,52 @@ def _resolve_proposed_destinations(
                     f"after the move",
                     file=source_relative,
                 )
+            if source.exists():
+                # An EXISTING move source must be safely removable AND owned by
+                # the proposed page (Plan 02 / P2 review). First the shared
+                # nonblocking type/readability probe (so a FIFO or socket
+                # source is never opened and candidate validation — which
+                # would otherwise die in ``copytree`` on the uncopyable source
+                # — sees the exact same conflict live apply raises), then the
+                # title/path identity check: a source that belongs to another
+                # page, to the Control File, or to nobody would turn the
+                # post-write unlink into an undeclared removal (a new
+                # "Hijacker" page "moving from overview.md" used to delete the
+                # existing overview page). A MISSING source stays tolerated:
+                # the move writes the target and unlinks nothing.
+                reason = _special_or_unreadable_reason(source)
+                if reason == "special":
+                    raise DestinationConflict(
+                        f"Cannot move {title!r} from {source_relative}: the move "
+                        f"source is a special file (FIFO, socket, or device) "
+                        f"that must not be opened or removed",
+                        file=source_relative,
+                    )
+                if reason == "unreadable":
+                    raise DestinationConflict(
+                        f"Cannot move {title!r} from {source_relative}: the move "
+                        f"source is an unreadable file that must not be opened "
+                        f"or removed",
+                        file=source_relative,
+                    )
+                owner = title_by_path.get(source_relative)
+                if owner is not None and owner != title:
+                    raise DestinationConflict(
+                        f"Cannot move {title!r} from {source_relative}: that "
+                        f"file is the recorded path of existing page {owner!r}, "
+                        f"not of {title!r}; a move only relocates the proposed "
+                        f"page's own recorded path",
+                        file=source_relative,
+                    )
+                if owner is None:
+                    raise DestinationConflict(
+                        f"Cannot move {title!r} from {source_relative}: the move "
+                        f"source is an untracked file (another page's file, the "
+                        f"Control File, or a stray file) that no proposed page "
+                        f"owns; moving it would delete content the proposal "
+                        f"does not declare",
+                        file=source_relative,
+                    )
             if source_relative != target_relative and (root / target_relative).exists():
                 raise DestinationConflict(
                     f"Cannot move {title!r} to {page.relative_path}: "
@@ -425,7 +493,10 @@ def _write_destination(destination: _Destination, root: Path) -> Path:
     resolution time; this performs the branch's byte writes. A compound
     revision merges its resolution-time merge base (existing prior Sources
     are preserved and deduplicated, issue #79); a move unlinks its source
-    only after the destination is written (issue #80).
+    only after the destination is written (issue #80) — that source was
+    verified removable (regular, readable) and owned by the proposed page's
+    title at resolution time, so the unlink can never remove an undeclared
+    file.
     """
     page = destination.page
     target = root / destination.relative_path
@@ -773,9 +844,10 @@ def validate_candidate_knowledge_base(
     resolved and checked against the REAL root BEFORE the throwaway candidate
     tree is copied, so a conflict — including an uncopyable occupant such as
     a Unix socket at a proposed destination, which ``copytree`` itself could
-    never get past, a FIFO occupant the preflight must never open, a
-    non-directory ancestor of any write/removal/Control File path, or an
-    unusable Control File destination — comes back as an error
+    never get past, a FIFO occupant the preflight must never open, an
+    unowned or special/unreadable move source, a non-directory ancestor of
+    any write/removal/Control File path, or an unusable Control File
+    destination — comes back as an error
     ``ValidationIssue`` instead of raised, exactly the conflict live
     application would raise. Only
     :class:`DestinationConflict` is translated; unexpected errors still
