@@ -663,6 +663,21 @@ class S3Location:
         """
         return self.graph_state_with_source()[0]
 
+    def published_version_content(self, version: str) -> tuple[S3Manifest, dict[str, bytes]]:
+        """Return one complete immutable version's manifest and canonical content.
+
+        Read-only accessor for version-to-version comparison (t_66f162f2):
+        reads the version's manifest, then materializes every canonical file
+        through the same digest-validated read path ``resolve()`` uses
+        (:meth:`_materialize` — size and sha-256 checked, bounded cache). The
+        active pointer is never consulted, so any two complete versions can be
+        compared without touching ``current.json``.
+        """
+        _require_obstore()
+        manifest = self._read_manifest(version)
+        content = self._materialize(version, manifest)
+        return manifest, content
+
 
 def open_s3_knowledge_base(
     store: ObjectStore,

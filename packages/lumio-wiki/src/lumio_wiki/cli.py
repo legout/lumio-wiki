@@ -2782,6 +2782,64 @@ def _cmd_cleanup_s3(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_diff_s3(args: argparse.Namespace) -> int:
+    """Diff two immutable S3 Published Versions (read-only, report-only)."""
+    import msgspec
+
+    from lumio_wiki.s3_location import S3Location
+    from lumio_wiki.s3_version_diff import compare_published_versions
+
+    store, prefix = _build_publish_store(args.destination)
+    location = S3Location(store, prefix)
+    try:
+        _from_manifest, from_content = location.published_version_content(args.from_version)
+        _to_manifest, to_content = location.published_version_content(args.to_version)
+        report = compare_published_versions(
+            args.from_version, args.to_version, from_content, to_content
+        )
+    except KnowledgeBaseError as exc:
+        raise CliError(f"diff failed: {exc}") from exc
+    except Exception as exc:  # object-store transport/credential failures
+        raise CliError(f"diff failed: {exc}") from exc
+
+    if args.json:
+        print(msgspec.json.encode(report).decode("utf-8"))
+        return 0
+
+    print(
+        f"Diff {args.destination}: {report.from_version} -> {report.to_version} "
+        f"({len(report.added_pages)} added, {len(report.removed_pages)} removed, "
+        f"{len(report.changed)} changed page(s); "
+        f"{len(report.added_sources)} source(s) added, "
+        f"{len(report.removed_sources)} source(s) removed)"
+    )
+    if not report.has_changes:
+        print("No changes between the versions.")
+        return 0
+    for path in report.added_pages:
+        print(f"  + {path}")
+    for path in report.removed_pages:
+        print(f"  - {path}")
+    for change in report.changed:
+        title_from, title_to = change.title
+        title_note = f" (title: {title_from!r} -> {title_to!r})" if title_from != title_to else ""
+        fields = [f"{change.path}{title_note}"]
+        if change.lifecycle is not None:
+            fields.append(f"lifecycle {change.lifecycle[0]!r} -> {change.lifecycle[1]!r}")
+        if change.visibility is not None:
+            fields.append(f"visibility {change.visibility[0]!r} -> {change.visibility[1]!r}")
+        if change.added_sources:
+            fields.append(f"+sources: {', '.join(change.added_sources)}")
+        if change.removed_sources:
+            fields.append(f"-sources: {', '.join(change.removed_sources)}")
+        print(f"  ~ {fields[0]}: " + "; ".join(fields[1:]))
+    if report.added_sources:
+        print(f"  sources added:   {', '.join(report.added_sources)}")
+    if report.removed_sources:
+        print(f"  sources removed: {', '.join(report.removed_sources)}")
+    return 0
+
+
 def _cmd_discard(args: argparse.Namespace) -> int:
     _kb, pipeline = _proposal_pipeline(args)
     discarded = pipeline.discard(args.proposal_id)
@@ -5461,6 +5519,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Object-store Knowledge Base URI (e.g. s3://bucket/kb).",
     )
     cleanup_s3_parser.set_defaults(func=_cmd_cleanup_s3)
+
+    # diff-s3 (t_66f162f2: read-only Published Version diff)
+    diff_s3_parser = subparsers.add_parser(
+        "diff-s3",
+        help="Diff two immutable S3 Published Versions (read-only).",
+        description=(
+            "Compare two complete immutable S3 Published Versions and report "
+            "added/removed/changed Compiled Pages and Source identities, with "
+            "lifecycle/visibility transitions when the canonical data names "
+            "them. Read-only: nothing is published, deleted, or written. "
+            "Requires lumio-wiki[s3]."
+        ),
+    )
+    diff_s3_parser.add_argument(
+        "destination",
+        type=str,
+        help="Object-store Knowledge Base URI (e.g. s3://bucket/kb).",
+    )
+    diff_s3_parser.add_argument(
+        "--from",
+        dest="from_version",
+        required=True,
+        type=str,
+        help="The base (earlier) immutable version label.",
+    )
+    diff_s3_parser.add_argument(
+        "--to",
+        dest="to_version",
+        required=True,
+        type=str,
+        help="The target (later) immutable version label.",
+    )
+    diff_s3_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one machine-readable JSON object instead of human-readable output.",
+    )
+    diff_s3_parser.set_defaults(func=_cmd_diff_s3)
 
     # discard
     discard_parser = subparsers.add_parser(
