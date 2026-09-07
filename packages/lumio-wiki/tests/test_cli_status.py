@@ -13,7 +13,6 @@ live reader journey is covered by the MinIO suite.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -160,89 +159,9 @@ def _stale_fingerprint() -> SourceFingerprint:
 # ---------------------------------------------------------------------------
 
 
-def test_status_maintainer_role_and_argument_source(capsys):
-    assert cli.main(["status", str(FIXTURES / "valid")]) == 0
-    out = _flat(capsys.readouterr().out)
-    assert "role:maintainer (local worktree)" in out
-    assert "config_source:argument" in out
-    assert f"kb_location:{FIXTURES / 'valid'}" in out
-
-
-def test_status_config_source_exported_env(monkeypatch, capsys):
-    monkeypatch.setenv("LUMIO_KB_PATH", str(FIXTURES / "valid"))
-    assert cli.main(["status"]) == 0
-    assert "config_source:exported env (LUMIO_KB_PATH)" in _flat(capsys.readouterr().out)
-
-
-def test_status_config_source_project_env_file(tmp_path, monkeypatch, capsys):
-    (tmp_path / ".env").write_text(f"LUMIO_KB_PATH={FIXTURES / 'valid'}\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    assert cli.main(["status"]) == 0
-    out = _flat(capsys.readouterr().out)
-    assert f"config_source:project .env ({tmp_path / '.env'})" in out
-
-
 def test_status_without_any_location_is_actionable():
     with pytest.raises(CliError, match="no Knowledge Base location configured"):
         cli._collect_status(None)
-
-
-def test_status_backend_and_mode_are_separate_fields(tmp_path, monkeypatch):
-    (tmp_path / ".env").write_text(
-        "\n".join(
-            [
-                f"LUMIO_KB_PATH={FIXTURES / 'valid'}",
-                "LUMIO_RETRIEVAL_BACKEND=lancedb",
-                "LUMIO_RETRIEVAL_MODE=semantic",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    monkeypatch.chdir(tmp_path)
-    status = cli._collect_status()
-    assert status["retrieval_backend"] == "lancedb"
-    assert status["retrieval_mode"] == "semantic"
-    assert status["retrieval_backend"] != status["retrieval_mode"]
-
-
-def test_status_rendered_output_distinguishes_backend_and_mode(tmp_path, monkeypatch, capsys):
-    (tmp_path / ".env").write_text(
-        "\n".join(
-            [
-                f"LUMIO_KB_PATH={FIXTURES / 'valid'}",
-                "LUMIO_RETRIEVAL_BACKEND=lancedb",
-                "LUMIO_RETRIEVAL_MODE=hybrid",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    monkeypatch.chdir(tmp_path)
-    assert cli.main(["status"]) == 0
-    out = _flat(capsys.readouterr().out)
-    assert "retrieval_backend:lancedb" in out
-    assert "retrieval_mode:hybrid" in out
-
-
-def test_status_graph_memory_then_artifact_after_materialization(tmp_path):
-    import shutil
-
-    kb_root = tmp_path / "kb"
-    shutil.copytree(FIXTURES / "valid", kb_root)
-    first = cli._collect_status(str(kb_root))
-    assert first["graph_source"] == "memory"
-    assert first["graph_fresh"] is False
-    assert "health" in first["next_action"] and "--rebuild" in first["next_action"]
-
-    from lumio_wiki.knowledge_base import load_knowledge_base
-
-    kb, _report = load_knowledge_base(kb_root)
-    kb.materialize_graph(cli.default_index_dir(kb.root))
-    second = cli._collect_status(str(kb_root))
-    assert second["graph_source"] == "artifact"
-    assert second["graph_fresh"] is True
-    assert second["next_action"] == "none required"
 
 
 def test_status_reports_validation_state_and_next_action():
@@ -311,65 +230,9 @@ def test_status_local_lancedb_index_not_built_yet(tmp_path, monkeypatch):
     assert ".lumio" in status["lancedb_fallback"]
 
 
-def test_status_zero_index_backend_never_probes_lance():
-    status = cli._collect_status(str(FIXTURES / "valid"))
-    assert status["lancedb_requested"] is False
-    assert status["lancedb_healthy"] is None
-    assert status["lancedb_fallback"] is None
-
-
-def test_status_json_matches_rendered_keys(capsys):
-    assert cli.main(["status", str(FIXTURES / "valid"), "--json"]) == 0
-    payload = json.loads(capsys.readouterr().out)
-    rendered = cli._render_status(payload)
-    for key in payload:
-        assert f"{key}:" in rendered
-    assert payload["role"] == "maintainer"
-    assert payload["retrieval_backend"] == "zero-index"
-    assert payload["retrieval_mode"] == "lexical"
-
-
 # ---------------------------------------------------------------------------
 # Read-only S3 Reader status (stubbed Location).
 # ---------------------------------------------------------------------------
-
-
-def test_status_reader_reports_published_version_and_fingerprint(monkeypatch):
-    snapshot = _snapshot_with_descriptor(_reader_snapshot(), version="v1")
-    _route_reader(monkeypatch, snapshot)
-    status = cli._collect_status("s3://bucket/kb")
-    assert status["role"] == "reader"
-    assert status["published_version"] == "v1"
-    assert status["fingerprint"] == snapshot.fingerprint.digest
-    assert status["graph_source"] == "published artifact"
-    assert status["graph_fresh"] is True
-    assert status["graph_edges"] == 2
-    assert status["validation_valid"] is True
-
-
-def test_status_reader_graph_derived_in_memory(monkeypatch):
-    _route_reader(monkeypatch, _reader_snapshot(), graph_source="memory")
-    status = cli._collect_status("s3://bucket/kb")
-    assert status["graph_source"] == "memory"
-    assert status["graph_fresh"] is False
-    # Derived-in-memory is complete, not broken: no recovery action demanded.
-    assert status["next_action"] == "none required"
-
-
-def test_status_reader_lance_healthy(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    snapshot = _snapshot_with_descriptor(_reader_snapshot())
-    _route_reader(monkeypatch, snapshot)
-    _route_lance(
-        monkeypatch,
-        _StubLanceLocation(fingerprint=snapshot.fingerprint, tables=("evidence", "pages")),
-    )
-    _reader_with_backend(monkeypatch, _StubLanceLocation(fingerprint=snapshot.fingerprint))
-    status = cli._collect_status()
-    assert status["lancedb_healthy"] is True
-    assert status["lancedb_fingerprint_matches"] is True
-    assert status["lancedb_fallback"] is None
-    assert status["lancedb_index"] == "s3://bucket/kb/v1/derived/lance"
 
 
 def _reader_with_backend(monkeypatch, lance, *, backend="lancedb"):
@@ -442,23 +305,6 @@ def test_status_output_never_contains_credentials(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # Shared post-setup summary.
 # ---------------------------------------------------------------------------
-
-
-def test_setup_prints_shared_status_summary_maintainer(tmp_path, capsys):
-    assert cli.main(["setup", "kb"]) == 0
-    out = _flat(capsys.readouterr().out)
-    assert "role:maintainer (local worktree)" in out
-    assert "retrieval_backend:zero-index" in out
-    assert "next_action:" in out
-
-
-def test_setup_prints_shared_status_summary_reader(monkeypatch, tmp_path, capsys):
-    snapshot = _snapshot_with_descriptor(_reader_snapshot())
-    _route_reader(monkeypatch, snapshot)
-    assert cli.main(["setup", "--from", "s3://bucket/kb"]) == 0
-    out = _flat(capsys.readouterr().out)
-    assert "role:reader (read-only S3)" in out
-    assert "published_version:v1" in out
 
 
 def test_setup_summary_degrades_when_location_not_yet_resolvable(

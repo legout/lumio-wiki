@@ -2,8 +2,8 @@
 
 Four test layers, matching the PRD-0005 testing decisions:
 
-* Gold-file tests for both export formats over ``eval/fixture_kb`` (node/edge
-  counts, typed-vs-untyped edge marking, determinism).
+* Semantic checks for both export formats over ``eval/fixture_kb`` (node/edge
+  counts and typed-vs-untyped edge marking).
 * Round-trip test: ``export_graph`` -> ``import_graph`` -> one staged Ingest
   Proposal that validates cleanly.
 * Import tests: foreign wiki-export lineage ``graph.json``, malformed input,
@@ -47,7 +47,7 @@ GRAPHML_NS = "{http://graphml.graphdrawing.org/xmlns}"
 
 
 # ---------------------------------------------------------------------------
-# Export: gold-file tests over eval/fixture_kb
+# Export: semantic journeys over eval/fixture_kb
 # ---------------------------------------------------------------------------
 
 
@@ -104,43 +104,6 @@ def test_export_graph_marks_typed_vs_untyped_edges():
     assert all(link["target"] in node_ids for link in links)
     assert export.relationship_count == len(relationships)
     assert export.reference_count == len(references)
-
-
-def test_export_graph_is_deterministic():
-    """Identical authorized pages yield byte-identical artifacts."""
-    export_a, _ = _export_eval_fixture()
-    export_b, _ = _export_eval_fixture()
-    assert export_a.graph_json == export_b.graph_json
-    assert export_a.graphml == export_b.graphml
-
-
-def test_export_graph_matches_committed_gold_files():
-    """Gold-file contract over ``eval/fixture_kb`` (PRD-0005): byte-stable.
-
-    The committed artifacts under ``tests/fixtures/graph_exchange/`` pin the
-    serialized shape of the public authorized page set; any intentional format
-    change updates them deliberately (``graph.json`` node fields are
-    additive-only once shipped, PRD-0005).
-    """
-    kb, _report = load_knowledge_base(EVAL_KB)
-    export = export_graph(select_export_pages(kb.pages, ExportVisibilityScope.PUBLIC))
-
-    gold = FIXTURES / "graph_exchange"
-    assert export.graph_json == (gold / "graph.json").read_text(encoding="utf-8")
-    assert export.graphml == (gold / "graph.graphml").read_text(encoding="utf-8")
-
-
-def test_import_graph_stub_matches_committed_gold_markdown(tmp_path: Path):
-    """Gold-file contract: the foreign stub page renders byte-stable."""
-    graph_path = tmp_path / "foreign.json"
-    graph_path.write_text(json.dumps(WIKI_EXPORT_GRAPH), encoding="utf-8")
-    dest_kb, _report = load_knowledge_base(_fresh_categorized_kb(tmp_path / "dest"))
-    proposal = import_graph(graph_path, dest_kb)
-    assert not proposal.blocked
-
-    gold = (FIXTURES / "graph_exchange" / "transformers_stub.md").read_text(encoding="utf-8")
-    stub = next(p for p in proposal.proposed_pages if p.title == "Transformer Architecture")
-    assert stub.markdown == gold
 
 
 def test_export_graph_graphml_matches_json():

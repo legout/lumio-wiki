@@ -115,22 +115,6 @@ def _hub_kb() -> list[CompiledPage]:
 # ---------------------------------------------------------------------------
 
 
-def test_report_is_separate_type_from_graph_health_report(tmp_path):
-    kb = _kb(_hub_kb())
-    report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
-    assert isinstance(report, StructuralGraphReport)
-    # Structural report carries NO artifact/runtime observability fields and
-    # NO fixed health verdict.
-    for forbidden in (
-        "graph_fresh",
-        "materialized",
-        "startup_ms",
-        "traversal_latency_ms",
-        "is_healthy",
-    ):
-        assert not hasattr(report, forbidden), f"structural report must not expose {forbidden!r}"
-
-
 def test_report_never_embeds_compiled_page_bodies():
     kb = _kb(_hub_kb())
     report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
@@ -153,18 +137,6 @@ def test_invalid_scope_raises():
     kb = _kb(_hub_kb())
     with pytest.raises(ValueError):
         kb.graph_diagnostics(scope="nope")
-
-
-# ---------------------------------------------------------------------------
-# Deterministic output.
-# ---------------------------------------------------------------------------
-
-
-def test_deterministic_output_repeated_calls_equal():
-    kb = _kb(_hub_kb())
-    first = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
-    second = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
-    assert first == second
 
 
 # ---------------------------------------------------------------------------
@@ -198,17 +170,6 @@ def test_canonical_counts_and_directionality():
     assert all(h.title != "Sink" for h in report.top_outbound_hubs)
 
 
-def test_hub_ordering_is_deterministic_with_title_tiebreak():
-    kb = _kb(_hub_kb())
-    report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
-    # A and B both have outbound degree 1 -> tie broken by title: A before B.
-    outbound_titles = [h.title for h in report.top_outbound_hubs]
-    assert outbound_titles.index("A") < outbound_titles.index("B")
-    # inbound: A,B,C all degree 1 -> A, B, C order.
-    inbound_titles = [h.title for h in report.top_inbound_hubs]
-    assert inbound_titles[1:4] == ["A", "B", "C"]
-
-
 def test_weakly_connected_components_and_coverage():
     kb = _kb(_hub_kb())
     report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
@@ -217,28 +178,6 @@ def test_weakly_connected_components_and_coverage():
     assert report.largest_component_coverage == pytest.approx(5 / 6)
     # Components use an undirected projection of directed edges.
     assert report.undirected_projection_used is True
-
-
-# ---------------------------------------------------------------------------
-# Disconnected components.
-# ---------------------------------------------------------------------------
-
-
-def test_disconnected_components_counted():
-    # Two separate pairs + one isolated page.
-    pages = [
-        _page("A", relationships=[Relationship(target="B", type="uses")]),
-        _page("B"),
-        _page("C", relationships=[Relationship(target="D", type="uses")]),
-        _page("D"),
-        _page("E"),  # isolated
-    ]
-    kb = _kb(pages)
-    report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
-    assert report.page_count == 5
-    assert report.edge_count == 2
-    assert report.weakly_connected_component_count == 3  # AB, CD, E
-    assert report.largest_component_coverage == pytest.approx(2 / 5)
 
 
 # ---------------------------------------------------------------------------
@@ -260,60 +199,6 @@ def test_cycles_handled():
     # No page is an orphan in a full cycle.
     assert report.inbound_orphan_count == 0
     assert report.outbound_orphan_count == 0
-
-
-# ---------------------------------------------------------------------------
-# Duplicate / parallel edges.
-# ---------------------------------------------------------------------------
-
-
-def test_duplicate_canonical_edges_counted_separately():
-    # Two distinct typed Relationships to the same target = parallel edges.
-    alpha = _page(
-        "Alpha",
-        relationships=[
-            Relationship(target="Beta", type="uses"),
-            Relationship(target="Beta", type="implements"),
-        ],
-    )
-    beta = _page("Beta")
-    kb = _kb([alpha, beta])
-
-    report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
-    # Canonical adjacency keeps both parallel edges.
-    assert report.edge_count == 2
-    assert report.top_outbound_hubs == (
-        GraphHub(title="Alpha", edge_count=2, entity_id="entity:alpha"),
-    )
-    assert report.top_inbound_hubs == (
-        GraphHub(title="Beta", edge_count=2, entity_id="entity:beta"),
-    )
-
-
-def test_discovery_scope_retains_parallel_edges_to_same_endpoint():
-    alpha = _page(
-        "Alpha",
-        relationships=[
-            Relationship(target="Beta", type="uses"),
-            Relationship(target="Beta", type="implements"),
-        ],
-    )
-    beta = _page("Beta")
-    kb = _kb([alpha, beta])
-
-    report = kb.graph_diagnostics(scope=GRAPH_SCOPE_DISCOVERY)
-    # Discovery state retains EVERY edge with its own Claim identity and
-    # provenance (issue #170); endpoint deduplication belongs to traversal,
-    # which surfaces each page once through its visited set.
-    assert report.edge_count == 2
-    assert report.top_outbound_hubs == (
-        GraphHub(title="Alpha", edge_count=2, entity_id="entity:alpha"),
-    )
-    assert report.top_inbound_hubs == (
-        GraphHub(title="Beta", edge_count=2, entity_id="entity:beta"),
-    )
-    # Traversal still returns the endpoint once.
-    assert kb.related_pages("Alpha", scope=GRAPH_SCOPE_DISCOVERY) == ["Beta"]
 
 
 # ---------------------------------------------------------------------------
@@ -348,26 +233,6 @@ def test_discovery_scope_includes_extracted_edges():
     assert report.edge_count == 3  # Alpha->Beta, Alpha->Gamma, Gamma->Beta
     assert report.weakly_connected_component_count == 1
     assert report.largest_component_coverage == pytest.approx(1.0)
-
-
-# ---------------------------------------------------------------------------
-# Empty Knowledge Base.
-# ---------------------------------------------------------------------------
-
-
-def test_empty_knowledge_base():
-    kb = _kb([])
-    for scope in (GRAPH_SCOPE_CANONICAL, GRAPH_SCOPE_DISCOVERY):
-        report = kb.graph_diagnostics(scope=scope)
-        assert report.page_count == 0
-        assert report.edge_count == 0
-        assert report.inbound_orphan_count == 0
-        assert report.outbound_orphan_count == 0
-        assert report.weakly_connected_component_count == 0
-        assert report.largest_component_coverage == 0.0
-        assert report.top_inbound_hubs == ()
-        assert report.top_outbound_hubs == ()
-        assert report.unresolved_references == ()
 
 
 # ---------------------------------------------------------------------------
@@ -492,16 +357,6 @@ def test_unresolved_references_aggregated_by_outcome_and_target():
     assert by_target["other-missing.md"].count == 1
 
 
-def test_unresolved_groups_are_deterministically_ordered():
-    a = _page("A", body="[x](zebra.md)\n")
-    b = _page("B", body="[y](alpha.md)\n")
-    kb = _kb([a, b])
-    report = kb.graph_diagnostics(scope=GRAPH_SCOPE_DISCOVERY)
-    # Groups ordered by (outcome, target).
-    targets = [g.target for g in report.unresolved_references]
-    assert targets == sorted(targets)
-
-
 def test_unresolved_samples_bounded():
     # Many pages link to the same missing target; samples are bounded.
     pages = [_page(f"P{i:02d}", body="[x](missing.md)\n") for i in range(12)]
@@ -514,18 +369,6 @@ def test_unresolved_samples_bounded():
     # Deterministic ordering of the representative subset.
     sample_keys = [(s.source_path, s.line_start) for s in group.samples]
     assert sample_keys == sorted(sample_keys)
-
-
-def test_caller_retains_full_diagnostics_seam():
-    a = _page("A", body="[x](missing.md)\n")
-    b = _page("B", body="[y](missing.md)\n")
-    kb = _kb([a, b])
-    report = kb.graph_diagnostics(scope=GRAPH_SCOPE_DISCOVERY)
-    # The report summary is bounded; the complete diagnostics remain available.
-    assert report.unresolved_references[0].count == 2
-    full = kb.extraction_diagnostics()
-    assert len(full) == 2
-    assert all(d.kind == "broken" for d in full)
 
 
 def test_unresolved_references_empty_in_canonical_scope():
@@ -554,92 +397,6 @@ def test_external_and_escaping_links_are_not_unresolved():
     kb = _kb([a])
     report = kb.graph_diagnostics(scope=GRAPH_SCOPE_DISCOVERY)
     assert report.unresolved_references == ()
-
-
-# ---------------------------------------------------------------------------
-# Undirected projection disclosure.
-# ---------------------------------------------------------------------------
-
-
-def test_undirected_projection_disclosed_and_not_relationship_semantics():
-    kb = _kb(_hub_kb())
-    report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
-    # The projection is disclosed explicitly.
-    assert report.undirected_projection_used is True
-    # Hubs are directed degree, not a semantic "centrality" claim.
-    for hub in report.top_inbound_hubs + report.top_outbound_hubs:
-        assert isinstance(hub, GraphHub)
-        assert isinstance(hub.edge_count, int)
-
-
-# ---------------------------------------------------------------------------
-# Self-loops carry no structural connectivity (directed-safe).
-# ---------------------------------------------------------------------------
-
-
-def test_self_relationship_excluded_from_structural_counts():
-    # A self-loop (Alpha relates to Alpha) carries no inter-page connectivity:
-    # it does not connect to another page, does not reduce orphan status, and
-    # does not contribute to components. It is excluded from structural counts.
-    alpha = _page(
-        "Alpha",
-        relationships=[
-            Relationship(target="Alpha", type="self"),
-        ],
-    )
-    beta = _page("Beta")
-    kb = _kb([alpha, beta])
-    report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
-    assert report.edge_count == 0
-    assert report.inbound_orphan_count == 2
-    assert report.outbound_orphan_count == 2
-    assert report.weakly_connected_component_count == 2
-    # No hub has a positive degree from a self-loop.
-    assert report.top_outbound_hubs == ()
-    assert report.top_inbound_hubs == ()
-
-
-# ---------------------------------------------------------------------------
-# Report is an immutable frozen struct: field reassignment blocked AND
-# collection fields are immutable tuples (no list mutation).
-# ---------------------------------------------------------------------------
-
-
-def test_report_is_frozen_struct():
-    kb = _kb(_hub_kb())
-    report = kb.graph_diagnostics(scope=GRAPH_SCOPE_CANONICAL)
-    with pytest.raises((AttributeError, TypeError)):
-        report.edge_count = 999  # type: ignore[misc]
-    with pytest.raises((AttributeError, TypeError)):
-        report.scope = "discovery"  # type: ignore[misc]
-    # Collection fields are tuples, not mutable lists.
-    assert isinstance(report.top_inbound_hubs, tuple)
-    assert isinstance(report.top_outbound_hubs, tuple)
-    assert isinstance(report.unresolved_references, tuple)
-    assert isinstance(report.inbound_orphan_sample_titles, tuple)
-    assert isinstance(report.outbound_orphan_sample_titles, tuple)
-    with pytest.raises(AttributeError):
-        report.top_inbound_hubs.append(GraphHub(title="X", edge_count=1))  # type: ignore[union-attr]
-    with pytest.raises(AttributeError):
-        report.inbound_orphan_sample_titles.append("X")  # type: ignore[union-attr]
-
-
-# ---------------------------------------------------------------------------
-# Public API surface.
-# ---------------------------------------------------------------------------
-
-
-def test_public_api_exports_structural_report_types():
-    import lumio_wiki
-
-    for name in (
-        "StructuralGraphReport",
-        "GraphHub",
-        "UnresolvedReferenceGroup",
-        "UnresolvedReferenceSample",
-    ):
-        assert hasattr(lumio_wiki, name), f"missing public export {name!r}"
-    assert callable(getattr(KnowledgeBase, "graph_diagnostics", None))
 
 
 if __name__ == "__main__":

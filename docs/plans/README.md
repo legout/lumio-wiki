@@ -1,78 +1,147 @@
 # Library stabilization and simplification
 
-Status: **proposed implementation plans; not approved for execution**, except the test reduction explicitly authorized by the owner. Baseline: `9712f6fd51ac4381a6ca4fc513e2546355fba0d0`.
+Status: **plans 02–05 are proposed, not approved for execution**. Only the
+[test reduction](01-test-retention.md) is implemented here. No production defect
+is fixed by this batch. Audit revision: `9712f6fd51ac4381a6ca4fc513e2546355fba0d0`;
+implementation base: `67b45ab4ac114d674ec900c7f17b171eae5e92fa`.
 
-## Owner decisions
+## Owner decisions and authority
 
-- Reduce tests to essential journeys plus distinct safety/validation regressions. Remove tests rather than hiding cases in loops or changing collection. Accept less incidental formatting, representation, export-inventory and noncritical edge coverage; no arbitrary test-count target.
-- Preserve supported optional features. Fix and simplify them before adding the bounded agent improvements below.
-- A coordinated breaking API release is allowed. Identify and migrate actual consumers, including the separate private Lumio app; do not keep indefinite compatibility shims.
-- Local writes are serialized per KB, with rollback on ordinary failures. Crash-atomic publication and atomic visibility to concurrent readers are **not** promised.
-- Disjoint staged proposals can publish sequentially. Use affected-file/control preconditions, not a whole-KB fingerprint that invalidates every outstanding proposal.
-- Keep plans in this directory. No GitHub tickets, commits, pushes or implementation of the remaining findings are authorized by these plans alone.
+- Keep essential journeys plus distinct security, data-loss, isolation,
+  validation, conflict and resource-bound regressions. Actually delete tests;
+  do not conceal cases in loops, alter collection, or weaken survivors.
+  Incidental formatting, representation, exhaustive exports and noncritical
+  edge coverage may be lost. This supersedes older gold-file/wording-parity
+  obligations, not the underlying supported capabilities.
+- Preserve optional converters, providers, capture clients, S3 and LanceDB.
+  Host-as-Distiller stays the default; providers remain opt-in.
+- A coordinated breaking API release is allowed, **after actual consumer
+  inventory and migration**, including the separate private Lumio application.
+  Absence of a caller in this repository does not prove an API dead.
+- Serialize cooperating local writers per Knowledge Base across processes;
+  roll back ordinary failures. Crash atomicity and atomic visibility to
+  concurrent readers are not promised. External manual edits do not obey a lock.
+- Disjoint staged proposals may publish after intervening disjoint changes.
+  Check affected-file and control preconditions, then validate the full current
+  candidate; do not reject all outstanding proposals using a whole-KB digest.
+- Plans belong here. No tickets, push, release, or main-branch integration is
+  authorized. Local lane commits are solely durable review handoffs. Plans
+  02–05 require separate implementation approval; S4 is a separate release gate.
 
-## Sources and boundaries
+Sources: [Core PRD](../prd/0002-core-sdk.md), [glossary](../../CONTEXT.md),
+[packaging ADR-0010](../adr/0010-uv-workspace-and-progressive-packaging.md),
+[graph ADR-0011](../adr/0011-derived-reference-graph-and-progressive-storage.md),
+[S3 ADR-0013](../adr/0013-s3-native-knowledge-base-locations.md),
+[source lifecycle ADR-0014](../adr/0014-source-versions-and-page-level-invalidation.md),
+[skill ADR-0017](../adr/0017-portable-agent-skill-distribution-and-project-bootstrap.md),
+[converters ADR-0018](../adr/0018-layered-document-conversion-anydoc.md),
+[ontology ADR-0021](../adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md),
+[Activity Log ADR-0022](../adr/0022-retire-activity-log-artifact.md),
+[exchange ADR-0024](../adr/0024-graph-exchange-and-cli-skill-boundary.md), and
+[split ADR-0025](../adr/0025-repository-split.md).
+[ADR-0019](../adr/0019-coding-agent-setup-and-complete-s3-publication.md) and
+[ADR-0020](../adr/0020-private-source-artifacts-and-authorized-inspection.md)
+remain **proposed**: their shipped behavior/tests are capability evidence, not
+accepted architectural authority. ADR-0010 supersedes the old PRD's ingestion
+exclusion; ADR-0021 supersedes title-based Relationship input. The current owner
+bounds local atomicity more narrowly than ADR-0021's broad atomicity wording.
 
-[Core PRD](../prd/0002-core-sdk.md), [packaging ADR-0010](../adr/0010-uv-workspace-and-progressive-packaging.md), [ontology ADR-0021](../adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md), [Activity Log retirement ADR-0022](../adr/0022-retire-activity-log-artifact.md), [exchange ADR-0024](../adr/0024-graph-exchange-and-cli-skill-boundaries.md), and [repository split ADR-0025](../adr/0025-repository-split.md) govern the work. ADRs 0019/0020 are marked proposed: their shipped behaviors/tests are evidence, not accepted architectural authority. The older PRD's ingestion exclusion is superseded by ADR-0010.
+Evidence provenance: the complete original audit is
+`/tmp/lumio-wiki-audit-9712f6f.md`; the approved deletion maps are the **final**
+`core.md` and `workflows.md` under session artifact run
+`95588354-ff5d-469d-afe4-bd675af92c90/test-reduction/`.
+These are review artifacts, not portable dependencies of the product. The tables
+below record their findings with code owners verified at the pinned base; the
+retention plan contains the applied list. No original repro was rerun or fixed
+in this documentation lane. Future tasks first reproduce against their own base.
 
-No private-app production behavior was audited. No real Knowledge Base may be used as a test fixture. Do not introduce a database, generic plugin/storage hierarchy, new agent runtime, mandatory provider, automatic Claim publication, or additional distribution.
+## Order and ownership
 
-The original audit ran the current workspace interpreter: **1,709 passed, 11 skipped**, approximately 89 seconds, and focused Ruff was clean. Targeted temporary repros nevertheless exposed the defects below. The local `.venv/bin/pytest` launcher points at an old `/tmp` interpreter; use `uv run python -m pytest`, not that launcher, until the environment is recreated separately.
+1. [01 — Test retention](01-test-retention.md): implemented reduction and evidence.
+2. [02 — Publication integrity](02-publication-integrity.md): P1–P5, one mutation owner.
+3. [03 — Snapshot/retrieval](03-snapshot-retrieval.md): R1–R6, one captured identity.
+4. [04 — Agent workflows](04-agent-workflows.md): A1–A7, safety before additions.
+5. [05 — Simplification/release](05-simplification-release.md): S1–S4, migration before deletion.
 
-## Plans and integration order
-
-1. [Test retention and reduction](01-test-retention.md) — authorized now; establish the smaller test surface first.
-2. [Publication and validation integrity](02-publication-integrity.md) — canonical validation, destination identity, locking, proposal preconditions, rollback.
-3. [Snapshots and retrieval](03-snapshot-retrieval.md) — one captured source identity, S3 binding, derived-index lifecycle, useful passages and evaluation.
-4. [Agent workflows](04-agent-workflows.md) — safety and command parity, then lossless bounded reads and current authoring guidance.
-5. [Simplification and coordinated release](05-simplification-release.md) — retire obsolete production behavior, consolidate public/graph surfaces, migrate consumers.
-
-Each task is independently checked. Keep one writer per cwd/worktree. Plans 2–4 may be developed in isolated worktrees after the test reduction, but their shared `knowledge_base.py`, `ingest.py`, `proposal_pipeline.py`, `cli.py`, `__init__.py` and test fixtures require **serial integration**. Integrate validation/identity before mutation preconditions; loaded-snapshot identity before S3/index work; agent fixes before schema/I/O additions; API removals last. No automatic merge or release.
+After new approval, integrate P1/P2 → P3 → P4 → P5; R1 → R2/R3 → R4/R5 → R6;
+A1/A2/A4 and A3 safety repair → A5/A6/A7 additions; consumer inventory precedes
+S1/S2 API removals, R1 precedes S3, all fixes precede S4. A3 may centralize
+composition after its ingestion repair; S2 removes migrated old seams, not a
+second implementation. Shared `knowledge_base.py`, `ingest.py`,
+`proposal_pipeline.py`, `cli.py`, `__init__.py` and fixtures require serial
+integration even if independent work is developed separately. One writer per
+worktree; no automatic merge or release.
 
 ## Finding-to-task map
 
-Paths in this table are under `packages/lumio-wiki/src/lumio_wiki/` unless otherwise stated. Task IDs are stable handoff references.
+Paths in this table abbreviate **W** = `packages/lumio-wiki/src/lumio_wiki/`,
+**L** = `packages/lumio-lancedb/src/lumio_lancedb/`. Symbols rather than stale
+line numbers identify the inspected owners. B01–B18 are audit-observed failures
+(including disclosed fault/race injections), except where qualified below.
 
-| Finding | Baseline evidence | Plan task / acceptance |
-|---|---|---|
-| B01 New title slug overwrites another page | `publish.py:143–149` | P2: occupied/duplicate destinations rejected without mutation |
-| B02 Lost SourceRegistry updates | `source_registry.py:269–302` | P3: separate instances/processes cannot lose successful writes |
-| B03 Cached discarded proposal can publish | `ingest.py:1558–1587` | P3: durable terminal-state check under lock |
-| B04 Stale reviewed base overwrites newer content | `proposal_pipeline.py:1185–1209` | P4: overlapping conflicts rejected; disjoint edits succeed |
-| B05 Partial local publication after write failure | `proposal_pipeline.py:1205–1249` | P5: restore files/control/artifacts/status on ordinary failure |
-| B06 Malformed Claims silently disappear; confidence crashes | `knowledge_base.py:2434–2538,2712` | P1: aggregate structural errors without dropping diagnostics |
-| B07 Invalid literal structures/zero line anchors accepted | `knowledge_base.py:3128–3166` | P1: scalar kinds and 1-based coordinates enforced |
-| B08 Old loaded pages stamped with current disk digest | `knowledge_base.py:1421–1425,1653–1660` | R1: one immutable content identity; no false freshness |
-| B09 Lexical rebuild leaves old semantic evidence usable | `../lumio_lancedb/index.py:718–731` in adapter package | R2: invalidate vectors or reject mismatched source identity |
-| B10 S3 content/fingerprint/bindings read different worktree states | `s3_publish.py:290–355`; `artifact_store.py:738–760` | R3: every artifact derives from one captured candidate |
-| B11 Required-retention rollback accepts partial manifests | `artifact_store.py:771–805` | R4: verify every historical required page/source pair |
-| B12 Nested headings yield duplicate whole-page evidence | `evidence.py:23–48` | R5: focused nested passages, meaningful snippets, bounded duplication |
-| B13 JSON credential redaction misses quoted keys | `capture.py:95–98` | A1: quoted/escaped credential fixtures removed before preview/stage |
-| B14 Slow URL headers exceed deadline | `url_fetch.py:262,299–305` | A2: connection/header/body deadline enforced |
-| B15 AnyDoc ordinary CLI ingest crashes | `cli.py:1950`; `ingest.py:657–660` | A3: one preparation path, real CSV CLI proposal |
-| B16 Citation replay switches KB | `citation_actions.py:186–198` | A4: explicit original location in every executable action |
-| B17 Provider errors leak arbitrary exception text | `distiller.py:224`; `cli.py:6330+` | A1: safe CLI error without raw provider message/traceback |
-| B18 Packaged commands/schema and README drift | `data/skill/SKILL.md:106,174+`; `README.md` | A5/A7: executed examples and valid v2 authoring |
-| B19 Retired Activity Log still generated | `proposal_pipeline.py:1212–1240` | S1: remove producers, retain legacy recognition |
-| B20 Root API inventory / duplicate traversal / repeated graph derivation | `__init__.py`; `knowledge_base.py:613,750,973,4427` | S2/S3: consumer-backed surface and one traversal owner |
-| B21 Optional adapter discovery coupled to evaluation | `retrieval_eval.py:295–329`; `cli.py:375+` | A3/S2: one explicit composition helper, core stays dependency-light |
-| I01 Lossless bounded agent reads and stable machine output | `cli.py:1546–1600` | A6 |
-| I02 KB-aware authoring and simple local onboarding | `distiller.py:62–74`; `docs/quickstart.md` | A5/A7 |
-| I03 Realistic negatives and passage/lifecycle evaluation | `eval/gold_set.yaml`, `eval/test_retrieval_eval_gate.py` | R6 |
-| I04 Explicit source-content prompt-injection boundary | packaged protocol | A7 |
+| ID | Evidence / qualification | Task and completion evidence |
+| --- | --- | --- |
+| B01 | `W/publish.py:apply_proposed_pages`, new `A_B` overwrites `A B` at `a_b.md` | P2: occupied and duplicate targets blocked; same-page revision works |
+| B02 | `W/source_registry.py:SourceRegistry._commit`, two instances lose the first registration | P3: lock/reload transaction survives separate processes |
+| B03 | `W/ingest.py:IngestStore.get`, cached discarded proposal publishes | P3/P4: reread durable terminal state under shared lock |
+| B04 | `W/proposal_pipeline.py:ProposalPipeline.publish`, older overlapping proposal overwrites newer page | P4: reviewed affected-path/control bases enforced; disjoint proposals succeed |
+| B05 | Same method plus `W/publish.py`, injected second target write failure leaves first changed | P5: ordinary-failure restoration of complete mutation state |
+| B06 | `W/knowledge_base.py:_as_claims`, `_load_page`, `_load_pages_and_validate`: issues discarded, nonnumeric confidence raises | P1: structural errors aggregate, no silent malformed-Claim acceptance |
+| B07 | `W/knowledge_base.py:_ontology_issues`: mapping literal and `[0,0]` anchors accepted | P1: scalar kinds and 1-based coordinates enforced |
+| B08 | `KnowledgeBase.build_index`, `retrieve`, `materialize_graph`: old pages stamped with live disk hash | R1: bytes/pages/graph/index share captured identity |
+| B09 | `L/index.py:LanceDBRetrievalAdapter.build_index`: lexical rebuild leaves old vectors/model metadata | R2: invalid semantic state cannot cite stale/deleted content |
+| B10 | `W/s3_publish.py:publish_s3_version`, `W/artifact_store.py:activation_binding_hook`: deterministic capture/binding races | R3: content, digest, graph, index and private bindings use one candidate; retain CAS |
+| B11 | `W/artifact_store.py:verify_rollback_coverage`: optional empty manifest later passes required rollback | R4: reproduce partial-manifest hole first; compare complete historical required set |
+| B12 | `W/evidence.py:body_sections`, `page_evidences`: nested headings skipped, duplicate whole-page hits | R5: focused nested passage, exact range, useful snippet and result budget |
+| B13 | `W/capture.py:redact_capture_text`: quoted JSON password reaches staged page | A1: quoted/escaped keys redacted before preview and staging |
+| B14 | `W/url_fetch.py:_request_once`, `fetch_url`: loopback slow header exceeds per-hop deadline | A2: remaining budget applies through connect/headers/body; disclose DNS ceiling |
+| B15 | `W/cli.py:_cmd_ingest` excludes AnyDoc from wrapping; SDK includes it | A3: real CSV CLI reaches a proposal via shared preparation |
+| B16 | `W/citation_actions.py:page_open_command`, `source_inspect_command`: explicit KB dropped | A4: executable actions replay the effective original location |
+| B17 | `W/distiller.py:OpenAIDistiller._call_with_retry`, `W/cli.py:main`: raw exception and traceback escape | A1: bounded safe errors; synthetic provider proved propagation, real secret content is conditional |
+| B18 | `W/data/skill/SKILL.md`, `PROTOCOL.md`, `README.md`: source ordering/skill syntax and invalid initialized-v2 sample | A5/A7: executed schema and packaged command examples |
+| B19 | `W/proposal_pipeline.py:publish`, `W/knowledge_base.py:append_activity_log_entry`: reachable writer contradicts ADR-0022 | S1: retire producers, not legacy recognition/collision guards |
+| B20 | `W/__init__.py`, `KnowledgeBase.graph_path`, `shortest_path`, `_load_and_validate` | S2/S3: actual caller migration and one traversal owner; no measured scale defect claimed |
+| B21 | `W/retrieval_eval.py:lancedb_available`, `load_lancedb_adapter`; CLI runtime routes import evaluation | A3/S2: one optional composition owner, not a plugin framework |
+| I01 | `W/cli.py:_cmd_page` is lossy human output; JSON coverage selective | A6: optional bounded raw/JSON reads and stable machine mutation/error results |
+| I02 | Distiller prompt has categories but no current ontology; onboarding leads with S3 | A5/A7: KB-aware guidance and local-first journey |
+| I03 | `eval/gold_set.yaml`, starter gold set: no empty-relevance queries; permissive enhanced gate | R6: hard negatives, passages and source/index-mode lifecycle evaluation |
+| I04 | Packaged protocol lacks explicit source-instruction authorization boundary | A7: source/page/transcript/tool output are untrusted data |
+| C01 | `CONTEXT.md` foregrounds private UI, duplicates trailing terms, stale Relationship/Activity Log language; PRD scope lags | A5/S1/S4: align vocabulary/docs without deleting private-app capabilities |
+| C02 | `W/embeddings.py:cosine_similarity`, `is_semantic_index_stale`, exported `DocumentSourceProcessor`, `L/graph.py:load_graph_state` lack local production callers | S2: inventory candidates only, not proven dead APIs |
+| C03 | Graph materializations do not feed built-in traversal; validation index discarded | S3: reuse captured facts and measure, not a new generic graph engine |
+| C04 | Converter/OCR/page-boundary, optional provider, skill-install and remote capabilities are legitimate | A1–A3/S2/S4: preserve missing-extra guidance, isolation, converter provenance and installed gates |
 
-## Global verification
+Non-findings remain boundaries: no demonstrated SSRF bypass, environment shell
+execution, or private-app publisher defect; no proof that optional base imports
+leak. Page search is not Evidence retrieval; graph reachability is not support;
+citation existence is not entailment. Keep Hot and Navigation Indexes distinct,
+MessagePack and LanceDB progressive projections, source-version inspection,
+visibility-before-expansion, and skill-install consent/concurrency safeguards.
+No mandatory dependencies, database, generic storage/plugin framework, new agent
+runtime, automatic Claim publication or distribution. MCP requires a concrete
+client and separate approval, not this plan set.
 
-Run focused tasks serially, and the complete retained suite with four workers:
+## Global verification for future implementation
+
+Python ≥3.14, uv workspace, existing pytest/Ruff. Every task names its exact
+focused files; run those serially. For each `new-test` task, add the named missing
+regression, observe its intended red failure, implement the smallest fix, rerun
+that node green and then its focused files. Existing journeys should carry the
+rest; do not recreate the removed matrices.
 
 ```sh
-uv run python -m pytest -q <explicit task test files>
 uv run python -m pytest -q -n 4
 uv run python -m ruff check packages tests eval scripts
 uv lock --check
 git diff --check
 ```
 
-For production/package changes, also run the existing installed-wheel gates in `.github/workflows/ci.yml` and `lumio-lancedb-wheel.yml`. Before builds, inspect LSP diagnostics for changed Python files. Live MinIO tests require an explicitly provisioned disposable service; report skips rather than claiming live S3 verification. Use existing tests/journeys whenever they fail for the intended change; a new bug gets one focused regression only when surviving coverage cannot distinguish it. Do not recreate the deleted microtest inventory.
-
-Approval of these documents will authorize a later implementation phase only at the agreed scope. Each task needs fresh evidence; the audit's passing suite is not proof of a future fix.
+Verify imports point into the worktree being tested. Use `python -m pytest`, not
+a potentially stale pytest launcher, and never `-n auto`. Installed-wheel tests
+already run in the full suite; [S4](05-simplification-release.md#s4) additionally
+certifies the explicit CI smoke scripts and consumer artifacts for release.
+MinIO requires an explicitly provisioned disposable service; skips are not live
+S3 evidence. No real KB or installed user skill is a fixture. Plan-writing itself
+is `no-new-test`: local links, exact paths/symbols/task IDs and placeholders are
+checked, Markdown lint only if already available. Approval of these documents
+alone is not implementation or release approval.

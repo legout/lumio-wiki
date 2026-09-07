@@ -1,11 +1,8 @@
 """CLI S3 Knowledge Base Location support (issue #120, ADR-0013).
 
-Proves the ``lumio-wiki`` CLI routes validation, search, page reading, and
-related-page traversal through the S3 Location seam (zero-index retrieval, no
-LanceDB) when the path argument is an object-store URI. The S3 resolution is
-stubbed to a real filesystem Snapshot so the command *output* contracts are
-exercised deterministically without infrastructure; the live object-store read
-path is covered by the in-memory contract suite and the MinIO integration.
+Retains URI/configuration validation and in-memory publication, conflict,
+rollback, and cleanup journeys. Live reader operation is covered by the
+optional MinIO integration suites.
 """
 
 from __future__ import annotations
@@ -15,36 +12,9 @@ from pathlib import Path
 
 import pytest
 from lumio_wiki import cli
-from lumio_wiki.location import FilesystemLocation
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
-
-
-class _StubS3Location:
-    """A stand-in S3 Location that resolves to a real fixture Snapshot."""
-
-    def __init__(self, snapshot) -> None:
-        self._snapshot = snapshot
-
-    def resolve(self):
-        return self._snapshot
-
-
-@pytest.fixture
-def stub_s3_resolution(monkeypatch):
-    """Route S3 URIs to the ``categorized_kb`` fixture Snapshot via the CLI seam."""
-    # The categorized fixture carries an accepted entity Claim
-    # (Lumio Overview -> Acme Corp), so graph traversal has a canonical edge
-    # now that the title-based relationship input is gone (ADR-0021).
-    snapshot = FilesystemLocation(FIXTURES / "categorized_kb").resolve()
-
-    def _fake_resolve(uri):
-        assert cli._is_object_store_uri(uri), "S3 path must reach the object-store branch"
-        return _StubS3Location(snapshot)
-
-    monkeypatch.setattr(cli, "_resolve_object_store_location", _fake_resolve)
-    return snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -98,56 +68,6 @@ def test_s3_config_from_env_empty_when_unset(monkeypatch):
     config, client_options = cli._s3_config_from_env()
     assert config == {}
     assert client_options == {}
-
-
-# ---------------------------------------------------------------------------
-# Command routing: an S3 URI resolves a Snapshot and serves the command.
-# ---------------------------------------------------------------------------
-
-
-def test_cli_validate_s3_uri_routes_through_the_snapshot(stub_s3_resolution, capsys):
-    rc = cli.main(["validate", "s3://bucket/kb"])
-    captured = capsys.readouterr()
-    snapshot = stub_s3_resolution
-    assert rc == (0 if snapshot.validation_report.is_valid else 1)
-    assert str(snapshot.validation_report) in captured.out
-
-
-def test_cli_search_s3_uri_returns_results(stub_s3_resolution, capsys):
-    rc = cli.main(["search", "s3://bucket/kb", "Lumio"])
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert "##" in captured.out  # at least one page header
-
-
-def test_cli_page_s3_uri_reads_a_compiled_page(stub_s3_resolution, capsys):
-    rc = cli.main(["page", "s3://bucket/kb", "Lumio Overview"])
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert "# Lumio Overview" in captured.out
-
-
-def test_cli_related_s3_uri_traverses_the_graph(stub_s3_resolution, capsys):
-    rc = cli.main(["related", "s3://bucket/kb", "Lumio Overview"])
-    captured = capsys.readouterr()
-    assert rc == 0
-    # The fixture's Lumio Overview has an accepted claim edge to Acme Corp.
-    assert "Acme Corp" in captured.out
-
-
-def test_cli_paths_s3_uri_finds_a_path(stub_s3_resolution, capsys):
-    rc = cli.main(["paths", "s3://bucket/kb", "Lumio Overview", "Acme Corp"])
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert "Lumio Overview" in captured.out and "Acme Corp" in captured.out
-
-
-def test_cli_doctor_reports_the_s3_extra(capsys):
-    rc = cli.main(["doctor"])
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert "extra[s3]" in captured.out
-    assert "lumio-wiki[s3]" in captured.out or "extra[s3]: installed" in captured.out
 
 
 # ---------------------------------------------------------------------------

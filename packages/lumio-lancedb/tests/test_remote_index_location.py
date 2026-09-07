@@ -97,17 +97,6 @@ def _fingerprint() -> SourceFingerprint:
 # ---------------------------------------------------------------------------
 
 
-def test_as_location_normalizes_path_str_and_passthrough():
-    from pathlib import Path
-
-    loc = as_location("/tmp/x")
-    assert isinstance(loc, LocalIndexLocation)
-    assert isinstance(as_location(Path("/tmp/x")), LocalIndexLocation)
-    assert as_location(None) is None
-    remote = RemoteIndexLocation("s3://b/p")
-    assert as_location(remote) is remote
-
-
 def test_as_location_rejects_unknown_types():
     with pytest.raises(TypeError):
         as_location(12345)  # type: ignore[arg-type]

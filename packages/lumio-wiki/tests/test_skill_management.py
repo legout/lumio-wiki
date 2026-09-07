@@ -1,6 +1,5 @@
 """Cross-client Agent Skill installation and drift management (issue #150)."""
 
-import json
 import os
 import threading
 import time
@@ -10,46 +9,6 @@ from pathlib import Path
 import lumio_wiki.skill as skill
 import pytest
 from lumio_wiki.cli import main
-
-
-def test_shared_scope_destinations(tmp_path: Path):
-    assert skill.scope_skill_dir("user", home=tmp_path) == (
-        tmp_path / ".agents" / "skills" / "lumio-wiki"
-    )
-    project = tmp_path / "project"
-    assert skill.scope_skill_dir("project", project_dir=project) == (
-        project / ".agents" / "skills" / "lumio-wiki"
-    )
-
-
-@pytest.mark.parametrize(
-    ("agent", "relative"),
-    [
-        ("pi", ".pi/agent/skills/lumio-wiki"),
-        ("hermes", ".hermes/skills/lumio-wiki"),
-        ("codex", ".codex/skills/lumio-wiki"),
-        ("claude-code", ".claude/skills/lumio-wiki"),
-    ],
-)
-def test_vendor_compatibility_destinations(tmp_path: Path, agent: str, relative: str):
-    assert skill.agent_skill_dir(agent, home=tmp_path) == tmp_path / relative
-
-
-def test_install_writes_traceable_manifest_and_reports_current(tmp_path: Path):
-    target = skill.install_skill(scope="user", home=tmp_path)
-
-    manifest = json.loads((target / skill.MANIFEST_FILENAME).read_text(encoding="utf-8"))
-    assert manifest == {
-        "schema_version": 1,
-        "distribution": "lumio-wiki",
-        "distribution_version": skill.package_version(),
-        "content_hash": skill.packaged_contract_hash(),
-        "source_contract_hash": skill.packaged_contract_hash(),
-        "target": "scope:user",
-    }
-    status = skill.skill_status(scope="user", home=tmp_path)
-    assert status.state == "current"
-    assert status.installed_hash == status.packaged_hash
 
 
 def test_status_reports_missing_without_writing(tmp_path: Path):
@@ -204,18 +163,6 @@ def test_target_selection_rejects_ambiguous_or_unsafe_combinations(tmp_path: Pat
         skill.skill_status(dest=tmp_path / "custom")
     with pytest.raises(skill.SkillError, match="cannot be combined"):
         skill.skill_status(scope="project", dest=tmp_path / "custom")
-
-
-def test_cli_install_and_status_shared_user_scope(tmp_path: Path, monkeypatch, capsys):
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-    assert main(["skill", "install", "--scope", "user"]) == 0
-    target = tmp_path / ".agents" / "skills" / "lumio-wiki"
-    assert (target / skill.MANIFEST_FILENAME).is_file()
-    assert "Restart the agent" in capsys.readouterr().out
-
-    assert main(["skill", "status", "--scope", "user"]) == 0
-    assert "state:             current" in capsys.readouterr().out
 
 
 def test_cli_status_missing_is_read_only(tmp_path: Path, monkeypatch, capsys):

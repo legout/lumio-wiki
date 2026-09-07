@@ -139,12 +139,6 @@ def test_resolve_entity_unknown_name_is_unresolved_not_guessed(kb: KnowledgeBase
     assert resolution.matched_by == ""
 
 
-def test_resolve_entity_is_deterministic(kb: KnowledgeBase):
-    first = kb.resolve_entity("Overview")
-    second = kb.resolve_entity("Overview")
-    assert first == second
-
-
 def test_resolve_entity_empty_name_is_unresolved(kb: KnowledgeBase):
     assert kb.resolve_entity("   ").entity is None
 
@@ -200,13 +194,6 @@ def test_entity_command_resolves_by_alias(kb_root: Path, capsys: pytest.CaptureF
     assert "Architecture" in out
     assert "entity:architecture" in out
     assert "matched by:  alias" in out
-
-
-def test_entity_command_resolves_by_id(kb_root: Path, capsys: pytest.CaptureFixture[str]):
-    rc = main(["entity", str(kb_root), "entity:lumio-overview"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "entity-id" in out
 
 
 def test_entity_command_ambiguity_lists_candidates(
@@ -276,12 +263,6 @@ def test_resolve_entity_follows_ontology_redirect(tmp_path: Path):
     assert resolution.entity is not None
     assert resolution.entity.id == "entity:architecture"
     assert resolution.matched_by == "redirect"
-
-
-def test_entity_id_for_title_returns_stable_id(kb: KnowledgeBase):
-    """Public SDK seam maps a Canonical Page Title to its Entity ID."""
-    assert kb.entity_id_for_title("Architecture") == "entity:architecture"
-    assert kb.entity_id_for_title("Lumio Overview") == "entity:lumio-overview"
 
 
 def test_entity_id_for_title_unknown_returns_none(kb: KnowledgeBase):

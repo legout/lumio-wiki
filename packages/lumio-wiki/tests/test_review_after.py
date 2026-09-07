@@ -221,11 +221,3 @@ def test_status_zero_due_without_field(tmp_path: Path, capsys):
     assert main(["status", str(root), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["review_due"] == 0
-
-
-def test_status_rendered_output_includes_review_due(tmp_path: Path, capsys):
-    root = _kb(tmp_path)
-    _set_review_after(root, "concepts/overview.md", PAST)
-    assert main(["status", str(root)]) == 0
-    out = capsys.readouterr().out
-    assert "review_due:" in out

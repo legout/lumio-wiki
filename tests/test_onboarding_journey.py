@@ -1,14 +1,9 @@
 """Canonical onboarding journey certification (issue #180).
 
-Three layers, one truth — the journey documented in ``docs/quickstart.md``
-must be executable, scriptable, and drift-guarded:
+Three retained checks for the journey documented in ``docs/quickstart.md``:
 
-1. **Parity** — every ``lumio-wiki <cmd>`` fragment the quickstart cites
-   resolves to a registered public CLI command; the quickstart, its scriptable
-   twin (``examples/onboarding-journey/smoke-journey.sh``), the example
-   README, and the packaged Agent Skill agree on the journey's commands; the
-   entrypoint docs link it; and the walkthrough carries no secrets beyond the
-   explicitly labelled local MinIO test credentials.
+1. **Privacy** — the walkthrough carries no secrets beyond the explicitly
+   labelled local MinIO test credentials.
 2. **Fresh environment** — the local half of the journey runs verbatim in a
    clean temporary project (no inherited ``LUMIO_KB_PATH``), ending in the
    truthful Source-Artifact unavailability.
@@ -33,35 +28,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 QUICKSTART = ROOT / "docs" / "quickstart.md"
 SCRIPT = ROOT / "examples" / "onboarding-journey" / "smoke-journey.sh"
-EXAMPLE_README = ROOT / "examples" / "onboarding-journey" / "README.md"
 RAW_SOURCE = ROOT / "examples" / "onboarding-journey" / "sources" / "support-runbook.md"
-
-# The journey's commands, in quickstart order. Every entry must appear in the
-# quickstart, the smoke script, and (for the agent-facing subset) the packaged
-# skill surfaces — this is the drift guard issue #180 asks CI to enforce.
-JOURNEY_COMMANDS = [
-    "lumio-wiki --version",
-    "lumio-wiki doctor",
-    "lumio-wiki setup",
-    "lumio-wiki status",
-    "lumio-wiki validate",
-    "lumio-wiki ingest",
-    "lumio-wiki proposal list",
-    "lumio-wiki proposal inspect",
-    "lumio-wiki proposal validate",
-    "lumio-wiki publish",
-    "lumio-wiki search",
-    "lumio-wiki page",
-    "lumio-wiki related",
-    "lumio-wiki paths",
-    "lumio-wiki source inspect",
-    "lumio-wiki source fetch",
-    "lumio-wiki publish-s3",
-    "lumio-wiki rollback-s3",
-    "lumio-wiki cleanup-s3",
-]
-# Commands the packaged Agent Skill must teach for the S3 half of the journey.
-SKILL_JOURNEY_COMMANDS = ["publish-s3", "rollback-s3", "cleanup-s3", "source inspect"]
 
 
 def _run_cli(args: list[str]) -> str:
@@ -79,20 +46,8 @@ def _run_cli(args: list[str]) -> str:
     return buf.getvalue()
 
 
-def _cli_help(cmd: str) -> str:
-    from lumio_wiki.cli import main
-
-    buf = io.StringIO()
-    with redirect_stdout(buf), redirect_stderr(io.StringIO()):
-        try:
-            main([cmd, "--help"])
-        except SystemExit:
-            pass
-    return buf.getvalue()
-
-
 # ---------------------------------------------------------------------------
-# 1. Parity: docs, script, example, and skill cannot drift.
+# 1. Privacy: only labelled local-test credentials in the quickstart.
 # ---------------------------------------------------------------------------
 
 
@@ -100,71 +55,6 @@ def _collapse(text: str) -> str:
     """Collapse markdown line wrapping so phrase checks are not hostage to
     where a line happens to break."""
     return re.sub(r"\s+", " ", text)
-
-
-def test_quickstart_cites_registered_public_commands():
-    """Every lumio-wiki command fragment in the quickstart is a real CLI
-    command with help — documentation drift fails here, not at the reader."""
-    text = QUICKSTART.read_text(encoding="utf-8")
-    cited = {m.group(1) for m in re.finditer(r"lumio-wiki ([a-z][a-z0-9-]*)", text)}
-    cited |= {m.group(1) for m in re.finditer(r"lumio-wiki (--[a-z-]+)", text)}
-    assert cited, "quickstart must cite lumio-wiki commands"
-    for cmd in cited:
-        if cmd.startswith("-"):
-            continue  # global flags are covered by the literal journey checks below
-        assert _cli_help(cmd).startswith("usage:"), f"unknown CLI command: {cmd}"
-    collapsed = _collapse(text)
-    for journey in JOURNEY_COMMANDS:
-        assert journey in collapsed, f"journey command missing from quickstart: {journey}"
-
-
-def test_journey_commands_have_one_home_across_quickstart_script_and_example():
-    """The quickstart, its scriptable twin, and the example README agree on
-    the journey's commands — the script follows the docs' review sequence
-    (list -> inspect -> validate -> publish), not a loose approximation."""
-    quickstart = _collapse(QUICKSTART.read_text(encoding="utf-8"))
-    script = SCRIPT.read_text(encoding="utf-8")
-    example = EXAMPLE_README.read_text(encoding="utf-8")
-    for journey in JOURNEY_COMMANDS:
-        assert journey in quickstart, f"quickstart must cite: {journey}"
-        if journey in (
-            "lumio-wiki --version",
-            "lumio-wiki doctor",
-            "lumio-wiki rollback-s3",
-            "lumio-wiki cleanup-s3",
-        ):
-            continue  # informational pointers, documented but not scripted
-        head, sub = journey.split(maxsplit=1)
-        assert re.search(rf"\b{re.escape(sub.split()[0])}\b", script), (
-            f"smoke journey must execute the documented command: {journey}"
-        )
-    assert "smoke-journey.sh" in quickstart, "quickstart must link its scriptable twin"
-    assert "docs/quickstart.md" in example, "example README must link the quickstart"
-    assert "smoke-journey.sh" in example, "example README must name the smoke script"
-
-
-def test_entrypoint_docs_link_the_canonical_journey():
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    usage = (ROOT / "docs" / "usage.md").read_text(encoding="utf-8")
-    for name, text in (("README.md", readme), ("docs/usage.md", usage)):
-        assert "docs/quickstart.md" in text, f"{name} must link the canonical quickstart"
-
-
-def test_skill_documents_the_s3_journey_commands():
-    """The packaged Agent Skill (the agent-facing contract) teaches the S3
-    publication commands the journey uses (issue #180 primary files)."""
-    skill = (ROOT / "packages/lumio-wiki/src/lumio_wiki/data/skill/SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    protocol = (
-        ROOT / "packages/lumio-wiki/src/lumio_wiki/data/skill/PROTOCOL.md"
-    ).read_text(encoding="utf-8")
-    for name, text in (("SKILL.md", skill), ("PROTOCOL.md", protocol)):
-        for cmd in SKILL_JOURNEY_COMMANDS:
-            assert cmd in text, f"{name} must document the journey command: {cmd}"
-        assert "docs/quickstart.md" in text or "quickstart" in text, (
-            f"{name} must point at the canonical journey"
-        )
 
 
 def test_quickstart_uses_nothing_secret_beyond_labelled_minio_test_defaults():
@@ -181,20 +71,6 @@ def test_quickstart_uses_nothing_secret_beyond_labelled_minio_test_defaults():
     assert set(secret_envs) <= {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}, (
         f"unexpected secret-bearing exports: {secret_envs}"
     )
-
-
-def test_quickstart_explains_the_four_operating_model_facts():
-    """Backend vs mode, lumio.yaml states, local-vs-immutable-S3, and the
-    expected zero-index fallback each get an explanation (issue #180)."""
-    text = _collapse(QUICKSTART.read_text(encoding="utf-8"))
-    for phrase in (
-        "retrieval backend",
-        "valid-empty ontology",
-        "Legacy Flat Mode",
-        "zero-index fallback",
-        "read-only",
-    ):
-        assert phrase in text, f"quickstart must explain: {phrase}"
 
 
 # ---------------------------------------------------------------------------
@@ -437,4 +313,3 @@ def test_minio_smoke_journey_script(tmp_path):
         f"{result.stdout[-2000:]}\n--- stderr tail ---\n{result.stderr[-2000:]}"
     )
     assert "PASS: full onboarding journey complete" in result.stdout
-

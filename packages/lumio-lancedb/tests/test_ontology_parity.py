@@ -4,7 +4,7 @@ The shared corpus in ``eval/ontology_corpus`` exercises every ontology
 phenomenon in one place: entity and literal Claims, an inverse Predicate
 pair, disputed/superseded lifecycle, Extracted References (including
 discovery-only neighbours), an Entity Merge redirect, visibility classes,
-and ontology validation failures.
+and visibility-constrained traversal.
 
 Every traversal/retrieval assertion in this module runs identically against
 the zero-index MessagePack projection and the LanceDB ``entities`` /
@@ -13,7 +13,6 @@ the zero-index MessagePack projection and the LanceDB ``entities`` /
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
@@ -47,14 +46,6 @@ def corpus_kb():
     kb, report = load_knowledge_base(CORPUS)
     assert report.is_valid, [i.message for i in report.issues]
     return kb
-
-
-@pytest.fixture(scope="module")
-def corpus_dir(tmp_path_factory):
-    """A writable copy of the corpus, so tests can inject faults."""
-    target = tmp_path_factory.mktemp("ontology-parity") / "corpus"
-    shutil.copytree(CORPUS, target)
-    return target
 
 
 PUBLIC_TITLES = frozenset({"Lumio", "LanceDB", "Knowledge Graph"})
@@ -234,78 +225,6 @@ def test_entity_resolution_surfaces(corpus_kb):
         got = resolution.entity.id if resolution.entity is not None else None
         assert got == expected_id, name
         assert resolution.matched_by == expected_match, name
-
-
-# ---------------------------------------------------------------------------
-# Ontology failures block validation and publication (corpus fault injection).
-# ---------------------------------------------------------------------------
-
-
-def _load_expecting_invalid(root: Path) -> list[str]:
-    _kb, report = load_knowledge_base(root)
-    assert not report.is_valid
-    return [i.message for i in report.issues if i.severity == "error"]
-
-
-def test_unknown_predicate_in_corpus_blocks_validation(corpus_dir):
-    page = corpus_dir / "entities" / "lancedb.md"
-    original = page.read_text()
-    page.write_text(original.replace('predicate: "used-by"', 'predicate: "consumes"'))
-    try:
-        messages = _load_expecting_invalid(corpus_dir)
-        assert any("unknown predicate: consumes" in m for m in messages)
-    finally:
-        page.write_text(original)
-
-
-def test_domain_violation_in_corpus_blocks_validation(corpus_dir):
-    # `uses` requires a software-system subject; obstore is a library.
-    page = corpus_dir / "entities" / "obstore.md"
-    original = page.read_text()
-    faulty = original.replace(
-        "---\n\n# obstore",
-        "claims:\n  - id: \"claim:obstore-uses-lumio\"\n"
-        "    predicate: \"uses\"\n"
-        "    object: \"entity:lumio\"\n"
-        "    status: \"accepted\"\n"
-        "    evidence:\n      - section: \"Overview\"\n"
-        "---\n\n# obstore",
-    )
-    page.write_text(faulty)
-    try:
-        messages = _load_expecting_invalid(corpus_dir)
-        assert any("domain violation" in m for m in messages)
-    finally:
-        page.write_text(original)
-
-
-def test_redirect_cycle_in_corpus_blocks_validation(corpus_dir):
-    control = corpus_dir / "lumio.yaml"
-    original = control.read_text()
-    control.write_text(
-        original.replace(
-            "    entity:legacy-wiki: entity:sage-wiki",
-            "    entity:legacy-wiki: entity:sage-wiki\n"
-            "    entity:sage-wiki: entity:legacy-wiki",
-        )
-    )
-    try:
-        messages = _load_expecting_invalid(corpus_dir)
-        # sage-wiki is a live entity: it may not redirect; the pair also cycles.
-        assert any("redirect" in m for m in messages)
-    finally:
-        control.write_text(original)
-
-
-def test_missing_evidence_section_blocks_validation(corpus_dir):
-    page = corpus_dir / "entities" / "lancedb.md"
-    original = page.read_text()
-    page.write_text(original.replace('section: "Adoption"', 'section: "Nowhere"'))
-    try:
-        messages = _load_expecting_invalid(corpus_dir)
-        assert any("unknown evidence section" in m for m in messages)
-    finally:
-        page.write_text(original)
 
 
 # ---------------------------------------------------------------------------

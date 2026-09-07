@@ -19,7 +19,6 @@ from pathlib import Path
 
 import pytest  # type: ignore[import-not-found]
 from lumio_wiki import cli
-from lumio_wiki.cli import _write_agents_md_section
 from lumio_wiki.env_loader import (
     ENV_ALLOWLIST,
     PUBLISH_TO_ENV_VAR,
@@ -624,23 +623,6 @@ def test_wizard_aborts_cleanly_on_eof(tmp_path, monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_load_project_config_exported_values_beat_env_file(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _clean_env(monkeypatch)
-    (tmp_path / ".env").write_text(
-        f"{PUBLISH_TO_ENV_VAR}=s3://file-value/kb\n"
-        f"{RETRIEVAL_BACKEND_ENV_VAR}=zero-index\n"
-        "UNRELATED_KEY=nope\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv(PUBLISH_TO_ENV_VAR, "s3://exported-value/kb")
-
-    config = load_project_config()
-    assert config[PUBLISH_TO_ENV_VAR] == "s3://exported-value/kb"
-    assert config[RETRIEVAL_BACKEND_ENV_VAR] == "zero-index"  # from .env
-    assert "UNRELATED_KEY" not in config
-
-
 def test_load_project_config_empty_exported_value_never_falls_back(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _clean_env(monkeypatch)
@@ -731,52 +713,3 @@ def test_s3_config_exported_lumio_endpoint_beats_env_file(tmp_path, monkeypatch)
 
     config, _ = cli._s3_config_from_env()
     assert config["aws_endpoint"] == "http://exported:9000"
-
-
-# ---------------------------------------------------------------------------
-# Generated AGENTS.md and CLI help parity surfaces (issue #161 AC)
-# ---------------------------------------------------------------------------
-
-
-def test_generated_agents_md_documents_configured_s3_settings(tmp_path):
-    """The configured AGENTS.md section records the S3 settings; plain does not."""
-    _write_agents_md_section(
-        tmp_path / "AGENTS.md",
-        "/example/kb",
-        publish_to="s3://public-bucket/team-kb",
-        retrieval="lancedb",
-        source_store="s3://private-bucket/team-kb",
-    )
-    text = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
-    assert "LUMIO_PUBLISH_TO" in text
-    assert "LUMIO_RETRIEVAL_BACKEND" in text
-    assert "LUMIO_SOURCE_STORE" in text
-    assert "lumio-wiki publish-s3" in text
-    assert "s3://private-bucket/team-kb" not in text  # ADR-0020: no private URI
-    # Retrieval backend and mode are presented as separate settings.
-    assert "retrieval *mode*" in text
-
-    plain = tmp_path / "plain-AGENTS.md"
-    _write_agents_md_section(plain, "/example/kb")
-    plain_text = plain.read_text(encoding="utf-8")
-    assert "LUMIO_PUBLISH_TO" not in plain_text
-    assert "LUMIO_SOURCE_STORE" not in plain_text
-
-
-def test_setup_help_documents_the_s3_forms():
-    import io
-
-    buf = io.StringIO()
-    import contextlib
-
-    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
-        try:
-            cli.main(["setup", "--help"])
-        except SystemExit:
-            pass
-    help_text = buf.getvalue()
-    assert "--publish-to" in help_text
-    assert "--from" in help_text
-    assert "--source-store" in help_text
-    assert "--retrieval" in help_text
-    assert "lumio-lancedb[s3]" in help_text

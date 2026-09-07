@@ -9,7 +9,6 @@ codes, and output contracts against the package's own test fixtures.
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import shutil
@@ -21,7 +20,7 @@ from pathlib import Path
 import lumio_wiki as lw
 import pytest  # type: ignore[import-not-found]
 from lumio_wiki import GRAPH_ARTIFACT_FILENAME
-from lumio_wiki.cli import build_parser, default_index_dir, main
+from lumio_wiki.cli import default_index_dir, main
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -67,78 +66,8 @@ def source_file(tmp_path: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Dispatch and help
-# ---------------------------------------------------------------------------
-
-
-def test_build_parser_produces_lumio_wiki_prog():
-    parser = build_parser()
-    assert parser.prog == "lumio-wiki"
-
-
-def test_no_command_prints_help_and_returns_1(capsys: pytest.CaptureFixture[str]):
-    rc = main([])
-    assert rc == 1
-    captured = capsys.readouterr()
-    assert "lumio-wiki" in captured.out
-    assert "init" in captured.out
-    assert "validate" in captured.out
-
-
-def test_version_flag_prints_package_version(capsys: pytest.CaptureFixture[str]):
-    with pytest.raises(SystemExit) as exc_info:
-        main(["--version"])
-    assert exc_info.value.code == 0
-    captured = capsys.readouterr()
-    assert lw.__version__ in captured.out
-
-
-def test_all_documented_commands_have_handlers():
-    """Every command the issue requires is registered with a callable handler."""
-    parser = build_parser()
-    # Walk the subparsers to find every registered command.
-    subparsers_action = next(
-        (a for a in parser._actions if isinstance(a, argparse._SubParsersAction)),
-        None,
-    )
-    assert subparsers_action is not None
-    # Top-level commands.
-    expected_top_level = {
-        "init",
-        "validate",
-        "search",
-        "page",
-        "related",
-        "paths",
-        "hot",
-        "index",
-        "ingest",
-        "proposal",
-        "publish",
-        "discard",
-        "health",
-        "doctor",
-        "skill",
-    }
-    assert expected_top_level <= set(subparsers_action.choices)
-
-
-# ---------------------------------------------------------------------------
 # init
 # ---------------------------------------------------------------------------
-
-
-def test_init_creates_control_file_and_derived_dirs(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
-    target = tmp_path / "newkb"
-    rc = main(["init", str(target)])
-    assert rc == 0
-    assert (target / "lumio.yaml").is_file()
-    assert (target / ".lumio" / "ingest").is_dir()
-    assert (target / ".lumio" / "index").is_dir()
-    out = capsys.readouterr().out
-    assert "Initialized" in out
 
 
 def test_init_refuses_existing_knowledge_base(tmp_path: Path):
@@ -153,12 +82,6 @@ def test_init_refuses_existing_knowledge_base(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_validate_valid_knowledge_base_returns_0(kb_root: Path, capsys: pytest.CaptureFixture[str]):
-    rc = main(["validate", str(kb_root)])
-    assert rc == 0
-    assert "valid" in capsys.readouterr().out.lower()
-
-
 def test_validate_invalid_knowledge_base_returns_1(tmp_path: Path):
     root = tmp_path / "bad"
     shutil.copytree(FIXTURES / "invalid", root)
@@ -169,23 +92,6 @@ def test_validate_invalid_knowledge_base_returns_1(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # search
 # ---------------------------------------------------------------------------
-
-
-def test_search_returns_matching_pages(kb_root: Path, capsys: pytest.CaptureFixture[str]):
-    rc = main(["search", str(kb_root), "LanceDB", "--limit", "5"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Architecture" in out or "Technology" in out
-
-
-def test_search_output_exposes_stable_entity_ids(
-    graph_kb: Path, capsys: pytest.CaptureFixture[str]
-):
-    """Issue #172: search stays human-readable while exposing stable IDs."""
-    rc = main(["search", str(graph_kb), "LanceDB", "--limit", "5"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "entity:architecture" in out or "entity:technology-stack" in out
 
 
 def test_search_no_matches_returns_0(kb_root: Path, capsys: pytest.CaptureFixture[str]):
@@ -433,21 +339,6 @@ def test_eval_semantic_model_missing_extra_guidance(
 # ---------------------------------------------------------------------------
 
 
-def test_page_reads_by_canonical_title(kb_root: Path, capsys: pytest.CaptureFixture[str]):
-    rc = main(["page", str(kb_root), "Architecture"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "# Architecture" in out
-    assert "modular monolith" in out
-
-
-def test_page_falls_back_to_alias(kb_root: Path, capsys: pytest.CaptureFixture[str]):
-    # The valid fixture declares "System Architecture" as an alias.
-    rc = main(["page", str(kb_root), "System Architecture"])
-    assert rc == 0
-    assert "Architecture" in capsys.readouterr().out
-
-
 def test_page_unknown_title_returns_1(kb_root: Path):
     rc = main(["page", str(kb_root), "Nonexistent Page"])
     assert rc == 1
@@ -458,92 +349,10 @@ def test_page_unknown_title_returns_1(kb_root: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_related_lists_outgoing_titles(graph_kb: Path, capsys: pytest.CaptureFixture[str]):
-    rc = main(["related", str(graph_kb), "Lumio Overview"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Architecture" in out
-    # Stable Entity IDs exposed beside human-readable titles (issue #172).
-    assert "Architecture (entity:architecture)" in out
-
-
-def test_paths_finds_shortest_path(graph_kb: Path, capsys: pytest.CaptureFixture[str]):
-    rc = main(["paths", str(graph_kb), "Lumio Overview", "Technology Stack"])
-    assert rc == 0
-    out = capsys.readouterr().out.strip()
-    assert "Lumio Overview" in out
-    assert "Technology Stack" in out
-    assert "->" in out
-    # Stable Entity IDs exposed on every path node (issue #172).
-    assert "Lumio Overview (entity:lumio-overview)" in out
-    assert "Technology Stack (entity:technology-stack)" in out
-
-
 def test_paths_no_path_returns_1(kb_root: Path):
     # A non-existent source title has no outgoing edges, so no path is found.
     rc = main(["paths", str(kb_root), "Nonexistent Source", "Architecture"])
     assert rc == 1
-
-
-# ---------------------------------------------------------------------------
-# ingest → proposal → publish → discard journey
-# ---------------------------------------------------------------------------
-
-
-def test_ingest_stages_reviewable_proposal(
-    kb_root: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
-):
-    rc = main(["ingest", str(kb_root), str(source_file)])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Staged proposal" in out
-    assert "converted_by:   markdown" in out
-    assert "CLI Page" in out
-
-
-def test_proposal_list_shows_staged_proposal(kb_root: Path, source_file: Path):
-    main(["ingest", str(kb_root), str(source_file)])
-    # proposal list should show the staged proposal
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    proposals = store.list()
-    assert len(proposals) == 1
-    assert proposals[0].affected_pages == ["CLI Page"]
-
-
-def test_proposal_inspect_prints_metadata_and_diff(
-    kb_root: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
-):
-    main(["ingest", str(kb_root), str(source_file)])
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    pid = store.list()[0].id
-    rc = main(["proposal", "inspect", str(kb_root), pid])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert f"id:              {pid}" in out
-    assert "Diff:" in out
-
-
-def test_proposal_inspect_json_emits_valid_json(
-    kb_root: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
-):
-    main(["ingest", str(kb_root), str(source_file)])
-    capsys.readouterr()  # drain ingest output before capturing JSON.
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    pid = store.list()[0].id
-    rc = main(["proposal", "inspect", str(kb_root), pid, "--json"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    data = json.loads(out)
-    assert data["id"] == pid
-    assert data["affected_pages"] == ["CLI Page"]
-
-
-def test_proposal_validate_reports_valid(kb_root: Path, source_file: Path):
-    main(["ingest", str(kb_root), str(source_file)])
-    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
-    pid = store.list()[0].id
-    rc = main(["proposal", "validate", str(kb_root), pid])
-    assert rc == 0
 
 
 # ---------------------------------------------------------------------------
@@ -775,13 +584,6 @@ def test_lumio_dot_dir_does_not_pollute_fingerprint(kb_root: Path, source_file: 
 # ---------------------------------------------------------------------------
 
 
-def test_ingest_distiller_passthrough_is_the_default(kb_root: Path, source_file: Path):
-    """The default distiller is the model-free passthrough (unchanged journey)."""
-    parser = build_parser()
-    args = parser.parse_args(["ingest", str(kb_root), str(source_file)])
-    assert args.distiller == "passthrough"
-
-
 def test_ingest_distiller_llm_without_extra_fails_actionably(
     kb_root: Path, source_file: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
 ):
@@ -854,61 +656,8 @@ def test_ingest_distiller_llm_with_fake_provider_stages_proposal(
 
 
 # ---------------------------------------------------------------------------
-# health + doctor
-# ---------------------------------------------------------------------------
-
-
-def test_health_reports_page_count_and_graph(kb_root: Path, capsys: pytest.CaptureFixture[str]):
-    rc = main(["health", str(kb_root)])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "pages:" in out
-    assert "graph_edges:" in out
-    assert "fingerprint:" in out
-
-
-def test_doctor_reports_version_optionals_and_skill(capsys: pytest.CaptureFixture[str]):
-    rc = main(["doctor"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert f"lumio-wiki {lw.__version__}" in out
-    assert "extra[documents]:" in out
-    assert "extra[llm]:" in out
-    assert "skill_md:" in out
-    assert "skill_exists:" in out
-
-
-# ---------------------------------------------------------------------------
 # skill subcommands
 # ---------------------------------------------------------------------------
-
-
-def test_skill_path_prints_existing_skill(capsys: pytest.CaptureFixture[str]):
-    from lumio_wiki.skill import resolve_skill_path
-
-    rc = main(["skill", "path"])
-    assert rc == 0
-    out = capsys.readouterr().out.strip()
-    assert str(resolve_skill_path()) == out
-    assert Path(out).is_file()
-
-
-def test_skill_protocol_prints_existing_protocol(capsys: pytest.CaptureFixture[str]):
-    from lumio_wiki.skill import resolve_protocol_path
-
-    rc = main(["skill", "protocol"])
-    assert rc == 0
-    out = capsys.readouterr().out.strip()
-    assert str(resolve_protocol_path()) == out
-    assert Path(out).is_file()
-
-
-def test_skill_install_copies_into_agent_dir(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    dest = tmp_path / "skills" / "lumio-wiki"
-    rc = main(["skill", "install", "--agent", "pi", "--dest", str(dest)])
-    assert rc == 0
-    assert (dest / "SKILL.md").is_file()
-    assert (dest / "PROTOCOL.md").is_file()
 
 
 def test_skill_install_refuses_overwrite_without_flag(tmp_path: Path):
@@ -934,14 +683,6 @@ def test_unsupported_agent_is_rejected():
 # Issue #110: the zero-index retrieval ladder — graph bounds + truthful trace,
 # Hot Index / Navigation Index surfaces, and graceful graph recovery.
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def categorized_kb(tmp_path: Path) -> Path:
-    """Copy the categorized fixture (has Hot Index pins) into a writable root."""
-    root = tmp_path / "kb"
-    shutil.copytree(FIXTURES / "categorized_kb", root)
-    return root
 
 
 # A categorized KB whose canonical graph is the chain
@@ -1079,29 +820,6 @@ def test_paths_max_depth_bounds_traversal(graph_kb: Path):
     assert rc_deep == 0
 
 
-def test_paths_trace_reports_found_and_hops(graph_kb: Path, capsys: pytest.CaptureFixture[str]):
-    rc = main(
-        [
-            "paths",
-            str(graph_kb),
-            "Lumio Overview",
-            "Technology Stack",
-            "--scope",
-            "canonical",
-            "--max-depth",
-            "3",
-            "--trace",
-        ]
-    )
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "# trace:" in out
-    assert "scope=canonical" in out
-    assert "max_depth=3" in out
-    assert "found=true" in out
-    assert "hops=2" in out
-
-
 def test_paths_trace_reports_not_found(kb_root: Path, capsys: pytest.CaptureFixture[str]):
     rc = main(
         [
@@ -1121,39 +839,6 @@ def test_paths_trace_reports_not_found(kb_root: Path, capsys: pytest.CaptureFixt
 
 
 # --- Hot Index + Navigation Index ladder entry points (AC2) ---
-
-
-def test_hot_prints_pinned_hot_index(categorized_kb: Path, capsys: pytest.CaptureFixture[str]):
-    rc = main(["hot", str(categorized_kb)])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Hot Index" in out
-    assert "Lumio Overview" in out
-    assert "Acme Corp" in out
-
-
-def test_hot_reports_when_no_pins(kb_root: Path, capsys: pytest.CaptureFixture[str]):
-    # The valid fixture has no Control File → no pins.
-    rc = main(["hot", str(kb_root)])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "No Hot Index" in out
-
-
-def test_index_prints_root_navigation_index(kb_root: Path, capsys: pytest.CaptureFixture[str]):
-    rc = main(["index", str(kb_root)])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Lumio Overview" in out
-    assert "Architecture" in out
-    assert "Technology Stack" in out
-
-
-def test_index_prints_subdirectory_index(categorized_kb: Path, capsys: pytest.CaptureFixture[str]):
-    rc = main(["index", str(categorized_kb), "concepts"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Lumio Overview" in out
 
 
 # --- Graceful graph recovery (AC4) ---
@@ -1224,15 +909,6 @@ def test_health_rebuild_overwrites_corrupt_artifact(
 # ---------------------------------------------------------------------------
 
 
-def test_kb_path_defaults_to_env_var(monkeypatch, capsys):
-    """LUMIO_KB_PATH is used when no positional <kb> is given."""
-    monkeypatch.setenv("LUMIO_KB_PATH", str(FIXTURES / "valid"))
-    rc = main(["search", "stack"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Technology Stack" in out
-
-
 def test_kb_path_missing_gives_actionable_error(tmp_path, monkeypatch, capsys):
     """Neither positional nor env var → actionable error, exit 2."""
     monkeypatch.chdir(tmp_path)
@@ -1241,15 +917,6 @@ def test_kb_path_missing_gives_actionable_error(tmp_path, monkeypatch, capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "LUMIO_KB_PATH" in err
-
-
-def test_explicit_path_overrides_env_var(monkeypatch, capsys):
-    """Positional <kb> takes precedence over LUMIO_KB_PATH."""
-    monkeypatch.setenv("LUMIO_KB_PATH", "/nonexistent/path")
-    rc = main(["search", str(FIXTURES / "valid"), "stack"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Technology Stack" in out
 
 
 # ---------------------------------------------------------------------------
@@ -1341,48 +1008,6 @@ def test_setup_repeated_run_never_duplicates_the_section(tmp_path, monkeypatch):
     assert content.count("<!-- lumio-wiki-kb -->") == 1
 
 
-def test_setup_with_skill_install(tmp_path, monkeypatch, capsys):
-    """setup --agent installs the skill into the agent's directory."""
-    monkeypatch.chdir(tmp_path)
-    fake_home = tmp_path / "fake-home"
-    fake_home.mkdir()
-    monkeypatch.setenv("HOME", str(fake_home))
-
-    rc = main(["setup", str(tmp_path / "kb"), "--agent", "codex", "--overwrite"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "skill install:" in out
-
-    skill_dir = fake_home / ".codex" / "skills" / "lumio-wiki"
-    assert (skill_dir / "SKILL.md").exists()
-    assert (skill_dir / "PROTOCOL.md").exists()
-
-
-def test_setup_env_var_enables_implicit_path(tmp_path, monkeypatch, capsys):
-    """After setup, LUMIO_KB_PATH from .env enables commands with no path arg."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("LUMIO_KB_PATH", raising=False)
-    kb_path = tmp_path / "wiki"
-    shutil.copytree(FIXTURES / "valid", kb_path)
-
-    # Setup writes .env with LUMIO_KB_PATH
-    rc = main(["setup", str(kb_path)])
-    assert rc == 0
-
-    # Manually load .env (simulating what a shell/agent harness does)
-    env_content = (tmp_path / ".env").read_text()
-    for line in env_content.splitlines():
-        if line.startswith("LUMIO_KB_PATH="):
-            monkeypatch.setenv("LUMIO_KB_PATH", line.split("=", 1)[1])
-            break
-
-    # Now search with no path → uses LUMIO_KB_PATH
-    rc = main(["search", "stack"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Technology Stack" in out
-
-
 # ---------------------------------------------------------------------------
 # Project .env loading (issue #152, ADR-0017)
 #
@@ -1419,50 +1044,6 @@ def _run_cli_in_subprocess(
         text=True,
         timeout=60,
     )
-
-
-def test_env_file_loaded_when_no_positional_and_no_env_var(tmp_path: Path, monkeypatch, capsys):
-    """With no positional and no exported var, LUMIO_KB_PATH is read from .env."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("LUMIO_KB_PATH", raising=False)
-    kb = tmp_path / "kb"
-    shutil.copytree(FIXTURES / "valid", kb)
-    (tmp_path / ".env").write_text(f"LUMIO_KB_PATH={kb}\n", encoding="utf-8")
-
-    rc = main(["search", "Technology"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Technology Stack" in out
-
-
-def test_positional_path_overrides_env_file_and_env_var(tmp_path: Path, monkeypatch, capsys):
-    """Positional <kb> takes precedence over both the env var and .env."""
-    monkeypatch.chdir(tmp_path)
-    real_kb = tmp_path / "real-kb"
-    shutil.copytree(FIXTURES / "valid", real_kb)
-    # Both lower-precedence sources point at nonexistent paths.
-    monkeypatch.setenv("LUMIO_KB_PATH", str(tmp_path / "env-kb"))
-    (tmp_path / ".env").write_text(f"LUMIO_KB_PATH={tmp_path / 'file-kb'}\n", encoding="utf-8")
-
-    rc = main(["search", str(real_kb), "Technology"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Technology Stack" in out
-
-
-def test_exported_env_var_overrides_env_file(tmp_path: Path, monkeypatch, capsys):
-    """An exported LUMIO_KB_PATH wins over a .env value."""
-    monkeypatch.chdir(tmp_path)
-    real_kb = tmp_path / "real-kb"
-    shutil.copytree(FIXTURES / "valid", real_kb)
-    # .env points at a nonexistent path; the exported var points at the real KB.
-    (tmp_path / ".env").write_text(f"LUMIO_KB_PATH={tmp_path / 'file-kb'}\n", encoding="utf-8")
-    monkeypatch.setenv("LUMIO_KB_PATH", str(real_kb))
-
-    rc = main(["search", "Technology"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Technology Stack" in out
 
 
 def test_subprocess_positional_path_overrides_env_and_env_file(tmp_path: Path):
@@ -1534,37 +1115,6 @@ def test_subprocess_invalid_env_path_is_actionable(tmp_path: Path):
     assert result.returncode == 2
     assert "no Knowledge Base path provided" in result.stderr
     assert "Traceback" not in result.stderr
-
-
-def test_setup_help_claims_env_loading(capsys):
-    """AC7: setup help/usage matches the tested .env-loading behavior."""
-    with pytest.raises(SystemExit):
-        main(["setup", "--help"])
-    out = capsys.readouterr().out
-    assert ".env" in out
-    assert "LUMIO_KB_PATH" in out
-    # argparse wraps the description, so assert a phrase that fits one line.
-    assert "LUMIO_KB_PATH from .env" in out
-
-
-def test_module_usage_documents_optional_kb_path():
-    """The module docstring documents the pathless <kb> behavior so callers
-    know commands can omit the path once ``setup`` has written ``.env``
-    (issue #152; ADR-0017)."""
-    import lumio_wiki.cli as cli_module
-
-    usage = cli_module.__doc__ or ""
-    assert "LUMIO_KB_PATH" in usage
-    assert ".env" in usage
-
-
-def test_kb_path_help_documents_env_and_env_file(capsys):
-    """AC7: the <kb> argument help documents the .env fallback."""
-    with pytest.raises(SystemExit):
-        main(["validate", "--help"])
-    out = capsys.readouterr().out
-    assert "LUMIO_KB_PATH" in out
-    assert ".env" in out
 
 
 def test_subprocess_setup_then_validate_reads_env(tmp_path: Path):
@@ -3142,4 +2692,3 @@ def test_source_fetch_unavailable_artifact_error_explains_retention_step(
     assert "without artifact retention" in err
     assert "managed ingest" in err
     assert not out_file.exists()
-
