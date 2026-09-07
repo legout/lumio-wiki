@@ -625,6 +625,92 @@ def test_control_file_directory_destination_is_rejected_before_page_writes(tmp_p
     assert "lumio.yaml" in issues[0].message
 
 
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="requires Unix domain sockets")
+def test_control_file_socket_destination_is_rejected_before_page_writes(tmp_path: Path):
+    # Review-fix regression (Plan 02 / P2, review v4 blocker 1): the Control
+    # File destination preflight only rejected a DIRECTORY at lumio.yaml, so
+    # a special-file occupant (a Unix socket) passed preflight: candidate
+    # validation died with a raw ``shutil.Error`` from ``copytree`` (the
+    # socket cannot be copied) while live apply wrote the proposed pages and
+    # then REPLACED the socket with a regular Control File. The Control File
+    # destination now runs the same nonblocking special/unreadable probe as
+    # page destinations: the conflict raises before ANY page write, and
+    # candidate validation returns the SAME blocking destination issue.
+    kb = _kb(tmp_path)
+    control_path = kb.root / "lumio.yaml"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(control_path))
+    control = lw.KnowledgeBaseControlFile(version=1)
+    page = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-control-socket-review-fix"),
+    )
+    try:
+        with pytest.raises(DestinationConflict) as live:
+            lw.apply_proposed_pages([page], kb.root, control_file=control)
+        report = lw.validate_candidate_knowledge_base([page], kb.root, control_file=control)
+        # No page write, no Control File replacement: the socket survives.
+        assert not (kb.root / "fresh.md").exists()
+        assert control_path.is_socket()
+    finally:
+        sock.close()
+        control_path.unlink(missing_ok=True)
+
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].message == str(live.value)
+    assert "special file" in issues[0].message
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFOs")
+def test_control_file_fifo_destination_is_rejected_without_opening_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Review-fix regression (Plan 02 / P2, review v4 blocker 1): a FIFO at
+    # lumio.yaml used to pass the directory-only Control File preflight. The
+    # destination is now typed with the same nonblocking stat probe as page
+    # destinations, so the preflight never opens the FIFO (an open(2) on a
+    # FIFO blocks until a writer appears and would hang the suite), live
+    # apply raises DestinationConflict before ANY page write, and candidate
+    # validation aggregates the same blocking destination issue. The guarded
+    # Path.open below turns a regression back into a fast failure (instead of
+    # a hang) if the preflight ever opens the FIFO again.
+    kb = _kb(tmp_path)
+    fifo_path = kb.root / "lumio.yaml"
+    os.mkfifo(fifo_path)
+    real_open = Path.open
+
+    def _never_open_the_fifo(self, *args, **kwargs):
+        if self == fifo_path:
+            raise AssertionError("the preflight must never open a FIFO Control File destination")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _never_open_the_fifo)
+    control = lw.KnowledgeBaseControlFile(version=1)
+    page = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-control-fifo-review-fix"),
+    )
+
+    with pytest.raises(DestinationConflict) as live:
+        lw.apply_proposed_pages([page], kb.root, control_file=control)
+    report = lw.validate_candidate_knowledge_base([page], kb.root, control_file=control)
+
+    # The FIFO was never opened, never replaced, and no page was written.
+    assert fifo_path.is_fifo()
+    assert not (kb.root / "fresh.md").exists()
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].message == str(live.value)
+    assert "special file" in issues[0].message
+
+
 def test_control_file_replacement_still_works_for_regular_and_missing_paths(tmp_path: Path):
     # Review-fix companion (Plan 02 / P2): the new Control File destination
     # preflight must not disturb the normal behavior — an existing REGULAR
@@ -651,3 +737,94 @@ def test_control_file_replacement_still_works_for_regular_and_missing_paths(tmp_
         assert "version: 1" in written, name
         if preexisting:
             assert "legacy" not in written, name
+
+
+def _skip_if_symlinks_unavailable(tmp_path: Path) -> None:
+    """Skip when the platform cannot create symlinks (e.g. unprivileged Windows)."""
+    if not hasattr(os, "symlink"):
+        pytest.skip("platform has no os.symlink")
+    probe = tmp_path / "_symlink-probe"
+    try:
+        probe.symlink_to("probe-target")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation unavailable for this user/platform")
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def test_symlink_move_source_is_rejected_before_resolution(tmp_path: Path):
+    # Review-fix regression (Plan 02 / P2, review v4 blocker 2): a move
+    # source submitted as a SYMLINK was silently resolved (followed) by the
+    # escape check, so "source-link.md -> architecture.md" was accepted as
+    # the owned regular architecture.md: live apply wrote the new target,
+    # UNLINKED architecture.md, and left the now-dangling source-link.md
+    # behind, while candidate validation dereferenced the link into a second
+    # page and failed on ordinary duplicate-title issues — no destination
+    # issue at all. A move source is now rejected on non-following lstat
+    # BEFORE resolution loses the lexical path: only the actual regular
+    # recorded page file is movable, and live apply and candidate validation
+    # report the same destination conflict.
+    _skip_if_symlinks_unavailable(tmp_path)
+    kb = _kb(tmp_path)
+    architecture = kb.root / "architecture.md"
+    original = architecture.read_text(encoding="utf-8")
+    link = kb.root / "source-link.md"
+    link.symlink_to("architecture.md")
+    page = lw.ProposedPage(
+        relative_path="moved.md",
+        title="Architecture",
+        markdown=_probe_markdown("Architecture", "arch-symlink-move-review-fix"),
+        move_from_path="source-link.md",
+    )
+
+    with pytest.raises(DestinationConflict) as live:
+        lw.apply_proposed_pages([page], kb.root)
+    # Nothing written, nothing removed: the recorded page keeps its bytes
+    # and the submitted link still points at it (NOT left dangling).
+    assert architecture.read_text(encoding="utf-8") == original
+    assert not (kb.root / "moved.md").exists()
+    assert link.is_symlink()
+    assert link.resolve() == architecture.resolve()
+
+    # Candidate validation returns the SAME blocking destination issue.
+    report = lw.validate_candidate_knowledge_base([page], kb.root)
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].message == str(live.value)
+    assert "symlink" in issues[0].message
+
+
+def test_dangling_symlink_move_source_is_rejected_before_resolution(tmp_path: Path):
+    # Same parity for a DANGLING symlink move source: exists() and stat()
+    # both follow the link and see nothing, so the missing-source tolerance
+    # used to accept the link — live apply then wrote the target while the
+    # unremovable dangling entry stayed behind, and candidate validation died
+    # in ``copytree`` on the uncopyable link. Non-following lstat still sees
+    # the link itself, so it is rejected up front and candidate validation
+    # returns the same destination issue instead of a filesystem exception.
+    _skip_if_symlinks_unavailable(tmp_path)
+    kb = _kb(tmp_path)
+    link = kb.root / "dangling-link.md"
+    link.symlink_to("ghost-target.md")
+    page = lw.ProposedPage(
+        relative_path="moved.md",
+        title="Moved",
+        markdown=_probe_markdown("Moved", "moved-dangling-link-review-fix"),
+        move_from_path="dangling-link.md",
+    )
+
+    with pytest.raises(DestinationConflict) as live:
+        lw.apply_proposed_pages([page], kb.root)
+    # Rejected up front: the link was never followed and never removed.
+    assert link.is_symlink()
+    assert not (kb.root / "moved.md").exists()
+
+    report = lw.validate_candidate_knowledge_base([page], kb.root)
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].message == str(live.value)
+    assert "symlink" in issues[0].message

@@ -20,18 +20,21 @@ targets within one proposal, existing directories, unreadable occupants,
 special-file occupants (FIFOs, sockets, devices — typed with a nonblocking
 ``stat`` so a FIFO is never opened), non-directory ancestors of any
 proposed destination, move source, removal target, or the Control File
-destination, an unusable Control File destination (an existing directory
-at ``lumio.yaml``), escaping paths, compound-fallback collisions, and move
-sources that are not safely removable — an existing directory (unremovable
-after the write), a special file (FIFO, socket, device — typed with the same
-nonblocking ``stat`` probe so a FIFO source is never opened), an unreadable
-file, or a file that is not the recorded path of the proposed page's own
-title (a different page's file, the Control File, or any untracked file, so
-a move can never delete content the proposal does not own) — are rejected
-up front. The candidate gate resolves against the REAL root before its
-throwaway copy is made, so an occupant ``copytree`` could never get past
-still produces the same destination issue as live apply. There is no
-automatic suffix allocation and no removal that was not declared.
+destination, an unusable Control File destination (an existing directory,
+special file, or unreadable file at ``lumio.yaml``), escaping paths,
+compound-fallback collisions, and move sources that are not safely
+removable — an existing directory (unremovable after the write), a symlink
+(rejected by non-following ``lstat`` BEFORE resolution — dangling links
+included — so a submitted link is never followed), a special file (FIFO,
+socket, device — typed with the same nonblocking ``stat`` probe so a FIFO
+source is never opened), an unreadable file, or a file that is not the
+recorded path of the proposed page's own title (a different page's file,
+the Control File, or any untracked file, so a move can never delete content
+the proposal does not own) — are rejected up front. The candidate gate
+resolves against the REAL root before its throwaway copy is made, so an
+occupant ``copytree`` could never get past still produces the same
+destination issue as live apply. There is no automatic suffix allocation
+and no removal that was not declared.
 """
 
 from __future__ import annotations
@@ -258,6 +261,10 @@ def _resolve_proposed_destinations(
     - two pages resolving to the same destination within one proposal are a
       duplicate-target conflict (no last-writer-wins);
     - every destination must resolve inside the working directory;
+    - a move source submitted as a SYMLINK is rejected on non-following
+      ``lstat`` BEFORE resolution (dangling links included): resolving would
+      follow the link and lose the submitted lexical path, so only the actual
+      regular recorded page file is movable;
     - an EXISTING move source must be a removable, regular, readable file AND
       the recorded path of the proposed page's own title: a directory source
       (unremovable after the write), a special file (FIFO, socket, device —
@@ -300,6 +307,22 @@ def _resolve_proposed_destinations(
             # Explicit category/path move (issue #80): relocate ATOMICALLY.
             # Both paths are escape-checked, and the original collision guard
             # (issue #80, P1.2) is reused as the occupancy rule for the move.
+            # A move source submitted as a SYMLINK is rejected FIRST, on
+            # non-following lstat, BEFORE resolution loses the lexical path
+            # (P2 review v4): ``_checked_relative_path`` resolves the link,
+            # so "link.md -> architecture.md" used to be accepted as the
+            # owned regular architecture.md — live apply then deleted
+            # architecture.md and left the dangling link behind while the
+            # candidate dereferenced the link into a second page. lstat also
+            # sees a DANGLING symlink (exists()/stat() would not), so only
+            # the actual regular recorded page file is ever movable.
+            if (root / move_from).is_symlink():
+                raise DestinationConflict(
+                    f"Cannot move {title!r} from {move_from}: the move source "
+                    f"is a symlink and must not be followed or removed; only "
+                    f"the proposed page's own recorded regular file may be moved",
+                    file=move_from,
+                )
             source_relative = _checked_relative_path(root, move_from, page_title=title)
             target_relative = _checked_relative_path(root, page.relative_path, page_title=title)
             source = root / source_relative
@@ -561,19 +584,44 @@ def _reject_unusable_control_file_path(
     AFTER the proposal's page writes had already landed, stranding them behind
     a Control File that can never be written. When a Control File is supplied,
     the shared preflight therefore requires the path to be absent or a
-    replaceable non-directory; a directory (directly or through a symlink) is
-    rejected up front, and candidate validation aggregates the same conflict
-    as a destination issue. A regular file keeps the normal replacement
-    behavior and a missing path is created.
+    replaceable regular readable file, applying the SAME occupant rules as
+    page destinations (P2 review v4): a directory (directly or through a
+    symlink), a special file (FIFO, socket, device — typed with the shared
+    nonblocking ``stat`` probe so a FIFO is never opened), or an unreadable
+    file is rejected up front, and candidate validation aggregates the same
+    conflict as a destination issue before its throwaway copy is even made.
+    A regular readable file keeps the normal replacement behavior and a
+    missing path is created.
     """
     if control_file is None:
         return
     target = root / CONTROL_FILE_BASENAME
-    if target.exists() and target.is_dir():
+    if not target.exists():
+        return
+    if target.is_dir():
         raise DestinationConflict(
             f"Control File destination is an existing directory and cannot be "
             f"replaced by the proposed {CONTROL_FILE_BASENAME}: the Control "
             f"File write would only fail after the proposal's page writes",
+            file=CONTROL_FILE_BASENAME,
+        )
+    # Same nonblocking type/readability probe as page-destination occupants:
+    # stat(2) never opens the occupant, so a FIFO or socket at lumio.yaml is
+    # classified — and rejected — without ever being opened, and only a
+    # regular file is probe-opened for honest readability (P2 review v4).
+    reason = _special_or_unreadable_reason(target)
+    if reason == "unreadable":
+        raise DestinationConflict(
+            f"Control File destination is an unreadable file that cannot be "
+            f"replaced by the proposed {CONTROL_FILE_BASENAME}: the Control "
+            f"File write would only fail after the proposal's page writes",
+            file=CONTROL_FILE_BASENAME,
+        )
+    if reason == "special":
+        raise DestinationConflict(
+            f"Control File destination is occupied by a special file (FIFO, "
+            f"socket, or device) that must not be opened or replaced by the "
+            f"proposed {CONTROL_FILE_BASENAME}",
             file=CONTROL_FILE_BASENAME,
         )
 
@@ -700,9 +748,10 @@ def apply_proposed_pages(
     fixed path (``lumio.yaml`` at the root) is resolved against the proposed
     destinations before any page write, so a page can never overwrite the
     Control File. A Control File destination occupied by an existing
-    directory is rejected in the same shared preflight, BEFORE any page
-    write — the atomic Control File replacement could otherwise only fail
-    after the proposal's pages had already landed. Likewise, every parent
+    directory, a special file (FIFO, socket, device), or an unreadable file
+    is rejected in the same shared preflight, BEFORE any page write — the
+    atomic Control File replacement could otherwise only fail after the
+    proposal's pages had already landed. Likewise, every parent
     component of every proposed destination, move source, removal target,
     and the Control File path must be an existing (or creatable) directory:
     a non-directory ancestor is rejected up front instead of surfacing as a
