@@ -10,8 +10,9 @@ discard) and cover every acceptance criterion:
 * AC4 — inspect shows removed title, lost-support reason, diff, blast radius.
 * AC5 — every canonical Relationship to the removed page is repaired;
   unresolved canonical dependencies block publication.
-* AC6 — internal body links become location-bearing repair candidates, never
-  silently redirected.
+* AC6 — exactly-resolved internal body links are stripped to their readable
+  text in the same proposal; ambiguous destinations are never guessed and
+  remain visible.
 * AC7 — publication removes the page atomically, regenerates reserved
   artifacts, and records the Activity Log transition.
 * AC9 — a blocked/failed publish leaves the Knowledge Base unchanged.
@@ -211,18 +212,22 @@ def test_page_removal_serializes_and_round_trips(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_relationship_repair_drops_edges_and_body_links_become_candidates(tmp_path):
+def test_relationship_repair_drops_edges_and_repairs_exactly_resolved_links(tmp_path):
     root = _categorized_kb(tmp_path)
     _write(
         root,
         "concepts/alpha.md",
         _page(
             "Alpha",
-            body="Details in [[Beta]] and [plain](beta.md).",
+            body=(
+                "Details in [[Beta]] and [[Beta|the beta notes]] and "
+                "[plain](beta.md) and [other](gamma.md)."
+            ),
             relationships=[{"target": "Beta", "type": "depends-on"}],
         ),
     )
     _write(root, "concepts/beta.md", _page("Beta"))
+    _write(root, "concepts/gamma.md", _page("Gamma"))
     _kb, pipeline = _pipeline(root, tmp_path)
 
     proposal = pipeline.propose_page_removal("Beta")
@@ -237,12 +242,98 @@ def test_relationship_repair_drops_edges_and_body_links_become_candidates(tmp_pa
     _data, _body, _ = lw.parse_frontmatter(repair.markdown, Path("concepts/alpha.md"))
     assert all(c.get("object") != "entity:beta" for c in _data.get("claims", []))
 
-    # AC6: the wikilink/body link becomes a location-bearing candidate, never
-    # silently redirected. Alpha's body still mentions Beta verbatim.
-    assert any(
-        c.source_title == "Alpha" and c.target_title == "Beta" for c in proposal.body_link_repairs
+    # AC6: every exactly-resolved link to Beta is unwrapped to its readable
+    # text; the unrelated link to Gamma is untouched.
+    assert "Details in Beta and the beta notes and plain and [other](gamma.md)." in (
+        repair.markdown
     )
-    assert "Beta" in proposal.proposed_pages[0].markdown  # body untouched
+    assert "[[Beta]]" not in repair.markdown and "(beta.md)" not in repair.markdown
+    # Disclosure lists each repaired link exactly once (reviewer visibility).
+    alpha_beta = [
+        c
+        for c in proposal.body_link_repairs
+        if c.source_title == "Alpha" and c.target_title == "Beta"
+    ]
+    assert len(alpha_beta) == 1
+
+
+def test_body_only_page_without_claims_is_proposed_and_repaired(tmp_path):
+    """A page with ONLY a body link to the removed page still gets a revision."""
+    root = _categorized_kb(tmp_path)
+    _write(root, "concepts/alpha.md", _page("Alpha", body="See [the notes](beta.md)."))
+    _write(root, "concepts/beta.md", _page("Beta"))
+    _kb, pipeline = _pipeline(root, tmp_path)
+
+    proposal = pipeline.propose_page_removal("Beta")
+    assert [p.title for p in proposal.proposed_pages] == ["Alpha"]
+    assert "See the notes." in proposal.proposed_pages[0].markdown
+    assert not proposal.blocked
+
+
+def test_external_images_code_and_ambiguous_links_are_untouched(tmp_path):
+    """External URLs, images, inline code, and ambiguous targets stay verbatim."""
+    root = _categorized_kb(tmp_path)
+    _write(
+        root,
+        "concepts/alpha.md",
+        _page(
+            "Alpha",
+            body=(
+                "Web at [site](https://example.com/beta) and ![alt](beta.md) and "
+                "code `[[Beta]]` plus [x](beta.md \"title\") end."
+            ),
+        ),
+    )
+    _write(root, "concepts/beta.md", _page("Beta"))
+    _write(
+        root,
+        "concepts/zeta.md",
+        _page("BETA").replace('id: "entity:beta"', 'id: "entity:beta-shadow"'),
+    )
+    _kb, pipeline = _pipeline(root, tmp_path)
+
+    proposal = pipeline.propose_page_removal("Beta")
+
+    # Nothing staged: the only internal link is ambiguous (Beta AND BETA),
+    # never guessed. The removal itself still stages (diagnostic, not blocking).
+    assert proposal.proposed_pages == []
+    assert not proposal.blocked
+
+    # With the case collision gone, exactly-resolved links unwrap while the
+    # external URL, image, and inline-code span stay verbatim.
+    (root / "concepts/zeta.md").unlink()
+    kb2, _ = load_knowledge_base(root)
+    pipeline2 = ProposalPipeline(kb2, store=IngestStore(root.parent / "ingest2"))
+    proposal2 = pipeline2.propose_page_removal("Beta")
+    assert [p.title for p in proposal2.proposed_pages] == ["Alpha"]
+    markdown = proposal2.proposed_pages[0].markdown
+    assert "[site](https://example.com/beta)" in markdown
+    assert "![alt](beta.md)" in markdown
+    assert "`[[Beta]]`" in markdown
+    assert "code `[[Beta]]` plus x end." in markdown
+
+
+def test_published_kb_has_no_broken_link_warning_for_repaired_links(tmp_path):
+    root = _categorized_kb(tmp_path)
+    _write(
+        root,
+        "concepts/alpha.md",
+        _page("Alpha", body="Details in [[Beta]] and [backup docs](beta.md)."),
+    )
+    _write(root, "concepts/beta.md", _page("Beta"))
+    _kb, pipeline = _pipeline(root, tmp_path)
+
+    proposal = pipeline.propose_page_removal("Beta")
+    pipeline.publish(proposal.id)
+
+    kb2, report2 = load_knowledge_base(root)
+    assert report2.is_valid, report2
+    assert "Beta" not in [p.title for p in kb2.pages]
+    assert not [
+        i
+        for i in report2.issues
+        if i.severity == "warning" and "internal link" in i.message and "Beta" in i.message
+    ], "repaired links must not leave broken-link warnings"
 
 
 def test_unresolved_canonical_dependency_blocks_publication(tmp_path):
@@ -347,37 +438,39 @@ def test_partial_support_removal_keeps_the_page(tmp_path):
 
 
 def test_unresolved_body_link_surfaces_as_nonblocking_diagnostic(tmp_path):
-    """AC10: a body link to the removed page, left un-repaired, surfaces as a
-    non-blocking broken-internal-link diagnostic after publish — never silent.
+    """AC10: a body link left un-repaired surfaces as a non-blocking
+    broken-internal-link diagnostic after publish — never silent.
 
-    Body links are NEVER silently redirected (AC6); a Maintainer who does not
-    repair one still gets a visible, non-blocking warning in the new version
-    rather than a silent break or a blocking failure.
+    Exactly-resolved links are repaired by the proposal, so a Maintainer who
+    publishes the default removal sees a clean KB. A link that resolves
+    NOWHERE (never exactly the removed page, so never repairable) still
+    surfaces as a visible, non-blocking warning rather than a silent break or
+    a blocking failure.
     """
     root = _categorized_kb(tmp_path)
     _write(
         root,
         "concepts/alpha.md",
-        _page("Alpha", body="Details in [[Beta]]."),
+        _page("Alpha", body="Details in [[Beta]] and [notes](missing-page.md)."),
     )
     _write(root, "concepts/beta.md", _page("Beta"))
     kb, pipeline = _pipeline(root, tmp_path)
     proposal = pipeline.propose_page_removal("Beta")
-    # No body link is repaired in this proposal (only the relationship edge
-    # would be); Alpha's [[Beta]] wikilink is an un-repaired candidate.
+    # [[Beta]] is exactly resolved and repaired; the broken link is untouched.
     assert any(c.target_title == "Beta" for c in proposal.body_link_repairs)
-
     pipeline.publish(proposal.id)
     kb2, report2 = load_knowledge_base(root)
-    # The published KB is VALID (body links are non-blocking)...
     assert report2.is_valid, report2
-    # ...and the dangling link surfaces as a warning diagnostic, not silently.
+    alpha = next(p for p in kb2.pages if p.title == "Alpha")
+    assert "[notes](missing-page.md)" in (kb2.root / alpha.path).read_text(encoding="utf-8")
     link_warnings = [
         i
         for i in report2.issues
-        if i.severity == "warning" and "internal link" in i.message and "Beta" in i.message
+        if i.severity == "warning" and "internal link" in i.message
     ]
-    assert link_warnings, "expected a broken-internal-link warning for the dangling [[Beta]]"
+    assert any("missing-page" in i.message for i in link_warnings), (
+        "expected a broken-internal-link warning for the unresolvable link"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ web application's responsibility (issue #93).
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -43,12 +44,12 @@ from lumio_wiki.knowledge_base import (
     HotIndexPin,
     KnowledgeBaseControlFile,
     append_activity_log_entry,
-    extract_references,
     make_activity_log_entry,
 )
+from lumio_wiki.knowledge_base import _extract_references as _extract_references
 from lumio_wiki.knowledge_base import _parse_frontmatter as parse_frontmatter
 from lumio_wiki.publish import apply_proposed_pages, validate_candidate_knowledge_base
-from lumio_wiki.records import EntityRedirect, Ontology, ValidationReport
+from lumio_wiki.records import EntityRedirect, Ontology, ValidationIssue, ValidationReport
 from lumio_wiki.source_registry import (
     KnowledgeSource,
     PendingSourceTransition,
@@ -72,9 +73,9 @@ def _drop_claims_for_entity(data: dict, removed_entity_id: str) -> bool:
 
     The default, reviewed repair for a Page Removal (issue #135, AC5, as
     revised by ADR-0021): every canonical Claim whose object Entity would
-    otherwise dangle is removed in the same proposal. Only Claims are dropped;
-    the page body is untouched (body links become location-bearing repair
-    candidates, never guessed — AC6). Returns whether any Claim was dropped.
+    otherwise dangle is removed in the same proposal. Body links are repaired
+    separately (AC6): exactly-resolved links are unwrapped and ambiguous ones
+    are never guessed. Returns whether any Claim was dropped.
     """
     changed = False
     claims = data.get("claims")
@@ -94,23 +95,75 @@ def _drop_claims_for_entity(data: dict, removed_entity_id: str) -> bool:
 
 
 def _repair_page_for_removal(
-    markdown: str, removed_entity_id: str, source_path: str
-) -> tuple[str, bool]:
-    """Return a page's Markdown with Claims targeting a removed Entity dropped.
+    markdown: str,
+    removed_entity_id: str,
+    source_path: str,
+    body_start_line: int,
+    retired_title: str,
+    pages,
+) -> tuple[str, bool, list[str]]:
+    """Return a page's Markdown repaired for a Page Removal (issue #135).
 
-    A removal has no chosen destination, so the safe, reviewed repair is to
-    drop the Claim that would otherwise dangle (ADR-0021). Returns
-    ``(rewritten_markdown, was_changed)``.
+    Two reviewed repairs in one revision (ADR-0021): Claims whose object
+    Entity would dangle are dropped, and every internal body link that
+    resolves — with the shared resolver's precedence — EXACTLY to the removed
+    page is unwrapped to its readable text (``[[T]]``/``[[T|L]]`` -> ``T``/``L``,
+    ``[L](t.md)`` -> ``L``). External URLs, images, inline-code spans,
+    unresolved links, and ambiguous destinations are never touched: an
+    ambiguous destination (the removed page AND another page through the same
+    resolution key) is reported, never guessed. Returns
+    ``(rewritten_markdown, changed, ambiguous)``.
     """
     try:
         data, body, _ = parse_frontmatter(markdown, Path(source_path))
     except Exception:
-        return markdown, False
+        return markdown, False, []
     changed = _drop_claims_for_entity(data, removed_entity_id)
+
+    # Unwrap exactly-resolved body links against the ORIGINAL body spans, so
+    # repeated links on one line are each repaired exactly once.
+    from lumio_wiki.knowledge_base import _scan_body_links
+
+    source_dir = str(PurePosixPath(source_path).parent) if "/" in source_path else ""
+    body_lines = body.splitlines(keepends=True)
+    ambiguous: list[str] = []
+    for dest, line_start, line_end in _scan_body_links(body, body_start_line):
+        kind = _classify_retired_link(dest, pages, source_dir, retired_title)
+        if kind is None:
+            continue
+        if kind == "ambiguous":
+            ambiguous.append(
+                f"{source_path}: line {line_start}: '{dest}' matches the removed "
+                f"page and another page; leaving it unresolved"
+            )
+            continue
+        lo = max(line_start - body_start_line, 0)
+        hi = min(line_end - body_start_line, len(body_lines) - 1)
+        # Delimiter-bounded patterns (like the Entity Merge repair) so a shared
+        # prefix is never rewritten by accident; group 1 carries the readable
+        # label/alias, and the ``!`` lookbehind keeps images untouched. The
+        # Markdown pattern also matches the optional ``"title"`` tail the
+        # scanner excludes from ``dest``.
+        escaped = re.escape(dest)
+        patterns = (
+            re.compile(r"\[\[" + escaped + r"\]\]"),
+            re.compile(r"\[\[" + escaped + r"\|([^\]]*)\]\]"),
+            re.compile(r"(?<!\!)\[([^\]]*)\]\(" + escaped + r"(?:\s+\"[^\"]*\")?\)"),
+        )
+        for index in range(lo, hi + 1):
+            line = body_lines[index]
+            for pattern in patterns:
+                if pattern.search(line):
+                    replacement = dest if pattern.groups == 0 else lambda m: m.group(1)
+                    body_lines[index] = pattern.sub(replacement, line, count=1)
+                    changed = True
+                    break
+    body = "".join(body_lines)
+
     if not changed:
-        return markdown, False
+        return markdown, False, ambiguous
     frontmatter = yaml.encode(data).decode("utf-8").strip()
-    return f"---\n{frontmatter}\n---\n{body}", True
+    return f"---\n{frontmatter}\n---\n{body}", True, ambiguous
 
 
 def _compute_removal_diff(
@@ -576,8 +629,11 @@ class ProposalPipeline:
         """Stage an explicit, reviewed Page Removal proposal (issue #135).
 
         Builds and persists a proposal that excludes one Compiled Page from
-        the next Published Version and repairs every canonical Relationship
-        that would otherwise become invalid in the SAME proposal. A Page
+        the next Published Version and repairs every dependent page that
+        would otherwise reference it invalidly in the SAME proposal: canonical
+        Relationships to the removed title are dropped, and internal body
+        links that resolve exactly to it are unwrapped to their readable text
+        (ambiguous destinations are never guessed). A Page
         Removal is never inferred from an omitted page (ADR-0014): it is an
         explicit, declared mutation persisted, inspected, validated,
         published, and discarded through this same Proposal Pipeline.
@@ -605,9 +661,10 @@ class ProposalPipeline:
     ) -> IngestProposal:
         """Assemble a Page Removal proposal without persisting it (#135).
 
-        Resolves the page by Canonical Title, generates the dependent-edge
-        repair revisions (dropping Relationships to the removed title),
-        collects location-bearing body-link repair candidates, drops a stale
+        Resolves the page by Canonical Title, generates the dependent-page
+        repair revisions (dropping Relationships to the removed title and
+        unwrapping exactly-resolved body links to their readable text),
+        collects location-bearing body-link repair disclosures, drops a stale
         Hot Index pin atomically when needed, and validates the removal + its
         repairs as ONE candidate Knowledge Base. Mirrors the rename (#140)
         and retire/reactivate source-lifecycle flows.
@@ -628,30 +685,55 @@ class ProposalPipeline:
         # Relationship targeting the removed title gets a revision that DROPS
         # those edges. Redirect is an explicit Maintainer edit to the staged
         # proposal; the default, reviewed repair is to drop the dangling edge.
+        # AC6: the same revision unwraps exactly-resolved body links to their
+        # readable text, so a page is proposed when either a Claim or an
+        # exactly-resolved body link targets the removed page; an ambiguous
+        # destination is reported for review, never guessed.
+        # AC6: location-bearing disclosure of exactly-resolved body links,
+        # derived from the shared Extracted Reference extraction. Replaced
+        # pages keep their location line (reviewer visibility); ambiguous
+        # destinations never appear (they are not exactly resolved).
+        _refs, diagnostics = _extract_references(self._kb.pages)
         proposed_pages: list[ProposedPage] = []
+        body_link_repairs: list[BodyLinkRepairCandidate] = []
+        validation_issues: list = []
         for page in self._kb.pages:
             if page.title == title or not page.path:
-                continue
-            if not any(claim.object == removed_entity_id for claim in page.claims):
                 continue
             try:
                 page_markdown = (self._kb.root / page.path).read_text(encoding="utf-8")
             except OSError:
                 continue
-            repaired, changed = _repair_page_for_removal(
-                page_markdown, removed_entity_id, page.path
+            _data, _body, body_start_line = parse_frontmatter(
+                page_markdown, self._kb.root / page.path
             )
+            repaired, changed, ambiguous = _repair_page_for_removal(
+                page_markdown,
+                removed_entity_id,
+                page.path,
+                body_start_line,
+                title,
+                self._kb.pages,
+            )
+            for note in ambiguous:
+                validation_issues.append(
+                    ValidationIssue(
+                        file=page.path,
+                        field="body-links",
+                        message=note,
+                        severity="warning",
+                    )
+                )
             if not changed:
                 continue
             proposed_pages.append(
                 ProposedPage(relative_path=page.path, title=page.title, markdown=repaired)
             )
 
-        # Body-link repair candidates (AC6): location-bearing, never silently
-        # redirected to a guessed page. A remaining link surfaces post-removal
-        # as a non-blocking broken-internal-link warning.
-        body_link_repairs: list[BodyLinkRepairCandidate] = []
-        for ref in extract_references(self._kb.pages):
+        # Disclosure (AC6): every exactly-resolved body link is disclosed
+        # once for reviewer visibility. Pages with a Claim drop the edge and
+        # the link in ONE revision; body-only pages get the unwrap-only one.
+        for ref in _refs:
             if ref.target_title == title and ref.source_title != title:
                 body_link_repairs.append(
                     BodyLinkRepairCandidate(
@@ -687,15 +769,18 @@ class ProposalPipeline:
         # authoritative gate is the full-candidate validation below; the
         # ingest-routing validator is SKIPPED for a removal proposal because
         # every proposed page is a REPAIR of an existing, already-classified,
-        # already-published page (it drops a relationship edge) — exactly as
-        # category moves and title renames skip routing re-validation.
+        # already-published page (it drops a relationship edge and unwraps
+        # exactly-resolved body links) — exactly as category moves and title
+        # renames skip routing re-validation.
         page_validation = validate_candidate_knowledge_base(
             proposed_pages,
             self._kb.root,
             removed_titles=[title],
             control_file=control_file,
         )
-        validation_report = ValidationReport(issues=list(page_validation.issues))
+        validation_report = ValidationReport(
+            issues=list(page_validation.issues) + validation_issues
+        )
 
         existing_pages = _existing_page_markdown(self._kb)
         removed_markdown: str = existing_pages.get(title) or target_page.body
