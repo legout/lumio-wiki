@@ -383,6 +383,74 @@ def test_valid_move_of_owned_source_and_missing_source_still_behave(tmp_path: Pa
     assert (kb.root / "fresh.md").is_file()
 
 
+@pytest.mark.skipif(
+    os.name != "posix", reason="POSIX directory mode bits are required to deny an unlink"
+)
+def test_unremovable_move_source_parent_is_blocked_with_candidate_parity(tmp_path: Path):
+    # Review-fix regression (Plan 02 / P2, review v5 blocker 1): an OWNED,
+    # regular, readable move source whose parent directory does not permit
+    # removing entries (chmod 0555) passed every preflight — unlink(2)
+    # permission comes from the parent directory's mode bits, not from the
+    # file. Live apply then wrote the target first and died on the source
+    # unlink with a raw PermissionError, stranding a partial move, while
+    # candidate validation leaked the same filesystem exception instead of a
+    # destination issue. The preflight now evaluates the parent's mode bits
+    # (and sticky bit) DIRECTLY — never ``os.access``, which false-passes as
+    # root — so the conflict raises as a DestinationConflict before ANY byte
+    # is written, and candidate validation aggregates the identical
+    # destination issue.
+    kb = _kb(tmp_path)
+    locked = kb.root / "locked"
+    locked.mkdir()
+    source = locked / "overview.md"
+    (kb.root / "overview.md").rename(source)
+    kb, load_report = lw.load_knowledge_base(kb.root)
+    assert load_report.is_valid, load_report
+    original = source.read_text(encoding="utf-8")
+    page = lw.ProposedPage(
+        relative_path="moved.md",
+        title="Lumio Overview",
+        markdown=_probe_markdown("Lumio Overview", "overview-locked-parent-review-fix"),
+        move_from_path="locked/overview.md",
+    )
+
+    os.chmod(locked, 0o555)
+    try:
+        with pytest.raises(DestinationConflict) as live:
+            lw.apply_proposed_pages([page], kb.root)
+        candidate_report = lw.validate_candidate_knowledge_base([page], kb.root)
+        # No partial move: the target was never written and the intact
+        # recorded page survives behind the locked parent directory.
+        assert not (kb.root / "moved.md").exists()
+        assert source.read_text(encoding="utf-8") == original
+        assert not candidate_report.is_valid
+        issues = [issue for issue in candidate_report.issues if issue.severity == "error"]
+        assert len(issues) == 1, issues
+        assert issues[0].field == "destination"
+        # Candidate/live parity: the identical conflict, aggregated as an issue.
+        assert issues[0].message == str(live.value)
+        assert "locked/overview.md" in issues[0].message
+        # The message names the fixable parent directory, not a raw OSError.
+        assert "locked" in issues[0].message
+
+        # The removability requirement is scoped to moves that will actually
+        # unlink: moving a page onto its own recorded path overwrites in
+        # place (no unlink), so it stays valid even while the parent is
+        # locked — in candidate validation and live apply alike.
+        in_place = lw.ProposedPage(
+            relative_path="locked/overview.md",
+            title="Lumio Overview",
+            markdown=_probe_markdown("Lumio Overview", "overview-in-place-review-fix"),
+            move_from_path="locked/overview.md",
+        )
+        in_place_report = lw.validate_candidate_knowledge_base([in_place], kb.root)
+        assert in_place_report.is_valid, in_place_report
+        lw.apply_proposed_pages([in_place], kb.root)
+        assert source.read_text(encoding="utf-8") != original
+    finally:
+        os.chmod(locked, 0o755)
+
+
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="requires Unix domain sockets")
 def test_move_source_socket_is_rejected_with_candidate_parity(tmp_path: Path):
     # Review-fix regression (Plan 02 / P2, review v3 blocker 2): the move

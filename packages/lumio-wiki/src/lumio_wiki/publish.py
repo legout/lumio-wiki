@@ -27,8 +27,11 @@ removable — an existing directory (unremovable after the write), a symlink
 (rejected by non-following ``lstat`` BEFORE resolution — dangling links
 included — so a submitted link is never followed), a special file (FIFO,
 socket, device — typed with the same nonblocking ``stat`` probe so a FIFO
-source is never opened), an unreadable file, or a file that is not the
-recorded path of the proposed page's own title (a different page's file,
+source is never opened), an unreadable file, a file whose parent directory
+does not permit removing entries (unlink permission is decided by the
+parent's mode bits and sticky bit, evaluated directly so a root-owned
+environment cannot false-pass), or a file that is not the recorded path of
+the proposed page's own title (a different page's file,
 the Control File, or any untracked file, so a move can never delete content
 the proposal does not own) — are rejected up front. The candidate gate
 resolves against the REAL root before its throwaway copy is made, so an
@@ -166,6 +169,52 @@ def _special_or_unreadable_reason(target: Path) -> str | None:
     return None
 
 
+def _parent_denies_removal(parent: Path, source: Path) -> str | None:
+    """Return why ``parent`` cannot release ``source`` via unlink, or ``None``.
+
+    Removing a directory entry is authorized by the PARENT directory's
+    permission metadata, not by the entry itself: unlink(2) needs write and
+    search permission on the parent for the effective user, and a sticky
+    parent additionally requires owning the parent or the entry. The classic
+    owner/group/other mode-bit algorithm is evaluated directly from ``stat(2)``
+    metadata instead of ``os.access``: as root, ``os.access`` reports write
+    access even for a mode-denied directory, so a preflight built on it would
+    false-pass a root-owned environment and let the same tree fail with a raw
+    PermissionError mid-apply for every non-root publisher. Nothing is mutated
+    and nothing is opened — the probe is ``stat(2)`` metadata only (B01, P2
+    review v5).
+    """
+    try:
+        parent_stat = os.stat(parent)
+        source_stat = os.stat(source)
+    except OSError as exc:
+        if isinstance(exc, FileNotFoundError):
+            # The parent or the entry vanished between the existence probe
+            # and now: the same tolerance as a missing source (nothing to
+            # unlink).
+            return None
+        return "its parent directory's metadata cannot be read to verify removal permission"
+    if not stat.S_ISDIR(parent_stat.st_mode):
+        # A non-directory parent is rejected with its own precise message by
+        # the non-directory-ancestor preflight.
+        return None
+    effective_uid = os.geteuid()
+    if effective_uid == parent_stat.st_uid:
+        write_bit, search_bit = stat.S_IWUSR, stat.S_IXUSR
+    elif parent_stat.st_gid in (os.getegid(), *os.getgroups()):
+        write_bit, search_bit = stat.S_IWGRP, stat.S_IXGRP
+    else:
+        write_bit, search_bit = stat.S_IWOTH, stat.S_IXOTH
+    if not parent_stat.st_mode & write_bit or not parent_stat.st_mode & search_bit:
+        return "its parent directory's mode bits deny the effective user write or search access"
+    if parent_stat.st_mode & stat.S_ISVTX and effective_uid not in (
+        parent_stat.st_uid,
+        source_stat.st_uid,
+    ):
+        return "its parent directory's sticky bit denies the effective user removing the entry"
+    return None
+
+
 def _reject_occupied_target(
     root: Path,
     relative_path: str,
@@ -269,10 +318,12 @@ def _resolve_proposed_destinations(
       the recorded path of the proposed page's own title: a directory source
       (unremovable after the write), a special file (FIFO, socket, device —
       probed with a nonblocking ``stat`` so a FIFO source is never opened),
-      an unreadable file, or a file owned by a different page or untracked
-      (the Control File included) is rejected, so a move can never delete
-      content the proposal does not own; a MISSING source stays tolerated
-      (the move writes the target and removes nothing).
+      an unreadable file, a file whose parent directory denies the unlink
+      (the parent's mode bits and sticky bit are evaluated directly — never
+      ``os.access``, which false-passes as root), or a file owned by a
+      different page or untracked (the Control File included) is rejected, so
+      a move can never delete content the proposal does not own; a MISSING
+      source stays tolerated (the move writes the target and removes nothing).
 
     ``force_compound`` forces the compound branch for every proposed page:
     the public compound-revision writer (:func:`apply_compound_revision`) is
@@ -366,6 +417,28 @@ def _resolve_proposed_destinations(
                         f"or removed",
                         file=source_relative,
                     )
+                if source_relative != target_relative:
+                    # unlink(2) permission comes from the parent directory's
+                    # permission metadata, not from the source file, and
+                    # ``os.access`` false-passes as root — so the parent's
+                    # mode bits (and sticky bit) are evaluated directly (P2
+                    # review v5). A source whose parent cannot release it is
+                    # rejected BEFORE the target is written, so candidate
+                    # validation and live apply can never strand a partial
+                    # move behind a raw PermissionError. A self-move (source
+                    # == target) overwrites in place and never unlinks, so
+                    # it needs no removability.
+                    denial = _parent_denies_removal(source.parent, source)
+                    if denial is not None:
+                        raise DestinationConflict(
+                            f"Cannot move {title!r} from {source_relative}: the "
+                            f"move source cannot be removed because {denial}; "
+                            f"make the parent directory writable and searchable "
+                            f"for the publishing user (for example chmod u+wx "
+                            f"{Path(source_relative).parent.as_posix()}) before "
+                            f"publishing this move",
+                            file=source_relative,
+                        )
                 owner = title_by_path.get(source_relative)
                 if owner is not None and owner != title:
                     raise DestinationConflict(
@@ -517,9 +590,11 @@ def _write_destination(destination: _Destination, root: Path) -> Path:
     revision merges its resolution-time merge base (existing prior Sources
     are preserved and deduplicated, issue #79); a move unlinks its source
     only after the destination is written (issue #80) — that source was
-    verified removable (regular, readable) and owned by the proposed page's
-    title at resolution time, so the unlink can never remove an undeclared
-    file.
+    verified removable (regular, readable, with a parent directory whose
+    mode bits and sticky bit permit removing entries) and owned by the
+    proposed page's title at resolution time, so the unlink can never remove
+    an undeclared file or fail with a raw PermissionError after the target
+    landed.
     """
     page = destination.page
     target = root / destination.relative_path
