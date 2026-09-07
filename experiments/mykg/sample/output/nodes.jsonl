@@ -1,0 +1,3 @@
+{"id": "n_acme", "type": "Organization", "confidence": 0.93, "aliases": ["Acme Corp", "Acme"], "attributes": {"name": {"value": "Acme", "confidence": 0.9}, "founded": {"value": "2010", "confidence": 0.8}}, "source_files": ["corpus/acme-overview.md"]}
+{"id": "n_bob", "type": "Person", "confidence": 0.88, "aliases": ["Robert"], "attributes": {"name": {"value": "Bob Lee"}}, "source_files": ["corpus/team.md", "corpus/bio.md"]}
+{"id": "n_noname", "type": "Concept", "confidence": 0.5, "attributes": {"description": {"value": "an unnamed concept"}}}

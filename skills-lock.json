@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "skills": {
+    "domain-modeling": {
+      "source": "legout/skills",
+      "sourceType": "github",
+      "skillPath": "skills/workflow/domain-modeling/SKILL.md",
+      "computedHash": "4c6be7293021394cd0d46b215c80a9813d4fef98a2dc609f9be07d52758cffad"
+    },
+    "grilling": {
+      "source": "legout/skills",
+      "sourceType": "github",
+      "skillPath": "skills/workflow/grilling/SKILL.md",
+      "computedHash": "02b5b6a6ca422572edafe115fbe4a3bf1b2cec2d9ffa4057ff1cbd3b0a5f7333"
+    },
+    "make-release": {
+      "source": "legout/skills",
+      "sourceType": "github",
+      "skillPath": "skills/workflow/make-release/SKILL.md",
+      "computedHash": "49d258d5881fc3f3596a07e656025812bbaad9324036440def44ba5479adbe11"
+    },
+    "merge-worktree": {
+      "source": "legout/skills",
+      "sourceType": "github",
+      "skillPath": "skills/workflow/merge-worktree/SKILL.md",
+      "computedHash": "6572e11bab20c06a1f19b7ec37c6f50683d1dc63071b016c4461337b96bc3a99"
+    },
+    "orchestrate-implementation": {
+      "source": "legout/skills",
+      "sourceType": "github",
+      "skillPath": "skills/workflow/orchestrate-implementation/SKILL.md",
+      "computedHash": "593d3dba6796dac51ab338ceb8f64b524cec76655a84795c32f5eec286ab42a5"
+    },
+    "prototype-question": {
+      "source": "legout/skills",
+      "sourceType": "github",
+      "skillPath": "skills/workflow/prototype-question/SKILL.md",
+      "computedHash": "019af4e4800f5f5855278b2901546e73215277ff5fb7d736e2238e3ec5726a1b"
+    },
+    "research": {
+      "source": "legout/skills",
+      "sourceType": "github",
+      "skillPath": "skills/tools-and-research/research/SKILL.md",
+      "computedHash": "64730e70d8e8109407133bb713f8ffaf78215c101e5a629059b6f391f6f7be23"
+    },
+    "shape-design": {
+      "source": "legout/skills",
+      "sourceType": "github",
+      "skillPath": "skills/workflow/shape-design/SKILL.md",
+      "computedHash": "02eb8bbe3cd21ca508165e44c4c324c77174ae28c161645e0a7f94c7a0943cd3"
+    },
+    "systematic-debugging": {
+      "source": "legout/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/systematic-debugging/SKILL.md",
+      "computedHash": "145009794a3db1f990b596206bb19ef6250bade0732bc75e6867bbf208fceffa"
+    },
+    "verification-before-completion": {
+      "source": "legout/skills",
+      "sourceType": "github",
+      "skillPath": "skills/workflow/verification-before-completion/SKILL.md",
+      "computedHash": "acb67aad9f3c105c2d960efcd093d8bda5458369615050a308567e59c9138ffe"
+    },
+    "write-implementation-plan": {
+      "source": "legout/skills",
+      "sourceType": "github",
+      "skillPath": "skills/workflow/write-implementation-plan/SKILL.md",
+      "computedHash": "4050f96bb7aac31149fcb2c7a5a258516f3e6ce1f7e3296ff3e8f28d310171b9"
+    }
+  }
+}

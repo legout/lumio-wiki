@@ -1,0 +1,1337 @@
+{
+  "anydoc_version": "0.1.3",
+  "python": "3.14.0",
+  "platform": "Linux-6.17.0-1018-oracle-aarch64-with-glibc2.39",
+  "arch": "aarch64",
+  "warm_runs": 3,
+  "fixtures": [
+    {
+      "path": "anydoc-fixtures/book.epub",
+      "ext": ".epub",
+      "bytes": 6167,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 1.56,
+        "warm_ms": 0.919,
+        "peak_bytes": 20290,
+        "structure": {
+          "chars": 769,
+          "lines": 41,
+          "headings": 4,
+          "table_rows": 4,
+          "list_items": 4,
+          "links": 4,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "epub",
+        "assets": [
+          {
+            "media_type": "image/png",
+            "origin_part": "EPUB/media/file0.png",
+            "bytes": 70
+          }
+        ],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "# Fixture Book\n\n# **Fixture Book**\n\nanydoc tests\n\n<a id=\"epub-text-ch001-xhtml-chapter-one\"></a>\n\n# **Chapter One**\n\nOpening paragraph with **bold**, *italic*, and `code` runs.\n\nA list of things:\n\n1. "
+      }
+    },
+    {
+      "path": "anydoc-fixtures/corrupt-styles--skips.docx",
+      "ext": ".docx",
+      "bytes": 8874,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 3.111,
+        "warm_ms": 2.421,
+        "peak_bytes": 35377,
+        "structure": {
+          "chars": 1257,
+          "lines": 78,
+          "headings": 0,
+          "table_rows": 5,
+          "list_items": 12,
+          "links": 3,
+          "images": 0,
+          "footnote_refs": 4
+        },
+        "detected_format": "docx",
+        "assets": [
+          {
+            "media_type": "image/png",
+            "origin_part": "word/media/image1.png",
+            "bytes": 70
+          }
+        ],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "Fixture Document\n\nPlain paragraph with bold, italic, and struck runs.\n\nStyle-bold paragraph with a NotBold-styled span inside.\n\nLists\n\n1. First numbered\n\n2. Second numbered\n\n   - a) Alpha sub one\n\n   "
+      }
+    },
+    {
+      "path": "anydoc-fixtures/deepxml--errors.docx",
+      "ext": ".docx",
+      "bytes": 1257,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": false,
+        "error": "ConvertError: resource limit exceeded (max_xml_depth): element nesting exceeds 256",
+        "cold_ms": 1.159,
+        "warm_ms": null,
+        "peak_bytes": 1677,
+        "structure": null,
+        "detected_format": "docx",
+        "assets": null,
+        "asset_error": null,
+        "deterministic": null,
+        "md_preview": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/empty--errors.docx",
+      "ext": ".docx",
+      "bytes": 0,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": false,
+        "error": "ConvertError: unsupported input: unrecognized file content: name the format explicitly",
+        "cold_ms": 0.08,
+        "warm_ms": null,
+        "peak_bytes": 1640,
+        "structure": null,
+        "detected_format": null,
+        "assets": null,
+        "asset_error": null,
+        "deterministic": null,
+        "md_preview": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/encrypted--errors.odt",
+      "ext": ".odt",
+      "bytes": 658,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": false,
+        "error": "ConvertError: document is encrypted",
+        "cold_ms": 0.305,
+        "warm_ms": null,
+        "peak_bytes": 1582,
+        "structure": null,
+        "detected_format": "odt",
+        "assets": null,
+        "asset_error": null,
+        "deterministic": null,
+        "md_preview": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/encrypted--errors.pdf",
+      "ext": ".pdf",
+      "bytes": 87008,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": false,
+        "error": "ConvertError: document is encrypted",
+        "cold_ms": 1.088,
+        "warm_ms": null,
+        "peak_bytes": 1582,
+        "structure": null,
+        "detected_format": "pdf",
+        "assets": null,
+        "asset_error": null,
+        "deterministic": null,
+        "md_preview": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/handmade-features.epub",
+      "ext": ".epub",
+      "bytes": 1957,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 0.872,
+        "warm_ms": 0.396,
+        "peak_bytes": 20334,
+        "structure": {
+          "chars": 635,
+          "lines": 43,
+          "headings": 3,
+          "table_rows": 5,
+          "list_items": 12,
+          "links": 4,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "epub",
+        "assets": [],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "# Feature Book\n\n<a id=\"oebps-ch1-xhtml\"></a>\n\n# Feature Chapter\n\n**Inline-styled bold paragraph.**\n\n~~Struck via class.~~\n\n|  |  |\n| --- | --- |\n| Tall | B1 |\n|  | B2 |\n| A3 | B3 |\n\n3. three\n\n2. two\n\n"
+      }
+    },
+    {
+      "path": "anydoc-fixtures/handmade-links.pptx",
+      "ext": ".pptx",
+      "bytes": 2508,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 0.516,
+        "warm_ms": 0.339,
+        "peak_bytes": 3587,
+        "structure": {
+          "chars": 120,
+          "lines": 8,
+          "headings": 0,
+          "table_rows": 0,
+          "list_items": 0,
+          "links": 2,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "pptx",
+        "assets": [],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "[Jump to the second slide](#slide-2)\n\n[External link](https://example.com/)\n\n<a id=\"slide-2\"></a>\n\nSecond slide content\n"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": false,
+        "error": "FileConversionException: File conversion failed after 1 attempts:\n - PptxConverter threw MissingDependencyException with message: PptxConverter recognized the input as a potential .pptx file, but the dependencies needed to read .pptx files have not been installed. To resolve this error, include the optional dependency [pptx] or [all] when installing MarkItDown. For example:\n\n* pip install 'markitdown[pptx]'\n* pip install 'markitdown[all]'\n* pip install 'markitdown[pptx, ...]'\n* etc.\n",
+        "cold_ms": 1162.769,
+        "warm_ms": null,
+        "peak_bytes": 20649832,
+        "structure": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/handmade-merge.rtf",
+      "ext": ".rtf",
+      "bytes": 475,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 0.606,
+        "warm_ms": 0.181,
+        "peak_bytes": 8028,
+        "structure": {
+          "chars": 203,
+          "lines": 11,
+          "headings": 1,
+          "table_rows": 6,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "rtf",
+        "assets": [],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "## ***Inherited heading***\n\nPlain paragraph between tables.\n\n|  |  |  |  |\n| --- | --- | --- | --- |\n| A1 | B1 |  | C1 |\n|  | Wide B2 |  |  |\n| A3 wide |  | B3 wide |  |\n| stray continuation |  | X | "
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": true,
+        "error": null,
+        "cold_ms": 46.739,
+        "warm_ms": 62.388,
+        "peak_bytes": 362483,
+        "structure": {
+          "chars": 475,
+          "lines": 10,
+          "headings": 0,
+          "table_rows": 0,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        }
+      }
+    },
+    {
+      "path": "anydoc-fixtures/handmade-merged.xlsx",
+      "ext": ".xlsx",
+      "bytes": 1686,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 1.042,
+        "warm_ms": 0.286,
+        "peak_bytes": 5609,
+        "structure": {
+          "chars": 94,
+          "lines": 6,
+          "headings": 0,
+          "table_rows": 5,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "xlsx",
+        "assets": [],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "|  |  |  |\n| --- | --- | --- |\n| Merged across |  | padded |\n| tall | b2 | 3.5 |\n|  | b3 |  |\n"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": false,
+        "error": "FileConversionException: File conversion failed after 1 attempts:\n - XlsxConverter threw MissingDependencyException with message: XlsxConverter recognized the input as a potential .xlsx file, but the dependencies needed to read .xlsx files have not been installed. To resolve this error, include the optional dependency [xlsx] or [all] when installing MarkItDown. For example:\n\n* pip install 'markitdown[xlsx]'\n* pip install 'markitdown[all]'\n* pip install 'markitdown[xlsx, ...]'\n* etc.\n",
+        "cold_ms": 47.015,
+        "warm_ms": null,
+        "peak_bytes": 291403,
+        "structure": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/handmade-quoted.csv",
+      "ext": ".csv",
+      "bytes": 66,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 0.705,
+        "warm_ms": 0.146,
+        "peak_bytes": 984,
+        "structure": {
+          "chars": 111,
+          "lines": 6,
+          "headings": 0,
+          "table_rows": 5,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": null,
+        "assets": null,
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "|  |  |  |\n| --- | --- | --- |\n| name | desc | qty |\n| padded | comma, inside | 3 |\n| plain | multi line | 4 |\n"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": true,
+        "error": null,
+        "cold_ms": 38.367,
+        "warm_ms": 58.864,
+        "peak_bytes": 291171,
+        "structure": {
+          "chars": 103,
+          "lines": 5,
+          "headings": 0,
+          "table_rows": 3,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        }
+      }
+    },
+    {
+      "path": "anydoc-fixtures/handmade-rich.docx",
+      "ext": ".docx",
+      "bytes": 3268,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 1.47,
+        "warm_ms": 0.7,
+        "peak_bytes": 10282,
+        "structure": {
+          "chars": 197,
+          "lines": 19,
+          "headings": 0,
+          "table_rows": 4,
+          "list_items": 3,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "docx",
+        "assets": [
+          {
+            "media_type": "image/png",
+            "origin_part": "word/media/dot.png",
+            "bytes": 70
+          },
+          {
+            "media_type": "application/vnd.ms-ole-object",
+            "origin_part": "word/embeddings/oleObject1.bin",
+            "bytes": 80
+          }
+        ],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "Rich objects follow.\n\n**Quarterly Widgets**\n\n| Quarter | Widgets |\n| --- | --- |\n| Q1 | 10 |\n| Q2 | 14 |\n\n- Plan\n- Build\n- Ship\n\ntiny dot image\n\nEmbedded object: Excel.Sheet.12\n\nAfter the objects.\n"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": true,
+        "error": null,
+        "cold_ms": 75.212,
+        "warm_ms": 54.597,
+        "peak_bytes": 540190,
+        "structure": {
+          "chars": 85,
+          "lines": 5,
+          "headings": 0,
+          "table_rows": 0,
+          "list_items": 0,
+          "links": 1,
+          "images": 1,
+          "footnote_refs": 0
+        }
+      }
+    },
+    {
+      "path": "anydoc-fixtures/handmade-tables.docx",
+      "ext": ".docx",
+      "bytes": 1348,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 1.095,
+        "warm_ms": 0.286,
+        "peak_bytes": 5630,
+        "structure": {
+          "chars": 115,
+          "lines": 7,
+          "headings": 0,
+          "table_rows": 4,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "docx",
+        "assets": [],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "| Head A | Head B | Head C |\n| --- | --- | --- |\n|  |  |  |\n| legacy start<br>legacy cont |  |  |\n\nafter the table\n"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": true,
+        "error": null,
+        "cold_ms": 77.238,
+        "warm_ms": 69.778,
+        "peak_bytes": 416982,
+        "structure": {
+          "chars": 98,
+          "lines": 6,
+          "headings": 0,
+          "table_rows": 3,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        }
+      }
+    },
+    {
+      "path": "anydoc-fixtures/handmade-utf16.csv",
+      "ext": ".csv",
+      "bytes": 62,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 0.797,
+        "warm_ms": 0.15,
+        "peak_bytes": 1085,
+        "structure": {
+          "chars": 70,
+          "lines": 6,
+          "headings": 0,
+          "table_rows": 5,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": null,
+        "assets": null,
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "|  |  |\n| --- | --- |\n| col1 | col2 |\n| na\u00efve | caf\u00e9 |\n| \u0391\u03b8\u03ae\u03bd\u03b1 | \u6570\u636e |\n"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": true,
+        "error": null,
+        "cold_ms": 47.648,
+        "warm_ms": 50.85,
+        "peak_bytes": 359502,
+        "structure": {
+          "chars": 61,
+          "lines": 4,
+          "headings": 0,
+          "table_rows": 4,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        }
+      }
+    },
+    {
+      "path": "anydoc-fixtures/hugerepeat--errors.ods",
+      "ext": ".ods",
+      "bytes": 483,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": false,
+        "error": "ConvertError: resource limit exceeded (max_expansion): table repeat expansion exceeds the content budget",
+        "cold_ms": 0.702,
+        "warm_ms": null,
+        "peak_bytes": 1720,
+        "structure": null,
+        "detected_format": "ods",
+        "assets": null,
+        "asset_error": null,
+        "deterministic": null,
+        "md_preview": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/hugespan--errors.ods",
+      "ext": ".ods",
+      "bytes": 465,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": false,
+        "error": "ConvertError: resource limit exceeded (max_expansion): table repeat expansion exceeds the content budget",
+        "cold_ms": 0.28,
+        "warm_ms": null,
+        "peak_bytes": 1720,
+        "structure": null,
+        "detected_format": "ods",
+        "assets": null,
+        "asset_error": null,
+        "deterministic": null,
+        "md_preview": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/imagebomb--errors.docx",
+      "ext": ".docx",
+      "bytes": 197082,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": false,
+        "error": "ConvertError: resource limit exceeded (max_entry_bytes): word/media/image1.png declares 201326592 decompressed bytes",
+        "cold_ms": 1.844,
+        "warm_ms": null,
+        "peak_bytes": 1745,
+        "structure": null,
+        "detected_format": "docx",
+        "assets": null,
+        "asset_error": null,
+        "deterministic": null,
+        "md_preview": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/mislabeled-docx-as-pdf.pdf",
+      "ext": ".pdf",
+      "bytes": 10159,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 4.78,
+        "warm_ms": 3.74,
+        "peak_bytes": 35625,
+        "structure": {
+          "chars": 1319,
+          "lines": 78,
+          "headings": 7,
+          "table_rows": 5,
+          "list_items": 12,
+          "links": 3,
+          "images": 0,
+          "footnote_refs": 4
+        },
+        "detected_format": "docx",
+        "assets": [
+          {
+            "media_type": "image/png",
+            "origin_part": "word/media/image1.png",
+            "bytes": 70
+          }
+        ],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "# **Fixture Document**\n\nPlain paragraph with **bold**, *italic*, and ~~struck~~ runs.\n\n**Style-bold paragraph with a NotBold-styled span inside.**\n\n## **Lists**\n\n1. First numbered\n\n2. Second numbered\n"
+      },
+      "baseline": {
+        "route": "liteparse",
+        "ok": false,
+        "error": "ParseError: conversion error: LibreOffice is not installed. Please install LibreOffice to convert office documents. On macOS: brew install --cask libreoffice, On Ubuntu: apt-get install libreoffice, On Windows: choco install libreoffice-fresh",
+        "cold_ms": 80.064,
+        "warm_ms": null,
+        "peak_bytes": 901034,
+        "structure": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/mismatched--recovers.docx",
+      "ext": ".docx",
+      "bytes": 1104,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 0.41,
+        "warm_ms": 0.224,
+        "peak_bytes": 1747,
+        "structure": {
+          "chars": 16,
+          "lines": 2,
+          "headings": 0,
+          "table_rows": 0,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "docx",
+        "assets": [],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "Mismatched tags\n"
+      }
+    },
+    {
+      "path": "anydoc-fixtures/pres.odp",
+      "ext": ".odp",
+      "bytes": 19065,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 4.361,
+        "warm_ms": 3.839,
+        "peak_bytes": 12776,
+        "structure": {
+          "chars": 280,
+          "lines": 22,
+          "headings": 0,
+          "table_rows": 4,
+          "list_items": 3,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "odp",
+        "assets": [
+          {
+            "media_type": "application/octet-stream",
+            "origin_part": "Pictures/TablePreview1.svm",
+            "bytes": 2354
+          }
+        ],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "Deck Title Slide\n\n- Top level point\n\n- - Nested detail\n- Second point with emphasis\n\n> Speaker note for the intro slide.\n\nNumbers Slide\n\n|  |  |\n| --- | --- |\n| Region | Total |\n| North | 42 |\n\nGroupe"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": false,
+        "error": "UnsupportedFormatException: Could not convert stream to Markdown. No converter attempted a conversion, suggesting that the filetype is simply not supported.",
+        "cold_ms": 37.82,
+        "warm_ms": null,
+        "peak_bytes": 289787,
+        "structure": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/pres.ppt",
+      "ext": ".ppt",
+      "bytes": 464384,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 0.923,
+        "warm_ms": 0.485,
+        "peak_bytes": 8067,
+        "structure": {
+          "chars": 250,
+          "lines": 26,
+          "headings": 0,
+          "table_rows": 0,
+          "list_items": 3,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "ppt",
+        "assets": [],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "Deck Title Slide\n\n- Top level point\n\n  - Nested detail\n\n- Second point with emphasis\n\n> Speaker note for the intro slide.\n\nNumbers Slide\n\nRegion\n\nTotal\n\nNorth\n\n42\n\nGrouped shapes below.\n\nInside a grou"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": false,
+        "error": "UnsupportedFormatException: Could not convert stream to Markdown. No converter attempted a conversion, suggesting that the filetype is simply not supported.",
+        "cold_ms": 36.533,
+        "warm_ms": null,
+        "peak_bytes": 289771,
+        "structure": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/pres.pptx",
+      "ext": ".pptx",
+      "bytes": 15734,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 3.523,
+        "warm_ms": 2.866,
+        "peak_bytes": 9156,
+        "structure": {
+          "chars": 281,
+          "lines": 23,
+          "headings": 0,
+          "table_rows": 4,
+          "list_items": 3,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "pptx",
+        "assets": [],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "Deck Title Slide\n\n- Top level point\n\n  - Nested detail\n\n- Second point with emphasis\n\n> Speaker note for the intro slide.\n\nNumbers Slide\n\n|  |  |\n| --- | --- |\n| Region | Total |\n| North | 42 |\n\nGroup"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": false,
+        "error": "FileConversionException: File conversion failed after 1 attempts:\n - PptxConverter threw MissingDependencyException with message: PptxConverter recognized the input as a potential .pptx file, but the dependencies needed to read .pptx files have not been installed. To resolve this error, include the optional dependency [pptx] or [all] when installing MarkItDown. For example:\n\n* pip install 'markitdown[pptx]'\n* pip install 'markitdown[all]'\n* pip install 'markitdown[pptx, ...]'\n* etc.\n",
+        "cold_ms": 44.365,
+        "warm_ms": null,
+        "peak_bytes": 289755,
+        "structure": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/sheet.csv",
+      "ext": ".csv",
+      "bytes": 210,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 0.638,
+        "warm_ms": 0.167,
+        "peak_bytes": 1178,
+        "structure": {
+          "chars": 305,
+          "lines": 11,
+          "headings": 0,
+          "table_rows": 10,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": null,
+        "assets": null,
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "|  |  |  |\n| --- | --- | --- |\n| Kind | Value | Note |\n| Percent | 15.5% | fifteen and a half |\n| Currency | 1234.5 | dollars |\n| Thousands | 9876543 | grouped |\n| Date | 2026-03-15 | ides of March |\n"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": true,
+        "error": null,
+        "cold_ms": 40.893,
+        "warm_ms": 70.157,
+        "peak_bytes": 289739,
+        "structure": {
+          "chars": 293,
+          "lines": 9,
+          "headings": 0,
+          "table_rows": 9,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        }
+      }
+    },
+    {
+      "path": "anydoc-fixtures/sheet.ods",
+      "ext": ".ods",
+      "bytes": 16142,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 2.557,
+        "warm_ms": 1.57,
+        "peak_bytes": 20240,
+        "structure": {
+          "chars": 407,
+          "lines": 20,
+          "headings": 2,
+          "table_rows": 14,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "ods",
+        "assets": [],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "## Values\n\n|  |  |  |\n| --- | --- | --- |\n| Kind | Value | Note |\n| Percent | 15.5% | fifteen and a half |\n| Currency | $1,234.50 | dollars |\n| Thousands | 9,876,543 | grouped |\n| Date | 2026-03-15 | "
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": false,
+        "error": "UnsupportedFormatException: Could not convert stream to Markdown. No converter attempted a conversion, suggesting that the filetype is simply not supported.",
+        "cold_ms": 45.28,
+        "warm_ms": null,
+        "peak_bytes": 289707,
+        "structure": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/sheet.xls",
+      "ext": ".xls",
+      "bytes": 7168,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 0.908,
+        "warm_ms": 0.197,
+        "peak_bytes": 20237,
+        "structure": {
+          "chars": 402,
+          "lines": 20,
+          "headings": 2,
+          "table_rows": 14,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "xlsx",
+        "assets": [],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "## Values\n\n|  |  |  |\n| --- | --- | --- |\n| Kind | Value | Note |\n| Percent | 0.155 | fifteen and a half |\n| Currency | 1234.5 | dollars |\n| Thousands | 9876543 | grouped |\n| Date | 2026-03-15 | ides "
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": false,
+        "error": "FileConversionException: File conversion failed after 1 attempts:\n - XlsConverter threw MissingDependencyException with message: XlsConverter recognized the input as a potential .xls file, but the dependencies needed to read .xls files have not been installed. To resolve this error, include the optional dependency [xls] or [all] when installing MarkItDown. For example:\n\n* pip install 'markitdown[xls]'\n* pip install 'markitdown[all]'\n* pip install 'markitdown[xls, ...]'\n* etc.\n",
+        "cold_ms": 66.207,
+        "warm_ms": null,
+        "peak_bytes": 289707,
+        "structure": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/sheet.xlsx",
+      "ext": ".xlsx",
+      "bytes": 7106,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 1.49,
+        "warm_ms": 0.753,
+        "peak_bytes": 20237,
+        "structure": {
+          "chars": 402,
+          "lines": 20,
+          "headings": 2,
+          "table_rows": 14,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "xlsx",
+        "assets": [],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "## Values\n\n|  |  |  |\n| --- | --- | --- |\n| Kind | Value | Note |\n| Percent | 0.155 | fifteen and a half |\n| Currency | 1234.5 | dollars |\n| Thousands | 9876543 | grouped |\n| Date | 2026-03-15 | ides "
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": false,
+        "error": "FileConversionException: File conversion failed after 1 attempts:\n - XlsxConverter threw MissingDependencyException with message: XlsxConverter recognized the input as a potential .xlsx file, but the dependencies needed to read .xlsx files have not been installed. To resolve this error, include the optional dependency [xlsx] or [all] when installing MarkItDown. For example:\n\n* pip install 'markitdown[xlsx]'\n* pip install 'markitdown[all]'\n* pip install 'markitdown[xlsx, ...]'\n* etc.\n",
+        "cold_ms": 42.867,
+        "warm_ms": null,
+        "peak_bytes": 289707,
+        "structure": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/text.doc",
+      "ext": ".doc",
+      "bytes": 20480,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 1.531,
+        "warm_ms": 0.741,
+        "peak_bytes": 34017,
+        "structure": {
+          "chars": 1253,
+          "lines": 76,
+          "headings": 7,
+          "table_rows": 5,
+          "list_items": 12,
+          "links": 2,
+          "images": 0,
+          "footnote_refs": 4
+        },
+        "detected_format": "doc",
+        "assets": [
+          {
+            "media_type": "image/png",
+            "origin_part": "data/pic520.png",
+            "bytes": 70
+          }
+        ],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "# **Fixture Document**\n\nPlain paragraph with **bold**, *italic*, and ~~struck~~ runs.\n\n**Style-bold paragraph with a** NotBold-styled span **inside.**\n\n## **Lists**\n\n1. First numbered\n\n2. Second numbe"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": false,
+        "error": "UnsupportedFormatException: Could not convert stream to Markdown. No converter attempted a conversion, suggesting that the filetype is simply not supported.",
+        "cold_ms": 58.152,
+        "warm_ms": null,
+        "peak_bytes": 289707,
+        "structure": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/text.docx",
+      "ext": ".docx",
+      "bytes": 10159,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 5.022,
+        "warm_ms": 3.855,
+        "peak_bytes": 35625,
+        "structure": {
+          "chars": 1319,
+          "lines": 78,
+          "headings": 7,
+          "table_rows": 5,
+          "list_items": 12,
+          "links": 3,
+          "images": 0,
+          "footnote_refs": 4
+        },
+        "detected_format": "docx",
+        "assets": [
+          {
+            "media_type": "image/png",
+            "origin_part": "word/media/image1.png",
+            "bytes": 70
+          }
+        ],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "# **Fixture Document**\n\nPlain paragraph with **bold**, *italic*, and ~~struck~~ runs.\n\n**Style-bold paragraph with a NotBold-styled span inside.**\n\n## **Lists**\n\n1. First numbered\n\n2. Second numbered\n"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": true,
+        "error": null,
+        "cold_ms": 268.988,
+        "warm_ms": 89.369,
+        "peak_bytes": 2530218,
+        "structure": {
+          "chars": 1317,
+          "lines": 67,
+          "headings": 7,
+          "table_rows": 5,
+          "list_items": 14,
+          "links": 6,
+          "images": 1,
+          "footnote_refs": 0
+        }
+      }
+    },
+    {
+      "path": "anydoc-fixtures/text.odt",
+      "ext": ".odt",
+      "bytes": 25489,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 6.911,
+        "warm_ms": 2.521,
+        "peak_bytes": 35031,
+        "structure": {
+          "chars": 1325,
+          "lines": 77,
+          "headings": 7,
+          "table_rows": 5,
+          "list_items": 12,
+          "links": 3,
+          "images": 0,
+          "footnote_refs": 4
+        },
+        "detected_format": "odt",
+        "assets": [
+          {
+            "media_type": "image/png",
+            "origin_part": "Pictures/100000010000000100000001C4EE90A9.png",
+            "bytes": 70
+          }
+        ],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "# **Fixture Document**\n\nPlain paragraph with **bold**, *italic*, and ~~struck~~ runs.\n\n**Style-bold paragraph with a** NotBold-styled span **inside.**\n\n## **Lists**\n\n1. First numbered\n\n2. Second numbe"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": false,
+        "error": "UnsupportedFormatException: Could not convert stream to Markdown. No converter attempted a conversion, suggesting that the filetype is simply not supported.",
+        "cold_ms": 52.911,
+        "warm_ms": null,
+        "peak_bytes": 289707,
+        "structure": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/text.pdf",
+      "ext": ".pdf",
+      "bytes": 90060,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 12.0,
+        "warm_ms": 6.019,
+        "peak_bytes": 7288,
+        "structure": {
+          "chars": 1061,
+          "lines": 42,
+          "headings": 8,
+          "table_rows": 0,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "pdf",
+        "assets": null,
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "# Fixture Document\n\nPlain paragraph with **bold**, *italic*, and struck runs. **Style-bold paragraph with a** NotBold-styled span **inside.**\n\n## Lists\n\n1.First numbered\n2.Second numbered\na)Alpha sub "
+      },
+      "baseline": {
+        "route": "liteparse",
+        "ok": true,
+        "error": null,
+        "cold_ms": 1690.41,
+        "warm_ms": 1815.612,
+        "peak_bytes": 50527,
+        "structure": {
+          "chars": 1180,
+          "lines": 51,
+          "headings": 0,
+          "table_rows": 0,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        }
+      }
+    },
+    {
+      "path": "anydoc-fixtures/text.rtf",
+      "ext": ".rtf",
+      "bytes": 20136,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 2.963,
+        "warm_ms": 2.204,
+        "peak_bytes": 38256,
+        "structure": {
+          "chars": 1324,
+          "lines": 77,
+          "headings": 7,
+          "table_rows": 5,
+          "list_items": 12,
+          "links": 3,
+          "images": 0,
+          "footnote_refs": 4
+        },
+        "detected_format": "rtf",
+        "assets": [
+          {
+            "media_type": "image/png",
+            "origin_part": "pict/0.png",
+            "bytes": 70
+          }
+        ],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "# **Fixture Document**\n\nPlain paragraph with **bold**, *italic*, and ~~struck~~ runs.\n\n**Style-bold paragraph with a** NotBold-styled span **inside.**\n\n## **Lists**\n\n1. First numbered\n\n2. Second numbe"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": true,
+        "error": null,
+        "cold_ms": 67.27,
+        "warm_ms": 74.66,
+        "peak_bytes": 289707,
+        "structure": {
+          "chars": 20136,
+          "lines": 177,
+          "headings": 0,
+          "table_rows": 0,
+          "list_items": 0,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        }
+      }
+    },
+    {
+      "path": "anydoc-fixtures/truncated--errors.docx",
+      "ext": ".docx",
+      "bytes": 6095,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": false,
+        "error": "ConvertError: unsupported input: unrecognized file content: name the format explicitly",
+        "cold_ms": 0.509,
+        "warm_ms": null,
+        "peak_bytes": 1640,
+        "structure": null,
+        "detected_format": null,
+        "assets": null,
+        "asset_error": null,
+        "deterministic": null,
+        "md_preview": null
+      }
+    },
+    {
+      "path": "anydoc-fixtures/unbalanced--recovers.rtf",
+      "ext": ".rtf",
+      "bytes": 1391,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 0.614,
+        "warm_ms": 0.232,
+        "peak_bytes": 12816,
+        "structure": {
+          "chars": 347,
+          "lines": 23,
+          "headings": 1,
+          "table_rows": 4,
+          "list_items": 5,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "rtf",
+        "assets": [],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "# **Heading via style**\n\nBefore the binary blob.\n\nAfter the binary blob: braces stay balanced.\n\n- iv. Roman four via list table\n- v. Roman five\n\n- x. Roman ten via start override\n- xi. Roman eleven\n\n7"
+      }
+    },
+    {
+      "path": "anydoc-fixtures/zipbomb--errors.docx",
+      "ext": ".docx",
+      "bytes": 196603,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": false,
+        "error": "ConvertError: resource limit exceeded (max_entry_bytes): word/document.xml declares 201326759 decompressed bytes",
+        "cold_ms": 3.305,
+        "warm_ms": null,
+        "peak_bytes": 1737,
+        "structure": null,
+        "detected_format": "docx",
+        "assets": null,
+        "asset_error": null,
+        "deterministic": null,
+        "md_preview": null
+      }
+    },
+    {
+      "path": "real-world/2025-impact-report.pdf",
+      "ext": ".pdf",
+      "bytes": 3767,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 1.955,
+        "warm_ms": 2.047,
+        "peak_bytes": 5218,
+        "structure": {
+          "chars": 2120,
+          "lines": 34,
+          "headings": 7,
+          "table_rows": 8,
+          "list_items": 1,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "pdf",
+        "assets": null,
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "# Atlas Heatworks 2025 Impact Report\n\n## Reporting period: 1 January\u201331 December 2025 \u00b7 Issued 20 March 2026\n\nFictional demonstration document. Figures are internally generated estimates and are not i"
+      },
+      "baseline": {
+        "route": "liteparse",
+        "ok": true,
+        "error": null,
+        "cold_ms": 3400.046,
+        "warm_ms": 3457.686,
+        "peak_bytes": 46720,
+        "structure": {
+          "chars": 2255,
+          "lines": 41,
+          "headings": 0,
+          "table_rows": 0,
+          "list_items": 1,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        }
+      }
+    },
+    {
+      "path": "real-world/installation-handbook.docx",
+      "ext": ".docx",
+      "bytes": 38263,
+      "anydoc_supported": true,
+      "anydoc": {
+        "ok": true,
+        "error": null,
+        "cold_ms": 26.173,
+        "warm_ms": 23.755,
+        "peak_bytes": 27993,
+        "structure": {
+          "chars": 2862,
+          "lines": 55,
+          "headings": 8,
+          "table_rows": 7,
+          "list_items": 16,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        },
+        "detected_format": "docx",
+        "assets": [],
+        "asset_error": null,
+        "deterministic": true,
+        "md_preview": "# Atlas Heatworks Installation Handbook\n\nControlled document IH-4.1 \u00b7 Effective 10 February 2026\n\nApplies to Aster 8 and Aster 12 installations. Fictional demonstration document.\n\n# **1. Responsibilit"
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": true,
+        "error": null,
+        "cold_ms": 923.017,
+        "warm_ms": 383.345,
+        "peak_bytes": 18343844,
+        "structure": {
+          "chars": 2831,
+          "lines": 54,
+          "headings": 7,
+          "table_rows": 7,
+          "list_items": 16,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        }
+      }
+    },
+    {
+      "path": "real-world/product-catalog.html",
+      "ext": ".html",
+      "bytes": 2382,
+      "anydoc_supported": false,
+      "anydoc": {
+        "ok": false,
+        "error": "ConvertError: unsupported input: unrecognized file content: name the format explicitly",
+        "cold_ms": 0.528,
+        "warm_ms": null,
+        "peak_bytes": 1640,
+        "structure": null,
+        "detected_format": null,
+        "assets": null,
+        "asset_error": null,
+        "deterministic": null,
+        "md_preview": null
+      },
+      "baseline": {
+        "route": "markitdown",
+        "ok": true,
+        "error": null,
+        "cold_ms": 185.205,
+        "warm_ms": 74.959,
+        "peak_bytes": 337950,
+        "structure": {
+          "chars": 1490,
+          "lines": 45,
+          "headings": 4,
+          "table_rows": 0,
+          "list_items": 10,
+          "links": 0,
+          "images": 0,
+          "footnote_refs": 0
+        }
+      }
+    }
+  ],
+  "notes": [],
+  "network_audit": {
+    "command": "strace -f -e trace=network -o <trace> python -c 'import anydoc; ... convert one fixture of each kind ...'",
+    "strace_available": true,
+    "outbound_syscalls": 0,
+    "child_returncode": 0,
+    "total_trace_lines": 1
+  }
+}

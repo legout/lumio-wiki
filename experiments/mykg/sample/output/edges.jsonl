@@ -1,0 +1,2 @@
+{"id": "e1", "from": "n_bob", "to": "n_acme", "type": "works_for", "confidence": 0.82, "method": "extracted", "source_files": ["corpus/team.md"]}
+{"id": "e2", "from": "n_acme", "to": "n_noname", "type": "related_to", "confidence": 0.4, "method": "extracted", "source_files": ["corpus/acme-overview.md"]}

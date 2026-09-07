@@ -1,0 +1,7 @@
+{
+  "concepts": [
+    {"type": "Organization", "parent": null},
+    {"type": "Person", "parent": null},
+    {"type": "Concept", "parent": null}
+  ]
+}
