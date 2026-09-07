@@ -1,6 +1,6 @@
 # 02 — Publication and validation integrity
 
-**Proposed; unexecuted.** Goal: prevent silent canonical data loss and stale
+**P1 implemented; P2–P5 proposed and unexecuted.** Goal: prevent silent canonical data loss and stale
 publication while preserving proposal-first local maintenance.
 Sources/requirements: [owner decisions and B01–B07](README.md#finding-to-task-map),
 [PRD aggregation](../prd/0002-core-sdk.md),
@@ -16,7 +16,7 @@ no alternate CLI mutation implementation. Global checks: [README](README.md#glob
 
 ## P1
 
-- [ ] **Aggregate Claim diagnostics instead of losing assertions (B06/B07).**
+- [x] **Aggregate Claim diagnostics instead of losing assertions (B06/B07).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/knowledge_base.py`;
   `packages/lumio-wiki/tests/test_entity_claims.py`;
   `packages/lumio-wiki/tests/test_qa_validation_report.py`.
@@ -25,9 +25,10 @@ no alternate CLI mutation implementation. Global checks: [README](README.md#glob
   common loader and publication validation. Prerequisite: retained test floor.
   Propagate parser issues once, without reparsing Claims in a second validator.
   Malformed list/entry/predicate/evidence structures cannot vanish into a valid
-  report. Nonnumeric confidence becomes an issue, not an uncaught conversion
-  error. Reject mapping/list literal values outside string/number/boolean kinds
-  and zero/negative/reversed/out-of-body anchors; distinguish `None` from zero.
+  report. Nonnumeric or overflowing confidence becomes an issue, not an uncaught
+  conversion error. Reject mapping/list/date/datetime literal values outside
+  string/number/boolean kinds, non-string predicate/section scalars, and
+  zero/negative/reversed/out-of-body anchors; distinguish `None` from zero.
   Valid Claims still load, lifecycle rules still apply and multiple invalid
   pages contribute diagnostics to the same report.
   **Obligation:** `new-test`; surviving ontology tests miss these parser branches.
@@ -46,6 +47,15 @@ no alternate CLI mutation implementation. Global checks: [README](README.md#glob
 
   **Done:** new nodes first expose acceptance/crash, then all pass; the public
   aggregate report blocks candidate publication without hiding authored errors.
+  **Evidence:** integrated locally in `eae343a`; seven focused regressions and
+  the two-file validation suite pass, followed by `1493 passed, 9 skipped` with
+  four workers. Repository-wide Ruff passes. The seven regressions are
+  `test_malformed_claims_keep_structural_diagnostics`,
+  `test_invalid_claim_confidence_is_an_aggregated_issue`,
+  `test_container_literal_is_blocked`, `test_zero_evidence_line_is_blocked`,
+  `test_confidence_overflow_is_an_aggregated_issue`,
+  `test_evidence_lines_on_empty_body_are_out_of_bounds`, and
+  `test_non_string_claim_scalars_are_blocked`.
 
 ## P2
 

@@ -1,9 +1,10 @@
 # Library stabilization and simplification
 
-Status: **plans 02–05 are proposed, not approved for execution**. Only the
-[test reduction](01-test-retention.md) is implemented here. No production defect
-is fixed by this batch. Audit revision: `9712f6fd51ac4381a6ca4fc513e2546355fba0d0`;
-implementation base: `67b45ab4ac114d674ec900c7f17b171eae5e92fa`.
+Status: **Plan 01 and Plan 02 / P1 are implemented**. Plan 02 / P2–P5 and
+Plans 03–05 remain proposed and require separate approval. The P1 integration
+is recorded in `eae343a`; no other planned production defect is fixed here.
+Audit revision: `9712f6fd51ac4381a6ca4fc513e2546355fba0d0`; implementation base:
+`67b45ab4ac114d674ec900c7f17b171eae5e92fa`.
 
 ## Owner decisions and authority
 
@@ -24,9 +25,10 @@ implementation base: `67b45ab4ac114d674ec900c7f17b171eae5e92fa`.
 - Disjoint staged proposals may publish after intervening disjoint changes.
   Check affected-file and control preconditions, then validate the full current
   candidate; do not reject all outstanding proposals using a whole-KB digest.
-- Plans belong here. No tickets, push, release, or main-branch integration is
-  authorized. Local lane commits are solely durable review handoffs. Plans
-  02–05 require separate implementation approval; S4 is a separate release gate.
+- Plans belong here. No tickets, push, release, or further main-branch integration
+  is authorized by these documents alone. The P1 integration was separately
+  approved; remaining Plan 02 tasks and Plans 03–05 require approval. S4 is a
+  separate release gate.
 
 Sources: [Core PRD](../prd/0002-core-sdk.md), [glossary](../../CONTEXT.md),
 [packaging ADR-0010](../adr/0010-uv-workspace-and-progressive-packaging.md),
@@ -58,12 +60,12 @@ in this documentation lane. Future tasks first reproduce against their own base.
 ## Order and ownership
 
 1. [01 — Test retention](01-test-retention.md): implemented reduction and evidence.
-2. [02 — Publication integrity](02-publication-integrity.md): P1–P5, one mutation owner.
+2. [02 — Publication integrity](02-publication-integrity.md): P1 implemented; P2–P5 proposed, one mutation owner.
 3. [03 — Snapshot/retrieval](03-snapshot-retrieval.md): R1–R6, one captured identity.
 4. [04 — Agent workflows](04-agent-workflows.md): A1–A7, safety before additions.
 5. [05 — Simplification/release](05-simplification-release.md): S1–S4, migration before deletion.
 
-After new approval, integrate P1/P2 → P3 → P4 → P5; R1 → R2/R3 → R4/R5 → R6;
+After new approval, integrate P2 → P3 → P4 → P5; R1 → R2/R3 → R4/R5 → R6;
 A1/A2/A4 and A3 safety repair → A5/A6/A7 additions; consumer inventory precedes
 S1/S2 API removals, R1 precedes S3, all fixes precede S4. A3 may centralize
 composition after its ingestion repair; S2 removes migrated old seams, not a
