@@ -124,7 +124,7 @@ jobs:
       - name: Package isolation + local library smoke (verify_lumio_wiki_wheel.py)
         run: |
           /tmp/wiki/bin/python scripts/verify_lumio_wiki_wheel.py \
-            tp/lumio_wiki-*.whl tp/lumio_lancedb-*.whl \
+            tp/lumio_wiki-*.whl \
             tests/fixtures/valid tests/fixtures/categorized_kb
       - name: Packaged Agent Skill matches the tagged contract byte-for-byte
         run: |

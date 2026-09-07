@@ -79,5 +79,5 @@ jobs:
       - name: Exercise only the installed lumio-wiki wheel
         run: |
           /tmp/lumio-wiki-venv/bin/python scripts/verify_lumio_wiki_wheel.py \
-            dist/lumio-wiki/lumio_wiki-*.whl dist/lumio-lancedb/lumio_lancedb-*.whl \
+            dist/lumio-wiki/lumio_wiki-*.whl \
             tests/fixtures/valid tests/fixtures/categorized_kb

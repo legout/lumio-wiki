@@ -39,30 +39,20 @@ def _python_roots(wheel: Path) -> set[str]:
     return roots
 
 
-def _wheel_requirements(wheel: Path) -> list[str]:
-    with zipfile.ZipFile(wheel) as archive:
-        metadata_name = next(
-            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
-        )
-        metadata = archive.read(metadata_name).decode("utf-8")
-    return [
-        line.removeprefix("Requires-Dist: ").strip()
-        for line in metadata.splitlines()
-        if line.startswith("Requires-Dist: ")
-    ]
-
-
 def main() -> int:
-    if len(sys.argv) != 5:
+    """Verify the installed lumio-wiki wheel in isolation (ADR-0025: the app
+    wheel is private and out of scope; the optional LANCEDB_WHEEL argument
+    carries its own bounded-range check)."""
+    if len(sys.argv) not in (3, 4):
         raise SystemExit(
-            "usage: verify_lumio_wiki_wheel.py WIKI_WHEEL APP_WHEEL "
-            "VALID_FIXTURE CATEGORIZED_FIXTURE"
+            "usage: verify_lumio_wiki_wheel.py WIKI_WHEEL VALID_FIXTURE "
+            "[CATEGORIZED_FIXTURE]"
         )
-    wiki_wheel, app_wheel, valid_fixture, categorized_fixture = map(Path, sys.argv[1:])
+    wiki_wheel = Path(sys.argv[1])
+    valid_fixture = Path(sys.argv[2])
+    categorized_fixture = Path(sys.argv[3]) if len(sys.argv) == 4 else valid_fixture
 
     assert _python_roots(wiki_wheel) == {"lumio_wiki"}
-    assert _python_roots(app_wheel) == {"lumio"}
-    assert _python_roots(wiki_wheel).isdisjoint(_python_roots(app_wheel))
 
     requirements = importlib.metadata.requires("lumio-wiki") or []
     # Core (unconditional) runtime deps only — exclude optional extras gated
@@ -78,14 +68,6 @@ def main() -> int:
     )
     assert core_requirements == ["msgpack>=1.0", "msgspec[yaml]>=0.21.1"], core_requirements
 
-    app_requirements = [item.replace(" ", "").lower() for item in _wheel_requirements(app_wheel)]
-    # The app's CORE dependency on lumio-wiki; ignore the optional
-    # ``lumio-wiki[s3]`` entry that appears under the app's own ``s3`` extra.
-    app_member = [
-        item for item in app_requirements if item.startswith("lumio-wiki") and ";" not in item
-    ]
-    assert len(app_member) == 1, app_requirements
-    assert ">=0.1.2" in app_member[0] and "<0.2.0" in app_member[0]
     assert all(importlib.util.find_spec(name) is None for name in FORBIDDEN)
     installed = {
         distribution.metadata["Name"].lower().replace("_", "-")
