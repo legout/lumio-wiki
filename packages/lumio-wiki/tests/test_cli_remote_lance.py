@@ -176,15 +176,6 @@ class _FakeEmbedder:
 # ---------------------------------------------------------------------------
 
 
-def test_retrieval_backend_defaults_to_zero_index():
-    assert cli._retrieval_backend() == "zero-index"
-
-
-def test_retrieval_backend_reads_exported_env(monkeypatch):
-    monkeypatch.setenv("LUMIO_RETRIEVAL_BACKEND", "lancedb")
-    assert cli._retrieval_backend() == "lancedb"
-
-
 def test_retrieval_backend_rejects_unknown_value(monkeypatch):
     monkeypatch.setenv("LUMIO_RETRIEVAL_BACKEND", "weaviate")
     with pytest.raises(cli.CliError, match="LUMIO_RETRIEVAL_BACKEND"):

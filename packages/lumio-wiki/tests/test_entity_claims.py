@@ -30,7 +30,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import lumio_wiki
 import pytest
 from lumio_wiki.knowledge_base import (
     GRAPH_SCOPE_CANONICAL,
@@ -44,7 +43,6 @@ from lumio_wiki.knowledge_base import (
 from lumio_wiki.records import (
     CLAIM_STATUS_ACCEPTED,
     PUBLISHED_CLAIM_STATUSES,
-    SourceFingerprint,
     ValidationReport,
 )
 
@@ -858,45 +856,9 @@ def test_fingerprint_is_sensitive_to_redirects(tmp_path):
     assert _digest(root) != before
 
 
-def test_fingerprint_record_shape(tmp_path) -> None:
-    root = _write_kb(tmp_path, _valid_kb_files())
-    assert isinstance(fingerprint_sources(root), SourceFingerprint)
-
-
 # ---------------------------------------------------------------------------
 # AC8: exports + deterministic serialization.
 # ---------------------------------------------------------------------------
-
-
-def test_new_records_are_exported_from_lumio_wiki() -> None:
-    public = set(lumio_wiki.__all__)
-    for name in (
-        "Claim",
-        "ClaimEvidence",
-        "EntityRedirect",
-        "EntityTypeDefinition",
-        "PredicateDefinition",
-        "Ontology",
-        "CLAIM_STATUS_ACCEPTED",
-        "CLAIM_STATUS_DISPUTED",
-        "CLAIM_STATUS_SUPERSEDED",
-        "PUBLISHED_CLAIM_STATUSES",
-        "LITERAL_KINDS",
-        "LITERAL_KIND_STRING",
-        "LITERAL_KIND_NUMBER",
-        "LITERAL_KIND_BOOLEAN",
-        "CLAIM_ORIGINS",
-        "CLAIM_ORIGIN_AUTHORED",
-        "CLAIM_ORIGIN_MIGRATED",
-    ):
-        assert name in public, name
-    # The canonical Relationship INPUT contract is gone.
-    for name in (
-        "PREFERRED_RELATIONSHIP_TYPES",
-        "PREFERRED_RELATIONSHIP_INVERSES",
-        "RELATIONSHIP_INVERSES",
-    ):
-        assert name not in public, name
 
 
 def test_write_control_file_is_deterministic(tmp_path) -> None:

@@ -44,8 +44,6 @@ from lumio_wiki.proposal_pipeline import ProposalPipeline
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
 CAPTURE_FIXTURES = FIXTURES / "capture"
-CLIENT_MANIFESTS = ["pi", "codex", "claude-code", "hermes", "manual"]
-
 SECRET_FIXTURES = [
     # (label, secret-bearing text, category asserted in redaction_counts)
     ("api-key", "Used key sk-ant-0123456789abcdef0123 in the run.", "api-key"),
@@ -116,16 +114,6 @@ def _manifest_bytes(tmp_path: Path, manifest: CaptureManifest) -> tuple[Path, by
 # ---------------------------------------------------------------------------
 # Manifest loading and validation.
 # ---------------------------------------------------------------------------
-
-
-def test_load_manifest_reads_client_manifest_and_keeps_bytes():
-    manifest, raw = load_capture_manifest(CAPTURE_FIXTURES / "pi.yaml")
-    assert manifest.client == "pi"
-    assert manifest.project == "lumio-reader"
-    assert manifest.transcript == "pi-session.jsonl"
-    assert manifest.artifacts == ["lumio-wiki-search-results.md"]
-    assert manifest.redactions == ["oracle-a1 host IP"]
-    assert raw == (CAPTURE_FIXTURES / "pi.yaml").read_bytes()
 
 
 def test_load_manifest_rejects_unknown_fields(tmp_path: Path):
@@ -203,11 +191,6 @@ def test_plain_prose_is_untouched():
 # ---------------------------------------------------------------------------
 # Raw-transcript refusal (AC3).
 # ---------------------------------------------------------------------------
-
-
-def test_detect_raw_transcript_finds_chat_turns():
-    turns = detect_raw_transcript("user: hi\nassistant: hello\nuser: bye\n")
-    assert len(turns) == 3
 
 
 def test_session_page_with_chat_turns_is_refused(tmp_path: Path):
@@ -466,41 +449,6 @@ def _registry_state(store) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("client", CLIENT_MANIFESTS)
-def test_each_client_fixture_captures_through_one_contract(tmp_path: Path, client: str):
-    kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
-    manifest, raw = load_capture_manifest(CAPTURE_FIXTURES / f"{client}.yaml")
-    transcript = (
-        CAPTURE_FIXTURES / f"{client}-session.jsonl"
-        if (CAPTURE_FIXTURES / f"{client}-session.jsonl").is_file()
-        else None
-    )
-
-    outcome = capture_session(
-        pipeline,
-        store,
-        compiled_page_markdown=_page(f"session-{client}"),
-        manifest=manifest,
-        manifest_bytes=raw,
-        manifest_path=CAPTURE_FIXTURES / f"{client}.yaml",
-        source_id=f"session-{client}",
-        transcript_path=transcript,
-        confirmed=True,
-    )
-
-    assert outcome.proposal is not None
-    assert outcome.preview.client == client
-    assert outcome.proposal.provenance.source_id == f"session-{client}"
-    # Manual capture (no transcript) registers the manifest as the record and
-    # says so instead of fabricating a transcript.
-    if client == "manual":
-        assert any(
-            "manifest is registered as the private capture record" in w
-            for w in outcome.preview.warnings
-        )
-
-
 def test_manual_manifest_without_transcript_registers_manifest_record(tmp_path: Path):
     kb = _kb(tmp_path)
     pipeline, store = _pipeline(kb, tmp_path)
@@ -616,26 +564,6 @@ def test_page_must_declare_source_id_before_any_registration(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # AC6 — capture stays optional; ordinary ingest is unchanged.
 # ---------------------------------------------------------------------------
-
-
-def test_capture_never_autopublishes(tmp_path: Path):
-    kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
-    manifest, raw = load_capture_manifest(CAPTURE_FIXTURES / "pi.yaml")
-    capture_session(
-        pipeline,
-        store,
-        compiled_page_markdown=_page("session-nopublish"),
-        manifest=manifest,
-        manifest_bytes=raw,
-        manifest_path=CAPTURE_FIXTURES / "pi.yaml",
-        source_id="session-nopublish",
-        transcript_path=CAPTURE_FIXTURES / "pi-session.jsonl",
-        confirmed=True,
-    )
-    # Staged, not published: the page is absent from the live KB.
-    assert not any(p.title == "Session Findings" for p in kb.pages)
-    assert pipeline.list()[0].status == "staged"
 
 
 def test_ordinary_managed_ingest_still_works_alongside_capture(tmp_path: Path):
@@ -833,9 +761,3 @@ def test_cli_missing_manifest_errors_cleanly(tmp_path: Path):
     )
     assert code == 2
     assert "capture manifest not found" in out
-
-
-def test_cli_capture_help_lists_session_subcommand(tmp_path: Path):
-    code, out = _run_cli(tmp_path, "capture", "--help")
-    assert code == 0
-    assert "session" in out

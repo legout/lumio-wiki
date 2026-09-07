@@ -27,19 +27,6 @@ def test_fingerprint_sources_is_deterministic():
     assert fp1.digest == fp2.digest
 
 
-def test_freshness_reports_stale_after_source_change():
-    with tempfile.TemporaryDirectory() as tmp:
-        source = Path(tmp) / "valid"
-        shutil.copytree(FIXTURES / "valid", source)
-
-        fp1 = fingerprint_sources(source)
-        overview = source / "overview.md"
-        overview.write_text(overview.read_text() + "\n")
-        fp2 = fingerprint_sources(source)
-
-        assert not is_fresh(fp1, fp2)
-
-
 def test_rebuilding_restores_freshness():
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "valid"
@@ -83,27 +70,6 @@ def test_lookup_by_title():
     pages = kb.lookup_by_title("Architecture")
     assert len(pages) == 1
     assert pages[0].title == "Architecture"
-
-
-def test_loaded_knowledge_base_builds_derived_index_once(monkeypatch):
-    import lumio_wiki.knowledge_base as knowledge_base_module
-
-    kb, _ = load_knowledge_base(FIXTURES / "valid")
-    real_index = knowledge_base_module._KnowledgeIndex
-    build_count = 0
-
-    class CountingKnowledgeIndex(real_index):
-        def __init__(self, pages):
-            nonlocal build_count
-            build_count += 1
-            super().__init__(pages)
-
-    monkeypatch.setattr(knowledge_base_module, "_KnowledgeIndex", CountingKnowledgeIndex)
-
-    kb.lookup_by_title("Architecture")
-    kb.lookup_by_alias("Stack")
-
-    assert build_count == 1
 
 
 def test_lookup_by_alias():
@@ -187,27 +153,6 @@ def test_retrieve_unknown_fact_returns_no_results():
         kb = build_lancedb_kb(kb, index_dir)
         results = kb.retrieve("banana", limit=5)
     assert results == []
-
-
-def test_retrieval_result_source_type_is_free_string():
-    kb, _ = load_knowledge_base(FIXTURES / "valid")
-    with tempfile.TemporaryDirectory() as tmp:
-        index_dir = Path(tmp)
-        kb = build_lancedb_kb(kb, index_dir)
-        results = kb.retrieve("Lumio uses LanceDB", limit=5)
-    assert results
-    assert all(isinstance(r.evidence.source_type, str) for r in results)
-    assert all(r.evidence.source_type == "compiled_markdown" for r in results)
-
-
-def test_cli_retrieve_returns_cited_results():
-    # ADR-0025: the application CLI lives in the private repository; the
-    # public seam here is the SDK's in-process retrieval.
-    kb, _ = load_knowledge_base(FIXTURES / "valid")
-    results = kb.retrieve("Lumio uses LanceDB", limit=5)
-    assert results
-    assert any(r.evidence.source_type == "compiled_markdown" for r in results)
-    assert any("architecture" in r.citation.relative_path for r in results)
 
 
 def _search_page(

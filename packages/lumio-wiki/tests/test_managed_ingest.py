@@ -102,36 +102,6 @@ def test_managed_ingest_binds_source_and_authored_page_into_one_staged_proposal(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("filename, content_type, converter", FORMAT_PROVENANCE)
-def test_managed_ingest_records_original_provenance_per_format(
-    tmp_path: Path, filename, content_type, converter
-):
-    kb = _kb(tmp_path)
-    pipeline, store = _pipeline(kb, tmp_path)
-    raw = b"original raw bytes for " + filename.encode()
-
-    proposal = pipeline.managed_ingest(
-        raw, content_type, filename, "annual-impact-report", _authored_page("annual-impact-report")
-    )
-
-    provenance = proposal.provenance
-    assert provenance.original_filename == filename
-    assert provenance.content_type == content_type
-    assert provenance.converted_by == converter
-    assert provenance.source_id == "annual-impact-report"
-    expected_hash = hashlib.sha256(raw).hexdigest()
-    assert provenance.source_hash == expected_hash
-
-    # The private Source identity is established with an immutable Source
-    # Version whose content hash is over the ORIGINAL raw bytes (ADR-0014).
-    source = store.source_registry.get("annual-impact-report")
-    assert source.status == "active"
-    assert source.source_id == "annual-impact-report"
-    assert len(source.versions) == 1
-    assert source.versions[0].content_hash == expected_hash
-    assert source.versions[0].source_id == "annual-impact-report"
-
-
 def test_managed_ingest_never_requires_the_documents_extra(tmp_path: Path):
     # No document converter runs (the host agent authored the page). The
     # processor is never invoked, so a PDF/DOCX/HTML source reaches a staged

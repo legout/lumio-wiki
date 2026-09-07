@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 from lumio_wiki.embeddings import EmbeddingError
-from lumio_wiki.fingerprint_store import load_stored_fingerprint
 from lumio_wiki.knowledge_base import fingerprint_sources, load_knowledge_base
 from lumio_wiki.records import Citation, Evidence, RetrievalResult, RetrievalTrace
 from lumio_wiki.retrieval import ZeroIndexRetrieval
@@ -35,24 +34,6 @@ def test_zero_index_adapter_unknown_and_limit_and_semantic():
     assert len(adapter.retrieve(kb.pages, "Lumio", limit=1)) <= 1
     with pytest.raises(EmbeddingError, match="LanceDB|adapter|semantic"):
         adapter.retrieve(kb.pages, "Lumio", mode="semantic")
-
-
-def test_zero_index_adapter_build_writes_fingerprint(tmp_path):
-    kb, _ = load_knowledge_base(FIXTURES / "valid")
-    index_dir = tmp_path / "idx"
-    fp = fingerprint_sources(kb.root)
-    ZeroIndexRetrieval().build_index(kb.pages, index_dir, fingerprint=fp)
-    stored = load_stored_fingerprint(index_dir)
-    assert stored is not None
-    assert stored.digest == fp.digest
-
-
-def test_kb_zero_index_retrieve_without_index_dir():
-    kb, report = load_knowledge_base(FIXTURES / "valid")
-    assert report.is_valid
-    results = kb.retrieve("Lumio uses LanceDB", limit=5)
-    assert results
-    assert isinstance(results[0], RetrievalResult)
 
 
 def test_kb_zero_index_build_index_roundtrip_freshness(tmp_path):

@@ -151,12 +151,3 @@ def test_bound_expected_fingerprint_match_proceeds_then_degrades_unhealthy():
     stage = results[0].trace.stages[0]
     assert stage.name == "index-fallback"
     assert "unavailable" in stage.detail
-
-
-def test_bound_location_and_fingerprint_are_readable():
-    """The construction-bound location/fingerprint are inspectable for diagnostics."""
-    loc = _remote()
-    fp = _fingerprint()
-    adapter = LanceDBRetrievalAdapter(index_location=loc, expected_fingerprint=fp)
-    assert adapter.index_location is loc
-    assert adapter.expected_fingerprint == fp

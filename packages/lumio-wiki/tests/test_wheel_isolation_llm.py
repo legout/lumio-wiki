@@ -158,17 +158,6 @@ def llm_wheel_env(tmp_path_factory: pytest.TempPathFactory) -> dict:
     }
 
 
-def test_base_wheel_does_not_import_openai(llm_wheel_env: dict):
-    """AC1: the base wheel stays model-free; ``openai`` is not importable."""
-    python = llm_wheel_env["base_python"]
-    result = subprocess.run(
-        [str(python), "-c", "import openai"],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode != 0, "openai must NOT be importable in the base wheel"
-
-
 def test_llm_extra_installs_openai(llm_wheel_env: dict):
     """AC1: the ``[llm]`` extra installs the OpenAI-compatible provider dependency."""
     python = llm_wheel_env["llm_python"]

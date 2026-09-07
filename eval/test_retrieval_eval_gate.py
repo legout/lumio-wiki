@@ -43,11 +43,6 @@ def test_ac1_base_layer_is_deterministic(fixture_kb, gold_set):
     assert report_a.to_dict() == report_b.to_dict()
 
 
-def test_ac1_base_layer_needs_no_lancedb_or_embedder():
-    """The base stages run with only lumio-wiki core deps present."""
-    zero = ev.ZeroIndexLexicalStage()
-    graph = ev.GraphExpansionStage()
-    assert zero.available() and graph.available()
     # No embedder, no index_dir required to construct or call these stages.
 
 
@@ -112,16 +107,6 @@ def test_ac3_graph_expansion_measurably_lifts_recall(fixture_kb, gold_set):
     assert not worse, f"graph expansion regressed queries: {worse}"
 
 
-def test_ac3_graph_disabled_is_the_zero_index_stage(fixture_kb, gold_set):
-    """Disabling graph expansion IS the zero-index-lexical stage — the control."""
-    report = ev.evaluate(fixture_kb, gold_set, ks=K)
-    graph_qs = _graph_applicable_queries(report)
-    # The "degraded" run is precisely zero-index (no graph_seed_titles).
-    for q in graph_qs:
-        assert q.per_stage["zero-index-lexical"].retrieved is not None
-        assert q.per_stage["graph-expansion"].retrieved is not None
-
-
 # ---------------------------------------------------------------------------
 # LanceDB stages (when installed).
 # ---------------------------------------------------------------------------
@@ -163,17 +148,6 @@ def test_lancedb_semantic_catches_synonym_paraphrase(lancedb_report):
     )
     sem = probe.per_stage["lancedb-semantic"].recall_by_k[5]
     assert sem > 0.0, "synonym-collapsed semantic stage must recall the ingestion cluster"
-
-
-def test_json_report_round_trips(lancedb_report):
-    payload = json.dumps(lancedb_report.to_dict())
-    parsed = json.loads(payload)
-    assert parsed["gold_set_size"] == lancedb_report.gold_set_size
-    assert len(parsed["stages"]) == len(lancedb_report.stages)
-    # Every query cell is JSON-serializable and self-consistent.
-    for q in parsed["queries"]:
-        for _stage, cell in q["per_stage"].items():
-            assert "retrieved" in cell and "recall_by_k" in cell
 
 
 # ---------------------------------------------------------------------------

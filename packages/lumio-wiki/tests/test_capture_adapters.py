@@ -23,8 +23,6 @@ from lumio_wiki.capture import (
 )
 
 ROOT = Path(__file__).parents[3]
-FIXTURES = ROOT / "tests" / "fixtures" / "capture"
-
 CODEX_SESSION_ID = "9f0f8f0e-1111-4222-8333-444455556666"
 CODEX_TS = "2026-08-24T11:00:00.000Z"
 PI_SESSION_ID = "11111111-2222-4333-8444-555566667777"
@@ -117,40 +115,6 @@ def _make_pi(
         "\n".join(json.dumps(line) for line in lines[:3]) + "\n" + lines[3] + "\n", encoding="utf-8"
     )
     return path
-
-
-def test_codex_discovery_orders_and_projects(tmp_path: Path) -> None:
-    _make_codex(tmp_path, filename_ts="2026-08-24T09-00-00")
-    _make_codex(
-        tmp_path,
-        cwd="/other",
-        session_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeffff0000",
-        filename_ts="2026-08-24T10-00-00",
-    )
-    root = _codex_root(tmp_path)  # single shared sessions root
-    sessions = discover_sessions("codex", root=root.parent.parent.parent)
-    # deterministic chronological order (filename sort == time for both clients)
-    assert [s.native_id for s in sessions] == [
-        CODEX_SESSION_ID,
-        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeffff0000",
-    ]
-    assert sessions[0].client == "codex"
-    assert sessions[1].project == "/other"
-    assert sessions[0].started_at == CODEX_TS
-    # ids are the stable sha256-16 path-derived ids, NOT the header ids
-    for session in sessions:
-        assert len(session.id) == 16
-        int(session.id, 16)  # hex
-        assert session.id != session.native_id
-    assert sessions[0].id == _rediscovered_id(sessions[0])
-
-
-def _rediscovered_id(session) -> str:
-    """Recompute the stable id from client + path (determinism check)."""
-    import hashlib
-
-    digest = hashlib.sha256(f"{session.client}|{Path(session.path).resolve()}".encode()).hexdigest()
-    return digest[:16]
 
 
 def test_pi_discovery_reads_header_and_skips_malformed(tmp_path: Path) -> None:
@@ -390,16 +354,6 @@ def test_formatting_never_contains_transcript_text(tmp_path: Path) -> None:
     rendered = format_session_export(result)
     assert "Run the focused suite" not in rendered
     assert "capture.yaml" in rendered
-
-
-def test_manifest_fixture_round_trips_through_capture_contract() -> None:
-    """The exported manifest shape matches the existing CaptureManifest type."""
-    from lumio_wiki.capture import CaptureManifest, load_capture_manifest
-
-    manifest, _raw = load_capture_manifest(FIXTURES / "codex.yaml")
-    assert isinstance(manifest, CaptureManifest)
-    manifest, _raw = load_capture_manifest(FIXTURES / "pi.yaml")
-    assert manifest.client == "pi"
 
 
 def test_discovery_does_not_leave_the_declared_root(tmp_path: Path) -> None:

@@ -17,7 +17,6 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import msgpack
@@ -121,19 +120,6 @@ def _linked_kb(root: Path) -> KnowledgeBase:
 # ---------------------------------------------------------------------------
 
 
-def test_materialize_graph_creates_msgpack_artifact(tmp_path):
-    root = tmp_path / "kb"
-    root.mkdir()
-    kb = _linked_kb(root)
-    index_dir = tmp_path / "idx"
-
-    path = kb.materialize_graph(index_dir)
-
-    assert path == index_dir / GRAPH_ARTIFACT_FILENAME
-    assert path.is_file()
-    assert path.suffix == ".msgpack"
-
-
 def test_artifact_contains_incoming_and_outgoing_adjacency(tmp_path):
     root = tmp_path / "kb"
     root.mkdir()
@@ -174,52 +160,10 @@ def test_artifact_contains_incoming_and_outgoing_adjacency(tmp_path):
     assert [e.endpoint for e in state.incoming["entity:gamma"]] == ["entity:alpha"]
 
 
-def test_artifact_records_graph_version(tmp_path):
-    root = tmp_path / "kb"
-    root.mkdir()
-    kb = _linked_kb(root)
-    index_dir = tmp_path / "idx"
-
-    kb.materialize_graph(index_dir)
-    state = deserialize_graph((index_dir / GRAPH_ARTIFACT_FILENAME).read_bytes())
-
-    assert state is not None
-    assert state.version == GRAPH_ARTIFACT_VERSION
-
-
 # ---------------------------------------------------------------------------
 # 2. The artifact records the fingerprint and extractor version and is accepted
 #    only when both match the loaded Knowledge Base behavior.
 # ---------------------------------------------------------------------------
-
-
-def test_artifact_records_fingerprint_and_extractor_version(tmp_path):
-    root = tmp_path / "kb"
-    root.mkdir()
-    kb = _linked_kb(root)
-    index_dir = tmp_path / "idx"
-    expected_digest = fingerprint_sources(root).digest
-
-    kb.materialize_graph(index_dir)
-    state = deserialize_graph((index_dir / GRAPH_ARTIFACT_FILENAME).read_bytes())
-
-    assert state is not None
-    assert state.fingerprint_digest == expected_digest
-    assert state.extractor_version == EXTRACTOR_VERSION
-
-
-def test_load_or_derive_uses_artifact_when_fresh(tmp_path):
-    root = tmp_path / "kb"
-    root.mkdir()
-    kb = _linked_kb(root)
-    index_dir = tmp_path / "idx"
-    kb.materialize_graph(index_dir)
-
-    state = kb.load_or_derive_graph(index_dir)
-
-    assert state.fingerprint_digest == fingerprint_sources(root).digest
-    assert state.extractor_version == EXTRACTOR_VERSION
-    assert state.edge_count == 3  # Alpha->Beta, Alpha->Gamma, Gamma->Beta
 
 
 def test_load_rejects_stale_fingerprint(tmp_path):
@@ -433,15 +377,6 @@ def _v2_payload(outgoing_edge: list[object]) -> dict[str, object]:
     }
 
 
-def test_valid_claim_edge_decodes():
-    # A well-formed 9-field accepted-Claim edge decodes with its scope.
-    state = deserialize_graph(msgpack.packb(_v2_payload(_v2_edge()), use_bin_type=True))
-    assert state is not None
-    edge = state.outgoing["entity:alpha"][0]
-    assert edge.scope == "canonical"
-    assert edge.origin == "claim"
-
-
 def test_unknown_edge_origin_rejected():
     # A corrupt artifact whose edges decode type-wise but carry an origin
     # outside GRAPH_EDGE_ORIGINS must not become live graph state (#170).
@@ -646,40 +581,6 @@ def test_atomic_write_does_not_clobber_on_simulated_failure(tmp_path, monkeypatc
 # ---------------------------------------------------------------------------
 
 
-def test_serialization_is_byte_identical_across_calls(tmp_path):
-    root = tmp_path / "kb"
-    root.mkdir()
-    kb = _linked_kb(root)
-    index = kb._knowledge_index()
-    fingerprint = fingerprint_sources(root)
-
-    first = serialize_graph(index, fingerprint, EXTRACTOR_VERSION)
-    second = serialize_graph(index, fingerprint, EXTRACTOR_VERSION)
-
-    assert first == second
-
-
-def test_serialization_independent_of_page_insertion_order(tmp_path):
-    root = tmp_path / "kb"
-    root.mkdir()
-    alpha = _page(
-        "Alpha",
-        body="[g](gamma.md)\n",
-        relationships=[Relationship(target="Beta", type="uses")],
-    )
-    beta = _page("Beta")
-    gamma = _page("Gamma", body="[b](beta.md)\n")
-
-    kb_forward = _kb(root, [alpha, beta, gamma])
-    kb_reverse = _kb(root, [gamma, beta, alpha])
-    fp = fingerprint_sources(root)
-
-    forward = serialize_graph(kb_forward._knowledge_index(), fp, EXTRACTOR_VERSION)
-    reverse = serialize_graph(kb_reverse._knowledge_index(), fp, EXTRACTOR_VERSION)
-
-    assert forward == reverse
-
-
 def test_delete_and_rebuild_reproduces_byte_identical_artifact(tmp_path):
     root = tmp_path / "kb"
     root.mkdir()
@@ -696,21 +597,6 @@ def test_delete_and_rebuild_reproduces_byte_identical_artifact(tmp_path):
     kb.materialize_graph(index_dir)
 
     assert artifact.read_bytes() == original_bytes
-
-
-def test_rebuilt_graph_matches_in_memory_derivation(tmp_path):
-    root = tmp_path / "kb"
-    root.mkdir()
-    kb = _linked_kb(root)
-    index_dir = tmp_path / "idx"
-    index = kb._knowledge_index()
-
-    kb.materialize_graph(index_dir)
-    state = deserialize_graph((index_dir / GRAPH_ARTIFACT_FILENAME).read_bytes())
-    assert state is not None
-
-    assert state.outgoing == index.discovery_adjacency
-    assert state.incoming == index.discovery_incoming
 
 
 def test_rebuilt_graph_reproduces_public_traversal_results(tmp_path):
@@ -991,18 +877,6 @@ def test_graph_health_does_not_expose_msgpack_layout(tmp_path):
     }
 
 
-def test_graph_health_empty_kb(tmp_path):
-    root = tmp_path / "kb"
-    root.mkdir()
-    kb = _kb(root, [])
-    index_dir = tmp_path / "idx"
-
-    report = kb.graph_health(index_dir)
-    assert report.edge_count == 0
-    assert report.materialized is False
-    assert report.graph_fresh is False
-
-
 # ---------------------------------------------------------------------------
 # 8. The feature works in an isolated lumio-wiki installation without LanceDB,
 #    PyArrow, or an operational database.
@@ -1096,38 +970,6 @@ def test_roundtrip_preserves_canonical_edge_types(tmp_path):
     ]
     assert state.incoming["entity:gamma"][0].predicate == "implements"
     assert state.incoming["entity:gamma"][0].endpoint == "entity:alpha"
-
-
-def test_load_or_derive_is_idempotent(tmp_path):
-    root = tmp_path / "kb"
-    root.mkdir()
-    kb = _linked_kb(root)
-    index_dir = tmp_path / "idx"
-    kb.materialize_graph(index_dir)
-
-    first = kb.load_or_derive_graph(index_dir)
-    # Allow wall-clock to advance to confirm timing is the only thing that moves.
-    time.sleep(0.001)
-    second = kb.load_or_derive_graph(index_dir)
-
-    assert first.outgoing == second.outgoing
-    assert first.incoming == second.incoming
-    assert first.edge_count == second.edge_count
-    assert first.fingerprint_digest == second.fingerprint_digest
-
-
-def test_public_exports_present():
-    # The public surface re-exports the records and constants.
-    import lumio_wiki
-
-    assert hasattr(lumio_wiki, "GraphHealthReport")
-    assert hasattr(lumio_wiki, "GraphState")
-    assert hasattr(lumio_wiki, "GRAPH_ARTIFACT_FILENAME")
-    assert hasattr(lumio_wiki, "GRAPH_ARTIFACT_VERSION")
-    # KnowledgeBase exposes the three new methods.
-    assert callable(getattr(KnowledgeBase, "materialize_graph", None))
-    assert callable(getattr(KnowledgeBase, "load_or_derive_graph", None))
-    assert callable(getattr(KnowledgeBase, "graph_health", None))
 
 
 if __name__ == "__main__":

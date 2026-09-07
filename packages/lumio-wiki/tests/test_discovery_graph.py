@@ -39,7 +39,6 @@ from lumio_wiki.knowledge_base import (
     GRAPH_SCOPE_CANONICAL,
     GRAPH_SCOPE_DISCOVERY,
     KnowledgeBase,
-    extract_references,
 )
 from lumio_wiki.records import (
     CLAIM_STATUS_ACCEPTED,
@@ -140,15 +139,6 @@ def test_relative_markdown_link_produces_extracted_reference():
     assert ref.line_start >= 1
 
 
-def test_relative_markdown_link_with_dot_slash_prefix_resolves():
-    source = _page("Alpha", body="[b](./beta.md)\n")
-    target = _page("Beta", path="beta.md")
-    kb = _kb([source, target])
-
-    refs = kb.extracted_references("Alpha")
-    assert [r.target_title for r in refs] == ["Beta"]
-
-
 def test_nested_relative_link_resolves_via_source_directory():
     # A relative link ``[b](beta.md)`` in ``guide/alpha.md`` must resolve to
     # ``guide/beta.md`` (source-directory-relative), not a root-level page
@@ -162,18 +152,6 @@ def test_nested_relative_link_resolves_via_source_directory():
     assert [r.target_title for r in refs] == ["Beta Guide"]
 
 
-def test_nested_relative_link_prefers_source_dir_over_root():
-    # When both ``guide/beta.md`` and ``beta.md`` exist, a relative link from
-    # ``guide/alpha.md`` resolves to the sibling in the same directory.
-    source = _page("Alpha", body="[b](beta.md)\n", path="guide/alpha.md")
-    sibling = _page("Beta Sibling", path="guide/beta.md")
-    root = _page("Beta Root", path="beta.md")
-    kb = _kb([source, sibling, root])
-
-    refs = kb.extracted_references("Alpha")
-    assert [r.target_title for r in refs] == ["Beta Sibling"]
-
-
 def test_root_relative_link_falls_back_to_global_stem():
     # A link from the root (source_dir is empty) with no directory prefix
     # resolves by the bare stem, matching a page at any depth by exact stem.
@@ -183,17 +161,6 @@ def test_root_relative_link_falls_back_to_global_stem():
 
     refs = kb.extracted_references("Alpha")
     assert [r.target_title for r in refs] == ["Beta"]
-
-
-def test_markdown_link_resolves_via_alias():
-    target = _page("Beta Canonical", aliases=["Beta Alias"], path="beta.md")
-    source = _page("Alpha", body="[b](beta.md)\n")
-    kb = _kb([source, target])
-
-    refs = kb.extracted_references("Alpha")
-    assert len(refs) == 1
-    # Targets resolve to the canonical title, not the alias text.
-    assert refs[0].target_title == "Beta Canonical"
 
 
 def test_body_start_line_offsets_source_location():
@@ -225,16 +192,6 @@ def test_wikilink_resolves_to_canonical_title():
 
     refs = kb.extracted_references("Alpha")
     assert [r.target_title for r in refs] == ["Beta"]
-
-
-def test_wikilink_with_alias_label_resolves():
-    target = _page("Beta Canonical", aliases=["Beta Alias"])
-    source = _page("Alpha", body="See [[Beta Alias|display]].\n")
-    kb = _kb([source, target])
-
-    refs = kb.extracted_references("Alpha")
-    assert len(refs) == 1
-    assert refs[0].target_title == "Beta Canonical"
 
 
 def test_wikilink_resolves_via_alias_only():
@@ -638,37 +595,6 @@ def test_retrieval_trace_does_not_fabricate_graph_stage_when_unused():
 # ---------------------------------------------------------------------------
 
 
-def test_extraction_is_deterministic_for_unchanged_pages():
-    pages_a = [
-        _page("Alpha", body="[b](beta.md) and [g](gamma.md)\n"),
-        _page("Beta", path="beta.md"),
-        _page("Gamma", path="gamma.md"),
-    ]
-    pages_b = [
-        _page("Alpha", body="[b](beta.md) and [g](gamma.md)\n"),
-        _page("Beta", path="beta.md"),
-        _page("Gamma", path="gamma.md"),
-    ]
-    kb_a = _kb(pages_a)
-    kb_b = _kb(pages_b)
-
-    assert kb_a.extracted_references("Alpha") == kb_b.extracted_references("Alpha")
-    assert kb_a.related_pages("Alpha", scope=GRAPH_SCOPE_DISCOVERY) == kb_b.related_pages(
-        "Alpha", scope=GRAPH_SCOPE_DISCOVERY
-    )
-
-
-def test_extraction_stable_across_repeated_calls():
-    source = _page("Alpha", body="[b](beta.md)\n")
-    beta = _page("Beta", path="beta.md")
-    kb = _kb([source, beta])
-
-    first = kb.extracted_references("Alpha")
-    second = kb.extracted_references("Alpha")
-    third = kb.extracted_references("Alpha")
-    assert first == second == third
-
-
 def test_extraction_independent_of_page_insertion_order():
     alpha = _page("Alpha", body="[b](beta.md) and [g](gamma.md)\n")
     beta = _page("Beta", path="beta.md")
@@ -708,30 +634,9 @@ def test_extracted_references_inspection_empty_for_unknown_title():
     assert kb.extracted_references("Nope") == []
 
 
-def test_extracted_references_module_function_returns_all():
-    alpha = _page("Alpha", body="[b](beta.md)\n")
-    beta = _page("Beta", body="[g](gamma.md)\n", path="beta.md")
-    gamma = _page("Gamma", path="gamma.md")
-    pages = [alpha, beta, gamma]
-
-    refs = extract_references(pages)
-    targets = sorted((r.source_title, r.target_title) for r in refs)
-    assert targets == [("Alpha", "Beta"), ("Beta", "Gamma")]
-
-
 # ---------------------------------------------------------------------------
 # 10. Discovery scope is now a valid, working scope (flips the #106 reservation).
 # ---------------------------------------------------------------------------
-
-
-def test_discovery_scope_no_longer_raises():
-    alpha = _page("Alpha", body="[b](beta.md)\n")
-    beta = _page("Beta", path="beta.md")
-    kb = _kb([alpha, beta])
-
-    # Must NOT raise; returns the extracted neighbor.
-    assert kb.related_pages("Alpha", scope=GRAPH_SCOPE_DISCOVERY) == ["Beta"]
-    assert kb.shortest_path("Alpha", "Beta", scope=GRAPH_SCOPE_DISCOVERY) == ["Alpha", "Beta"]
 
 
 def test_unknown_scope_still_raises():

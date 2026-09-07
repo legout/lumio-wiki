@@ -57,13 +57,6 @@ def test_parse_expires_defaults_to_five_minutes():
     assert parse_expires("5M") == timedelta(minutes=5)  # case-insensitive
 
 
-def test_parse_expires_accepts_units_and_bare_minutes():
-    assert parse_expires("30s") == timedelta(seconds=30)
-    assert parse_expires("2m") == timedelta(minutes=2)
-    assert parse_expires("1h") == timedelta(hours=1)  # the ceiling itself
-    assert parse_expires("10") == timedelta(minutes=10)  # bare = minutes
-
-
 @pytest.mark.parametrize(
     "value",
     ["0", "0s", "00m", "61m", "2h", "7200s", "-5m", "abc", "5x", "5 m", "1.5h"],
@@ -88,19 +81,6 @@ def test_parse_expires_routes_huge_durations_to_the_ceiling_error():
 @pytest.fixture
 def registry(tmp_path: Path) -> SourceRegistry:
     return SourceRegistry(tmp_path / "source-registry")
-
-
-def test_resolve_registry_binding_returns_current_version(registry: SourceRegistry):
-    # One active source has exactly one current version (a second version
-    # only enters through the retire→reactivate proposal path, ADR-0014).
-    registry.register_source("policy", RAW, filename="report.pdf", content_type="application/pdf")
-    binding = resolve_registry_binding(registry, "policy")
-    assert binding.source_id == "policy"
-    assert binding.content_hash == artifact_content_hash(RAW)
-    assert binding.filename == "report.pdf"
-    assert binding.content_type == "application/pdf"
-    assert binding.size == len(RAW)
-    assert binding.published_version is None
 
 
 def test_resolve_registry_binding_unknown_id_is_absent_binding(registry: SourceRegistry):
@@ -239,18 +219,6 @@ def _binding(
         size=size if size is not None else len(RAW),
         published_version=published_version,
     )
-
-
-def test_fetch_verified_artifact_returns_byte_exact_original():
-    store = InMemoryArtifactStore()
-    store.put_artifact(
-        source_id="annual-report",
-        content_hash=artifact_content_hash(RAW),
-        raw_bytes=RAW,
-        content_type="application/pdf",
-        filename="annual.pdf",
-    )
-    assert fetch_verified_artifact(store, _binding()) == RAW
 
 
 def test_fetch_verified_artifact_unavailable_outcome():

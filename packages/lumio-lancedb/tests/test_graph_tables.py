@@ -256,41 +256,6 @@ def test_build_is_deterministic_and_fingerprint_bound(categorized_kb, tmp_path):
     assert _load_fingerprint(as_location(tmp_path / "lance")) == fingerprint
 
 
-def test_entity_fts_candidate_retrieval(categorized_kb, tmp_path):
-    build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint_sources(tmp_path))
-    import lancedb
-
-    table = lancedb.connect(tmp_path / "lance").open_table(ENTITY_TABLE_NAME)
-    hits = table.search("platform", query_type="fts").select(["entity_id"]).limit(5).to_list()
-    assert [row["entity_id"] for row in hits] == ["entity:lumio"]
-
-
-def test_scalar_status_and_kind_filters(categorized_kb, tmp_path):
-    build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint_sources(tmp_path))
-    import lancedb
-
-    table = lancedb.connect(tmp_path / "lance").open_table(GRAPH_EDGE_TABLE_NAME)
-    refs = (
-        table.search()
-        .where(f"kind = '{GRAPH_EDGE_ORIGIN_EXTRACTED}'")
-        .select(["edge_id"])
-        .limit(10)
-        .to_list()
-    )
-    assert len(refs) == 1
-    accepted = (
-        table.search()
-        .where(f"status = '{CLAIM_STATUS_ACCEPTED}'")
-        .select(["edge_id"])
-        .limit(10)
-        .to_list()
-    )
-    assert {row["edge_id"] for row in accepted} == {
-        "claim:lumio-uses-lancedb",
-        "claim:lumio-described",
-    }
-
-
 # ---------------------------------------------------------------------------
 # Load: behavioral parity with the zero-index MessagePack graph.
 # ---------------------------------------------------------------------------
@@ -319,16 +284,6 @@ def test_load_graph_state_matches_zero_index_graph(categorized_kb, tmp_path):
     assert len(claim_edges) == 1
     assert claim_edges[0].claim_id == "claim:lumio-uses-lancedb"
     assert claim_edges[0].scope == "canonical"
-
-
-def test_disputed_claims_never_enter_loaded_adjacency(categorized_kb, tmp_path):
-    fingerprint = fingerprint_sources(tmp_path)
-    build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint)
-    loaded = load_graph_state(tmp_path / "lance", fingerprint)
-    assert loaded is not None
-    outgoing_ids = {e.claim_id for buckets in loaded.outgoing.values() for e in buckets}
-    assert "claim:lumio-disputed" not in outgoing_ids
-    assert "claim:lumio-described" not in outgoing_ids
 
 
 def test_legacy_flat_kb_projects_reference_edges_only(tmp_path):

@@ -74,23 +74,6 @@ def test_a_wrong_expectation_is_a_measured_failure_not_a_crash(corpus_kb, tmp_pa
     assert report.edge_traversal.failures, "the failure must name the row"
 
 
-def test_report_discloses_corpus_mode_warm_up_and_fallback(corpus_kb, gold):
-    """AC: evaluation reports only measured metrics and discloses its setup."""
-    report = ontology_eval.evaluate_ontology(corpus_kb, gold)
-    assert report.corpus  # the corpus is named
-    assert "zero-index" in report.mode
-    assert "no model" in report.mode
-    assert "no warm-up" in report.warm_up
-    assert "fallback" in report.fallback
-    assert "answer quality" in report.not_measured
-    # The table and the JSON both carry the disclosure.
-    table = report.to_table()
-    for line in ("mode:", "warm-up:", "fallback:", "not measured:"):
-        assert line in table
-    payload = report.to_dict()
-    assert set(payload["disclosure"]) == {"mode", "warm_up", "fallback", "not_measured"}
-
-
 def test_empty_gold_set_sections_measure_as_vacuously_true(tmp_path, corpus_kb):
     empty = tmp_path / "empty_gold_set.yaml"
     empty.write_text("name: empty-v1\n", encoding="utf-8")

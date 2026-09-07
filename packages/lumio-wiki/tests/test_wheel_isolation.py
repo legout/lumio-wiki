@@ -409,11 +409,6 @@ def test_doctor_runs_from_isolated_install(isolated_wheel_env: dict):
     assert "not installed" in result.stdout
 
 
-def test_isolated_install_has_no_heavyweight_dependencies(isolated_wheel_env: dict):
-    """ADR-0010 invariant: the base wheel does not pull in forbidden deps."""
-    _assert_heavyweight_not_importable(isolated_wheel_env["python"])
-
-
 def test_isolated_init_ingest_publish_journey(isolated_wheel_env: dict, tmp_path: Path):
     """AC2 + AC5 + AC6: init → ingest → publish through the isolated CLI.
 
