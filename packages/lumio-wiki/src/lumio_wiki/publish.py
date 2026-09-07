@@ -17,9 +17,12 @@ candidate tree — resolves and checks its destinations through ONE resolution
 BEFORE any candidate or live byte is written. A new ``A_B`` can no longer
 replace an existing ``A B`` at ``a_b.md``: occupied targets, duplicate
 targets within one proposal, existing directories, unreadable occupants,
-escaping paths, and compound-fallback collisions are rejected up front.
-There is no automatic suffix allocation and no removal that was not
-declared.
+escaping paths, compound-fallback collisions, and move sources that are
+directories (unremovable after the write) are rejected up front. The
+candidate gate resolves against the REAL root before its throwaway copy is
+made, so an occupant ``copytree`` could never get past still produces the
+same destination issue as live apply. There is no automatic suffix
+allocation and no removal that was not declared.
 """
 
 from __future__ import annotations
@@ -183,6 +186,8 @@ def _resolve_proposed_destinations(
     proposed_pages: list,
     root: Path,
     existing_by_title: dict[str, str],
+    *,
+    force_compound: bool = False,
 ) -> list[_Destination]:
     """Resolve and check every proposed write destination BEFORE any write (B01).
 
@@ -205,7 +210,16 @@ def _resolve_proposed_destinations(
       blocking renames onto an existing title;
     - two pages resolving to the same destination within one proposal are a
       duplicate-target conflict (no last-writer-wins);
-    - every destination must resolve inside the working directory.
+    - every destination must resolve inside the working directory;
+    - a move source must be a removable file (a directory source would leave
+      the target written and the move half-done when the post-write unlink
+      raises).
+
+    ``force_compound`` forces the compound branch for every proposed page:
+    the public compound-revision writer (:func:`apply_compound_revision`) is
+    an unconditional merge (issue #79), so it routes the shared checks with
+    this flag even when the caller's record omits the ``compound_revision``
+    flag.
     """
     title_by_path = {
         _checked_relative_path(root, path, page_title=title): title
@@ -228,7 +242,7 @@ def _resolve_proposed_destinations(
     for page in proposed_pages:
         move_from = getattr(page, "move_from_path", None)
         rename_from = getattr(page, "rename_from", None)
-        compound = bool(getattr(page, "compound_revision", False))
+        compound = force_compound or bool(getattr(page, "compound_revision", False))
         title = page.title
         if move_from:
             # Explicit category/path move (issue #80): relocate ATOMICALLY.
@@ -236,6 +250,18 @@ def _resolve_proposed_destinations(
             # (issue #80, P1.2) is reused as the occupancy rule for the move.
             source_relative = _checked_relative_path(root, move_from, page_title=title)
             target_relative = _checked_relative_path(root, page.relative_path, page_title=title)
+            if (root / source_relative).is_dir():
+                # unlink(2) removes directory entries, never directories: a
+                # directory source cannot be removed after the target is
+                # written, so accepting it would strand a half-done move (the
+                # target present, the source directory untouched). Rejected
+                # at resolution time, before any byte is written (B01).
+                raise DestinationConflict(
+                    f"Cannot move {title!r} from {source_relative}: the move "
+                    f"source is an existing directory and cannot be removed "
+                    f"after the move",
+                    file=source_relative,
+                )
             if source_relative != target_relative and (root / target_relative).exists():
                 raise DestinationConflict(
                     f"Cannot move {title!r} to {page.relative_path}: "
@@ -384,6 +410,68 @@ def _write_destination(destination: _Destination, root: Path) -> Path:
     return target
 
 
+def _reject_proposal_overlaps(
+    destinations: list[_Destination],
+    removals: list[tuple[str, str]],
+) -> None:
+    """Reject cross-destination proposal conflicts BEFORE any byte is written (B01).
+
+    Runs after destination resolution, still in the check-only phase: a
+    proposed page must never target ``lumio.yaml`` (whether or not the
+    proposal also updates the Control File, so the file can never be
+    replaced by a page the loader would then never see), and of the declared
+    removals only the removal of the very page a write revises may overlap a
+    destination — any other overlap would silently discard content.
+    """
+    if CONTROL_FILE_BASENAME in {destination.relative_path for destination in destinations}:
+        raise DestinationConflict(
+            "A proposed page destination collides with the Control File "
+            f"({CONTROL_FILE_BASENAME}); the Control File is never written by a page",
+            file=CONTROL_FILE_BASENAME,
+        )
+    claimed = {destination.relative_path: destination for destination in destinations}
+    for title, relative in removals:
+        claimant = claimed.get(relative)
+        if claimant is None:
+            continue
+        # A proposal may revise a page and remove that SAME page (the removal
+        # stays authoritative and the file ends up gone, as before). Any other
+        # overlap — a different page writing over a removal path, or a move —
+        # would silently discard content, so it is rejected up front.
+        if claimant.kind in ("write", "compound") and claimant.page.title == title:
+            continue
+        raise DestinationConflict(
+            f"Proposed page {claimant.page.title!r} targets {relative}, which the "
+            f"same proposal removes ({title!r}); destinations must not overlap",
+            file=relative,
+        )
+
+
+def _apply_checked_destinations(
+    destinations: list[_Destination],
+    removals: list[tuple[str, str]],
+    root: Path,
+    control_file: KnowledgeBaseControlFile | None,
+) -> None:
+    """Apply an already-checked destination set — the only mutating phase (B01).
+
+    Every path below was resolved, checked, and claimed before this runs, so
+    the phase makes no further decisions: page writes in proposal order, then
+    the declared removals, then the optional Control File. Root-relative
+    checked paths apply unchanged to the live root and to the temporary
+    candidate tree alike, so candidate validation consumes exactly the same
+    mutations live application would perform.
+    """
+    for destination in destinations:
+        _write_destination(destination, root)
+    for _title, relative in removals:
+        target = root / relative
+        if target.exists():
+            target.unlink()
+    if control_file is not None:
+        write_control_file(root, control_file)
+
+
 def apply_proposed_pages(
     proposed_pages: list,
     working_dir: str | Path,
@@ -436,41 +524,9 @@ def apply_proposed_pages(
         if removed_titles
         else []
     )
-    # The Control File path is resolved before any page write: a proposed page
-    # must never target ``lumio.yaml`` (whether or not this proposal also
-    # updates the Control File), so the file can never be replaced by a page
-    # the loader would then never see.
-    if CONTROL_FILE_BASENAME in {destination.relative_path for destination in destinations}:
-        raise DestinationConflict(
-            "A proposed page destination collides with the Control File "
-            f"({CONTROL_FILE_BASENAME}); the Control File is never written by a page",
-            file=CONTROL_FILE_BASENAME,
-        )
-    claimed = {destination.relative_path: destination for destination in destinations}
-    for title, relative in removals:
-        claimant = claimed.get(relative)
-        if claimant is None:
-            continue
-        # A proposal may revise a page and remove that SAME page (the removal
-        # stays authoritative and the file ends up gone, as before). Any other
-        # overlap — a different page writing over a removal path, or a move —
-        # would silently discard content, so it is rejected up front.
-        if claimant.kind in ("write", "compound") and claimant.page.title == title:
-            continue
-        raise DestinationConflict(
-            f"Proposed page {claimant.page.title!r} targets {relative}, which the "
-            f"same proposal removes ({title!r}); destinations must not overlap",
-            file=relative,
-        )
+    _reject_proposal_overlaps(destinations, removals)
     # Phase 2 — apply the checked mutations in the documented order.
-    for destination in destinations:
-        _write_destination(destination, root)
-    for _title, relative in removals:
-        target = root / relative
-        if target.exists():
-            target.unlink()
-    if control_file is not None:
-        write_control_file(root, control_file)
+    _apply_checked_destinations(destinations, removals, root, control_file)
 
 
 def merge_compound_sources(proposed_markdown: str, existing_markdown: str) -> str:
@@ -542,13 +598,20 @@ def apply_compound_revision(page, working_dir: str | Path) -> Path:
     Resolves the existing Compiled Page by Canonical Title (falling back to
     the proposed relative path), merges its prior Sources with the proposed
     page's Sources via :func:`merge_compound_sources`, and writes the merged
-    Markdown at the resolved target. The target must resolve inside
-    ``working_dir``. Used by the publish-path writer for compound revisions
-    (issue #79); it never silently replaces the evidence trail.
+    Markdown at the resolved target. The merge is UNCONDITIONAL here: this is
+    the public compound-revision writer (issue #79), so it routes the shared
+    destination checks with the compound branch FORCED for this helper —
+    even when the caller's record does not carry the ``compound_revision``
+    flag, the existing page's prior Sources are preserved and deduplicated,
+    never silently replaced. The target must resolve inside ``working_dir``;
+    an occupied, duplicate, or escaping destination raises
+    :class:`DestinationConflict` before any byte is written.
     """
     root = Path(working_dir).resolve()
     existing_by_title = _existing_paths_by_title(root)
-    (destination,) = _resolve_proposed_destinations([page], root, existing_by_title)
+    (destination,) = _resolve_proposed_destinations(
+        [page], root, existing_by_title, force_compound=True
+    )
     return _write_destination(destination, root)
 
 
@@ -576,34 +639,55 @@ def validate_candidate_knowledge_base(
     as ONE candidate — exactly the gate publication uses.
 
     The candidate consumes the same pre-write destination resolution as live
-    application (Plan 02 / P2, B01): a destination conflict (occupied or
-    duplicate target, escaping path, …) is returned as an error
-    ``ValidationIssue`` instead of raised, so staging surfaces a blocked
-    proposal and the publish gate refuses through the ordinary candidate
-    report. Only :class:`DestinationConflict` is translated; unexpected
-    errors still propagate.
+    application (Plan 02 / P2, B01): every destination and removal is
+    resolved and checked against the REAL root BEFORE the throwaway candidate
+    tree is copied, so a conflict — including an uncopyable occupant such as
+    a Unix socket at a proposed destination, which ``copytree`` itself could
+    never get past — comes back as an error ``ValidationIssue`` instead of
+    raised, exactly the conflict live application would raise. Only
+    :class:`DestinationConflict` is translated; unexpected errors still
+    propagate. The checked destination set is then applied to the candidate
+    unchanged, so the validated tree is the tree publication would write.
     """
-    root = Path(knowledge_base_root)
+
+    def _conflict_report(exc: DestinationConflict) -> ValidationReport:
+        return ValidationReport(
+            issues=[
+                ValidationIssue(
+                    file=exc.file or "proposal",
+                    field="destination",
+                    message=str(exc),
+                )
+            ]
+        )
+
+    root = Path(knowledge_base_root).resolve()
+    existing_by_title = _existing_paths_by_title(root)
+    try:
+        # Resolve and check EVERY destination and removal against the REAL
+        # root BEFORE the candidate copy exists (Plan 02 / P2, B01): an
+        # uncopyable occupant at a proposed destination must surface as the
+        # same :class:`DestinationConflict` live apply raises — not as a
+        # ``shutil.copytree`` failure — so candidate validation keeps live
+        # parity and still aggregates the conflict into an error issue.
+        destinations = _resolve_proposed_destinations(proposed_pages, root, existing_by_title)
+        removals = (
+            _resolve_removal_destinations(removed_titles, root, existing_by_title)
+            if removed_titles
+            else []
+        )
+        _reject_proposal_overlaps(destinations, removals)
+    except DestinationConflict as exc:
+        return _conflict_report(exc)
     with tempfile.TemporaryDirectory() as tmp:
         candidate = Path(tmp) / "candidate"
         shutil.copytree(root, candidate, dirs_exist_ok=True)
         try:
-            apply_proposed_pages(
-                proposed_pages,
-                candidate,
-                removed_titles=removed_titles,
-                control_file=control_file,
-            )
+            # The checked set applies unchanged to the byte-identical
+            # candidate tree: every path is root-relative by construction.
+            _apply_checked_destinations(destinations, removals, candidate, control_file)
         except DestinationConflict as exc:
-            return ValidationReport(
-                issues=[
-                    ValidationIssue(
-                        file=exc.file or "proposal",
-                        field="destination",
-                        message=str(exc),
-                    )
-                ]
-            )
+            return _conflict_report(exc)
         return validate(candidate)
 
 
