@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-
 from lumio_wiki.embeddings import EmbeddingError
 from lumio_wiki.fingerprint_store import load_stored_fingerprint
 from lumio_wiki.knowledge_base import fingerprint_sources, load_knowledge_base

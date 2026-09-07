@@ -1,7 +1,7 @@
 name: release
 
-# Issue #181: certified Lumio wheel releases. A pushed v*.*.* tag builds all
-# three inter-member wheels once from that exact commit, records their
+# Issue #181 / ADR-0025: certified wheel releases. A pushed v*.*.* tag builds
+# both inter-member wheels once from that exact commit, records their
 # SHA-256 hashes and SLSA build provenance, publishes them to TestPyPI,
 # verifies the documented installation journey against the TestPyPI
 # artifacts, and only then — behind a human-approved protected environment —
@@ -46,14 +46,13 @@ jobs:
       - run: uv lock --check
       - run: uv build --package lumio-wiki --wheel --out-dir dist
       - run: uv build --package lumio-lancedb --wheel --out-dir dist
-      - run: uv build --package lumio --wheel --out-dir dist
-      - name: Assert all three wheels carry the tag version (lockstep policy)
+      - name: Assert both wheels carry the tag version (lockstep policy)
         run: |
           version="${GITHUB_REF_NAME#v}"
-          for member in lumio_wiki lumio_lancedb lumio; do
+          for member in lumio_wiki lumio_lancedb; do
             ls "dist/${member}-${version}-"*.whl > /dev/null
           done
-          test "$(ls dist/*.whl | wc -l)" -eq 3
+          test "$(ls dist/*.whl | wc -l)" -eq 2
       - name: Record wheel SHA-256 hashes
         run: |
           (cd dist && sha256sum *.whl > ../wheel-hashes.txt)
@@ -66,7 +65,7 @@ jobs:
             wheel-hashes.txt
           if-no-files-found: error
       # SLSA build provenance bound to the tag commit (issue #181: the tag
-      # "builds all three wheels once and records hashes/provenance").
+      # "builds both wheels once and records hashes/provenance").
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: dist/*.whl
@@ -125,7 +124,7 @@ jobs:
       - name: Package isolation + local library smoke (verify_lumio_wiki_wheel.py)
         run: |
           /tmp/wiki/bin/python scripts/verify_lumio_wiki_wheel.py \
-            tp/lumio_wiki-*.whl tp/lumio-*.whl \
+            tp/lumio_wiki-*.whl tp/lumio_lancedb-*.whl \
             tests/fixtures/valid tests/fixtures/categorized_kb
       - name: Packaged Agent Skill matches the tagged contract byte-for-byte
         run: |
@@ -197,42 +196,12 @@ jobs:
           LUMIO_PYTHON: /tmp/journey/bin/python
         run: bash examples/onboarding-journey/smoke-journey.sh
 
-  verify-testpypi-app:
-    # The assembled application installs by name from TestPyPI with its full
-    # dependency closure resolved from PyPI, exposes every member import and
-    # its console entry point, and reports the lockstep family version.
-    needs: publish-testpypi
-    runs-on: ubuntu-latest
-    steps:
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-        with:
-          python-version: "3.14"
-          enable-cache: false
-      - name: Fresh-venv install of the full application from TestPyPI
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          uv venv --python 3.14 /tmp/app
-          uv pip install --python /tmp/app/bin/python \
-            --index-url https://test.pypi.org/simple/ \
-            --extra-index-url https://pypi.org/simple/ \
-            "lumio==$version"
-      - name: Assert imports, entry point, and lockstep versions
-        run: |
-          /tmp/app/bin/python -c "
-          import importlib.metadata as im
-          import lumio, lumio_wiki, lumio_lancedb
-          versions = {im.version(name) for name in ('lumio', 'lumio-wiki', 'lumio-lancedb')}
-          assert len(versions) == 1, versions
-          print('assembled TestPyPI install ok:', versions.pop())
-          "
-          /tmp/app/bin/lumio --help > /dev/null
-
   promote-pypi:
     # The issue #181 human gate: this job runs only after the `pypi`
     # environment's required reviewers approve. It re-downloads the wheels
     # TestPyPI is actually serving, proves they are byte-identical to the
     # build record, and promotes those exact artifacts to PyPI.
-    needs: [verify-testpypi-wiki, verify-testpypi-minio, verify-testpypi-app]
+    needs: [verify-testpypi-wiki, verify-testpypi-minio]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

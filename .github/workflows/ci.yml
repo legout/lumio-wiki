@@ -16,35 +16,8 @@ jobs:
           enable-cache: true
       - run: uv lock --check
       - run: uv sync --locked
-      - run: >-
-          uv run --locked ruff check
-          scripts/verify_lumio_wiki_wheel.py
-          packages/lumio-wiki/src
-          packages/lumio-wiki/tests
-          tests/test_core_compatibility.py
-          tests/test_workspace_layout.py
-          tests/test_wheel_verifier.py
-      - run: >-
-          uv run --locked pytest -q
-          packages/lumio-wiki/tests
-          tests/test_core_compatibility.py
-          tests/test_workspace_layout.py
-          tests/test_wheel_verifier.py
-          tests/test_core_sdk.py
-          tests/test_core_sdk_index.py
-          tests/test_core_without_lancedb.py
-          tests/test_zero_index_retrieval.py
-          tests/test_retrieval_adapter_contract.py
-          tests/test_kb_control.py
-          tests/test_relationship_types.py
-          tests/test_graph_retrieval.py
-          tests/test_health_report.py
-          tests/test_registry.py
-          tests/test_okf_export.py
-          tests/test_okf_import.py
-          tests/test_okf_round_trip.py
-          tests/test_okf_reject_unsafe.py
-          tests/test_onboarding_journey.py
+      - run: uv run --locked ruff check .
+      - run: uv run --locked pytest -q -n 4
 
   # Issue #180, AC6: run the canonical onboarding journey (docs/quickstart.md)
   # against a real MinIO so the documented command sequence cannot drift from
@@ -82,8 +55,6 @@ jobs:
           enable-cache: true
       - run: uv lock --check
       - run: uv sync --locked
-      # The smoke journey creates its dedicated bucket with `mc` when present
-      # (the same tool docs/quickstart.md uses); install it for the job.
       - name: Install mc (bucket creation, as documented)
         run: >
           curl -sfL
@@ -102,11 +73,11 @@ jobs:
           enable-cache: true
       - run: uv lock --check
       - run: uv build --package lumio-wiki --wheel --out-dir dist/lumio-wiki
-      - run: uv build --package lumio --wheel --out-dir dist/lumio
+      - run: uv build --package lumio-lancedb --wheel --out-dir dist/lumio-lancedb
       - run: uv venv --python 3.14 /tmp/lumio-wiki-venv
       - run: uv pip install --python /tmp/lumio-wiki-venv/bin/python dist/lumio-wiki/lumio_wiki-*.whl
       - name: Exercise only the installed lumio-wiki wheel
         run: |
           /tmp/lumio-wiki-venv/bin/python scripts/verify_lumio_wiki_wheel.py \
-            dist/lumio-wiki/lumio_wiki-*.whl dist/lumio/lumio-*.whl \
+            dist/lumio-wiki/lumio_wiki-*.whl dist/lumio-lancedb/lumio_lancedb-*.whl \
             tests/fixtures/valid tests/fixtures/categorized_kb

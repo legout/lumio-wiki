@@ -532,7 +532,9 @@ def test_search_entity_candidates_returns_scored_review_candidates(categorized_k
     before = {
         p.name: p.read_bytes() for p in sorted(tmp_path.rglob("*.md"))
     }
-    candidates = search_entity_candidates(tmp_path / "lance", "Lumio", expected_fingerprint=fingerprint)
+    candidates = search_entity_candidates(
+        tmp_path / "lance", "Lumio", expected_fingerprint=fingerprint
+    )
     assert candidates, "expected FTS candidates"
     for candidate in candidates:
         assert candidate.entity.id
@@ -540,7 +542,9 @@ def test_search_entity_candidates_returns_scored_review_candidates(categorized_k
         assert candidate.reason
     # Aliases participate in the lexical surface: "Lumio Platform" (alias of
     # entity:lumio) finds the same entity.
-    alias_hits = search_entity_candidates(tmp_path / "lance", "Platform", expected_fingerprint=fingerprint)
+    alias_hits = search_entity_candidates(
+        tmp_path / "lance", "Platform", expected_fingerprint=fingerprint
+    )
     assert any(c.entity.id == "entity:lumio" for c in alias_hits)
     # Candidates are read-only: no source file changed.
     after = {p.name: p.read_bytes() for p in sorted(tmp_path.rglob("*.md"))}
@@ -552,7 +556,9 @@ def test_search_entity_candidates_excludes_redirect_rows(categorized_kb, tmp_pat
     fingerprint = fingerprint_sources(tmp_path)
     build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint)
 
-    candidates = search_entity_candidates(tmp_path / "lance", "old-lumio", expected_fingerprint=fingerprint) or []
+    candidates = search_entity_candidates(
+        tmp_path / "lance", "old-lumio", expected_fingerprint=fingerprint
+    ) or []
     assert all(c.entity.id != "entity:old-lumio" for c in candidates)
 
 
@@ -561,7 +567,10 @@ def test_search_entity_candidates_unavailable_truthfully(categorized_kb, tmp_pat
     fingerprint = fingerprint_sources(tmp_path)
 
     # No built index at all.
-    assert search_entity_candidates(tmp_path / "absent", "Lumio", expected_fingerprint=fingerprint) is None
+    assert (
+        search_entity_candidates(tmp_path / "absent", "Lumio", expected_fingerprint=fingerprint)
+        is None
+    )
 
     build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint)
     # Stale (fingerprint-mismatched) projection.
@@ -569,7 +578,12 @@ def test_search_entity_candidates_unavailable_truthfully(categorized_kb, tmp_pat
     assert search_entity_candidates(tmp_path / "lance", "Lumio", expected_fingerprint=stale) is None
 
     # A searched-but-empty result is a truthful [] rather than None.
-    assert search_entity_candidates(tmp_path / "lance", "zzz-no-match", expected_fingerprint=fingerprint) == []
+    assert (
+        search_entity_candidates(
+            tmp_path / "lance", "zzz-no-match", expected_fingerprint=fingerprint
+        )
+        == []
+    )
 
 
 def test_search_entity_candidates_fingerprint_optional(categorized_kb, tmp_path):

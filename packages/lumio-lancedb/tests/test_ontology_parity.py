@@ -17,7 +17,16 @@ import shutil
 from pathlib import Path
 
 import pytest
-
+from lumio_lancedb.graph import (
+    ENTITY_TABLE_NAME,
+    GRAPH_EDGE_TABLE_NAME,
+    build_graph_tables,
+    load_graph_state,
+)
+from lumio_wiki.graph_state import (
+    build_graph_state,
+    load_graph_artifact,
+)
 from lumio_wiki.knowledge_base import (
     EXTRACTOR_VERSION,
     GRAPH_DIRECTION_BOTH,
@@ -28,18 +37,7 @@ from lumio_wiki.knowledge_base import (
     fingerprint_sources,
     load_knowledge_base,
 )
-from lumio_wiki.graph_state import (
-    build_graph_state,
-    load_graph_artifact,
-)
 from lumio_wiki.records import CLAIM_STATUS_ACCEPTED
-
-from lumio_lancedb.graph import (
-    ENTITY_TABLE_NAME,
-    GRAPH_EDGE_TABLE_NAME,
-    build_graph_tables,
-    load_graph_state,
-)
 
 CORPUS = Path(__file__).resolve().parents[3] / "eval" / "ontology_corpus"
 

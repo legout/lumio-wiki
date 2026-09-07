@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import shutil
 from pathlib import Path
 
+import pytest
 from lumio_wiki.records import RetrievalResult
 
 ROOT = Path(__file__).parents[3]
@@ -60,6 +62,16 @@ def test_foundation_regenerates_portable_artifacts(tmp_path: Path):
     assert fingerprint_sources(target).digest == before
 
 
+def _lumio_core_compat_available() -> bool:
+    """ADR-0025: the temporary ``lumio.core`` compatibility surface lives in
+    the private application repository; skip these alias checks when it (and
+    therefore the application) is not installed."""
+    return importlib.util.find_spec("lumio") is not None
+
+@pytest.mark.skipif(
+    not _lumio_core_compat_available(),
+    reason="lumio.core lives in the private app repo (ADR-0025)",
+)
 def test_legacy_knowledge_base_module_aliases_the_new_owner():
     assert importlib.import_module("lumio.core.knowledge_base") is importlib.import_module(
         "lumio_wiki.knowledge_base"

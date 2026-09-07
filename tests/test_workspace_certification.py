@@ -1,9 +1,9 @@
 """Publishable workspace certification invariants for issue #104 / ADR-0010.
 
-The post-contraction workspace ships three independently buildable,
-independently installable distributions: ``lumio-wiki``, ``lumio-lancedb``,
-and ``lumio``. These tests assert the certification invariants that must
-hold for every release:
+This repository ships two independently buildable, independently
+installable distributions: ``lumio-wiki`` and ``lumio-lancedb`` (ADR-0025;
+the web application lives in a separate private repository). These tests
+assert the certification invariants that must hold for every release:
 
 * every member builds a wheel on its own (AC1);
 * every inter-member dependency declares an explicit compatible version
@@ -32,11 +32,9 @@ import tomllib
 ROOT = Path(__file__).parents[1]
 WIKI_MEMBER = ROOT / "packages" / "lumio-wiki"
 LANCEDB_MEMBER = ROOT / "packages" / "lumio-lancedb"
-APP_MEMBER = ROOT / "packages" / "lumio"
 ALL_MEMBERS = {
     "lumio-wiki": WIKI_MEMBER,
     "lumio-lancedb": LANCEDB_MEMBER,
-    "lumio": APP_MEMBER,
 }
 
 # Compatible published version range — every inter-member dependency must
@@ -81,8 +79,6 @@ def test_published_member_dependencies_declare_compatible_version_ranges():
         "lumio-wiki": {"lumio-wiki": 0, "lumio-lancedb": 0},
         # lumio-lancedb depends only on lumio-wiki.
         "lumio-lancedb": {"lumio-wiki": 1, "lumio-lancedb": 0},
-        # lumio consumes both upward (ADR-0010).
-        "lumio": {"lumio-wiki": 1, "lumio-lancedb": 1},
     }
 
     for name, member in ALL_MEMBERS.items():
@@ -155,8 +151,8 @@ def test_no_two_wheels_own_the_same_python_module_path():
         assert len(roots) == 1, f"{name} declares {len(roots)} roots"
     # The roots are disjoint at the top-level Python package name.
     top_level = {name: Path(roots[0]).name for name, roots in roots_by_member.items()}
-    assert len(set(top_level.values())) == 3, top_level
-    assert set(top_level.values()) == {"lumio", "lumio_wiki", "lumio_lancedb"}, top_level
+    assert len(set(top_level.values())) == 2, top_level
+    assert set(top_level.values()) == {"lumio_wiki", "lumio_lancedb"}, top_level
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +192,7 @@ def built_wheels(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
 @pytest.mark.slow
 def test_each_member_builds_a_wheel_independently(built_wheels: dict[str, Path]):
     """AC1: every member produces a wheel from the workspace without its siblings."""
-    assert set(built_wheels) == {"lumio-wiki", "lumio-lancedb", "lumio"}
+    assert set(built_wheels) == {"lumio-wiki", "lumio-lancedb"}
 
 
 @pytest.mark.slow
@@ -205,7 +201,6 @@ def test_built_wheels_ship_disjoint_python_roots(built_wheels: dict[str, Path]):
     expected_roots = {
         "lumio-wiki": {"lumio_wiki"},
         "lumio-lancedb": {"lumio_lancedb"},
-        "lumio": {"lumio"},
     }
     for name, wheel in built_wheels.items():
         roots: set[str] = set()
@@ -232,10 +227,6 @@ def test_built_wheels_declare_bounded_inter_member_ranges(built_wheels: dict[str
     expected = {
         "lumio-wiki": {},
         "lumio-lancedb": {"lumio-wiki": {">=0.1.2", "<0.2.0"}},
-        "lumio": {
-            "lumio-wiki": {">=0.1.2", "<0.2.0"},
-            "lumio-lancedb": {">=0.1.2", "<0.2.0"},
-        },
     }
     for name, wheel in built_wheels.items():
         with zipfile.ZipFile(wheel) as archive:

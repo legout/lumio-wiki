@@ -10,15 +10,15 @@ certification in `tests/test_workspace_certification.py` /
 
 ## Workspace shape
 
-Lumio is a [uv](https://docs.astral.sh/uv/) workspace with three
+This repository is a [uv](https://docs.astral.sh/uv/) workspace with two
 independently buildable, independently installable members and one shared
-lockfile.
+lockfile (ADR-0025). The web application lives in a separate private
+repository and consumes these published wheels.
 
 | Member | Path | Wheel | Python root |
 |---|---|---|---|
 | `lumio-wiki` | `packages/lumio-wiki` | `lumio_wiki` | `lumio_wiki` |
 | `lumio-lancedb` | `packages/lumio-lancedb` | `lumio_lancedb` | `lumio_lancedb` |
-| `lumio` | `packages/lumio` | `lumio` | `lumio` |
 
 The workspace root (`pyproject.toml`) is coordination only — it declares the
 workspace, shared dev tooling, and test/lint config. It is **not** a

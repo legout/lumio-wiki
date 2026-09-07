@@ -16,9 +16,9 @@ after editing this script or whenever a fixture is added.
 
 import argparse
 import sys
+from collections.abc import Callable
 from importlib import import_module
 from pathlib import Path
-from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ROOT / "sources"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import re
 from pathlib import Path
 
@@ -83,6 +84,16 @@ def test_search_and_zero_index_retrieval_are_model_free(tmp_path: Path):
         ZeroIndexRetrieval().retrieve(pages, "Lumio", mode="semantic")
 
 
+def _lumio_core_compat_available() -> bool:
+    """ADR-0025: the temporary ``lumio.core`` compatibility surface lives in
+    the private application repository; skip these alias checks when it (and
+    therefore the application) is not installed."""
+    return importlib.util.find_spec("lumio") is not None
+
+@pytest.mark.skipif(
+    not _lumio_core_compat_available(),
+    reason="lumio.core lives in the private app repo (ADR-0025)",
+)
 def test_legacy_primitive_modules_alias_the_new_owner():
     for name in (
         "records",

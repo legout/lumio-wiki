@@ -18,7 +18,6 @@ inside a **coding-agent harness** (opencode, Claude Code, Codex, etc.).
 |---|---|---|
 | `lumio-wiki` | Knowledge Base model, CLI, validation, search, traversal, ingest | [CLI](#1-cli) + [Python library](#2-python-library) + [Coding agent](#3-coding-agent-harness) |
 | `lumio-lancedb` | `lumio-wiki` + LanceDB BM25/semantic/hybrid retrieval | [Enhanced retrieval](#enhanced-retrieval-optional) |
-| `lumio` | `lumio-wiki` + `lumio-lancedb` + the full Stario web app | [Web app](#web-app-deployment-optional) |
 
 ## Install
 
@@ -228,7 +227,6 @@ lumio retrieve <kb-path> "<query>" [--limit N]    # lexical/frontmatter/graph re
 lumio ask <kb-path> "<question>"                  # cited answer via the Agent Runtime
 lumio sync <source> "<query>" --working-dir <path>  # sync a storage source, then retrieve
               [--kb-path <p>] [--ref <branch>] [--mode git|shared|hybrid]
-lumio serve [--host HOST] [--port PORT]           # run the web app
 ```
 
 In a checked-out repository, prefix with `uv run`:
@@ -744,28 +742,3 @@ scored the run (`lumio-eval-deterministic-hash` for the stand-in), so a
 reviewer can tell the hash stand-in from a real model at a glance (#158).
 
 ---
-
-## Web app deployment (optional)
-
-The full `lumio` wheel adds the deployable Stario web app:
-
-```bash
-pip install lumio
-
-# Configure
-export LUMIO_KB_PATH=/data/kb
-export LUMIO_STORAGE_MODE=git
-export LUMIO_GIT_SOURCE=https://github.com/you/your-compiled-wiki.git
-export LUMIO_PROVIDER_BASE_URL=http://localhost:11434/v1   # Ollama
-export LUMIO_PROVIDER_MODEL=llama3
-export LUMIO_PROVIDER_API_KEY=ignored
-
-# Serve
-lumio serve --port 8000
-```
-
-Then open `http://localhost:8000/setup` to create the Owner account
-(first-run only). See the [README](../README.md) for Docker deployment,
-storage modes, and the full HTTP surface.
- See the [README](../README.md) for Docker deployment,
-storage modes, and the full HTTP surface.

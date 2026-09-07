@@ -2,8 +2,8 @@
 
 Guards the invariants the release pipeline depends on:
 
-1. **Lockstep family** — all three inter-member distributions carry one
-   version. A tag builds all three wheels from that version
+1. **Lockstep family** — both inter-member distributions carry one
+   version. A tag builds both wheels from that version
    (``.github/workflows/release.yml`` asserts it), so drifted member
    versions would publish a broken family.
 2. **Bounded inter-member ranges** — every member-to-member dependency
@@ -29,7 +29,6 @@ ROOT = Path(__file__).resolve().parents[1]
 MEMBERS = {
     "lumio-wiki": ROOT / "packages" / "lumio-wiki" / "pyproject.toml",
     "lumio-lancedb": ROOT / "packages" / "lumio-lancedb" / "pyproject.toml",
-    "lumio": ROOT / "packages" / "lumio" / "pyproject.toml",
 }
 RELEASE_NOTES = ROOT / "docs" / "release-notes" / "v0.1.1.md"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
@@ -51,7 +50,7 @@ def _all_requirements(project: dict) -> list[str]:
 def test_members_share_one_lockstep_version():
     versions = {name: _project(path)["version"] for name, path in MEMBERS.items()}
     assert len(set(versions.values())) == 1, (
-        "the three distributions release as one lockstep family "
+        "the two distributions release as one lockstep family "
         f"(issue #181 pre-1.0 policy); found {versions}"
     )
 
@@ -82,7 +81,7 @@ def test_inter_member_bounds_track_the_released_family():
                     f"the lockstep family {expected}"
                 )
                 checked += 1
-    assert checked >= 4, "expected the documented member-to-member edges"
+    assert checked >= 1, "expected the documented member-to-member edges"
 
 
 def test_release_notes_cover_the_required_topics():

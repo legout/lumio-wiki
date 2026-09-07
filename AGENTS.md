@@ -2,15 +2,19 @@
 
 ## Project Context
 
-This repository contains the Lumio project: deployable chat for trusted knowledge and data. The MVP is a single-tenant, deployable browser agent platform over compiled Markdown knowledge bases.
+This repository contains the open-source Lumio foundation: the portable,
+model-free Knowledge Base SDK (`packages/lumio-wiki`) and the optional LanceDB
+enhanced-retrieval adapter (`packages/lumio-lancedb`). The deployable Lumio web
+application lives in a separate private repository and consumes these published
+wheels (ADR-0025).
 
 Before implementation work, read:
 
 - `CONTEXT.md` — the project's ubiquitous language (glossary).
-- `docs/prd/0001-knowledge-agent-platform.md` — the approved platform PRD.
+- `docs/prd/0002-core-sdk.md` — the Core SDK PRD.
 - `docs/adr/` — architectural decisions that govern implementation choices.
-
-The intended architecture is an SDK-centered modular monolith: one deployable app for the MVP, with a reusable Knowledge Base Core SDK and thin clients for web, external chat UIs, future CLI, and local coding agents.
+  ADR-0010 defines the workspace and packaging; ADR-0025 records the
+  repository split.
 
 ## Validation
 
@@ -18,19 +22,9 @@ The intended architecture is an SDK-centered modular monolith: one deployable ap
 - Run the full suite with four workers: `uv run pytest -q -n 4`.
 - Do not use `-n auto`; a fixed worker count keeps local and CI resource use predictable.
 
-## Agent skills
+## License
 
-### Issue tracker
-
-Issues and PRDs live as GitHub issues in `legout/lumio` (uses the `gh` CLI). External PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Default mattpocock vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context layout: one `CONTEXT.md` at the repo root + `docs/adr/`. See `docs/agents/domain.md`.
+Contributions are licensed Apache-2.0 (see LICENSE).
 
 <!-- lumio-wiki-kb -->
 ## Lumio Knowledge Base
@@ -87,6 +81,6 @@ automatically when no `<kb>` argument is given).
 
 - `lumio-wiki doctor` — version, detected extras, skill location.
 - `lumio-wiki health` — page counts, validation, Discovery Graph health.
-- `lumio-wiki status [<kb> | --json]` — effective configuration and retrieval state: role, location + config source, published version/fingerprint (S3), retrieval backend/mode, graph source, LanceDB health + fallback, artifact retention, validation, next action.
+- `lumio-wiki status [<kb> | --json]` — effective configuration and retrieval state.
 - `lumio-wiki validate` — exit 0 if valid, 1 otherwise.
 - `lumio-wiki lint` — full QA report (superset of validate + structural diagnostics).

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 from pathlib import Path
 
+import pytest
 from lumio_wiki.knowledge_base import load_knowledge_base
 
 ROOT = Path(__file__).parents[3]
@@ -51,5 +53,15 @@ def test_okf_export_and_import_use_only_portable_foundation(tmp_path: Path):
     }
 
 
+def _lumio_core_compat_available() -> bool:
+    """ADR-0025: the temporary ``lumio.core`` compatibility surface lives in
+    the private application repository; skip these alias checks when it (and
+    therefore the application) is not installed."""
+    return importlib.util.find_spec("lumio") is not None
+
+@pytest.mark.skipif(
+    not _lumio_core_compat_available(),
+    reason="lumio.core lives in the private app repo (ADR-0025)",
+)
 def test_legacy_okf_module_aliases_the_new_owner():
     assert importlib.import_module("lumio.core.okf") is importlib.import_module("lumio_wiki.okf")

@@ -20,7 +20,6 @@ All tests are zero-index: no LanceDB is built, proving #106 works without it.
 from pathlib import Path
 
 import pytest
-
 from lumio_wiki import KnowledgeBase, load_knowledge_base
 from lumio_wiki.records import CompiledPage, Relationship, Source
 

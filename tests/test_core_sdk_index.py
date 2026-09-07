@@ -1,8 +1,6 @@
 import shutil
-import sys
 import tempfile
 from pathlib import Path
-from subprocess import run
 
 from lumio_wiki import (
     Citation,
@@ -203,26 +201,13 @@ def test_retrieval_result_source_type_is_free_string():
 
 
 def test_cli_retrieve_returns_cited_results():
-    with tempfile.TemporaryDirectory() as tmp:
-        index_dir = Path(tmp)
-        result = run(
-            [
-                sys.executable,
-                "-m",
-                "lumio.cli",
-                "retrieve",
-                str(FIXTURES / "valid"),
-                "Lumio uses LanceDB",
-                "--index-dir",
-                str(index_dir),
-            ],
-            capture_output=True,
-            text=True,
-        )
-    assert result.returncode == 0
-    assert "Architecture" in result.stdout
-    assert "Lumio uses LanceDB" in result.stdout
-    assert "architecture.md" in result.stdout
+    # ADR-0025: the application CLI lives in the private repository; the
+    # public seam here is the SDK's in-process retrieval.
+    kb, _ = load_knowledge_base(FIXTURES / "valid")
+    results = kb.retrieve("Lumio uses LanceDB", limit=5)
+    assert results
+    assert any(r.evidence.source_type == "compiled_markdown" for r in results)
+    assert any("architecture" in r.citation.relative_path for r in results)
 
 
 def _search_page(

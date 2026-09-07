@@ -1,43 +1,46 @@
-# Workspace root — coordination only (ADR-0010, issue #102).
+# Workspace root — coordination only (ADR-0010).
 # This file is NOT a distributable package: it declares the uv workspace,
-# shared dev tooling, and test/lint config. The full ``lumio`` application
-# lives in ``packages/lumio``; the standalone ``lumio-wiki`` and the
-# ``lumio-lancedb`` adapter live alongside it. Each member owns its own
-# project metadata and build backend.
+# shared dev tooling, and test/lint config. The standalone ``lumio-wiki``
+# foundation and the ``lumio-lancedb`` adapter live alongside it. The full
+# ``lumio`` web application lives in a separate private repository and
+# consumes these two published wheels.
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["packages/lumio", "packages/lumio-lancedb", "packages/lumio-wiki"]
+members = ["packages/lumio-lancedb", "packages/lumio-wiki"]
 
 [tool.uv.sources]
-lumio = { workspace = true }
 lumio-lancedb = { workspace = true }
 lumio-wiki = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "playwright>=1.61.0",
     "pytest>=8.0",
     "pytest-xdist>=3.8.0",
     "ruff>=0.5.0",
-    # Issue #120: the S3 in-memory ObjectStore contract suite MUST run in
-    # every CI/local run, so obstore is a dev dependency (it stays optional
-    # for installed wheels via the lumio-wiki[s3] extra).
+    # The S3 in-memory ObjectStore contract suite MUST run in every CI/local
+    # run, so obstore is a dev dependency (it stays optional for installed
+    # wheels via the lumio-wiki[s3] extra).
     "obstore>=0.11.0",
+    # The document-converter and unattended-distillation suites run in the
+    # workspace environment where the extras' implementations are installed
+    # (the base-wheel-without-extras proof lives in test_wheel_isolation.py).
+    "liteparse>=2.4.0",
+    "markitdown[docx]>=0.1.6",
+    "firecrawl-anydoc==0.1.3",
+    "openai>=1.40.0",
 ]
 
 [tool.pyright]
-# Point type checkers at the workspace venv (uv sync creates .venv with all
-# three members editable-installed). Without this, Pyright cannot resolve
-# msgspec/pytest/lumio_wiki and reports spurious missing-import errors.
+# Point type checkers at the workspace venv (uv sync creates .venv with both
+# members editable-installed).
 venvPath = "."
 venv = ".venv"
 
 [tool.pytest.ini_options]
-# Issue #138: the retrieval gold-set evaluation gate (``eval/``) is part of the
-# default suite so every run is a regression check for retrieval-touching
-# changes. Its LanceDB stages skip gracefully when the adapter is absent.
+# The retrieval gold-set evaluation gate (``eval/``) is part of the default
+# suite so every run is a regression check for retrieval-touching changes.
 testpaths = ["tests", "packages/lumio-lancedb/tests", "packages/lumio-wiki/tests", "eval"]
 markers = [
     "slow: tests that build wheels or create isolated virtual environments",
