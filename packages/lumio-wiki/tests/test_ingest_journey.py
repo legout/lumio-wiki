@@ -7,6 +7,7 @@ review, publish and discard behavior without optional dependencies.
 
 from __future__ import annotations
 
+import os
 import shutil
 import socket
 from pathlib import Path
@@ -331,3 +332,148 @@ def test_candidate_validation_reports_socket_occupant_like_live_apply(tmp_path: 
     assert issues[0].field == "destination"
     assert issues[0].message == str(live.value)
     assert "unreadable" in issues[0].message
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFOs")
+def test_fifo_occupant_is_rejected_without_opening_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Review-fix regression (Plan 02 / P2): the occupied-target preflight used
+    # to probe readability by OPENING every non-directory occupant. A FIFO
+    # occupant blocked that open(2) forever (its read side waits for a writer
+    # that never comes), hanging the preflight before any conflict could be
+    # raised. The preflight now types the occupant with a nonblocking stat
+    # FIRST and rejects every non-regular special file: a FIFO is never
+    # opened, live apply raises DestinationConflict promptly, and candidate
+    # validation aggregates the same blocking destination issue. The guarded
+    # Path.open below turns a regression back into a fast failure (instead of
+    # a hung suite) if the preflight ever opens the FIFO again.
+    kb = _kb(tmp_path)
+    fifo_path = kb.root / "a_b.md"
+    os.mkfifo(fifo_path)
+    real_open = Path.open
+
+    def _never_open_the_fifo(self, *args, **kwargs):
+        if self == fifo_path:
+            raise AssertionError("the preflight must never open a FIFO occupant")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _never_open_the_fifo)
+    page = lw.ProposedPage(
+        relative_path="a_b.md",
+        title="A_B",
+        markdown=_probe_markdown("A_B", "ab-fifo-review-fix"),
+    )
+
+    with pytest.raises(DestinationConflict) as live:
+        lw.apply_proposed_pages([page], kb.root)
+    report = lw.validate_candidate_knowledge_base([page], kb.root)
+
+    # The FIFO occupant was never opened and never replaced.
+    assert fifo_path.is_fifo()
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].message == str(live.value)
+    assert "special file" in issues[0].message
+
+
+def test_blocked_ancestor_parent_prevents_any_partial_write(tmp_path: Path):
+    # Review-fix regression (Plan 02 / P2): a proposed destination whose
+    # parent component is an existing non-directory (a page file where a
+    # subdirectory would be needed) used to fail with a raw
+    # NotADirectoryError/FileExistsError from mkdir(parents=True) in the APPLY
+    # phase — after earlier pages of the same proposal had already been
+    # written. The shared preflight now checks every parent component of
+    # every proposed destination (and of every move source, removal target,
+    # and the Control File destination) BEFORE any write: the conflict raises
+    # up front, the earlier VALID page is never written, and candidate
+    # validation returns the conflict as a destination issue instead of
+    # leaking the filesystem exception. Missing parents stay creatable.
+    kb = _kb(tmp_path)
+    assert (kb.root / "overview.md").is_file()
+    first = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-ancestor-review-fix"),
+    )
+    blocked = lw.ProposedPage(
+        relative_path="overview.md/extra/inner.md",
+        title="Inner",
+        markdown=_probe_markdown("Inner", "inner-ancestor-review-fix"),
+    )
+
+    with pytest.raises(DestinationConflict):
+        lw.apply_proposed_pages([first, blocked], kb.root)
+    # The valid page came FIRST in proposal order: it must still not exist,
+    # proving the preflight ran before ANY page write.
+    assert not (kb.root / "fresh.md").exists()
+    assert not (kb.root / "overview.md").is_dir()
+    assert (kb.root / "overview.md").is_file()
+
+    report = lw.validate_candidate_knowledge_base([first, blocked], kb.root)
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert issues and all(issue.field == "destination" for issue in issues), issues
+    assert any("overview.md" in issue.message for issue in issues), issues
+
+
+def test_control_file_directory_destination_is_rejected_before_page_writes(tmp_path: Path):
+    # Review-fix regression (Plan 02 / P2): when a Control File is supplied
+    # and lumio.yaml is occupied by an existing directory, the atomic Control
+    # File write used to fail with IsADirectoryError in the APPLY phase —
+    # after the proposal's page writes had already landed. The shared
+    # preflight now rejects the unusable Control File destination up front:
+    # live apply raises DestinationConflict with the pages untouched, and
+    # candidate validation returns the same conflict as a destination issue.
+    kb = _kb(tmp_path)
+    (kb.root / "lumio.yaml").mkdir()
+    control = lw.KnowledgeBaseControlFile(version=1)
+    page = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-control-dir-review-fix"),
+    )
+
+    with pytest.raises(DestinationConflict) as live:
+        lw.apply_proposed_pages([page], kb.root, control_file=control)
+    # Pages untouched; the directory occupant survives.
+    assert not (kb.root / "fresh.md").exists()
+    assert (kb.root / "lumio.yaml").is_dir()
+
+    report = lw.validate_candidate_knowledge_base([page], kb.root, control_file=control)
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].message == str(live.value)
+    assert "lumio.yaml" in issues[0].message
+
+
+def test_control_file_replacement_still_works_for_regular_and_missing_paths(tmp_path: Path):
+    # Review-fix companion (Plan 02 / P2): the new Control File destination
+    # preflight must not disturb the normal behavior — an existing REGULAR
+    # lumio.yaml is replaced and a MISSING one is created, in the same atomic
+    # proposal as the proposed pages.
+    control = lw.KnowledgeBaseControlFile(version=1)
+    page = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-control-replace-review-fix"),
+    )
+    for name, preexisting in (("regular", True), ("missing", False)):
+        root = tmp_path / name
+        shutil.copytree(FIXTURES, root)
+        if preexisting:
+            (root / "lumio.yaml").write_text("legacy: junk\n", encoding="utf-8")
+
+        lw.apply_proposed_pages([page], root, control_file=control)
+
+        assert (root / "fresh.md").exists(), name
+        control_path = root / "lumio.yaml"
+        assert control_path.is_file(), name
+        written = control_path.read_text(encoding="utf-8")
+        assert "version: 1" in written, name
+        if preexisting:
+            assert "legacy" not in written, name

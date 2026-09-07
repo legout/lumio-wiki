@@ -17,17 +17,23 @@ candidate tree — resolves and checks its destinations through ONE resolution
 BEFORE any candidate or live byte is written. A new ``A_B`` can no longer
 replace an existing ``A B`` at ``a_b.md``: occupied targets, duplicate
 targets within one proposal, existing directories, unreadable occupants,
-escaping paths, compound-fallback collisions, and move sources that are
-directories (unremovable after the write) are rejected up front. The
-candidate gate resolves against the REAL root before its throwaway copy is
-made, so an occupant ``copytree`` could never get past still produces the
-same destination issue as live apply. There is no automatic suffix
-allocation and no removal that was not declared.
+special-file occupants (FIFOs, sockets, devices — typed with a nonblocking
+``stat`` so a FIFO is never opened), non-directory ancestors of any
+proposed destination, move source, removal target, or the Control File
+destination, an unusable Control File destination (an existing directory
+at ``lumio.yaml``), escaping paths, compound-fallback collisions, and move
+sources that are directories (unremovable after the write) are rejected up
+front. The candidate gate resolves against the REAL root before its
+throwaway copy is made, so an occupant ``copytree`` could never get past
+still produces the same destination issue as live apply. There is no
+automatic suffix allocation and no removal that was not declared.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -137,8 +143,11 @@ def _reject_occupied_target(
     """Reject an occupied destination before any write (B01).
 
     Generalizes the explicit move collision guard (issue #80, P1.2) to every
-    write branch: an existing directory, an unreadable occupant, or a file
-    owned by a different page is never overwritten. ``revising`` names the one
+    write branch: an existing directory, an unreadable occupant, a special
+    file (FIFO, socket, device — rejected via a nonblocking ``stat`` type
+    probe so the preflight never opens a FIFO, whose read side would block
+    forever), or a file owned by a different page is never overwritten.
+    ``revising`` names the one
     title allowed to occupy the path — the page's own recorded file for a
     revision (identity continuity), the old title's file for a reviewed rename
     (ADR-0016), or nobody for a new page. A missing file is always acceptable:
@@ -154,8 +163,30 @@ def _reject_occupied_target(
             file=relative_path,
         )
     try:
+        # Nonblocking type probe FIRST: stat(2) never opens the occupant, so
+        # a FIFO occupant cannot hang the preflight the way the readability
+        # open(2) below would (a FIFO's read side blocks until a writer
+        # appears). Only a regular file is ever opened afterwards, so the
+        # probe can neither block on a FIFO nor side-effect a device or
+        # socket (B01).
+        occupant_mode = os.stat(target).st_mode
+    except OSError as exc:
+        raise DestinationConflict(
+            f"Proposed page {page_title!r} destination is an unreadable file "
+            f"that must not be overwritten: {relative_path}",
+            file=relative_path,
+        ) from exc
+    if not stat.S_ISREG(occupant_mode):
+        raise DestinationConflict(
+            f"Proposed page {page_title!r} destination is occupied by an "
+            f"unreadable special file that must not be opened or overwritten: "
+            f"{relative_path}",
+            file=relative_path,
+        )
+    try:
         # Probe readability honestly: os.access lies when running as root, and
-        # an occupant we cannot read is one we must not overwrite (B01).
+        # an occupant we cannot read is one we must not overwrite (B01). Only
+        # reached for regular files, so the open can never block.
         with target.open("rb"):
             pass
     except OSError as exc:
@@ -447,6 +478,90 @@ def _reject_proposal_overlaps(
         )
 
 
+def _reject_unusable_control_file_path(
+    root: Path,
+    control_file: KnowledgeBaseControlFile | None,
+) -> None:
+    """Reject an unusable Control File destination BEFORE any page write (B01).
+
+    ``write_control_file`` replaces ``lumio.yaml`` atomically (temp file plus
+    ``os.replace``), which fails with ``IsADirectoryError`` while an existing
+    directory occupies the path — a failure that would otherwise surface only
+    AFTER the proposal's page writes had already landed, stranding them behind
+    a Control File that can never be written. When a Control File is supplied,
+    the shared preflight therefore requires the path to be absent or a
+    replaceable non-directory; a directory (directly or through a symlink) is
+    rejected up front, and candidate validation aggregates the same conflict
+    as a destination issue. A regular file keeps the normal replacement
+    behavior and a missing path is created.
+    """
+    if control_file is None:
+        return
+    target = root / CONTROL_FILE_BASENAME
+    if target.exists() and target.is_dir():
+        raise DestinationConflict(
+            f"Control File destination is an existing directory and cannot be "
+            f"replaced by the proposed {CONTROL_FILE_BASENAME}: the Control "
+            f"File write would only fail after the proposal's page writes",
+            file=CONTROL_FILE_BASENAME,
+        )
+
+
+def _reject_non_directory_ancestors(
+    destinations: list[_Destination],
+    removals: list[tuple[str, str]],
+    root: Path,
+    control_file: KnowledgeBaseControlFile | None,
+) -> None:
+    """Reject blocked parent components BEFORE any candidate or live write (B01).
+
+    ``Path.mkdir(parents=True)`` cannot create a parent path through an
+    existing non-directory: a page file where a subdirectory is needed makes
+    the apply phase fail with ``NotADirectoryError``/``FileExistsError`` —
+    after earlier pages of the same proposal were already written. Every
+    parent component of every proposed destination, of every move source that
+    must actually be unlinked, of every declared removal target, and of the
+    Control File destination is therefore checked here, still in the shared
+    check-only phase: an existing non-directory ancestor (a dangling symlink
+    included) raises :class:`DestinationConflict`, while missing parents stay
+    valid (they are created on demand) and symlinked directories keep
+    resolving like directories, preserving the escape checks made at
+    resolution time. Candidate validation runs the same preflight against the
+    REAL root before the throwaway copy, so the conflict comes back as a
+    destination issue instead of leaking a filesystem exception.
+    """
+    checked: list[tuple[str, str]] = []
+    for destination in destinations:
+        checked.append(
+            (destination.relative_path, f"Proposed page {destination.page.title!r} destination")
+        )
+        if destination.kind == "move" and destination.source_relative_path:
+            # "As applicable": a move source is only unlinked when it exists,
+            # so only an existing source needs its parent path guaranteed.
+            if (root / destination.source_relative_path).exists():
+                checked.append(
+                    (
+                        destination.source_relative_path,
+                        f"Move source of proposed page {destination.page.title!r}",
+                    )
+                )
+    checked.extend((relative, f"Removal target of {title!r}") for title, relative in removals)
+    if control_file is not None:
+        checked.append((CONTROL_FILE_BASENAME, "Control File destination"))
+    for relative, label in checked:
+        for parent in (root / relative).parents:
+            if parent == root:
+                break
+            # lexists (not exists): a dangling symlink ancestor would also
+            # break mkdir(parents=True) with FileExistsError mid-apply.
+            if os.path.lexists(parent) and not parent.is_dir():
+                raise DestinationConflict(
+                    f"{label} at {relative} is blocked by a non-directory "
+                    f"ancestor: {parent} exists and is not a directory",
+                    file=relative,
+                )
+
+
 def _apply_checked_destinations(
     destinations: list[_Destination],
     removals: list[tuple[str, str]],
@@ -513,7 +628,15 @@ def apply_proposed_pages(
     atomically with the removal. It is written only when supplied, and its
     fixed path (``lumio.yaml`` at the root) is resolved against the proposed
     destinations before any page write, so a page can never overwrite the
-    Control File.
+    Control File. A Control File destination occupied by an existing
+    directory is rejected in the same shared preflight, BEFORE any page
+    write — the atomic Control File replacement could otherwise only fail
+    after the proposal's pages had already landed. Likewise, every parent
+    component of every proposed destination, move source, removal target,
+    and the Control File path must be an existing (or creatable) directory:
+    a non-directory ancestor is rejected up front instead of surfacing as a
+    ``NotADirectoryError``/``FileExistsError`` after earlier pages of the
+    same proposal were written.
     """
     root = Path(working_dir).resolve()
     existing_by_title = _existing_paths_by_title(root)
@@ -525,6 +648,12 @@ def apply_proposed_pages(
         else []
     )
     _reject_proposal_overlaps(destinations, removals)
+    # Phase 1b — preflight the write-tool paths themselves BEFORE any mutation
+    # (B01): an unusable Control File destination and every non-directory
+    # ancestor of every proposed destination, move source, removal target,
+    # and the Control File path are rejected while the KB is still untouched.
+    _reject_unusable_control_file_path(root, control_file)
+    _reject_non_directory_ancestors(destinations, removals, root, control_file)
     # Phase 2 — apply the checked mutations in the documented order.
     _apply_checked_destinations(destinations, removals, root, control_file)
 
@@ -612,6 +741,7 @@ def apply_compound_revision(page, working_dir: str | Path) -> Path:
     (destination,) = _resolve_proposed_destinations(
         [page], root, existing_by_title, force_compound=True
     )
+    _reject_non_directory_ancestors([destination], [], root, None)
     return _write_destination(destination, root)
 
 
@@ -643,8 +773,11 @@ def validate_candidate_knowledge_base(
     resolved and checked against the REAL root BEFORE the throwaway candidate
     tree is copied, so a conflict — including an uncopyable occupant such as
     a Unix socket at a proposed destination, which ``copytree`` itself could
-    never get past — comes back as an error ``ValidationIssue`` instead of
-    raised, exactly the conflict live application would raise. Only
+    never get past, a FIFO occupant the preflight must never open, a
+    non-directory ancestor of any write/removal/Control File path, or an
+    unusable Control File destination — comes back as an error
+    ``ValidationIssue`` instead of raised, exactly the conflict live
+    application would raise. Only
     :class:`DestinationConflict` is translated; unexpected errors still
     propagate. The checked destination set is then applied to the candidate
     unchanged, so the validated tree is the tree publication would write.
@@ -677,6 +810,12 @@ def validate_candidate_knowledge_base(
             else []
         )
         _reject_proposal_overlaps(destinations, removals)
+        # The same preflight runs here so a blocked Control File destination or
+        # a non-directory ancestor surfaces as an aggregated destination issue
+        # against the REAL root, never as a filesystem exception from the
+        # candidate apply phase (Plan 02 / P2, B01).
+        _reject_unusable_control_file_path(root, control_file)
+        _reject_non_directory_ancestors(destinations, removals, root, control_file)
     except DestinationConflict as exc:
         return _conflict_report(exc)
     with tempfile.TemporaryDirectory() as tmp:
