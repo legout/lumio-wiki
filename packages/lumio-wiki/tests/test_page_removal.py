@@ -248,10 +248,13 @@ def test_relationship_repair_drops_edges_and_repairs_exactly_resolved_links(tmp_
         repair.markdown
     )
     assert "[[Beta]]" not in repair.markdown and "(beta.md)" not in repair.markdown
-    # Disclosure still lists the repaired links (reviewer visibility).
-    assert any(
-        c.source_title == "Alpha" and c.target_title == "Beta" for c in proposal.body_link_repairs
-    )
+    # Disclosure lists each repaired link exactly once (reviewer visibility).
+    alpha_beta = [
+        c
+        for c in proposal.body_link_repairs
+        if c.source_title == "Alpha" and c.target_title == "Beta"
+    ]
+    assert len(alpha_beta) == 1
 
 
 def test_body_only_page_without_claims_is_proposed_and_repaired(tmp_path):

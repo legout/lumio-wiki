@@ -694,9 +694,6 @@ class ProposalPipeline:
         # pages keep their location line (reviewer visibility); ambiguous
         # destinations never appear (they are not exactly resolved).
         _refs, diagnostics = _extract_references(self._kb.pages)
-        _reference_by_key = {
-            (ref.source_title, ref.target_title): ref for ref in _refs
-        }
         proposed_pages: list[ProposedPage] = []
         body_link_repairs: list[BodyLinkRepairCandidate] = []
         validation_issues: list = []
@@ -710,20 +707,6 @@ class ProposalPipeline:
             _data, _body, body_start_line = parse_frontmatter(
                 page_markdown, self._kb.root / page.path
             )
-            has_claim = any(claim.object == removed_entity_id for claim in page.claims)
-            if has_claim:
-                ref = _reference_by_key.get((page.title, title))
-                if ref is not None:
-                    body_link_repairs.append(
-                        BodyLinkRepairCandidate(
-                            source_title=ref.source_title,
-                            source_path=ref.source_path,
-                            target_title=ref.target_title,
-                            origin=ref.origin,
-                            line_start=ref.line_start,
-                            line_end=ref.line_end,
-                        )
-                    )
             repaired, changed, ambiguous = _repair_page_for_removal(
                 page_markdown,
                 removed_entity_id,
@@ -747,9 +730,9 @@ class ProposalPipeline:
                 ProposedPage(relative_path=page.path, title=page.title, markdown=repaired)
             )
 
-        # Keep-link disclosure (AC6): an exactly-resolved body link on a page
-        # with NO Claim repair still gets its revision (link unwrapped), and
-        # the location is disclosed for reviewer visibility.
+        # Disclosure (AC6): every exactly-resolved body link is disclosed
+        # once for reviewer visibility. Pages with a Claim drop the edge and
+        # the link in ONE revision; body-only pages get the unwrap-only one.
         for ref in _refs:
             if ref.target_title == title and ref.source_title != title:
                 body_link_repairs.append(
