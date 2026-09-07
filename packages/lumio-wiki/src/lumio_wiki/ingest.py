@@ -344,16 +344,17 @@ class PageRemoval(msgspec.Struct, frozen=True):
 
 
 class BodyLinkRepairCandidate(msgspec.Struct, frozen=True):
-    """A location-bearing body-link repair candidate for a Page Removal (#135).
+    """Location-bearing disclosure of a body-link repair in a Page Removal (#135).
 
     One internal Markdown/wikilink in another Compiled Page's body that
-    targeted the removed page. It is an explicit, location-bearing repair
-    CANDIDATE or diagnostic: it is never silently redirected to a guessed page
-    (ADR-0014, ADR-0016). The Maintainer decides whether to drop the link,
-    re-point it, or leave it (a remaining link surfaces post-removal as a
-    non-blocking broken-internal-link warning). ``origin`` is the resolver's
-    link origin (``markdown-link`` or ``wikilink``); ``line_start``/``line_end``
-    are 1-based and map to the source file.
+    resolved exactly to the removed page and is unwrapped to its readable
+    text by the same proposal (``[[T]]``/``[[T|L]]`` -> ``T``/``L``,
+    ``[L](t.md)`` -> ``L``). Disclosed so a Maintainer can see and adjust
+    every repaired location during review; ambiguous destinations are never
+    guessed or listed (ADR-0014, ADR-0016). A link left un-repaired surfaces
+    post-removal as a non-blocking broken-internal-link warning. ``origin``
+    is the resolver's link origin (``markdown-link`` or ``wikilink``);
+    ``line_start``/``line_end`` are 1-based and map to the source file.
     """
 
     source_title: str
