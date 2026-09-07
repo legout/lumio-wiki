@@ -405,6 +405,40 @@ class DuplicateEntityCandidate:
     signals_rank: int
 
 
+# Synthesis candidates (t_c13aea62): read-only page pairs whose ACCEPTED
+# Claims justify a synthetic Compiled Page. Advisory always: authoring is a
+# Distiller decision routed through the ordinary ingest/proposal pipeline —
+# nothing is authored or staged automatically (ADR-0021, ADR-0015).
+# ---------------------------------------------------------------------------
+
+#: Default bound on synthesis candidates carried on a DreamReport.
+SYNTHESIS_CANDIDATE_LIMIT = 10
+
+#: Support tiers, strongest value last. Only accepted entity-to-entity Claims
+#: justify a candidate (ADR-0021): mutual claims (strongest), a one-way claim,
+#: two pages claiming the same object (weakest — suggests a shared-topic page).
+SIGNAL_SHARED_OBJECT = 1
+SIGNAL_ONE_WAY_CLAIM = 2
+SIGNAL_MUTUAL_CLAIMS = 3
+
+
+@dataclass(frozen=True, slots=True)
+class SynthesisCandidate:
+    """One read-only synthesis opportunity for the Dream report.
+
+    ``signals`` explains EXACTLY why the pair was emitted, naming the accepted
+    Claim predicates or the shared Claim object. ``signals_rank`` is the tier
+    of the strongest signal. Advisory always: nothing is authored or staged
+    automatically — a synthetic page enters the Knowledge Base only through
+    the ordinary authored-page proposal pipeline.
+    """
+
+    entity_a_id: str
+    entity_b_id: str
+    signals: tuple[str, ...]
+    signals_rank: int
+
+
 def _title_tokens(title: str) -> frozenset[str]:
     """Lowercase ASCII word tokens of a title (deterministic, no deps)."""
     tokens: list[str] = []
@@ -483,6 +517,195 @@ def find_duplicate_entity_candidates(
     )
     return found
 
+
+def find_synthesis_candidates(
+    pages: Sequence[CompiledPage],
+) -> list[SynthesisCandidate]:
+    """Rank page pairs whose accepted Claims justify one synthetic page.
+
+    Pure and I/O-free. Two DISTINCT Entities become one candidate when their
+    ACCEPTED entity-to-entity Claims touch: claims in both directions
+    (strongest), a claim in one direction, or both claiming the same object
+    Entity (weakest). Literal, disputed, superseded, and dangling-claim
+    targets never justify a candidate — the same accepted-entity projection
+    rule as canonical traversal (ADR-0021). Legacy Flat Mode pages (no Entity
+    ID) and synthetic pages never enter the comparison. Deterministically
+    ordered: strongest rank first, then Entity IDs.
+    """
+    live = [page for page in pages if page.id and not page.synthetic and page.title]
+    index: dict[str, CompiledPage] = {}
+    for page in live:
+        index.setdefault(page.id, page)
+    # Accepted entity-to-entity edges only, keyed subject -> object and back.
+    predicates_by_object: dict[str, dict[str, list[str]]] = {}
+    claimed_by: dict[str, set[str]] = {}
+    for page in live:
+        for claim in page.claims:
+            if claim.status == "accepted" and claim.object in index and claim.object != page.id:
+                predicates_by_object.setdefault(page.id, {}).setdefault(
+                    claim.object, []
+                ).append(claim.predicate)
+                claimed_by.setdefault(claim.object, set()).add(page.id)
+
+    signals_by_pair: dict[tuple[str, str], list[str]] = {}
+    rank_by_pair: dict[tuple[str, str], int] = {}
+
+    def offer(pair: tuple[str, str], signal: str, rank: int) -> None:
+        signals_by_pair.setdefault(pair, []).append(signal)
+        rank_by_pair[pair] = max(rank_by_pair.get(pair, 0), rank)
+
+    # Direct claims: one candidate per unordered pair, mutual beats one-way.
+    seen_direct: set[tuple[str, str]] = set()
+    for subject in sorted(predicates_by_object):
+        for obj in sorted(predicates_by_object[subject]):
+            pair: tuple[str, str] = (subject, obj) if subject < obj else (obj, subject)
+            if pair in seen_direct:
+                continue
+            seen_direct.add(pair)
+            forward = set(predicates_by_object[subject][obj])
+            backward = set(predicates_by_object.get(obj, {}).get(subject, ()))
+            if backward:
+                offer(
+                    pair,
+                    f"mutual-claims: {', '.join(sorted(forward | backward))}",
+                    SIGNAL_MUTUAL_CLAIMS,
+                )
+            else:
+                offer(
+                    pair,
+                    f"one-way-claim: {', '.join(sorted(forward))}",
+                    SIGNAL_ONE_WAY_CLAIM,
+                )
+
+    # Shared objects: every pair of pages claiming the same object Entity.
+    for object_id in sorted(claimed_by):
+        claimants = sorted(claimed_by[object_id])
+        for i, a in enumerate(claimants):
+            for b in claimants[i + 1 :]:
+                offer((a, b), f"shared-object: {object_id}", SIGNAL_SHARED_OBJECT)
+
+    found = [
+        SynthesisCandidate(
+            entity_a_id=a,
+            entity_b_id=b,
+            signals=tuple(signals_by_pair[(a, b)]),
+            signals_rank=rank_by_pair[(a, b)],
+        )
+        for a, b in signals_by_pair
+    ]
+    found.sort(key=lambda c: (-c.signals_rank, c.entity_a_id, c.entity_b_id))
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Transitive impact (t_c13aea62): the bounded read-only reach of ONE selected
+# page/Entity. Canonical edges (accepted Claims) support the report; Discovery
+# edges only SELECT additional pages to inspect — they are never Evidence and
+# never support a conclusion (CONTEXT.md, ADR-0011). No community detection,
+# no betweenness: direct canonical edges plus a depth-bounded reachability
+# census through the Knowledge Base's own traversal seam.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TransitiveImpactReport:
+    """One selected page's bounded transitive reach over one graph scope.
+
+    ``direct_in``/``direct_out`` are the page's immediate CANONICAL edge
+    neighbors (accepted Claims; sorted Canonical Page Titles) — they support
+    conclusions. ``pages_by_depth`` groups the graph-reachable pages by
+    first-reached hop distance over ``scope`` edges (depth 1 = direct
+    neighbors); in ``discovery`` scope those extra selections are pages to
+    inspect, never support.
+    """
+
+    seed_title: str
+    entity_id: str | None
+    scope: str
+    found: bool
+    direct_in: tuple[str, ...] = ()
+    direct_out: tuple[str, ...] = ()
+    pages_by_depth: tuple[tuple[str, ...], ...] = ()
+    truncated: bool = False
+
+    @property
+    def reachable(self) -> int:
+        return sum(len(group) for group in self.pages_by_depth)
+
+
+def find_transitive_impact(
+    kb: KnowledgeBase,
+    name: str,
+    *,
+    scope: str = GRAPH_SCOPE_CANONICAL,
+    max_depth: int = 3,
+    max_pages: int = 100,
+) -> TransitiveImpactReport:
+    """Report the bounded transitive reach of one selected page/Entity.
+
+    Reuses the loaded Knowledge Base's authorized traversal
+    (:meth:`KnowledgeBase.related_pages`) instead of a second graph walk.
+    ``name`` resolves through the exact Entity ID / Canonical Page Title /
+    alias surfaces; an unknown or ambiguous name reports ``found=False``
+    rather than guessing. Direct in/out edges are always canonical (accepted
+    Claims); the depth census runs over ``scope``. Deterministic: every group
+    is sorted Canonical Page Titles. Read-only and model-free.
+    """
+    resolution = kb.resolve_entity(name)
+    entity = resolution.entity
+    if entity is None:
+        return TransitiveImpactReport(
+            seed_title=name, entity_id=None, scope=scope, found=False
+        )
+    direct_in = tuple(
+        sorted(
+            kb.related_pages(
+                entity.title, direction="incoming", scope=GRAPH_SCOPE_CANONICAL, max_depth=1
+            )
+        )
+    )
+    direct_out = tuple(
+        sorted(
+            kb.related_pages(
+                entity.title, direction="outgoing", scope=GRAPH_SCOPE_CANONICAL, max_depth=1
+            )
+        )
+    )
+    groups: list[tuple[str, ...]] = []
+    seen: set[str] = set()
+    reached: set[str] = set()
+    truncated = False
+    for _depth in range(1, max_depth + 1):
+        # Bounded by the traversal seam itself: max_results caps each census
+        # round deterministically (sorted titles, then slice).
+        reached |= set(
+            kb.related_pages(
+                entity.title,
+                direction="both",
+                scope=scope,
+                max_depth=_depth,
+                max_results=max_pages,
+            )
+        )
+        fresh = tuple(sorted(reached - seen))
+        if len(reached) >= max_pages:
+            truncated = True
+        if not fresh:
+            break
+        groups.append(fresh)
+        seen.update(fresh)
+        if truncated:
+            break
+    return TransitiveImpactReport(
+        seed_title=entity.title,
+        entity_id=entity.id,
+        scope=scope,
+        found=True,
+        direct_in=direct_in,
+        direct_out=direct_out,
+        pages_by_depth=tuple(groups),
+        truncated=truncated,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -772,6 +995,15 @@ class DreamReport:
     #: (t_3327f75e). Advisory: routing to the explicit Entity Merge proposal
     #: is a Maintainer decision, never an automatic step.
     duplicate_candidates: tuple[DuplicateEntityCandidate, ...] = ()
+    #: Read-only synthesis opportunities over accepted-Claim neighborhoods,
+    #: bounded and stably ranked (t_c13aea62). Advisory: a synthetic page is
+    #: authored by the Distiller and staged through the ordinary proposal
+    #: pipeline — nothing is authored or staged automatically (ADR-0021).
+    synthesis_candidates: tuple[SynthesisCandidate, ...] = ()
+    #: Optional one-page transitive-impact report (t_c13aea62), present only
+    #: when the caller selected a page/Entity. Read-only; never a ranking of
+    #: the whole KB.
+    impact: TransitiveImpactReport | None = None
 
     @property
     def is_valid(self) -> bool:
@@ -788,6 +1020,10 @@ class DreamReport:
     @property
     def duplicate_count(self) -> int:
         return len(self.duplicate_candidates)
+
+    @property
+    def synthesis_count(self) -> int:
+        return len(self.synthesis_candidates)
 
 
 @dataclass(frozen=True, slots=True)
@@ -814,6 +1050,8 @@ def _run_dream_cycle_loaded(
     manifest_status: str | None = None,
     coverage_registry: SourceRegistry | None = None,
     coverage_status: str | None = None,
+    impact_target: str | None = None,
+    impact_scope: str = GRAPH_SCOPE_CANONICAL,
 ) -> DreamReport:
     """Build one Dream report from a loaded Knowledge Base view."""
     lint = _run_lint_loaded(kb, validation_report, index_dir=index_dir)
@@ -828,6 +1066,12 @@ def _run_dream_cycle_loaded(
     )
     coverage = run_source_coverage_check(kb, coverage_registry, status=coverage_status)
     duplicates = find_duplicate_entity_candidates(kb.pages)[:DUPLICATE_CANDIDATE_LIMIT]
+    synthesis = find_synthesis_candidates(kb.pages)[:SYNTHESIS_CANDIDATE_LIMIT]
+    impact = (
+        find_transitive_impact(kb, impact_target, scope=impact_scope)
+        if impact_target is not None
+        else None
+    )
     return DreamReport(
         lint=lint,
         ranked_candidates=tuple(ranked),
@@ -835,6 +1079,8 @@ def _run_dream_cycle_loaded(
         drift=drift,
         coverage=coverage,
         duplicate_candidates=tuple(duplicates),
+        synthesis_candidates=tuple(synthesis),
+        impact=impact,
     )
 
 
@@ -847,6 +1093,8 @@ def run_dream_cycle(
     manifest_status: str | None = None,
     coverage_registry: SourceRegistry | None = None,
     coverage_status: str | None = None,
+    impact_target: str | None = None,
+    impact_scope: str = GRAPH_SCOPE_CANONICAL,
 ) -> DreamReport:
     """Run the read-only Dream Cycle reflection over a Knowledge Base.
 
@@ -854,10 +1102,13 @@ def run_dream_cycle(
     both scopes) with the deterministic link-candidate finder, ranked by
     Discovery Graph impact, the ``review_after`` due pages, the Source
     Drift diagnostic when the optional private inputs are provided
-    (issue #196), and the Source Coverage report when a registry is provided
-    (t_f703bd88). Model-free; never writes. The ranking is advisory: it
-    never infers a typed Relationship from a Markdown-link proposal
-    (ADR-0011).
+    (issue #196), the Source Coverage report when a registry is provided
+    (t_f703bd88), and the bounded read-only synthesis candidates over
+    accepted-Claim neighborhoods (t_c13aea62). When ``impact_target`` names a
+    resolvable page/Entity, the optional one-page transitive-impact report is
+    composed over ``impact_scope``. Model-free; never writes. The rankings are
+    advisory: they never author a page or infer a typed Relationship from a
+    Markdown-link proposal (ADR-0011), and nothing stages automatically.
     """
     kb, validation_report = load_knowledge_base(kb_path)
     return _run_dream_cycle_loaded(
@@ -869,6 +1120,8 @@ def run_dream_cycle(
         manifest_status=manifest_status,
         coverage_registry=coverage_registry,
         coverage_status=coverage_status,
+        impact_target=impact_target,
+        impact_scope=impact_scope,
     )
 
 
