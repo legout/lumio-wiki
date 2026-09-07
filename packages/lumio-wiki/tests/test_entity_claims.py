@@ -562,6 +562,320 @@ def test_unknown_evidence_section_is_blocked(tmp_path):
     )
 
 
+# ---------------------------------------------------------------------------
+# Claim parser diagnostics (Plan 02 P1): structural Claim frontmatter errors
+# must surface in the public ValidationReport instead of disappearing into a
+# valid report or crashing the load. One distinct defect per test.
+# ---------------------------------------------------------------------------
+
+
+def test_malformed_claims_keep_structural_diagnostics(tmp_path):
+    # Three malformed shapes across three pages: a scalar claims container, a
+    # non-mapping entry, and entries missing required fields. Each must keep
+    # the report invalid and name file/field/message exactly once — none may
+    # silently vanish — while valid Claims on untouched pages still load.
+    files = _valid_kb_files() | {
+        "concepts/extra-a.md": _entity_page(
+            "Extra A",
+            "entity:extra-a",
+            ["software-system"],
+            claims_yaml='  "not-a-list"\n',
+        ),
+        "concepts/extra-b.md": _entity_page(
+            "Extra B",
+            "entity:extra-b",
+            ["software-system"],
+            claims_yaml="  - 42\n",
+        ),
+        "concepts/extra-c.md": _entity_page(
+            "Extra C",
+            "entity:extra-c",
+            ["software-system"],
+            claims_yaml=(
+                "  - predicate: uses\n"
+                '    object: "entity:lancedb"\n'
+                "    status: accepted\n"
+                "    evidence:\n"
+                '      - section: "Overview"\n'
+                "  - id: claim:extra-c-no-predicate\n"
+                "    status: accepted\n"
+                "    evidence:\n"
+                '      - section: "Overview"\n'
+            ),
+        ),
+    }
+    kb, report = load_knowledge_base(_write_kb(tmp_path, files))
+
+    assert not report.is_valid, [i.message for i in report.issues]
+    claim_issues = [i for i in report.issues if i.field == "claims"]
+    by_file_and_message = {(i.file, i.message) for i in claim_issues}
+    assert ("concepts/extra-a.md", "claims must be a list") in by_file_and_message, sorted(
+        by_file_and_message
+    )
+    assert (
+        "concepts/extra-b.md",
+        "claims must be a list of mappings",
+    ) in by_file_and_message, sorted(by_file_and_message)
+    assert ("concepts/extra-c.md", "claim missing id") in by_file_and_message, sorted(
+        by_file_and_message
+    )
+    assert ("concepts/extra-c.md", "claim missing predicate") in by_file_and_message, sorted(
+        by_file_and_message
+    )
+    # The valid Claim on the untouched page still loads unchanged.
+    lumio = next(page for page in kb.pages if page.id == "entity:lumio")
+    assert [claim.id for claim in lumio.claims] == ["claim:lumio-uses-lancedb"]
+
+
+def test_invalid_claim_confidence_is_an_aggregated_issue(tmp_path):
+    # A nonnumeric confidence must become a ValidationIssue naming the claim,
+    # not an uncaught conversion error; validation continues so unrelated
+    # findings from the same load land in the same report.
+    files = _valid_kb_files()
+    files["concepts/lumio.md"] = _entity_page(
+        "Lumio",
+        "entity:lumio",
+        ["software-system"],
+        claims_yaml=(
+            "  - id: claim:lumio-uses-lancedb\n"
+            "    predicate: uses\n"
+            '    object: "entity:lancedb"\n'
+            "    status: accepted\n"
+            "    confidence: high\n"
+            "    evidence:\n"
+            '      - section: "Overview"\n'
+            "  - id: claim:lumio-unknown-predicate\n"
+            "    predicate: runs\n"
+            '    object: "entity:lancedb"\n'
+            "    status: accepted\n"
+            "    evidence:\n"
+            '      - section: "Overview"\n'
+        ),
+    )
+    report = validate(_write_kb(tmp_path, files))
+    messages = _errors(report)
+
+    assert any("claim:lumio-uses-lancedb" in m and "confidence" in m for m in messages), messages
+    assert any("unknown predicate: runs" in m for m in messages), messages
+    assert not report.is_valid
+
+
+def test_container_literal_is_blocked(tmp_path):
+    # Mapping/list literal values are invalid even when value_type is
+    # declared; scalar string values keep working with their declared kind.
+    files = _valid_kb_files()
+    files["concepts/lumio.md"] = _entity_page(
+        "Lumio",
+        "entity:lumio",
+        ["software-system"],
+        claims_yaml=(
+            "  - id: claim:lumio-mapping-value\n"
+            "    predicate: described-as\n"
+            "    value:\n"
+            "      nested: mapping\n"
+            "    value_type: string\n"
+            "    status: accepted\n"
+            "    evidence:\n"
+            '      - section: "Overview"\n'
+            "  - id: claim:lumio-list-value\n"
+            "    predicate: described-as\n"
+            "    value:\n"
+            "      - 1\n"
+            "      - 2\n"
+            "    value_type: string\n"
+            "    status: accepted\n"
+            "    evidence:\n"
+            '      - section: "Overview"\n'
+            "  - id: claim:lumio-scalar-value\n"
+            "    predicate: described-as\n"
+            '    value: "plain text"\n'
+            "    value_type: string\n"
+            "    status: accepted\n"
+            "    evidence:\n"
+            '      - section: "Overview"\n'
+        ),
+    )
+    report = validate(_write_kb(tmp_path, files))
+    messages = _errors(report)
+
+    assert any("claim:lumio-mapping-value" in m and "value must be" in m for m in messages), (
+        messages
+    )
+    assert any("claim:lumio-list-value" in m and "value must be" in m for m in messages), messages
+    assert not any("claim:lumio-scalar-value" in m for m in messages), messages
+    assert not report.is_valid
+
+
+def test_zero_evidence_line_is_blocked(tmp_path):
+    # Evidence line anchors are 1-based, nonzero, ordered, and within the
+    # owning body: zero/negative/reversed/out-of-body anchors are invalid,
+    # zero is never silently normalized to one, a section-only anchor (no
+    # lines) stays legal, and a valid 1-based range remains valid.
+    files = _valid_kb_files()
+    files["concepts/lumio.md"] = _entity_page(
+        "Lumio",
+        "entity:lumio",
+        ["software-system"],
+        claims_yaml=(
+            "  - id: claim:lumio-zero-line\n"
+            "    predicate: uses\n"
+            '    object: "entity:lancedb"\n'
+            "    status: accepted\n"
+            "    evidence:\n"
+            "      - lines: [0, 2]\n"
+            "  - id: claim:lumio-negative-line\n"
+            "    predicate: uses\n"
+            '    object: "entity:lancedb"\n'
+            "    status: accepted\n"
+            "    evidence:\n"
+            "      - lines: [-1, 2]\n"
+            "  - id: claim:lumio-reversed-lines\n"
+            "    predicate: uses\n"
+            '    object: "entity:lancedb"\n'
+            "    status: accepted\n"
+            "    evidence:\n"
+            "      - lines: [2, 1]\n"
+            "  - id: claim:lumio-beyond-body\n"
+            "    predicate: uses\n"
+            '    object: "entity:lancedb"\n'
+            "    status: accepted\n"
+            "    evidence:\n"
+            "      - lines: [1, 99]\n"
+            "  - id: claim:lumio-section-anchor\n"
+            "    predicate: uses\n"
+            '    object: "entity:lancedb"\n'
+            "    status: accepted\n"
+            "    evidence:\n"
+            '      - section: "Overview"\n'
+            "  - id: claim:lumio-valid-lines\n"
+            "    predicate: uses\n"
+            '    object: "entity:lancedb"\n'
+            "    status: accepted\n"
+            "    evidence:\n"
+            "      - lines: [1, 4]\n"
+        ),
+        body="## Overview\n\nalpha line\nbeta line\n",
+    )
+    root = _write_kb(tmp_path, files)
+    report = validate(root)
+    messages = _errors(report)
+
+    bounds_errors = [m for m in messages if "out of bounds" in m]
+    assert any("claim:lumio-zero-line" in m for m in bounds_errors), messages
+    assert any("claim:lumio-negative-line" in m for m in bounds_errors), messages
+    assert any("claim:lumio-reversed-lines" in m for m in bounds_errors), messages
+    assert any("claim:lumio-beyond-body" in m for m in bounds_errors), messages
+    assert not any("claim:lumio-section-anchor" in m for m in messages), messages
+    assert not any("claim:lumio-valid-lines" in m for m in messages), messages
+    assert not report.is_valid
+
+
+def test_confidence_overflow_is_an_aggregated_issue(tmp_path):
+    # A YAML integer too large for float conversion must become a
+    # ValidationIssue naming the claim — never an uncaught OverflowError.
+    files = _valid_kb_files()
+    files["concepts/lumio.md"] = _entity_page(
+        "Lumio",
+        "entity:lumio",
+        ["software-system"],
+        claims_yaml=(
+            "  - id: claim:lumio-huge-confidence\n"
+            "    predicate: uses\n"
+            '    object: "entity:lancedb"\n'
+            "    status: accepted\n"
+            f"    confidence: 1{'0' * 400}\n"
+            "    evidence:\n"
+            '      - section: "Overview"\n'
+        ),
+    )
+    report = validate(_write_kb(tmp_path, files))
+    messages = _errors(report)
+
+    assert any("claim:lumio-huge-confidence" in m and "confidence" in m for m in messages), messages
+    assert not report.is_valid
+
+
+def test_evidence_lines_on_empty_body_are_out_of_bounds(tmp_path):
+    # A page whose body is empty anchors nothing: a [1, 1] line range must be
+    # reported out of bounds (no max(line_count, 1) acceptance), while
+    # section-only anchors and nonempty 1-based bounds keep their behavior.
+    files = _valid_kb_files()
+    files["concepts/empty.md"] = (
+        "---\n"
+        'id: "entity:empty"\n'
+        'title: "Empty"\n'
+        "entity_types:\n  - software-system\n"
+        'tags:\n  - "test"\n'
+        'summary: "Empty summary."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        'sources:\n  - id: "src-empty"\n    title: "Empty Source"\n'
+        "claims:\n"
+        "  - id: claim:empty-body-lines\n"
+        "    predicate: uses\n"
+        '    object: "entity:lancedb"\n'
+        "    status: accepted\n"
+        "    evidence:\n"
+        "      - lines: [1, 1]\n"
+        "---"
+    )
+    root = _write_kb(tmp_path, files)
+    report = validate(root)
+    messages = _errors(report)
+
+    assert any("claim:empty-body-lines" in m and "out of bounds" in m for m in messages), messages
+    assert not report.is_valid
+
+
+def test_non_string_claim_scalars_are_blocked(tmp_path):
+    # Bare YAML dates and numeric scalars must not reach validation through
+    # str() coercion: a numeric predicate, a non-string evidence section (even
+    # one matching a rendered heading), and a date literal value (even with
+    # value_type declared) are each diagnosed as structural issues.
+    body = "## 2020-01-01\n\nCoercion bait heading.\n"
+    files = _valid_kb_files()
+    files["concepts/lumio.md"] = _entity_page(
+        "Lumio",
+        "entity:lumio",
+        ["software-system"],
+        claims_yaml=(
+            "  - id: claim:lumio-numeric-predicate\n"
+            "    predicate: 42\n"
+            '    object: "entity:lancedb"\n'
+            "    status: accepted\n"
+            "    evidence:\n"
+            '      - section: "Overview"\n'
+            "  - id: claim:lumio-date-section\n"
+            "    predicate: uses\n"
+            '    object: "entity:lancedb"\n'
+            "    status: accepted\n"
+            "    evidence:\n"
+            "      - section: 2020-01-01\n"
+            "  - id: claim:lumio-date-value\n"
+            "    predicate: described-as\n"
+            "    value: 2020-01-01\n"
+            "    value_type: string\n"
+            "    status: accepted\n"
+            "    evidence:\n"
+            '      - section: "Overview"\n'
+        ),
+        body=body,
+    )
+    root = _write_kb(tmp_path, files)
+    report = validate(root)
+    messages = _errors(report)
+
+    assert any(
+        "claim:lumio-numeric-predicate" in m and "predicate must be a string" in m for m in messages
+    ), messages
+    assert any(
+        "claim:lumio-date-section" in m and "evidence section must be a string" in m
+        for m in messages
+    ), messages
+    assert any("claim:lumio-date-value" in m and "value must be" in m for m in messages), messages
+    assert not report.is_valid
+
+
 def test_redirect_cycle_is_blocked(tmp_path):
     files = _valid_kb_files()
     files["lumio.yaml"] = _CONTROL_V2.replace(

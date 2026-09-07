@@ -2436,8 +2436,18 @@ def _as_claims(value: Any, relative: str) -> tuple[list[Claim], list[ValidationI
 
     A claim entry must be a mapping with a non-empty ``id`` and ``predicate``.
     ``evidence`` entries may carry ``section``, ``lines`` (a 2-list of 1-based
-    body line numbers), or both. Ontology conformance is validated later
-    against the Control File; this parser enforces only shape.
+    body line numbers), or both. A literal ``value`` must be a string, number,
+    or boolean scalar — any non-scalar (mappings/lists, bare YAML dates, or
+    any other non-``None`` value outside string/number/boolean) is rejected
+    even when ``value_type`` is declared — and ``confidence`` must be
+    numeric. ``predicate`` and evidence ``section`` must be strings: numeric
+    or date scalars are diagnosed rather than ``str()``-coerced into shapes
+    that could validate. A malformed entry is never
+    silently dropped: it is skipped and its diagnostic returned so the loader
+    can carry it into the ``ValidationReport`` exactly once. Ontology
+    conformance and evidence line values (1-based, ordered, within the owning
+    body) are validated later against the Control File; this parser enforces
+    only shape.
     """
     if value is None:
         return [], []
@@ -2454,12 +2464,24 @@ def _as_claims(value: Any, relative: str) -> tuple[list[Claim], list[ValidationI
             )
             continue
         claim_id = str(item.get("id", "")).strip()
-        predicate = str(item.get("predicate", "")).strip()
         if not claim_id:
             issues.append(
                 ValidationIssue(file=relative, field="claims", message="claim missing id")
             )
             continue
+        raw_predicate = item.get("predicate")
+        if raw_predicate is not None and not isinstance(raw_predicate, str):
+            issues.append(
+                ValidationIssue(
+                    file=relative,
+                    field="claims",
+                    message=(
+                        f"claim {claim_id}: predicate must be a string, got {raw_predicate!r}"
+                    ),
+                )
+            )
+            continue
+        predicate = (raw_predicate or "").strip()
         if not predicate:
             issues.append(
                 ValidationIssue(file=relative, field="claims", message="claim missing predicate")
@@ -2470,10 +2492,36 @@ def _as_claims(value: Any, relative: str) -> tuple[list[Claim], list[ValidationI
         if object_value is not None:
             object_value = str(object_value)
         value_value = item.get("value")
+        if value_value is not None and _literal_value_kind(value_value) is None:
+            issues.append(
+                ValidationIssue(
+                    file=relative,
+                    field="claims",
+                    message=(
+                        f"claim {claim_id}: value must be a string, number, or boolean "
+                        f"scalar, not a {type(value_value).__name__} literal"
+                    ),
+                )
+            )
+            continue
         value_type = item.get("value_type")
         if value_type is not None:
             value_type = str(value_type)
         confidence = item.get("confidence")
+        if confidence is not None:
+            try:
+                confidence = float(confidence)
+            except (TypeError, ValueError, OverflowError):
+                issues.append(
+                    ValidationIssue(
+                        file=relative,
+                        field="claims",
+                        message=(
+                            f"claim {claim_id}: confidence must be a number, got {confidence!r}"
+                        ),
+                    )
+                )
+                confidence = None
         origin = str(item.get("origin", CLAIM_ORIGIN_AUTHORED)) or CLAIM_ORIGIN_AUTHORED
         evidence: list[ClaimEvidence] = []
         raw_evidence = item.get("evidence")
@@ -2488,7 +2536,20 @@ def _as_claims(value: Any, relative: str) -> tuple[list[Claim], list[ValidationI
                         )
                     )
                     continue
-                section = anchor.get("section")
+                raw_section = anchor.get("section")
+                if raw_section is not None and not isinstance(raw_section, str):
+                    issues.append(
+                        ValidationIssue(
+                            file=relative,
+                            field="claims",
+                            message=(
+                                f"claim {claim_id}: evidence section must be a "
+                                f"string, got {raw_section!r}"
+                            ),
+                        )
+                    )
+                    raw_section = None
+                section = raw_section
                 lines = anchor.get("lines")
                 line_start: int | None = None
                 line_end: int | None = None
@@ -2513,7 +2574,7 @@ def _as_claims(value: Any, relative: str) -> tuple[list[Claim], list[ValidationI
                         line_start, line_end = lines
                 evidence.append(
                     ClaimEvidence(
-                        section=str(section) if section is not None else None,
+                        section=section,
                         line_start=line_start,
                         line_end=line_end,
                     )
@@ -2701,12 +2762,17 @@ def _classify_reserved_artifact(
     return ReservedArtifactClassification(valid=True)
 
 
-def _load_page(text: str, relative: str) -> tuple[CompiledPage, dict[str, Any]]:
-    """Parse a single Markdown page into a Compiled Page and raw frontmatter.
+def _parse_page(
+    text: str, relative: str
+) -> tuple[CompiledPage, dict[str, Any], list[ValidationIssue]]:
+    """Parse one page into a Compiled Page, raw frontmatter, and Claim issues.
 
     ``text`` is the page source and ``relative`` is its POSIX path relative to
     the Knowledge Base root. Source-agnostic so the same parser serves a
     filesystem root and an in-memory materialization (issue #120, ADR-0013).
+    The third element carries the structural Claim parser diagnostics so the
+    loading path can surface them in the ``ValidationReport`` exactly once,
+    without reparsing Claim frontmatter downstream.
     """
     data, body, body_start_line = _parse_frontmatter(text, Path(relative))
     claims, claim_issues = _as_claims(data.get("claims"), relative)
@@ -2728,6 +2794,17 @@ def _load_page(text: str, relative: str) -> tuple[CompiledPage, dict[str, Any]]:
         body=body,
         body_start_line=body_start_line,
     )
+    return page, data, claim_issues
+
+
+def _load_page(text: str, relative: str) -> tuple[CompiledPage, dict[str, Any]]:
+    """Parse a single Markdown page into a Compiled Page and raw frontmatter.
+
+    Two-tuple convenience wrapper over :func:`_parse_page` for callers that
+    only need the parsed page (no report). The loader consumes ``_parse_page``
+    directly so Claim structural diagnostics reach the ``ValidationReport``.
+    """
+    page, data, _claim_issues = _parse_page(text, relative)
     return page, data
 
 
@@ -3161,9 +3238,13 @@ def _ontology_issues(pages: list[CompiledPage], ontology: Ontology | None) -> li
                         )
                     )
                 if anchor.line_start is not None or anchor.line_end is not None:
-                    start = anchor.line_start or 1
-                    end = anchor.line_end or start
-                    if start < 1 or end < start or end > max(line_count, 1):
+                    # Distinguish absent from zero: line anchors are 1-based,
+                    # so a zero/negative/reversed/out-of-body coordinate is an
+                    # out-of-bounds finding — never silently normalized via a
+                    # truthiness fallback.
+                    start = 1 if anchor.line_start is None else anchor.line_start
+                    end = start if anchor.line_end is None else anchor.line_end
+                    if start < 1 or end < start or end > line_count:
                         issues.append(
                             ValidationIssue(
                                 file=page.path,
@@ -3590,7 +3671,9 @@ def _load_pages_and_validate(
         basename = PurePosixPath(relative).name
 
         try:
-            page, data = _load_page(source.read_bytes(relative).decode("utf-8"), relative)
+            page, data, claim_issues = _parse_page(
+                source.read_bytes(relative).decode("utf-8"), relative
+            )
         except FrontmatterError as exc:
             # A reserved path that cannot even parse frontmatter is still a
             # blocking collision: report it as a reserved-artifact issue.
@@ -3636,6 +3719,7 @@ def _load_pages_and_validate(
             continue
 
         pages.append(page)
+        issues.extend(claim_issues)
         issues.extend(_validate_page(page, data, relative))
 
     return pages, issues
