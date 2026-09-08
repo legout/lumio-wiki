@@ -64,7 +64,11 @@ would silently swallow it and leave the moved page behind (P2 review v9).
 The candidate gate
 resolves against the REAL root before its throwaway copy is made, so an
 occupant ``copytree`` could never get past still produces the same
-destination issue as live apply. There is no automatic suffix allocation
+destination issue as live apply, and the throwaway copy itself mirrors the
+real tree's structure — symlinks re-created verbatim so a KB-relative link
+reads identically on both trees, unrelated FIFOs/sockets/devices skipped as
+contentless entries — so candidate validation sees exactly what live
+validation sees (P2 review v10). There is no automatic suffix allocation
 and no removal that was not declared.
 """
 
@@ -1387,6 +1391,84 @@ def apply_compound_revision(page, working_dir: str | Path) -> Path:
     return _write_destination(destination, root)
 
 
+def _copy_candidate_tree(source: Path, destination: Path) -> None:
+    """Copy the real Knowledge Base into the throwaway candidate tree (B01).
+
+    This replaces the previous
+    ``shutil.copytree(..., ignore_dangling_symlinks=True)`` workaround (P2
+    review v9): CPython's dangling-symlink skip judges a RELATIVE link target
+    with ``os.path.exists`` against the PROCESS CWD instead of the link's own
+    directory, so a VALID KB-relative link such as ``alias.md -> real.md``
+    was silently OMITTED from the candidate whenever no same-named file
+    happened to sit in the CWD. The candidate then hid exactly the content
+    live validation still reads through the link (``_markdown_files`` follows
+    symlinked ``.md`` entries), so candidate validation passed a proposal
+    whose live application left the Knowledge Base invalid (P2 review v10).
+
+    The copy mirrors the real tree's STRUCTURE instead — source-entry-relative
+    by construction:
+
+    - a symlink — VALID or DANGLING — is re-created verbatim, so a relative
+      link keeps resolving against its own (mirrored) directory exactly as it
+      does in the live Knowledge Base and validation reads the same content
+      on both trees. Re-creating a dangling link cannot fail (``os.symlink``
+      needs no existing target), so dangling entries are handled consistently
+      instead of by CWD-dependent omission;
+    - a platform that cannot re-create the link (e.g. unprivileged Windows)
+      falls back to copying the link's read-through content, so nothing VALID
+      is hidden; a dangling entry has no content and is skipped — the same
+      contentless tolerance the v9 fix established;
+    - FIFOs, sockets, and devices are skipped: they are not Knowledge Base
+      content, every real-root preflight already rejected such occupants at
+      any PROPOSED destination BEFORE this copy runs, and ``copytree`` used
+      to die on UNRELATED special entries elsewhere in the tree with a raw
+      ``shutil.Error`` collected from ``SpecialFileError``/``OSError`` (P2
+      review v10);
+    - regular files are copied by content with fresh default permissions:
+      every permission decision belongs to the real-root preflights, and
+      candidate validation only reads.
+
+    Nothing here opens a FIFO or a socket: entries are classified by
+    non-following ``DirEntry`` metadata alone (``stat(2)`` never opens a
+    file).
+    """
+    destination.mkdir(parents=True, exist_ok=True)
+    with os.scandir(source) as entries:
+        for entry in entries:
+            target = destination / entry.name
+            if entry.is_symlink():
+                link_text = os.readlink(entry.path)
+                try:
+                    os.symlink(link_text, target)
+                except (NotImplementedError, OSError):
+                    # A platform that cannot re-create the link (unprivileged
+                    # Windows): fall back to the link's read-through content
+                    # so valid content is never hidden from candidate
+                    # validation. Classification is non-following-stat-only;
+                    # a dangling link has no target to read and is skipped —
+                    # the contentless tolerance fix9 established — and a
+                    # special target (FIFO/socket/device) has no Knowledge
+                    # Base content to mirror either.
+                    try:
+                        followed = os.stat(entry.path)
+                    except OSError:
+                        continue
+                    if stat.S_ISDIR(followed.st_mode):
+                        _copy_candidate_tree(Path(entry.path), target)
+                    elif stat.S_ISREG(followed.st_mode):
+                        shutil.copyfile(entry.path, target)
+                    continue
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                _copy_candidate_tree(Path(entry.path), target)
+            elif entry.is_file(follow_symlinks=False):
+                shutil.copyfile(entry.path, target)
+            # Any other entry type (FIFO, socket, device) is not Knowledge
+            # Base content: skipping it keeps candidate validation from
+            # leaking a raw copy error for an unrelated special entry the
+            # proposal does not touch.
+
+
 def validate_candidate_knowledge_base(
     proposed_pages: list,
     knowledge_base_root: str | Path,
@@ -1430,13 +1512,21 @@ def validate_candidate_knowledge_base(
     the declared removal), or a Control File parent whose mode bits deny the
     atomic temp-file creation and replace — comes back as an error
     ``ValidationIssue`` instead of raised, exactly the conflict live
-    application would raise. The throwaway copy itself also tolerates a
-    DANGLING symlink the real Knowledge Base already contains (a rejected
-    dangling destination legitimately survives, and a user-authored dangling
-    entry can predate any proposal): skipping that contentless entry in the
-    copy keeps candidate validation from leaking a raw ``shutil.Error`` for
-    ANY proposal on such a KB (P2 review v9). Only
-    :class:`DestinationConflict` is translated; unexpected errors still
+    application would raise. The throwaway copy itself mirrors the real
+    tree's STRUCTURE (:func:`_copy_candidate_tree`, P2 review v10) instead
+    of relying on ``copytree``'s CWD-relative ``ignore_dangling_symlinks``
+    heuristic: a symlink — valid or dangling — is re-created verbatim, so a
+    KB-relative link such as ``alias.md -> real.md`` is represented on the
+    candidate exactly as live validation reads it (the old skip judged the
+    relative target against the process CWD and silently OMITTED the valid
+    link, hiding the very content the live tree still exposes through it),
+    a dangling entry re-created in the candidate stays as invisible to
+    validation as it is live (a rejected dangling destination legitimately
+    survives, and a user-authored dangling entry can predate any proposal —
+    P2 review v9), and an unrelated FIFO, socket, or device elsewhere in the
+    Knowledge Base is skipped as the contentless entry it is instead of
+    surfacing a raw ``shutil.Error`` for a proposal that never touches it.
+    Only :class:`DestinationConflict` is translated; unexpected errors still
     propagate. The checked destination set is then applied to the candidate
     unchanged, so the validated tree is the tree publication would write.
     """
@@ -1481,18 +1571,23 @@ def validate_candidate_knowledge_base(
         return _conflict_report(exc)
     with tempfile.TemporaryDirectory() as tmp:
         candidate = Path(tmp) / "candidate"
-        # ``ignore_dangling_symlinks`` keeps the throwaway copy from dying on
-        # a DANGLING symlink the real Knowledge Base already contains (a
-        # proposal's rejected dangling destination legitimately survives, and
-        # a user-authored dangling entry can predate any proposal): the
-        # default dereferencing copy would raise a raw ``shutil.Error`` for
-        # ANY proposal on such a KB (P2 review v9). Skipping the entry in the
-        # throwaway copy masks nothing — every conflict preflight above ran
-        # against the REAL root before this copy exists, a dangling entry has
-        # no content to validate (it can never be a page or Control File),
-        # and every write branch rejects destinations that lexically traverse
-        # one. Valid symlinks keep the pre-existing dereferencing semantics.
-        shutil.copytree(root, candidate, dirs_exist_ok=True, ignore_dangling_symlinks=True)
+        # The throwaway copy mirrors the real tree's STRUCTURE instead of
+        # ``copytree``'s CWD-relative ``ignore_dangling_symlinks`` heuristic
+        # (P2 review v10): symlinks — valid or dangling — are re-created
+        # verbatim, so a KB-relative link such as ``alias.md -> real.md`` is
+        # represented on both trees exactly alike (the old skip judged the
+        # relative target against the process CWD and silently omitted the
+        # VALID link, hiding from candidate validation the very content live
+        # validation reads through it), an unrelated FIFO/socket/device is
+        # skipped as the contentless entry it is instead of surfacing a raw
+        # ``shutil.Error`` for a proposal that never touches it, and a
+        # dangling entry re-created in the candidate stays as invisible to
+        # validation as it is live. Masking nothing still holds: every
+        # conflict preflight above ran against the REAL root before this
+        # copy exists, a dangling or special entry can never be a page or
+        # Control File, and every write branch rejects destinations that
+        # lexically traverse one.
+        _copy_candidate_tree(root, candidate)
         try:
             # The checked set applies unchanged to the byte-identical
             # candidate tree: every path is root-relative by construction.

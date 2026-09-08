@@ -1231,9 +1231,10 @@ def test_dangling_symlink_ancestor_is_rejected_with_candidate_parity(
 
     # And a VALID symlink ancestor (its target exists) still resolves like an
     # ordinary directory: the write lands at the resolved target and the
-    # alias survives intact. Live apply only — the candidate's ``copytree``
-    # dereferences directory aliases into a second copy (pre-existing copy
-    # semantics, unrelated to this preflight).
+    # alias survives intact. Live apply only — the candidate copy re-creates
+    # the alias verbatim (P2 review v10), so this control pins the live
+    # resolution route; candidate validation of a further proposal on this
+    # KB reads the alias exactly as live validation does.
     (kb.root / "real_dir").mkdir()
     alias = kb.root / "alias"
     alias.symlink_to("real_dir")
@@ -1246,6 +1247,70 @@ def test_dangling_symlink_ancestor_is_rejected_with_candidate_parity(
     assert (kb.root / "real_dir/aliased.md").is_file()
     assert alias.is_symlink()
     assert alias.resolve() == (kb.root / "real_dir").resolve()
+
+
+def test_valid_relative_symlink_is_represented_in_candidate_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Review-fix regression (Plan 02 / P2, review v10 blocker 1): the
+    # candidate copy's ``ignore_dangling_symlinks=True`` workaround judged a
+    # RELATIVE link target with ``os.path.exists`` against the PROCESS CWD,
+    # not against the link's own directory, so a VALID KB-relative symlink
+    # such as "alias.md -> real.md" was silently omitted from the candidate
+    # whenever no same-named file happened to sit in the CWD. Live validation
+    # reads through the link (``_markdown_files`` follows symlinked ``.md``
+    # entries), so the live tree reports the alias's read-through page too —
+    # here a duplicate canonical title — while candidate validation, blind
+    # to the omitted alias, passed the very same tree and publication would
+    # have written an invalid Knowledge Base. The copy now re-creates
+    # symlinks verbatim (source-entry-relative), so candidate validation sees
+    # exactly what live validation sees and invalid content is not hidden.
+    _skip_if_symlinks_unavailable(tmp_path)
+    kb = _kb(tmp_path)
+    (kb.root / "real.md").write_text(
+        _probe_markdown("Anchor Topic", "anchor-valid-symlink-review-fix"),
+        encoding="utf-8",
+    )
+    (kb.root / "alias.md").symlink_to("real.md")
+    # Baseline: the LIVE tree's own validation reads through the alias and
+    # reports the duplicated canonical title on both entries.
+    live = lw.validate(kb.root)
+    live_duplicates = sorted(
+        (issue.file, issue.message)
+        for issue in live.issues
+        if issue.severity == "error" and "duplicate canonical title" in issue.message
+    )
+    assert [file for file, _ in live_duplicates] == ["alias.md", "real.md"]
+
+    page = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-valid-symlink-review-fix"),
+    )
+    # The process CWD holds no ``real.md``: this is exactly the configuration
+    # in which the old skip consulted ``os.path.exists("real.md")``, saw it
+    # missing, and dropped the valid alias from the candidate.
+    monkeypatch.chdir(tmp_path)
+    report = lw.validate_candidate_knowledge_base([page], kb.root)
+    candidate_duplicates = sorted(
+        (issue.file, issue.message)
+        for issue in report.issues
+        if issue.severity == "error" and "duplicate canonical title" in issue.message
+    )
+    # Consistent representation: the candidate reports the duplicate-title
+    # errors on exactly the entries live validation names — the valid
+    # relative symlink is represented, and its invalid duplicated content is
+    # not hidden from the publication gate.
+    assert candidate_duplicates == live_duplicates
+
+    # A proposal on the SAME KB stays live-consistent after the alias's
+    # target is gone too: removing the target leaves the link dangling, and
+    # the candidate copy re-creates it (which cannot fail) instead of dying
+    # on it — validation ignores the contentless entry on both trees.
+    (kb.root / "real.md").unlink()
+    dangling_report = lw.validate_candidate_knowledge_base([page], kb.root)
+    assert dangling_report.is_valid, dangling_report
 
 
 @pytest.mark.skipif(
@@ -1443,3 +1508,79 @@ def test_move_plus_removal_of_same_title_is_rejected_before_any_write(tmp_path: 
     lw.apply_proposed_pages([page], kb.root)
     assert not source.exists()
     assert (kb.root / "moved.md").is_file()
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "mkfifo"),
+    reason="POSIX FIFOs are required to model a special-file KB entry",
+)
+def test_unrelated_fifo_elsewhere_in_kb_returns_normal_candidate_report(tmp_path: Path):
+    # Review-fix regression (Plan 02 / P2, review v10 blocker 2): the
+    # candidate ``copytree`` died with a raw ``shutil.Error`` — collected
+    # from copyfile's SpecialFileError — on an UNRELATED FIFO elsewhere in
+    # the Knowledge Base, for EVERY proposal, even one that never touches
+    # the entry. A FIFO is not Knowledge Base content and can never satisfy
+    # a proposed destination (the real-root preflights reject special
+    # occupants up front, and the copy classifies entries by non-following
+    # stat metadata without ever opening one), so the mirrored copy skips it
+    # and candidate validation returns its normal report — matching live
+    # apply, which succeeds and never touches the FIFO either.
+    kb = _kb(tmp_path)
+    unrelated = kb.root / "artifacts"
+    unrelated.mkdir()
+    fifo = unrelated / "progress"
+    os.mkfifo(fifo)
+    page = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-fifo-neighbor-review-fix"),
+    )
+    report = lw.validate_candidate_knowledge_base([page], kb.root)
+    assert report.is_valid, report
+    # The unrelated entry was neither opened nor disturbed.
+    assert fifo.exists()
+    # Live parity: the same proposal applies cleanly beside the FIFO.
+    lw.apply_proposed_pages([page], kb.root)
+    assert (kb.root / "fresh.md").is_file()
+    assert fifo.exists()
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"),
+    reason="AF_UNIX sockets are required to model a special-file KB entry",
+)
+def test_unrelated_unix_socket_elsewhere_in_kb_returns_normal_candidate_report(
+    tmp_path: Path,
+):
+    # Review-fix regression (Plan 02 / P2, review v10 blocker 2): like the
+    # unrelated FIFO above, an unrelated Unix socket inode elsewhere in the
+    # Knowledge Base used to kill the candidate copy with a raw
+    # ``shutil.Error`` (copyfile cannot open a socket) for any proposal.
+    # The mirrored copy skips the contentless entry, so candidate validation
+    # returns its normal ValidationReport and live apply succeeds — no raw
+    # copy error either side.
+    kb = _kb(tmp_path)
+    unrelated = kb.root / "artifacts"
+    unrelated.mkdir()
+    sock_path = unrelated / "daemon.sock"
+    daemon = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        daemon.bind(str(sock_path))
+    except OSError:
+        pytest.skip("AF_UNIX socket file cannot be created on this platform")
+    finally:
+        daemon.close()
+    # The bound inode persists after close: an unrelated special entry.
+    assert sock_path.exists()
+    page = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-socket-neighbor-review-fix"),
+    )
+    report = lw.validate_candidate_knowledge_base([page], kb.root)
+    assert report.is_valid, report
+    assert sock_path.exists()
+    # Live parity: the same proposal applies cleanly beside the socket.
+    lw.apply_proposed_pages([page], kb.root)
+    assert (kb.root / "fresh.md").is_file()
+    assert sock_path.exists()
