@@ -1,6 +1,6 @@
 # 02 — Publication and validation integrity
 
-**P1–P4 implemented; P5 proposed and unexecuted.** Goal: prevent silent canonical data loss and stale
+**P1–P5 implemented.** Goal: prevent silent canonical data loss and stale
 publication while preserving proposal-first local maintenance.
 Sources/requirements: [owner decisions and B01–B07](README.md#finding-to-task-map),
 [PRD aggregation](../prd/0002-core-sdk.md),
@@ -185,7 +185,7 @@ no alternate CLI mutation implementation. Global checks: [README](README.md#glob
 
 ## P5
 
-- [ ] **Rollback ordinary local failures across the complete mutation (B05).**
+- [x] **Rollback ordinary local failures across the complete mutation (B05).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/mutation.py`,
   `packages/lumio-wiki/src/lumio_wiki/publish.py`,
   `packages/lumio-wiki/src/lumio_wiki/proposal_pipeline.py`,
@@ -218,6 +218,12 @@ no alternate CLI mutation implementation. Global checks: [README](README.md#glob
 
   **Done:** early and late ordinary failures restore the complete mutation and
   release locks; success state is last; existing navigation/source privacy holds.
+  **Evidence:** integrated locally in `a59eb98` after cumulative remediation and
+  a clean read-only P5 gate. Focused rollback, lifecycle, control, removal, merge,
+  and CLI suites passed; the required second-write failure and later-write,
+  Activity Log, reserved-artifact, chmod/rmdir, and actionable rollback-error
+  regressions pass. The full suite passed with four workers via the active uv
+  environment: `1583 passed, 9 skipped`.
 
 ## Limits and review gate
 
