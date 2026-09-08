@@ -1535,6 +1535,48 @@ def apply_proposed_pages(
     _apply_checked_destinations(destinations, removals, root, control_file)
 
 
+def affected_mutation_paths(
+    proposed_pages: list,
+    working_dir: str | Path,
+    *,
+    removed_titles: list[str] | None = None,
+) -> list[str]:
+    """Return every checked root-relative path a live publish mutation touches (P5).
+
+    The rollback companion of :func:`apply_proposed_pages` (Plan 02 / P5,
+    B05): before any live byte is written, the publisher snapshots exactly
+    these paths so an ordinary failure at any later step can restore the
+    COMPLETE prior state. Uses the SAME resolution live application uses —
+    :func:`_resolve_proposed_destinations` plus
+    :func:`_resolve_removal_destinations` from the pre-mutation state — so
+    the snapshotted set covers precisely the checked write branches apply
+    performs: every write/compound/rename/move destination, every move's
+    vacated source, every declared removal, and the Control File (always —
+    every publish either consumes or rewrites it). Raises
+    :class:`DestinationConflict` exactly like apply would, still before any
+    byte is written.
+    """
+    root = Path(working_dir).resolve()
+    existing_by_title = _existing_paths_by_title(root)
+    destinations = _resolve_proposed_destinations(proposed_pages, root, existing_by_title)
+    removals = (
+        _resolve_removal_destinations(removed_titles, root, existing_by_title)
+        if removed_titles
+        else []
+    )
+    _reject_proposal_overlaps(destinations, removals)
+    paths: dict[str, None] = {}  # insertion-ordered set
+    for destination in destinations:
+        paths[destination.relative_path] = None
+        source = destination.source_relative_path
+        if source:
+            paths[source] = None
+    for _title, relative in removals:
+        paths[relative] = None
+    paths[CONTROL_FILE_BASENAME] = None
+    return list(paths)
+
+
 def merge_compound_sources(proposed_markdown: str, existing_markdown: str) -> str:
     """Return proposed Markdown with prior Sources preserved and deduplicated.
 

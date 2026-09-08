@@ -1890,19 +1890,47 @@ class IngestStore:
         """Rollback compensation ONLY: restore a reviewable proposal verbatim.
 
         The narrowly authorized exception to terminal protection (Plan 02 /
-        P3 review): the Proposal Pipeline's publish/discard failure handling
-        calls this when a source-transition apply/cancel fails AFTER the
-        proposal was already marked terminal, to restore the reviewable
-        proposal for retry. The restored object is the very proposal that
-        was re-read from durable state and verified reviewable at the start
-        of the SAME critical section this write runs in (its reviewed
-        preconditions and content identity were also re-verified under the
-        publish locks before any terminal write), so it is a deliberate
-        rollback — never a path a stale caller can use to resurrect terminal
-        state. Ordinary :meth:`save_proposal` and re-staging remain refused;
-        the caller holds the store mutation lock.
+        P3 review): the Proposal Pipeline's discard failure handling calls
+        this when a source-transition cancellation fails AFTER the proposal
+        was already marked discarded, to restore the reviewable proposal for
+        retry. The restored object is the very proposal that was re-read
+        from durable state and verified reviewable at the start of the SAME
+        critical section this write runs in, so it is a deliberate rollback —
+        never a path a stale caller can use to resurrect terminal state.
+        Ordinary :meth:`save_proposal` and re-staging remain refused; the
+        caller holds the store mutation lock. (The publish path's rollback
+        no longer routes here: Plan 02 / P5 restores the EXACT snapshotted
+        proposal bytes through :meth:`restore_proposal_bytes` instead.)
         """
         self._write_proposal(proposal)
+
+    def snapshot_proposal_bytes(self, proposal_id: str) -> bytes | None:
+        """Return the durable proposal's exact bytes (``None`` when absent).
+
+        Plan 02 / P5 (B05): the publish rollback's pre-mutation snapshot of
+        the durable proposal record. Read under the store mutation lock, so
+        the bytes describe one consistent durable state.
+        """
+        with mutation_lock(self.root):
+            path = self._proposal_path(proposal_id)
+            return path.read_bytes() if path.exists() else None
+
+    def restore_proposal_bytes(self, proposal_id: str, data: bytes) -> None:
+        """Restore snapshotted durable proposal bytes verbatim (P5 rollback ONLY).
+
+        The publish rollback seam: an ordinary publish failure calls this —
+        inside the same critical section that performed the failed mutation —
+        to put the durable proposal record back to the exact pre-mutation
+        bytes returned by :meth:`snapshot_proposal_bytes`, so a publish that
+        did not complete leaves a reviewable proposal and never a partial
+        published marker. Like :meth:`_restore_reviewable`, this is a
+        deliberately authorized terminal-protection exception, unreachable
+        from ordinary saves; the bytes come from the store's own pre-mutation
+        snapshot, never from a caller-supplied record.
+        """
+        with mutation_lock(self.root):
+            self.proposals_dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_bytes(self._proposal_path(proposal_id), data)
 
     def _load(self, proposal_id: str) -> IngestProposal | None:
         """Read one durable proposal; the caller holds the store lock."""

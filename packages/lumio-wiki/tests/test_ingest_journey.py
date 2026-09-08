@@ -2784,3 +2784,416 @@ def test_stage_refuses_assembly_snapshot_drift(tmp_path: Path):
         pipeline.stage(control_proposal)
     assert "lumio.yaml" in str(control_excinfo.value)
     assert store.get(control_proposal.id) is None
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 / P5 (B05): ordinary local publish failures restore the COMPLETE
+# mutation — every touched page/control/reserved-artifact/Activity-Log byte
+# and existence, the durable proposal metadata (still reviewable — never a
+# partial published marker), and the private registry state — from a
+# pre-mutation backup kept outside canonical Knowledge Base content.
+# ---------------------------------------------------------------------------
+
+
+def _rollback_control(*, hot_pins: list[str] | None = None) -> str:
+    """The categorized Control File used by the P5 rollback journeys."""
+    pins_block = ""
+    if hot_pins:
+        pin_lines = "\n".join(f'  - {{title: "{p}"}}' for p in hot_pins)
+        pins_block = f"hot_index:\n{pin_lines}\n"
+    return (
+        "version: 2\n"
+        "mode: categorized\n"
+        "categories:\n"
+        "  - {name: concepts}\n"
+        "  - {name: archive}\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    concept: {}\n"
+        "  predicates:\n"
+        "    see:\n"
+        "      subject_types: [concept]\n"
+        "      object_types: [concept]\n"
+        f"{pins_block}"
+    )
+
+
+def _rollback_kb(tmp_path: Path, *, hot_pins: list[str] | None = None, alpha_claims: str = ""):
+    """A categorized KB with Alpha and Gamma pages (and optional Hot pins)."""
+    root = tmp_path / "kb"
+    root.mkdir(parents=True)
+    (root / "lumio.yaml").write_text(_rollback_control(hot_pins=hot_pins), encoding="utf-8")
+    (root / "concepts").mkdir()
+    (root / "concepts/alpha.md").write_text(
+        _disjoint_page("Alpha", entity="alpha", claims=alpha_claims), encoding="utf-8"
+    )
+    (root / "concepts/gamma.md").write_text(
+        _disjoint_page("Gamma", entity="gamma"), encoding="utf-8"
+    )
+    kb, report = lw.load_knowledge_base(root)
+    assert report.is_valid, report
+    return kb
+
+
+def _rollback_snapshot(root: Path) -> dict[str, bytes | None]:
+    """Byte/existence snapshot of every file under root (sorted, relative)."""
+    snapshot: dict[str, bytes | None] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        filenames.sort()
+        for name in filenames:
+            path = Path(dirpath) / name
+            snapshot[path.relative_to(root).as_posix()] = path.read_bytes()
+    return snapshot
+
+
+def _durable_state_snapshot(store: lw.IngestStore, proposal_id: str) -> dict[str, bytes | None]:
+    """Snapshot the durable proposal JSON and private registry state bytes."""
+    registry_path = store.source_registry.root / "sources.json"
+    return {
+        "proposal.json": (store.proposals_dir / f"{proposal_id}.json").read_bytes(),
+        "registry.json": registry_path.read_bytes() if registry_path.exists() else None,
+    }
+
+
+def _existing_backups() -> set[Path]:
+    from lumio_wiki.mutation import backup_root
+
+    backup_root_dir = backup_root()
+    return set(backup_root_dir.iterdir()) if backup_root_dir.exists() else set()
+
+
+def test_local_publish_failure_restores_complete_mutation(tmp_path, monkeypatch):
+    # B05 (Plan 02 / P5): an ordinary local failure in the MIDDLE of the live
+    # mutation — here the third page's live write dies after a revision and a
+    # move already landed — must restore the COMPLETE pre-mutation state:
+    # every touched page/Control File/reserved artifact/Activity Log byte and
+    # existence, the durable proposal metadata (still reviewable — never a
+    # partial published marker), and the private registry state. The backup
+    # lives outside the Knowledge Base, is cleaned up after the successful
+    # restoration, and the proposal publishes on retry. Deterministic: an
+    # injected OSError on one checked live write, no sleeps.
+    import lumio_wiki.publish as publish_module
+
+    kb = _rollback_kb(tmp_path)
+    root = kb.root.resolve()
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+
+    # A first successful publish establishes the real pre-mutation state:
+    # revised Alpha content and generated reserved artifacts.
+    baseline = lw.create_proposal_without_provider(
+        _disjoint_revision("Alpha", "alpha", "Baseline Alpha revision.").encode("utf-8"),
+        "text/markdown",
+        "alpha-baseline.md",
+        kb,
+        store=store,
+    )
+    assert not baseline.blocked, baseline.validation_report
+    assert pipeline.publish(baseline.id).status == "published"
+
+    # The failing proposal: revise Gamma (first live write, succeeds), move
+    # Alpha into the archive category (second write plus source unlink), then
+    # add Delta — whose live write is injected to fail.
+    move_segment = (
+        "---\n"
+        'title: "Alpha"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        'summary: "Relocated Alpha page."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "category: archive\n"
+        "type: concept\n"
+        "durability_rationale: reviewed durable knowledge move\n"
+        "move_from_path: concepts/alpha.md\n"
+        "sources:\n"
+        '  - id: "alpha-src"\n'
+        '    title: "Alpha source"\n'
+        'id: "entity:alpha"\n'
+        "entity_types:\n  - concept\n"
+        "synthetic: false\n"
+        "---\n"
+        "# Alpha\n\nThe Alpha page relocated into the archive category.\n"
+    )
+    failing_markdown = (
+        _disjoint_revision("Gamma", "gamma", "Revised Gamma.")
+        + "\n<!-- lumio: page-break -->\n"
+        + move_segment
+        + "\n<!-- lumio: page-break -->\n"
+        + DELTA_NEW_PAGE
+    )
+    failing = lw.create_proposal_without_provider(
+        failing_markdown.encode("utf-8"),
+        "text/markdown",
+        "gamma-move-delta.md",
+        kb,
+        store=store,
+    )
+    assert not failing.blocked, failing.validation_report
+    durable = store.get(failing.id)
+    assert durable is not None and durable.preconditions
+
+    files_before = _rollback_snapshot(root)
+    durable_before = _durable_state_snapshot(store, failing.id)
+    backups_before = _existing_backups()
+
+    original_write_destination = publish_module._write_destination
+    attempted: list[str] = []
+
+    def fail_delta_live_write(destination, working_root):
+        if Path(working_root) == root and destination.relative_path == "concepts/delta.md":
+            attempted.append(destination.relative_path)
+            raise OSError("injected second-page live write failure")
+        return original_write_destination(destination, working_root)
+
+    monkeypatch.setattr(publish_module, "_write_destination", fail_delta_live_write)
+
+    with pytest.raises(OSError, match="injected second-page live write failure"):
+        pipeline.publish(failing.id)
+
+    # The proposal's earlier writes landed, then the injected failure fired.
+    assert attempted == ["concepts/delta.md"]
+
+    # The complete pre-mutation KB state is restored byte for byte: the
+    # revised Gamma, the performed move, and the failed new page all revert;
+    # the Control File, reserved artifacts, and (absent) Activity Log match.
+    assert _rollback_snapshot(root) == files_before
+    assert not (root / "concepts/delta.md").exists()
+    assert not (root / "archive/alpha.md").exists()
+    assert not (root / "archive").exists()  # created directory pruned too
+    assert (root / "concepts/alpha.md").is_file()
+
+    # Durable proposal and registry state restored byte for byte: no partial
+    # published marker, the proposal is still reviewable.
+    assert _durable_state_snapshot(store, failing.id) == durable_before
+    reloaded = lw.IngestStore(tmp_path / "ingest").get(failing.id)
+    assert reloaded is not None and reloaded.status == "staged"
+    reviewable = pipeline.review(failing.id)
+    assert reviewable is not None and lw.is_reviewable_proposal(reviewable)
+
+    # The pre-mutation backup lived outside the KB and was cleaned up after
+    # the successful restoration.
+    assert _existing_backups() == backups_before
+
+    # Recovery works: with the injection gone the same durable proposal
+    # publishes completely.
+    monkeypatch.undo()
+    republished = pipeline.publish(failing.id)
+    assert republished.status == "published"
+    assert (root / "concepts/delta.md").is_file()
+    assert (root / "archive/alpha.md").is_file()
+    assert not (root / "concepts/alpha.md").exists()
+
+
+def test_reserved_artifact_regeneration_failure_restores_complete_mutation(tmp_path, monkeypatch):
+    # B05 focused injection: the reserved-artifact regeneration step dies
+    # after the Navigation Indexes were already recommitted (a mid-step
+    # failure no existing journey covers — the removal and Control File pin
+    # drop already landed). The rollback must restore the removed page, the
+    # rewritten Control File, and the half-regenerated reserved artifacts to
+    # their exact pre-mutation bytes, keep the proposal reviewable, and let a
+    # retry publish completely. Deterministic: injected OSError, no sleeps.
+    import lumio_wiki.proposal_pipeline as proposal_pipeline_module
+    from lumio_wiki.knowledge_base import (
+        NAV_INDEX_BASENAME,
+        _commit_reserved_artifacts,
+        generate_navigation_indexes,
+        load_knowledge_base,
+    )
+
+    kb = _rollback_kb(tmp_path, hot_pins=["Alpha"])
+    root = kb.root.resolve()
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+
+    baseline = lw.create_proposal_without_provider(
+        _disjoint_revision("Alpha", "alpha", "Baseline Alpha revision.").encode("utf-8"),
+        "text/markdown",
+        "alpha-baseline.md",
+        kb,
+        store=store,
+    )
+    assert pipeline.publish(baseline.id).status == "published"
+
+    removal = pipeline.propose_page_removal("Alpha")
+    assert not removal.blocked, removal.validation_report
+
+    files_before = _rollback_snapshot(root)
+    durable_before = _durable_state_snapshot(store, removal.id)
+
+    def fail_after_navigation_recommit(path):
+        current_kb, _report = load_knowledge_base(path)
+        _commit_reserved_artifacts(
+            Path(path),
+            generate_navigation_indexes(current_kb.pages),
+            basename=NAV_INDEX_BASENAME,
+            force_write=True,
+        )
+        raise OSError("injected reserved artifact regeneration failure")
+
+    monkeypatch.setattr(
+        proposal_pipeline_module,
+        "publish_reserved_artifacts",
+        fail_after_navigation_recommit,
+    )
+
+    with pytest.raises(OSError, match="injected reserved artifact regeneration failure"):
+        pipeline.publish(removal.id)
+
+    # The complete pre-mutation state is restored: the removed page, the pin
+    # dropped from the Control File, and the already-recommitted Navigation
+    # Indexes are all back to their exact reviewed bytes.
+    assert _rollback_snapshot(root) == files_before
+    assert (root / "concepts/alpha.md").is_file()
+    assert "Alpha" in (root / "index.md").read_text(encoding="utf-8")
+
+    assert _durable_state_snapshot(store, removal.id) == durable_before
+    reloaded = lw.IngestStore(tmp_path / "ingest").get(removal.id)
+    assert reloaded is not None and reloaded.status == "staged"
+    reviewable = pipeline.review(removal.id)
+    assert reviewable is not None and lw.is_reviewable_proposal(reviewable)
+
+    monkeypatch.undo()
+    republished = pipeline.publish(removal.id)
+    assert republished.status == "published"
+    assert not (root / "concepts/alpha.md").exists()
+
+
+def test_activity_log_append_failure_restores_complete_mutation(tmp_path, monkeypatch):
+    # B05 focused injection: the Activity Log append dies after the page
+    # removal, Control File pin drop, and reserved-artifact regeneration (and
+    # the Hot Index prune) already landed — until S1 the log is part of the
+    # mutation boundary, so the rollback must restore it and every earlier
+    # byte too, including the pruned Hot Index and the pre-pin Control File.
+    # Deterministic: injected OSError, no sleeps.
+    import lumio_wiki.proposal_pipeline as proposal_pipeline_module
+
+    alpha_claims = (
+        '  - id: "claim:alpha-gamma-0"\n'
+        '    predicate: "see"\n'
+        '    object: "entity:gamma"\n'
+        "    status: accepted\n"
+        '    evidence:\n      - section: "Evidence"\n'
+    )
+    kb = _rollback_kb(tmp_path, hot_pins=["Alpha"], alpha_claims=alpha_claims)
+    root = kb.root.resolve()
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+
+    baseline = lw.create_proposal_without_provider(
+        _disjoint_revision("Alpha", "alpha", "Baseline Alpha revision.").encode("utf-8"),
+        "text/markdown",
+        "alpha-baseline.md",
+        kb,
+        store=store,
+    )
+    assert pipeline.publish(baseline.id).status == "published"
+
+    # A first successful removal gives the KB its real pre-failure state:
+    # repaired Alpha (claim to Gamma dropped), pruned artifacts, and an
+    # Activity Log with one recorded transition.
+    gamma_removal = pipeline.propose_page_removal("Gamma")
+    assert pipeline.publish(gamma_removal.id).status == "published"
+    assert not (root / "concepts/gamma.md").exists()
+    log_before = (root / "log.md").read_bytes()
+    assert b"page-removal" in log_before
+
+    failing_removal = pipeline.propose_page_removal("Alpha")
+    assert not failing_removal.blocked, failing_removal.validation_report
+
+    files_before = _rollback_snapshot(root)
+    durable_before = _durable_state_snapshot(store, failing_removal.id)
+
+    def fail_log_append(path, entry):
+        raise OSError("injected activity log append failure")
+
+    monkeypatch.setattr(proposal_pipeline_module, "append_activity_log_entry", fail_log_append)
+
+    with pytest.raises(OSError, match="injected activity log append failure"):
+        pipeline.publish(failing_removal.id)
+
+    # Every byte of the pre-mutation state came back: the removed Alpha page,
+    # the pinned Control File, the regenerated Navigation Indexes and pruned
+    # Hot Index, and the Activity Log without the failed entry.
+    assert _rollback_snapshot(root) == files_before
+    assert (root / "log.md").read_bytes() == log_before
+    assert (root / "concepts/alpha.md").is_file()
+    assert (root / "hot.md").is_file()  # the pruned pin artifact is restored
+
+    assert _durable_state_snapshot(store, failing_removal.id) == durable_before
+    reloaded = lw.IngestStore(tmp_path / "ingest").get(failing_removal.id)
+    assert reloaded is not None and reloaded.status == "staged"
+    reviewable = pipeline.review(failing_removal.id)
+    assert reviewable is not None and lw.is_reviewable_proposal(reviewable)
+
+    monkeypatch.undo()
+    republished = pipeline.publish(failing_removal.id)
+    assert republished.status == "published"
+    assert not (root / "concepts/alpha.md").exists()
+    assert b"removed page(s): Alpha" in (root / "log.md").read_bytes()
+
+
+def test_rollback_failure_raises_actionable_recovery_error(tmp_path, monkeypatch):
+    # B05: when the restoration ITSELF fails, publish must never claim
+    # success or a completed rollback: it raises an actionable recovery error
+    # naming the retained backup directory and every failed path (chaining
+    # the original failure), keeps the pre-mutation backup for manual
+    # recovery, and still restores the durable proposal so it stays
+    # reviewable. Deterministic: injected failures, no sleeps.
+    import lumio_wiki.mutation as mutation_module
+    import lumio_wiki.proposal_pipeline as proposal_pipeline_module
+
+    kb = _rollback_kb(tmp_path, hot_pins=["Alpha"])
+    root = kb.root.resolve()
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    baseline = lw.create_proposal_without_provider(
+        _disjoint_revision("Alpha", "alpha", "Baseline Alpha revision.").encode("utf-8"),
+        "text/markdown",
+        "alpha-baseline.md",
+        kb,
+        store=store,
+    )
+    assert pipeline.publish(baseline.id).status == "published"
+
+    removal = pipeline.propose_page_removal("Alpha")
+    assert not removal.blocked, removal.validation_report
+    durable_before = _durable_state_snapshot(store, removal.id)
+
+    def fail_log_append(path, entry):
+        raise OSError("injected activity log append failure")
+
+    def fail_restoration(self, working_root, **_kwargs):
+        return ["concepts/alpha.md (injected restoration failure)"]
+
+    monkeypatch.setattr(proposal_pipeline_module, "append_activity_log_entry", fail_log_append)
+    monkeypatch.setattr(mutation_module.MutationBackup, "restore_all", fail_restoration)
+
+    with pytest.raises(mutation_module.MutationRollbackError) as excinfo:
+        pipeline.publish(removal.id)
+
+    error = excinfo.value
+    # Actionable: names the retained backup location and the failed path, and
+    # chains the original publish failure as the cause.
+    assert error.backup_dir is not None and error.backup_dir.is_dir()
+    assert str(error.backup_dir) in str(error)
+    assert "concepts/alpha.md" in str(error)
+    assert error.failed_paths == ("concepts/alpha.md (injected restoration failure)",)
+    assert isinstance(error.__cause__, OSError)
+    assert "injected activity log append failure" in str(error.__cause__)
+
+    # The rollback did not succeed, so the KB stays unrestored — but the
+    # failure is never reported as success, and the durable proposal was
+    # still restored to its reviewable pre-mutation bytes.
+    assert not (root / "concepts/alpha.md").exists()
+    assert _durable_state_snapshot(store, removal.id) == durable_before
+    reloaded = lw.IngestStore(tmp_path / "ingest").get(removal.id)
+    assert reloaded is not None and reloaded.status == "staged"
+
+    # The recovery backup is retained, then removed by this test so the
+    # shared temporary backup root stays clean for other journeys.
+    assert error.backup_dir.is_dir()
+    import shutil
+
+    shutil.rmtree(error.backup_dir)

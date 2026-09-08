@@ -380,6 +380,39 @@ class SourceRegistry:
             self._state = previous
             raise
 
+    def snapshot_state_bytes(self) -> bytes | None:
+        """Return the durable registry file's exact bytes (P5 rollback snapshot).
+
+        Plan 02 / P5 (B05): the publish rollback's pre-mutation snapshot of
+        the private registry state — sources, pending transitions, and
+        retirement candidates together, as one durable byte string. Read
+        under the registry mutation lock; ``None`` means the file does not
+        exist (a registry that never persisted anything).
+        """
+        with mutation_lock(self.root):
+            return self._path.read_bytes() if self._path.exists() else None
+
+    def restore_state_bytes(self, data: bytes | None) -> None:
+        """Restore snapshotted registry bytes verbatim (P5 rollback ONLY).
+
+        The publish rollback seam: an ordinary publish failure calls this —
+        inside the same critical section that performed the failed mutation —
+        to put the private registry state (sources, pending transitions,
+        candidates) back to the exact pre-mutation snapshot returned by
+        :meth:`snapshot_state_bytes`. ``None`` restores pre-registration
+        absence. The in-memory mirror is refreshed from the restored durable
+        state, so reads after a rollback agree with the file. This is a
+        rollback-only writer: ordinary callers mutate through the locked
+        mutating methods, never by handing bytes in.
+        """
+        with mutation_lock(self.root):
+            if data is None:
+                self._path.unlink(missing_ok=True)
+            else:
+                self.root.mkdir(parents=True, exist_ok=True)
+                atomic_write_bytes(self._path, data)
+            self._state = self._read()
+
     def get(self, source_id: str) -> KnowledgeSource:
         # #133 final review: validate the id BEFORE lookup so a secret-bearing
         # value is rejected at the boundary (never interpolated into the

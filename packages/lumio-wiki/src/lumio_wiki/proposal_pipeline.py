@@ -44,7 +44,10 @@ from lumio_wiki.ingest import (
     is_reviewable_proposal,
 )
 from lumio_wiki.knowledge_base import (
+    ACTIVITY_LOG_BASENAME,
     CONTROL_FILE_BASENAME,
+    HOT_INDEX_BASENAME,
+    NAV_INDEX_BASENAME,
     HotIndexPin,
     KnowledgeBase,
     KnowledgeBaseControlFile,
@@ -55,12 +58,13 @@ from lumio_wiki.knowledge_base import (
 )
 from lumio_wiki.knowledge_base import _extract_references as _extract_references
 from lumio_wiki.knowledge_base import _parse_frontmatter as parse_frontmatter
-from lumio_wiki.mutation import mutation_lock
+from lumio_wiki.mutation import MutationBackup, MutationRollbackError, mutation_lock
 from lumio_wiki.publish import (
     _capture_mutation_preconditions,
     _expected_precondition_pairs,
     _precondition_drift,
     _precondition_set_mismatch,
+    affected_mutation_paths,
     apply_proposed_pages,
     validate_candidate_knowledge_base,
 )
@@ -69,6 +73,7 @@ from lumio_wiki.source_registry import (
     KnowledgeSource,
     PendingSourceTransition,
     RetirementCandidate,
+    SourceRegistry,
     SourceRegistryError,
     SourceVersion,
     _validate_source_id,
@@ -109,6 +114,84 @@ def _as_path_preconditions(expectations) -> list[PathPrecondition]:
         )
         for expectation in expectations
     ]
+
+
+# The disposable derived artifacts a local publish regenerates (Plan 02 / P5):
+# reserved Navigation Indexes and the pinned Hot Index. The Activity Log is
+# NOT disposable history — until S1 it is snapshotted and restored like any
+# other affected file, so a failed publish never leaves half-recorded history.
+PUBLISH_RESERVED_BASENAMES = frozenset({NAV_INDEX_BASENAME, HOT_INDEX_BASENAME})
+
+
+def _rollback_publish_mutation(
+    backup: MutationBackup,
+    root: Path,
+    *,
+    store: IngestStore,
+    registry: SourceRegistry,
+    proposal_id: str,
+    proposal_bytes: bytes | None,
+    registry_bytes: bytes | None,
+    cause: BaseException,
+) -> None:
+    """Restore the COMPLETE pre-mutation state after a publish failure (P5, B05).
+
+    Runs inside the very publish critical section that performed the failed
+    mutation (locks still held; released only when :meth:`ProposalPipeline.publish`
+    exits), after an ordinary local failure at ANY live step — a page write,
+    the reserved-artifact regeneration, the Activity Log append, the terminal
+    proposal persistence, or the source-transition apply. Restoration covers:
+
+    * every captured page/Control File path — replacements and deletions
+      restored to their exact bytes, new files removed, moves undone, and
+      directories the mutation created pruned when empty;
+    * the reserved Navigation/Hot Index artifacts — half-regenerated commits
+      rolled back to their pre-mutation bytes, artifacts the regeneration
+      created removed, and ones it pruned put back (they are disposable
+      derived caches: invalidating them is always safe);
+    * the Activity Log — restored byte-for-byte while S1 keeps it a plain
+      append-only file inside the mutation boundary;
+    * the durable proposal record — restored to its exact pre-mutation
+      bytes, so a publish that did not complete leaves a reviewable proposal
+      and never a partial published marker;
+    * the private registry state — sources, pending transitions, and
+      candidates restored verbatim, so no transition survives a publish that
+      rolled back (successfully retained immutable raw artifacts are never
+      touched — they keep their existing recoverable-orphan policy).
+
+    Successfully retained raw artifacts are NOT removed as compensation.
+    If every restore succeeds, the backup is disposable again and the caller
+    re-raises the ORIGINAL failure. If any restore fails, this raises
+    :class:`MutationRollbackError` naming the RETAINED backup directory and
+    every failed path, chaining the original failure as its cause — success
+    is never claimed for a partially restored mutation.
+    """
+    failures = list(backup.restore_all(root, remove_untracked_basenames=PUBLISH_RESERVED_BASENAMES))
+    if proposal_bytes is not None:
+        try:
+            store.restore_proposal_bytes(proposal_id, proposal_bytes)
+        except Exception as exc:
+            failures.append(f"durable proposal {proposal_id}.json ({exc})")
+    try:
+        registry.restore_state_bytes(registry_bytes)
+    except Exception as exc:
+        failures.append(f"private source registry state ({exc})")
+    if failures:
+        backup_dir = backup.directory
+        backup_location = (
+            str(backup_dir) if backup_dir is not None else "<no backup directory was created>"
+        )
+        raise MutationRollbackError(
+            "publish failed and the automatic rollback could not fully restore the "
+            "previous state, so the publish did NOT succeed. The pre-mutation "
+            f"backup is retained at {backup_location} for manual recovery. Failed "
+            f"paths: {'; '.join(failures)}.",
+            backup_dir=backup_dir,
+            failed_paths=failures,
+        ) from cause
+    # The restoration succeeded: the backup is disposable again, so a rolled-
+    # back failure leaves no more backup state behind than a full success.
+    backup.cleanup()
 
 
 def _drop_claims_for_entity(data: dict, removed_entity_id: str) -> bool:
@@ -1746,11 +1829,37 @@ class ProposalPipeline:
         root (never a stale in-memory ``self._kb`` snapshot), so disjoint
         intervening changes that introduce alias/entity/Claim conflicts are
         still blocked.
+
+        Plan 02 / P5 (B05): after the gates pass and BEFORE the first live
+        byte, the exact pre-mutation state is backed up outside the Knowledge
+        Base (:class:`lumio_wiki.mutation.MutationBackup`): every affected
+        page path (replacement, creation, move source and target, removal),
+        the Control File, the reserved Navigation/Hot Index artifacts, the
+        Activity Log (while S1 keeps it a plain append-only file), plus the
+        durable proposal bytes and the private registry state (sources,
+        pending transitions, candidates). An ordinary local failure at ANY
+        later live step — a second page write, the reserved-artifact
+        regeneration, the Activity Log append, the terminal proposal
+        persistence, the source-transition persistence — restores the
+        COMPLETE prior state (:func:`_rollback_publish_mutation`): replaced
+        and deleted files come back byte-for-byte, created files (and the
+        directories it created for them) are removed, moves are undone,
+        derived reserved artifacts are invalidated back to their pre-state,
+        the log is restored, the proposal stays reviewable (never a partial
+        published marker), and the registry keeps its bound transition. The
+        locks release only after restoration; successfully retained raw
+        artifacts are never removed as compensation. If the restoration
+        itself fails, :class:`MutationRollbackError` reports the retained
+        backup directory and every failed path — success is never claimed
+        for a partially restored mutation. The backup is deleted only after
+        every step succeeded (a cleanup failure keeps the disposable backup
+        without changing the success result).
         """
         if self._store is None:
             raise RuntimeError("ProposalPipeline.publish requires an IngestStore")
         store = self._store
         registry = store.source_registry
+        root = Path(self._kb.root)
         with mutation_lock(self._kb.root, store.root, registry.root):
             proposal = store.get(proposal_id)
             if proposal is None or not is_reviewable_proposal(proposal):
@@ -1776,61 +1885,98 @@ class ProposalPipeline:
                 raise ProposalBlockedError(
                     f"proposal {proposal_id!r} candidate failed validation: {candidate_report}"
                 )
-            apply_proposed_pages(
-                proposal.proposed_pages,
-                self._kb.root,
-                removed_titles=removed_titles or None,
-                control_file=proposal.control_file,
-            )
-            publish_reserved_artifacts(self._kb.root)
-            # AC7: record the transition in the append-only Activity Log. Only a
-            # categorized Knowledge Base (one with a Control File) carries a
-            # portable Activity Log; legacy flat KBs do not. The entry records only
-            # the removed Canonical Titles and operation — never Claim Lineage
-            # (claim-level lineage is not modeled, ADR-0014). Plan 02 / P4: the
-            # categorized decision reads the CURRENT Control File presence from
-            # the root under the lock — never the possibly stale in-memory
-            # ``self._kb`` snapshot (a legacy→categorized migration publishes
-            # before the stale object would know about it).
-            if (Path(self._kb.root) / CONTROL_FILE_BASENAME).is_file():
-                if proposal.entity_merges:
-                    # issue #169: a reviewed Entity Merge logs its own transition
-                    # (retired Entity -> surviving Entity), not a page-removal.
-                    append_activity_log_entry(
-                        self._kb.root,
-                        make_activity_log_entry(
-                            operation="entity-merge",
-                            description="merged entity(s): "
-                            + ", ".join(
-                                f"{merge.retired_entity_id} -> {merge.surviving_entity_id}"
-                                for merge in proposal.entity_merges
+            # Plan 02 / P5 (B05): snapshot the exact pre-mutation state of
+            # everything the live mutation can touch BEFORE any live byte —
+            # the checked page/control destinations (the SAME resolution the
+            # apply step consumes), the reserved Navigation/Hot Index
+            # artifacts, and the Activity Log — plus the durable proposal and
+            # private registry bytes. The backup lives under the system temp
+            # directory, never inside canonical Knowledge Base content or an
+            # ingest-store export. Capture is read-only; a capture failure is
+            # still a pre-mutation failure, so the unused backup is dropped.
+            backup = MutationBackup(f"publish-{proposal.id}")
+            proposal_bytes = store.snapshot_proposal_bytes(proposal.id)
+            registry_bytes = registry.snapshot_state_bytes()
+            try:
+                for relative_path in affected_mutation_paths(
+                    proposal.proposed_pages, root, removed_titles=removed_titles or None
+                ):
+                    backup.capture_path(root, relative_path)
+                backup.capture_basename_sweep(root, PUBLISH_RESERVED_BASENAMES)
+                backup.capture_path(root, ACTIVITY_LOG_BASENAME)
+            except BaseException:
+                backup.discard()
+                raise
+            try:
+                apply_proposed_pages(
+                    proposal.proposed_pages,
+                    self._kb.root,
+                    removed_titles=removed_titles or None,
+                    control_file=proposal.control_file,
+                )
+                publish_reserved_artifacts(self._kb.root)
+                # AC7: record the transition in the append-only Activity Log. Only a
+                # categorized Knowledge Base (one with a Control File) carries a
+                # portable Activity Log; legacy flat KBs do not. The entry records only
+                # the removed Canonical Titles and operation — never Claim Lineage
+                # (claim-level lineage is not modeled, ADR-0014). Plan 02 / P4: the
+                # categorized decision reads the CURRENT Control File presence from
+                # the root under the lock — never the possibly stale in-memory
+                # ``self._kb`` snapshot (a legacy→categorized migration publishes
+                # before the stale object would know about it).
+                if (root / CONTROL_FILE_BASENAME).is_file():
+                    if proposal.entity_merges:
+                        # issue #169: a reviewed Entity Merge logs its own transition
+                        # (retired Entity -> surviving Entity), not a page-removal.
+                        append_activity_log_entry(
+                            self._kb.root,
+                            make_activity_log_entry(
+                                operation="entity-merge",
+                                description="merged entity(s): "
+                                + ", ".join(
+                                    f"{merge.retired_entity_id} -> {merge.surviving_entity_id}"
+                                    for merge in proposal.entity_merges
+                                ),
                             ),
-                        ),
-                    )
-                elif proposal.removed_pages:
-                    append_activity_log_entry(
-                        self._kb.root,
-                        make_activity_log_entry(
-                            operation="page-removal",
-                            description="removed page(s): "
-                            + ", ".join(removal.title for removal in proposal.removed_pages),
-                        ),
-                    )
-            published = store.publish(proposal_id)
-            if published is None:
-                raise ProposalPipelineError(f"proposal {proposal_id!r} was not publishable")
-            if proposal.source_change is not None:
-                try:
+                        )
+                    elif proposal.removed_pages:
+                        append_activity_log_entry(
+                            self._kb.root,
+                            make_activity_log_entry(
+                                operation="page-removal",
+                                description="removed page(s): "
+                                + ", ".join(removal.title for removal in proposal.removed_pages),
+                            ),
+                        )
+                published = store.publish(proposal_id)
+                if published is None:
+                    raise ProposalPipelineError(f"proposal {proposal_id!r} was not publishable")
+                if proposal.source_change is not None:
                     registry.apply_transition(proposal.id)
-                except Exception:
-                    # Authorized rollback compensation (Plan 02 / P3 review): the
-                    # restored object was re-read from durable state and verified
-                    # reviewable at the start of THIS critical section, so the
-                    # private restore deliberately overwrites the just-written
-                    # terminal state for retry — a stale caller's ordinary
-                    # save/re-stage is still refused and cannot reach this path.
-                    store._restore_reviewable(proposal)
-                    raise
+            except BaseException as exc:
+                # Plan 02 / P5 (B05): the failed publish restores the COMPLETE
+                # pre-mutation state while the locks are still held — pages,
+                # Control File, reserved artifacts, Activity Log, durable
+                # proposal (still reviewable, never a partial published
+                # marker), and private registry/pending transition. On a full
+                # restore the original failure propagates unchanged; a failed
+                # restore raises MutationRollbackError naming the retained
+                # backup and the failed paths instead.
+                _rollback_publish_mutation(
+                    backup,
+                    root,
+                    store=store,
+                    registry=registry,
+                    proposal_id=proposal.id,
+                    proposal_bytes=proposal_bytes,
+                    registry_bytes=registry_bytes,
+                    cause=exc,
+                )
+                raise
+            # Every step succeeded — success is decided HERE, after the last
+            # mutation, never before. The backup is disposable now; a cleanup
+            # failure keeps it without changing the success result.
+            backup.cleanup()
         return published
 
 

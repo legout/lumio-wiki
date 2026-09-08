@@ -587,6 +587,18 @@ def test_lifecycle_staging_refuses_an_invalid_current_knowledge_base(tmp_path) -
     assert [item for item in pipeline.list() if lw.is_reviewable_proposal(item)] == []
 
 
+def _lifecycle_kb_snapshot(root: Path) -> dict[str, bytes]:
+    """Byte/existence snapshot of every file under the KB root (P5 comparison)."""
+    snapshot: dict[str, bytes] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        filenames.sort()
+        for name in filenames:
+            path = Path(dirpath) / name
+            snapshot[path.relative_to(root).as_posix()] = path.read_bytes()
+    return snapshot
+
+
 def test_terminal_proposal_persistence_failure_keeps_reactivation_state_unchanged(
     tmp_path, monkeypatch
 ) -> None:
@@ -599,6 +611,17 @@ def test_terminal_proposal_persistence_failure_keeps_reactivation_state_unchange
     reactivation = pipeline.reactivate_source("policy", b"policy-v2")
     before = store.source_registry.get("policy")
 
+    # Plan 02 / P5: the WHOLE affected byte/state set is compared, not only
+    # the status/registry subset — every Knowledge Base file (pages and the
+    # regenerated Navigation Index artifact), the durable proposal JSON, and
+    # the private registry file including the bound pending transition.
+    kb_root = Path(kb.root)
+    kb_before = _lifecycle_kb_snapshot(kb_root)
+    proposal_json = store.proposals_dir / f"{reactivation.id}.json"
+    proposal_bytes_before = proposal_json.read_bytes()
+    registry_json = store.source_registry.root / "sources.json"
+    registry_bytes_before = registry_json.read_bytes()
+
     def fail_terminal_persistence(_proposal_id):
         raise OSError("terminal proposal persistence failed")
 
@@ -608,8 +631,19 @@ def test_terminal_proposal_persistence_failure_keeps_reactivation_state_unchange
         pipeline.publish(reactivation.id)
 
     assert store.source_registry.get("policy") == before
+    assert _lifecycle_kb_snapshot(kb_root) == kb_before
+    assert proposal_json.read_bytes() == proposal_bytes_before
+    assert registry_json.read_bytes() == registry_bytes_before
     re_staged = pipeline.review(reactivation.id)
     assert re_staged is not None and re_staged.status == "staged"
+
+    # Recovery: with the injection gone, the same durable proposal — whose
+    # pending transition was preserved through the rollback — publishes.
+    monkeypatch.undo()
+    published = pipeline.publish(reactivation.id)
+    assert published is not None and published.status == "published"
+    assert store.source_registry.get("policy").status == "active"
+    assert len(store.source_registry.get("policy").versions) == 2
 
 
 def test_source_transition_persistence_failure_rolls_back_terminal_proposal(
@@ -624,6 +658,19 @@ def test_source_transition_persistence_failure_rolls_back_terminal_proposal(
     reactivation = pipeline.reactivate_source("policy", b"policy-v2")
     before = store.source_registry.get("policy")
 
+    # Plan 02 / P5: compare the WHOLE affected byte/state set after the late
+    # registry failure — Knowledge Base bytes, the durable proposal JSON that
+    # the terminal write already changed back to its exact pre-publish bytes,
+    # and the private registry file (the failed atomic write left it, and
+    # must leave it, at its pre-publish state with the transition still
+    # pending).
+    kb_root = Path(kb.root)
+    kb_before = _lifecycle_kb_snapshot(kb_root)
+    proposal_json = store.proposals_dir / f"{reactivation.id}.json"
+    proposal_bytes_before = proposal_json.read_bytes()
+    registry_json = store.source_registry.root / "sources.json"
+    registry_bytes_before = registry_json.read_bytes()
+
     def fail_registry_persistence():
         raise OSError("registry persistence failed")
 
@@ -633,8 +680,20 @@ def test_source_transition_persistence_failure_rolls_back_terminal_proposal(
         pipeline.publish(reactivation.id)
 
     assert store.source_registry.get("policy") == before
+    assert _lifecycle_kb_snapshot(kb_root) == kb_before
+    assert proposal_json.read_bytes() == proposal_bytes_before
+    assert registry_json.read_bytes() == registry_bytes_before
     re_staged = pipeline.review(reactivation.id)
     assert re_staged is not None and re_staged.status == "staged"
+
+    # Recovery: with the injection gone, the same durable proposal — whose
+    # pending transition was preserved through the rollback — publishes.
+    monkeypatch.undo()
+    published = pipeline.publish(reactivation.id)
+    assert published is not None and published.status == "published"
+    active = store.source_registry.get("policy")
+    assert active.status == "active"
+    assert len(active.versions) == 2
 
 
 def test_reactivation_requires_a_retired_source(tmp_path) -> None:
