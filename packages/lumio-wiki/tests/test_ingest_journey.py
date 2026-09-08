@@ -2235,6 +2235,147 @@ def test_public_save_cannot_rebind_reviewed_identity_for_altered_content(tmp_pat
     assert page_path.read_text(encoding="utf-8") == original
 
 
+def test_public_save_cannot_swap_precondition_digests_for_intervening_bytes(
+    tmp_path: Path,
+):
+    # P4 FINAL review blocker (metadata binding): preconditions are excluded
+    # from the mutation content identity, so a public save that keeps the
+    # mutation content AND the reviewed content identity verbatim could still
+    # replace the stored precondition DIGESTS with the digests of the current
+    # intervening bytes. The next publish then passed BOTH the structural set
+    # check (paths/roles unchanged) and the drift check (the forged digests
+    # match the intervening bytes) and overwrote the newer content with pages
+    # reviewed against the older base. Reviewed metadata is durable state,
+    # never a caller-supplied value: an ordinary save of an existing
+    # reviewable proposal keeps its reviewed claim only when the mutation
+    # content AND both reviewed fields exactly match the durable record — any
+    # divergence (forged digests, added/removed/reordered records, a replaced
+    # identity, or new metadata over an unbound record) is stripped and
+    # publication fails closed with restage guidance. Deterministic: direct
+    # public-API calls, no sleeps.
+    kb = _kb(tmp_path)
+    page_path = kb.root / "overview.md"
+    reviewed_bytes = page_path.read_text(encoding="utf-8")
+    newer = reviewed_bytes.replace("deployable chat platform", "deployable chat and agent platform")
+    assert newer != reviewed_bytes
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    staged = lw.create_proposal_without_provider(
+        OVERVIEW_REVISION.encode("utf-8"),
+        "text/markdown",
+        "overview-revision.md",
+        kb,
+        store=store,
+    )
+    assert not staged.blocked, staged.validation_report
+    durable = store.get(staged.id)
+    assert durable is not None and durable.preconditions and durable.reviewed_identity
+
+    # The intervening revision lands AFTER review, changing overview.md.
+    page_path.write_text(newer, encoding="utf-8")
+
+    # The forged save keeps mutation content and reviewed identity verbatim
+    # but swaps the reviewed overview.md digest for the digest of the CURRENT
+    # intervening bytes — exactly the change that would let the next publish
+    # pass drift and overwrite the newer revision.
+    forged_preconditions = [
+        msgspec.structs.replace(item, digest=hashlib.sha256(newer.encode("utf-8")).hexdigest())
+        if item.path == "overview.md"
+        else item
+        for item in durable.preconditions
+    ]
+    forged = msgspec.structs.replace(durable, preconditions=forged_preconditions)
+    assert forged.proposed_pages == durable.proposed_pages  # content unchanged
+    assert forged.reviewed_identity == durable.reviewed_identity  # identity unchanged
+    assert forged.preconditions != durable.preconditions  # ...only the digests lie
+
+    store.save_proposal(forged)
+
+    saved = store.get(staged.id)
+    assert saved is not None
+    assert saved.status == "staged"  # the save itself persisted (still reviewable)
+    # ...but the caller-supplied reviewed metadata never persisted: the
+    # reviewed claim is stripped, so publication fails closed.
+    assert saved.preconditions is None
+    assert saved.reviewed_identity is None
+
+    with pytest.raises(lw.ProposalPreconditionError) as excinfo:
+        pipeline.publish(staged.id)
+    assert "restage" in str(excinfo.value).lower()
+    # The newer intervening bytes survive byte for byte: the forged reviewed
+    # base never blessed overwriting them.
+    assert page_path.read_text(encoding="utf-8") == newer
+
+
+def test_public_save_strips_every_reviewed_metadata_divergence(tmp_path: Path):
+    # The same binding rule covers the remaining divergence shapes beyond the
+    # forged-digest attack: REORDERED precondition records, a REPLACED
+    # reviewed identity, and metadata ADDED over a durable record that had
+    # none — no public save may introduce or change reviewed metadata, even
+    # over byte-identical content. Deterministic: direct public-API calls,
+    # no sleeps.
+    kb = _kb(tmp_path)
+    page_path = kb.root / "overview.md"
+    original = page_path.read_text(encoding="utf-8")
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    staged = lw.create_proposal_without_provider(
+        OVERVIEW_REVISION.encode("utf-8"),
+        "text/markdown",
+        "overview-revision.md",
+        kb,
+        store=store,
+    )
+    assert not staged.blocked, staged.validation_report
+    durable = store.get(staged.id)
+    assert durable is not None and durable.preconditions and durable.reviewed_identity
+
+    # (a) Reordering the precondition records (content and identity
+    #     verbatim) is a metadata change and must not persist.
+    reordered = msgspec.structs.replace(
+        durable, preconditions=list(reversed(durable.preconditions))
+    )
+    assert reordered.preconditions != durable.preconditions
+    store.save_proposal(reordered)
+    saved = store.get(staged.id)
+    assert saved is not None
+    assert saved.preconditions is None and saved.reviewed_identity is None
+
+    # A stripped record cannot publish; restaging through the seam re-binds.
+    with pytest.raises(lw.ProposalPreconditionError):
+        pipeline.publish(staged.id)
+    restaged = pipeline.stage(
+        msgspec.structs.replace(saved, preconditions=None, reviewed_identity=None)
+    )
+    assert restaged.reviewed_identity is not None
+    rebound = store.get(staged.id)
+    assert rebound is not None and rebound.preconditions
+
+    # (b) Replacing ONLY the reviewed identity (content and precondition
+    #     records verbatim) must not persist either.
+    identity_swapped = msgspec.structs.replace(rebound, reviewed_identity="f" * 64)
+    store.save_proposal(identity_swapped)
+    saved = store.get(staged.id)
+    assert saved is not None
+    assert saved.preconditions is None and saved.reviewed_identity is None
+
+    # (c) Metadata ADDED by a public save over a durable record that carries
+    #     none must not bind: strip the record below, then try to re-attach
+    #     the original reviewed metadata through an ordinary save.
+    store.save_proposal(msgspec.structs.replace(saved, preconditions=None, reviewed_identity=None))
+    unbound = store.get(staged.id)
+    assert unbound is not None
+    assert unbound.preconditions is None and unbound.reviewed_identity is None
+    store.save_proposal(durable)  # identical content, original metadata
+    saved = store.get(staged.id)
+    assert saved is not None
+    assert saved.preconditions is None and saved.reviewed_identity is None
+    with pytest.raises(lw.ProposalPreconditionError):
+        pipeline.publish(staged.id)
+    # The Knowledge Base bytes never changed: nothing was ever applied.
+    assert page_path.read_text(encoding="utf-8") == original
+
+
 def test_content_identical_save_keeps_reviewed_metadata_and_publishes(tmp_path: Path):
     # The guard must stay surgical: an ordinary save that does NOT alter the
     # mutation content (attaching raw-byte path metadata, persisting a
