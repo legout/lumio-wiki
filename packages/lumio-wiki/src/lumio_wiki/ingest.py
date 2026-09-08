@@ -509,6 +509,21 @@ def is_reviewable_proposal(proposal: IngestProposal) -> bool:
     return proposal.status not in TERMINAL_PROPOSAL_STATUSES
 
 
+class ProposalTerminalStateError(RuntimeError):
+    """An ordinary proposal write would replace durable terminal state.
+
+    Raised by :meth:`IngestStore.save_proposal` when the durable proposal
+    re-read under the store mutation lock is already ``published`` or
+    ``discarded``: that terminal decision is the durable authority, and a
+    stale caller re-saving an old staged object must never resurrect it
+    (Plan 02 / P3 review). The explicit reviewable-restore rollback inside
+    the Proposal Pipeline's publish/discard compensation is the ONE
+    authorized path past this guard
+    (:meth:`IngestStore._restore_reviewable`); ordinary saves and
+    re-staging are refused instead.
+    """
+
+
 def _provenance_for(normalized, filename, content_type):
     """Build SourceProvenance from a NormalizedSource (shared by the entry points)."""
     return SourceProvenance(
@@ -1535,6 +1550,14 @@ class IngestStore:
     lock through read/check/mutate. A terminal ``published``/``discarded``
     status therefore cannot be resurrected by a stale instance, and a
     concurrently discarded proposal can never be published by another one.
+    Ordinary writes are terminal-safe too: :meth:`save_proposal` re-reads the
+    durable proposal under the lock and refuses (with
+    :class:`ProposalTerminalStateError`) any save that would replace a
+    ``published``/``discarded`` proposal. Only the explicit
+    :meth:`_restore_reviewable` rollback compensation inside the Proposal
+    Pipeline's publish/discard failure handling may deliberately restore a
+    reviewable proposal over terminal state, and it runs inside the very
+    critical section that created that terminal state.
     """
 
     def __init__(self, root: str | Path) -> None:
@@ -1571,13 +1594,47 @@ class IngestStore:
         atomic_write_bytes(self._proposal_path(proposal.id), msgspec.json.encode(proposal))
 
     def save_proposal(self, proposal: IngestProposal, raw_path: Path | None = None) -> None:
+        """Persist one proposal atomically under the store lock.
+
+        The durable proposal is re-read under the lock BEFORE the write. If
+        it already reached a terminal ``published``/``discarded`` state, the
+        save is refused with :class:`ProposalTerminalStateError`: a stale
+        caller re-saving an old staged object must never overwrite a decided
+        proposal back to ``staged`` (from which it could then be published).
+        The Proposal Pipeline's explicit rollback compensation uses
+        :meth:`_restore_reviewable` instead, so this refusal never blocks a
+        legitimate rollback.
+        """
         proposal_with_path = (
             msgspec.structs.replace(proposal, raw_source_path=str(raw_path))
             if raw_path is not None
             else proposal
         )
         with mutation_lock(self.root):
+            durable = self._load(proposal.id)
+            if durable is not None and not is_reviewable_proposal(durable):
+                raise ProposalTerminalStateError(
+                    f"proposal {proposal.id!r} is already {durable.status!r} in the "
+                    "durable ingest store; terminal proposals cannot be replaced by "
+                    "an ordinary save"
+                )
             self._write_proposal(proposal_with_path)
+
+    def _restore_reviewable(self, proposal: IngestProposal) -> None:
+        """Rollback compensation ONLY: restore a reviewable proposal verbatim.
+
+        The narrowly authorized exception to terminal protection (Plan 02 /
+        P3 review): the Proposal Pipeline's publish/discard failure handling
+        calls this when a source-transition apply/cancel fails AFTER the
+        proposal was already marked terminal, to restore the reviewable
+        proposal for retry. The restored object is the very proposal that
+        was re-read from durable state and verified reviewable at the start
+        of the SAME critical section this write runs in, so it is a
+        deliberate rollback — never a path a stale caller can use to
+        resurrect terminal state. Ordinary :meth:`save_proposal` and
+        re-staging remain refused; the caller holds the store mutation lock.
+        """
+        self._write_proposal(proposal)
 
     def _load(self, proposal_id: str) -> IngestProposal | None:
         """Read one durable proposal; the caller holds the store lock."""
@@ -1639,6 +1696,7 @@ __all__ = [
     "IngestProposal",
     "IngestStore",
     "PageRemoval",
+    "ProposalTerminalStateError",
     "ProposedPage",
     "SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED",
     "SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED",

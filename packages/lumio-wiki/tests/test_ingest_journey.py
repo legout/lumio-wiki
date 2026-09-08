@@ -1731,3 +1731,59 @@ def test_discarded_proposal_cannot_publish_from_stale_store(tmp_path: Path):
     for pipeline in (pipeline_b, pipeline_a):
         viewed = pipeline.review(proposal.id)
         assert viewed is not None and viewed.status == "discarded"
+
+
+def test_stale_restage_cannot_overwrite_discarded_proposal_or_publish(tmp_path: Path):
+    # Plan 02 / P3 review blocker: terminal protection must also cover the
+    # STALE RESTAGING overwrite, not just the stale publish. Two ALREADY-OPEN
+    # IngestStore/Pipeline instances over the same private store: instance B
+    # stages and keeps a staged view; instance A discards the durable
+    # proposal; stale instance B then re-stages its stale staged object.
+    # Previously that blind save flipped the durable ``discarded`` proposal
+    # back to ``staged`` — from which B could publish a decision another
+    # instance had already made. The restage must now be refused BEFORE any
+    # write (no raw bytes, no proposal overwrite), the durable ``discarded``
+    # status must survive, and the subsequent stale publish must not publish
+    # the page. Deterministic: every interleaving is direct, ordered calls on
+    # the two shared instances under the same store locks — no sleeps, no
+    # threads.
+    kb = _kb(tmp_path)
+    store_a = lw.IngestStore(tmp_path / "ingest")
+    store_b = lw.IngestStore(tmp_path / "ingest")
+    pipeline_a = lw.ProposalPipeline(kb, store_a)
+    pipeline_b = lw.ProposalPipeline(kb, store_b)
+
+    proposal = lw.create_proposal_without_provider(
+        RELATED_PAGE.encode("utf-8"), "text/markdown", "related.md", kb, store=store_a
+    )
+    stale = pipeline_b.review(proposal.id)
+    assert stale is not None and stale.status == "staged"
+    raw_dir = tmp_path / "ingest" / "raw" / proposal.id
+    raw_files_before = sorted(path.name for path in raw_dir.iterdir())
+    assert raw_files_before, "the initial stage persists the raw source"
+
+    discarded = pipeline_a.discard(proposal.id)
+    assert discarded is not None and discarded.status == "discarded"
+
+    # Stale instance B re-stages its stale staged object: refused at the
+    # pipeline boundary BEFORE any raw or proposal write lands.
+    with pytest.raises(lw.ProposalPipelineError):
+        pipeline_b.stage(stale, raw_bytes=b"stale bytes", filename="stale-related.md")
+    assert sorted(path.name for path in raw_dir.iterdir()) == raw_files_before
+
+    # The store's ordinary save refuses the same stale object directly, and
+    # the durable proposal keeps its terminal discarded status.
+    with pytest.raises(lw.ProposalTerminalStateError):
+        store_b.save_proposal(stale)
+    reloaded = lw.IngestStore(tmp_path / "ingest")
+    reloaded_proposal = reloaded.get(proposal.id)
+    assert reloaded_proposal is not None and reloaded_proposal.status == "discarded"
+
+    # The stale publish after the refused restage cannot resurrect either:
+    # the page never reaches the Knowledge Base root.
+    with pytest.raises(lw.ProposalPipelineError):
+        pipeline_b.publish(proposal.id)
+    assert not (kb.root / "journey_related_page.md").exists()
+    for pipeline in (pipeline_b, pipeline_a):
+        viewed = pipeline.review(proposal.id)
+        assert viewed is not None and viewed.status == "discarded"

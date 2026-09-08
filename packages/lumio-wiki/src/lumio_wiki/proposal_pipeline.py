@@ -1129,10 +1129,24 @@ class ProposalPipeline:
         Plan 02 / P3: raw-byte isolation and proposal persistence happen under
         the store's interprocess mutation lock, and the returned proposal is
         re-read from durable state.
+
+        Plan 02 / P3 review: the DURABLE proposal is re-read and checked
+        BEFORE any write. A stale instance re-staging an object whose
+        proposal has already reached a terminal ``published``/``discarded``
+        state is refused with :class:`ProposalPipelineError` — no raw bytes
+        are written and durable terminal state is never replaced (the
+        store's :meth:`IngestStore.save_proposal` refuses that overwrite
+        too; only the pipeline's explicit rollback compensation may restore
+        a reviewable proposal over terminal state).
         """
         if self._store is None:
             raise RuntimeError("ProposalPipeline.stage requires an IngestStore")
         with mutation_lock(self._store.root):
+            durable = self._store.get(proposal.id)
+            if durable is not None and not is_reviewable_proposal(durable):
+                raise ProposalPipelineError(
+                    f"proposal {proposal.id!r} is already {durable.status} and cannot be re-staged"
+                )
             raw_path: Path | None = None
             if raw_bytes is not None and filename is not None:
                 raw_path = self._store.save_raw(proposal.id, raw_bytes, filename)
@@ -1202,7 +1216,13 @@ class ProposalPipeline:
                 except Exception:
                     # Cancellation failed: restore the original reviewable proposal
                     # so the discard can be retried with its transition still bound.
-                    store.save_proposal(proposal)
+                    # Authorized rollback compensation (Plan 02 / P3 review): the
+                    # restored object was re-read from durable state and verified
+                    # reviewable at the start of THIS critical section, so the
+                    # private restore deliberately overwrites the just-written
+                    # terminal state — a stale caller's ordinary save/re-stage is
+                    # still refused and cannot reach this path.
+                    store._restore_reviewable(proposal)
                     raise
         return discarded
 
@@ -1304,7 +1324,13 @@ class ProposalPipeline:
                 try:
                     registry.apply_transition(proposal.id)
                 except Exception:
-                    store.save_proposal(proposal)
+                    # Authorized rollback compensation (Plan 02 / P3 review): the
+                    # restored object was re-read from durable state and verified
+                    # reviewable at the start of THIS critical section, so the
+                    # private restore deliberately overwrites the just-written
+                    # terminal state for retry — a stale caller's ordinary
+                    # save/re-stage is still refused and cannot reach this path.
+                    store._restore_reviewable(proposal)
                     raise
         return published
 
