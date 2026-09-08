@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import queue
 import subprocess
@@ -19,6 +20,7 @@ from lumio_wiki.ingest import (
     SourceChangeImpact,
     SourceLifecycleChange,
     SourceProvenance,
+    _recomputed_mutation_identity,
 )
 from lumio_wiki.mutation import (
     MutationLockError,
@@ -476,6 +478,129 @@ def test_blocked_reactivation_keeps_source_retired(tmp_path) -> None:
     assert len(source.versions) == 1
 
 
+# --- Plan 02 / P4 remediation: source-lifecycle records fail closed too ---
+#
+# The reviewed-metadata checks are publish-time gates over the DURABLE
+# record, so they must apply to EVERY durable proposal. A source-lifecycle
+# proposal mutates only private registry state, but its reviewed base is
+# still bound at staging: an explicit EMPTY precondition set plus the
+# content identity over its ``source_change``. Legacy (pre-P4) records
+# lacking both — and durable records whose lifecycle content was altered
+# after review — must be refused at publish with the registry untouched.
+
+
+def test_publish_refuses_legacy_source_lifecycle_record_without_reviewed_metadata(
+    tmp_path,
+) -> None:
+    # P4 remediation (BLOCKER): source-lifecycle proposals used to return
+    # from the stale-base check before any reviewed-metadata validation, so
+    # a legacy serialized record with ``preconditions=None`` and
+    # ``reviewed_identity=None`` still published and flipped the registry.
+    # Every durable proposal now carries its reviewed metadata: publish
+    # refuses before any mutation, the source stays active, and the record
+    # stays reviewable (old JSON remains decodable and inspectable).
+    # Deterministic: direct durable-JSON edits, no sleeps.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    proposal = pipeline.retire_source("policy")
+    durable = store.get(proposal.id)
+    assert durable is not None
+    assert durable.preconditions == []  # explicit captured-nothing base
+    assert durable.reviewed_identity is not None
+
+    proposal_path = store.proposals_dir / f"{proposal.id}.json"
+    record = json.loads(proposal_path.read_text(encoding="utf-8"))
+    record.pop("preconditions", None)
+    record.pop("reviewed_identity", None)
+    proposal_path.write_text(json.dumps(record), encoding="utf-8")
+    prior_registry = msgspec.json.encode(store.source_registry._state)
+
+    with pytest.raises(lw.ProposalPreconditionError) as excinfo:
+        pipeline.publish(proposal.id)
+    assert "restage" in str(excinfo.value).lower()
+
+    source = store.source_registry.get("policy")
+    assert source.status == "active"
+    assert len(source.versions) == 1
+    assert msgspec.json.encode(store.source_registry._state) == prior_registry
+    persisted = store.get(proposal.id)
+    assert persisted is not None and persisted.status == "staged"
+
+
+def test_publish_refuses_tampered_source_lifecycle_content(tmp_path) -> None:
+    # Second remediation layer: a durable source-lifecycle record rewritten
+    # BELOW the public API (its reviewed lifecycle content altered while the
+    # reviewed identity was retained verbatim) cannot publish either — the
+    # identity is recomputed from the DURABLE record under the publish lock
+    # and must equal the stored one. The forged content never flips the
+    # registry. Deterministic: direct durable-JSON edits, no sleeps.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    proposal = pipeline.retire_source("policy")
+
+    proposal_path = store.proposals_dir / f"{proposal.id}.json"
+    record = json.loads(proposal_path.read_text(encoding="utf-8"))
+    record["source_change"]["trigger"] = "TAMPERED: forged retirement trigger"
+    proposal_path.write_text(json.dumps(record), encoding="utf-8")
+    prior_registry = msgspec.json.encode(store.source_registry._state)
+
+    with pytest.raises(lw.ProposalPreconditionError) as excinfo:
+        pipeline.publish(proposal.id)
+    assert "content identity" in str(excinfo.value)
+    assert "restage" in str(excinfo.value).lower()
+
+    assert store.source_registry.get("policy").status == "active"
+    assert msgspec.json.encode(store.source_registry._state) == prior_registry
+    persisted = store.get(proposal.id)
+    assert persisted is not None and persisted.status == "staged"
+
+
+def test_publish_refuses_source_lifecycle_record_carrying_precondition_records(
+    tmp_path,
+) -> None:
+    # Third remediation layer: the reviewed base of a source-lifecycle
+    # proposal is exactly the EMPTY captured-nothing set. A durable record
+    # that carries Knowledge Base precondition records (a foreign snapshot
+    # injected after review) cannot publish even when its content identity
+    # was re-forged to match: the precondition path-set must match the
+    # proposal. Deterministic: direct durable-JSON edits, no sleeps.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    proposal = pipeline.retire_source("policy")
+
+    proposal_path = store.proposals_dir / f"{proposal.id}.json"
+    record = json.loads(proposal_path.read_text(encoding="utf-8"))
+    record["preconditions"] = [
+        {
+            "path": "policy.md",
+            "role": "revision",
+            "kind": "file",
+            "digest": hashlib.sha256((kb.root / "policy.md").read_bytes()).hexdigest(),
+        }
+    ]
+    # Re-forge the identity so ONLY the path-set check can catch the forgery.
+    forged = msgspec.json.decode(msgspec.json.encode(record), type=IngestProposal)
+    record["reviewed_identity"] = _recomputed_mutation_identity(forged)
+    proposal_path.write_text(json.dumps(record), encoding="utf-8")
+    prior_registry = msgspec.json.encode(store.source_registry._state)
+
+    with pytest.raises(lw.ProposalPreconditionError) as excinfo:
+        pipeline.publish(proposal.id)
+    assert "no Knowledge Base path" in str(excinfo.value)
+    assert "restage" in str(excinfo.value).lower()
+
+    assert store.source_registry.get("policy").status == "active"
+    assert msgspec.json.encode(store.source_registry._state) == prior_registry
+    persisted = store.get(proposal.id)
+    assert persisted is not None and persisted.status == "staged"
+
+
 def test_private_registry_activity_does_not_change_kb_or_export_bytes(tmp_path) -> None:
     kb = _knowledge_base(tmp_path, ["policy"])
     store = IngestStore(tmp_path / "ingest")
@@ -509,7 +634,7 @@ def test_discarding_retirement_releases_pending_transition(tmp_path) -> None:
     discarded = pipeline.discard(first.id)
     replacement = pipeline.retire_source("policy")
 
-    assert discarded.status == "discarded"
+    assert discarded is not None and discarded.status == "discarded"
     assert replacement.status == "staged"
     assert store.source_registry.get("policy").status == "active"
 
@@ -717,7 +842,9 @@ def test_confirm_candidate_decision_failure_leaves_no_staged_transition(
     assert store.source_registry.get("policy").status == "active"
     assert [p for p in pipeline.list() if lw.is_reviewable_proposal(p)] == []
     monkeypatch.undo()
-    assert pipeline.confirm_retirement_candidate(candidate.id).source_change.action == "retire"
+    confirmed = pipeline.confirm_retirement_candidate(candidate.id)
+    assert confirmed.source_change is not None
+    assert confirmed.source_change.action == "retire"
 
 
 def test_discard_cancel_failure_restores_reviewable_proposal(tmp_path, monkeypatch) -> None:
@@ -774,6 +901,7 @@ def test_confirm_candidate_accepts_matching_expected_source_id(tmp_path) -> None
 
     proposal = pipeline.confirm_retirement_candidate(candidate.id, expected_source_id="policy")
 
+    assert proposal.source_change is not None
     assert proposal.source_change.action == "retire"
     assert store.source_registry.get_candidate(candidate.id).status == "confirmed"
     assert store.source_registry.get("policy").status == "active"

@@ -877,6 +877,11 @@ def test_proposal_inspect_json_carries_claim_changes_and_merges(tmp_path, capsys
     payload = capsys.readouterr().out
     assert '"entity_merges"' in payload
     assert '"claim_changes"' in payload
+    # Plan 02 / P4 remediation (private metadata): the private reviewed
+    # preconditions and content identity are durable metadata, never part of
+    # the JSON inspection surface (see ``PathPrecondition``).
+    assert '"preconditions"' not in payload
+    assert '"reviewed_identity"' not in payload
 
 
 def test_entity_merge_assembly_binds_its_reviewed_snapshot(tmp_path):

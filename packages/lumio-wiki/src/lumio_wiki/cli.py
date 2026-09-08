@@ -2359,10 +2359,23 @@ def _cmd_proposal_list(args: argparse.Namespace) -> int:
 
 
 def _encode_proposal(proposal) -> str:
-    """Serialize a proposal to indented JSON via the canonical msgspec codec."""
+    """Serialize a proposal's PUBLIC inspection surface to indented JSON.
+
+    Plan 02 / P4 remediation (private metadata): the private reviewed
+    preconditions and content identity (``preconditions``,
+    ``reviewed_identity``) are durable proposal metadata consumed by
+    publish-time verification — they carry the reviewed base paths, roles,
+    and byte digests — and never belong to an inspection surface (see the
+    ``PathPrecondition`` contract). Both fields are redacted here while
+    every public field serializes exactly as the canonical msgspec codec
+    renders it; the durable record keeps them untouched.
+    """
     import msgspec  # type: ignore[import-not-found]
 
-    return msgspec.json.format(msgspec.json.encode(proposal), indent=2).decode("utf-8")
+    payload = json.loads(msgspec.json.encode(proposal))
+    payload.pop("preconditions", None)
+    payload.pop("reviewed_identity", None)
+    return msgspec.json.format(msgspec.json.encode(payload), indent=2).decode("utf-8")
 
 
 def _cmd_proposal_inspect(args: argparse.Namespace) -> int:

@@ -535,6 +535,58 @@ def test_managed_ingest_inspect_distinguishes_provenance_from_authored_content(
     assert "Body authored from the original PDF" in out
 
 
+def test_proposal_inspect_json_redacts_private_reviewed_metadata(
+    kb_root: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
+):
+    # Plan 02 / P4 remediation (BLOCKER): ``proposal inspect --json`` used to
+    # serialize the complete IngestProposal, exposing the private reviewed
+    # preconditions (affected paths, roles, SHA-256 byte digests) and the
+    # reviewed content identity. Those are DURABLE metadata consumed by
+    # publish — never an inspection surface (see ``PathPrecondition``) — so
+    # the JSON view redacts both fields while staying valid JSON with every
+    # public field intact.
+    main(["ingest", str(kb_root), str(source_file)])
+    capsys.readouterr()  # drain ingest output.
+    store = lw.IngestStore(kb_root / ".lumio" / "ingest")
+    pid = store.list()[0].id
+    durable = store.get(pid)
+    assert durable is not None
+    assert durable.preconditions and durable.reviewed_identity
+
+    rc = main(["proposal", "inspect", str(kb_root), pid, "--json"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    payload = json.loads(out)  # valid JSON
+    # No private metadata key survives anywhere in the payload: the two
+    # reviewed-state fields themselves, and the ``role``/``digest`` field
+    # names only precondition records use (public ``path``/``kind`` keys
+    # exist on OkfImportDiagnostic and stay).
+    keys: set[str] = set()
+    stack: list[object] = [payload]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            keys.update(node)
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    assert not keys & {"preconditions", "reviewed_identity", "role", "digest"}
+    # And none of their values leak through any other field: reviewed byte
+    # digests, the identity, and precondition roles are all absent.
+    for item in durable.preconditions:
+        if item.digest:
+            assert item.digest not in out
+        assert json.dumps(item.role) not in out
+    assert durable.reviewed_identity not in out
+    # The public inspection surface is unchanged.
+    assert payload["id"] == pid
+    assert payload["status"] == "staged"
+    assert payload["proposed_pages"]
+    assert payload["diff"]
+    assert payload["validation_report"]
+    assert payload["provenance"]["source_hash"]
+
+
 def test_publish_writes_page_and_marks_terminal(
     kb_root: Path, source_file: Path, capsys: pytest.CaptureFixture[str]
 ):

@@ -1449,23 +1449,29 @@ class ProposalPipeline:
         Runs under the Knowledge Base + store + registry mutation locks,
         immediately before candidate construction (Plan 02 / B03/B04). The
         DURABLE proposal's private reviewed state is checked against the
-        CURRENT filesystem/control state, in four fail-closed layers:
+        CURRENT filesystem/control state, in fail-closed layers that apply
+        to EVERY durable proposal — source-lifecycle records included:
 
-        1. no reviewed preconditions at all — a mutating proposal staged
-           before preconditions were captured (or stripped by the store
-           after an altering save) is refused;
+        1. no captured reviewed preconditions at all (``None`` — a proposal
+           staged before preconditions were captured, or stripped by the
+           store after an altering save) is refused; source-lifecycle
+           proposals carry an explicit EMPTY captured set instead;
         2. no reviewed content identity, or the identity recomputed from the
            DURABLE record's mutation content differs from the stored one —
            the reviewed content and its metadata were separated after review
            (an altered proposal retaining its old claim), so unreviewed
            content can never publish;
-        3. the affected-path set freshly resolved from the durable proposal
-           does not match the stored precondition records — changed
-           destinations, removals, or moves cannot retain records captured
-           for the original structure;
+        3. the recorded precondition path-set does not match the proposal —
+           for Knowledge Base mutations the affected-path set freshly
+           resolved from the durable record (changed destinations, removals,
+           or moves cannot retain records captured for the original
+           structure), for source-lifecycle proposals exactly the EMPTY set
+           (a mutating-nothing record carrying Knowledge Base precondition
+           rows is altered after review);
         4. drift — a recorded reviewed byte vanished/changed, an
            expected-absent destination is occupied, or the reviewed Control
-           File state changed.
+           File state changed (Knowledge Base mutations only: a
+           source-lifecycle proposal has no filesystem base to drift).
 
         Every failure raises :class:`ProposalPreconditionError` with restage
         guidance, preserving newer on-disk content. Never a silent rebase,
@@ -1474,18 +1480,14 @@ class ProposalPipeline:
         mutates_knowledge_base = bool(
             proposal.proposed_pages or proposal.removed_pages or proposal.control_file is not None
         )
-        if not mutates_knowledge_base:
-            # A source-lifecycle proposal mutates only private registry state
-            # (its captured precondition set is deliberately empty).
-            return
-        if not proposal.preconditions:
+        if proposal.preconditions is None:
             raise ProposalPreconditionError(
-                f"proposal {proposal_id!r} carries no reviewed preconditions: it "
-                "was staged before reviewed bases were captured (Plan 02 / P4) "
-                "or its reviewed claim was stripped after an altering save. "
-                "Inspect it, then discard and restage it against the current "
-                "Knowledge Base — the current files are never guessed as the "
-                "reviewed base"
+                f"proposal {proposal_id!r} carries no captured reviewed "
+                "preconditions: it was staged before reviewed bases were "
+                "captured (Plan 02 / P4) or its reviewed claim was stripped "
+                "after an altering save. Inspect it, then discard and restage "
+                "it against the current Knowledge Base — the current files "
+                "are never guessed as the reviewed base"
             )
         if not proposal.reviewed_identity:
             raise ProposalPreconditionError(
@@ -1501,12 +1503,27 @@ class ProposalPipeline:
             raise ProposalPreconditionError(
                 f"proposal {proposal_id!r} no longer matches its reviewed content "
                 "identity: the durable mutation content (proposed pages, "
-                "removals, moves, body repairs, Control File) was altered after "
-                "review while its reviewed metadata was retained. Refusing to "
-                "publish unreviewed content: discard this proposal and restage "
-                "a fresh one against the current state, then review and "
-                "publish it"
+                "removals, moves, body repairs, Control File, source-lifecycle "
+                "change) was altered after review while its reviewed metadata "
+                "was retained. Refusing to publish unreviewed content: discard "
+                "this proposal and restage a fresh one against the current "
+                "state, then review and publish it"
             )
+        if not mutates_knowledge_base:
+            # A source-lifecycle proposal mutates only private registry state:
+            # its reviewed base is exactly the EMPTY captured-nothing set
+            # bound at staging. Any recorded Knowledge Base precondition row
+            # means the durable record was altered after review.
+            if proposal.preconditions:
+                raise ProposalPreconditionError(
+                    f"proposal {proposal_id!r} carries reviewed Knowledge Base "
+                    "precondition records but its durable content mutates no "
+                    "Knowledge Base path: the durable record was altered after "
+                    "review while its reviewed metadata was retained. Refusing "
+                    "to publish: discard this proposal and restage a fresh "
+                    "one against the current state, then review and publish it"
+                )
+            return
         expected_pairs = _expected_precondition_pairs(
             proposal.proposed_pages,
             Path(self._kb.root),
