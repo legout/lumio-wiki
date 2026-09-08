@@ -1751,16 +1751,8 @@ class IngestStore:
         legitimate rollback.
 
         Plan 02 / P4 review (durable-tampering defense, final): an ordinary
-        save of an EXISTING reviewable proposal NEVER carries a reviewed
-        claim along — not even when the caller recomputes the deterministic
-        content identity of its own altered content. Caller-side
-        recomputation is not a reviewed binding: the identity is a public,
-        deterministic hash, so any process can forge it for any content;
-        only the Proposal Pipeline's locked staging seam
-        (:meth:`ProposalPipeline._save_reviewed_proposal` →
-        :meth:`_write_reviewed_proposal`) binds reviewed metadata after
-        verification, under the Knowledge Base + store locks. An ordinary
-        save therefore keeps the durable reviewed claim ONLY when the
+        save NEVER carries a reviewed claim along. For an EXISTING
+        reviewable proposal the reviewed metadata survives only when the
         incoming mutation content is identical AND the incoming reviewed
         metadata is byte-for-byte the durable record's (the exact
         ``preconditions`` list — same records, same order, same digests —
@@ -1772,15 +1764,21 @@ class IngestStore:
         (Plan 02 / P4 final review). Any divergence — altered content,
         forged or reordered precondition records, a replaced identity, or
         new metadata over an unbound record — STRIPS both reviewed fields
-        from the persisted record: the saved content stays inspectable and
-        discardable, but publication refuses it until a real re-stage binds
-        it to a freshly reviewed base. Legitimate content-identical saves
-        (attaching raw-byte path metadata, persisting a status-carrying
-        object) keep the record as-is — the reviewed claim still describes
-        exactly the durable content, and publication re-verifies the claim
-        against the filesystem under the publish lock. The authorized
-        :meth:`_restore_reviewable` rollback remains the only other write
-        path that can restore a reviewed record verbatim.
+        from the persisted record. For a NEW proposal id (no durable
+        record) the strip is unconditional: a public save never binds
+        reviewed metadata to a fresh record either, however self-consistent
+        the caller made it look. In both cases the saved content stays
+        inspectable and discardable, but publication refuses it until a
+        real re-stage binds it to a freshly reviewed base. Legitimate
+        content-identical saves of existing records (attaching raw-byte
+        path metadata, persisting a status-carrying object) keep the record
+        as-is — the reviewed claim still describes exactly the durable
+        content, and publication re-verifies the claim against the
+        filesystem under the publish lock. The authorized
+        :meth:`_restore_reviewable` rollback and the pipeline's locked
+        staging seam (:meth:`ProposalPipeline._save_reviewed_proposal` →
+        :meth:`_write_reviewed_proposal`) remain the only writers of a
+        reviewed record.
         """
         proposal_with_path = (
             msgspec.structs.replace(proposal, raw_source_path=str(raw_path))
@@ -1795,22 +1793,28 @@ class IngestStore:
                     "durable ingest store; terminal proposals cannot be replaced by "
                     "an ordinary save"
                 )
-            if durable is not None and (
-                _recomputed_mutation_identity(proposal_with_path)
+            if (
+                durable is None
+                or _recomputed_mutation_identity(proposal_with_path)
                 != _recomputed_mutation_identity(durable)
                 or proposal_with_path.preconditions != durable.preconditions
                 or proposal_with_path.reviewed_identity != durable.reviewed_identity
             ):
-                # Altered mutation content — or ANY divergence in the
-                # reviewed metadata itself — over a reviewable record:
-                # persist the content WITHOUT any reviewed claim, so
-                # publication fails closed until a real re-stage. No
-                # caller-supplied identity or precondition set survives an
-                # ordinary save — the deterministic identity is trivially
+                # A NEW record (no durable state): the public save never
+                # binds reviewed metadata to it — only the Proposal
+                # Pipeline's locked staging seam creates a reviewed record.
+                # An EXISTING reviewable record: any divergence — altered
+                # mutation content, forged or reordered precondition
+                # records, a replaced identity, or new metadata over an
+                # unbound record — also strips the claim. No caller-supplied
+                # identity or precondition set ever survives an ordinary
+                # save — the deterministic identity is trivially
                 # recomputable by any caller and proves nothing, and the
                 # precondition digests are durable reviewed state, never a
                 # caller-swappable value (Plan 02 / P4 final review
-                # blockers).
+                # blockers). The saved content stays inspectable and
+                # discardable; publication fails closed until a real
+                # re-stage binds a freshly reviewed base.
                 proposal_with_path = msgspec.structs.replace(
                     proposal_with_path, preconditions=None, reviewed_identity=None
                 )

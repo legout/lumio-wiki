@@ -2376,6 +2376,67 @@ def test_public_save_strips_every_reviewed_metadata_divergence(tmp_path: Path):
     assert page_path.read_text(encoding="utf-8") == original
 
 
+def test_public_save_of_new_record_cannot_bind_forged_reviewed_metadata(
+    tmp_path: Path,
+):
+    # P4 remediation blocker: the metadata-divergence guard used to run only
+    # over an EXISTING durable record (``durable is not None``), so a public
+    # caller could save a NEW proposal id carrying caller-supplied
+    # preconditions (captured from the current Knowledge Base) plus a
+    # caller-computed ``reviewed_identity`` (the PUBLIC deterministic hash) —
+    # both persisted verbatim — and publication then accepted the forged
+    # reviewed base, bypassing the locked pipeline staging seam entirely.
+    # A public save never binds reviewed metadata to a NEW record either:
+    # only ProposalPipeline._save_reviewed_proposal →
+    # IngestStore._write_reviewed_proposal may create a reviewed record, so
+    # the persisted record stays unbound (inspectable, discardable) and
+    # publication fails closed with restage guidance. Deterministic: direct
+    # public-API calls, no sleeps.
+    kb = _kb(tmp_path)
+    page_path = kb.root / "overview.md"
+    original = page_path.read_text(encoding="utf-8")
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    prior_registry = msgspec.json.encode(store.source_registry._state)
+
+    # Hand-assembled NEW proposal (never staged): the assembly snapshot is
+    # captured against the current Knowledge Base and the caller computes
+    # the public deterministic content identity — exactly the
+    # self-consistent shape the staging seam would bind, forged entirely
+    # outside it.
+    unstaged = lw.create_proposal_without_provider(
+        OVERVIEW_REVISION.encode("utf-8"),
+        "text/markdown",
+        "overview-revision.md",
+        kb,
+    )
+    assert unstaged.preconditions  # the assembly snapshot rode along
+    forged = msgspec.structs.replace(
+        unstaged, reviewed_identity=_recomputed_mutation_identity(unstaged)
+    )
+    assert _is_self_consistent_restage(forged)  # the shape publish accepts
+    assert store.get(forged.id) is None  # NEW record: no durable state exists
+
+    store.save_proposal(forged)
+
+    saved = store.get(forged.id)
+    assert saved is not None
+    assert saved.status == "staged"  # the save itself persisted (reviewable)
+    # ...but the caller-supplied reviewed binding never persisted: a public
+    # save strips the reviewed metadata from NEW records too.
+    assert saved.preconditions is None
+    assert saved.reviewed_identity is None
+
+    with pytest.raises(lw.ProposalPreconditionError) as excinfo:
+        pipeline.publish(forged.id)
+    assert "restage" in str(excinfo.value).lower()
+    # The Knowledge Base bytes never changed and the Source Registry is
+    # untouched: the forged new record never applied anything.
+    assert page_path.read_text(encoding="utf-8") == original
+    assert msgspec.json.encode(store.source_registry._state) == prior_registry
+
+
 def test_content_identical_save_keeps_reviewed_metadata_and_publishes(tmp_path: Path):
     # The guard must stay surgical: an ordinary save that does NOT alter the
     # mutation content (attaching raw-byte path metadata, persisting a
