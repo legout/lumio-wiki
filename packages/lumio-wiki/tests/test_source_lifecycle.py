@@ -403,6 +403,190 @@ def test_retirement_impact_remains_action_aware_for_a_sole_source(tmp_path) -> N
     assert statuses == {"sole-source-lost"}
 
 
+# --- Plan 02 / P4 FINAL remediation: lifecycle impacts derive from the ---
+# --- CURRENT durable Knowledge Base under the staging boundary          ---
+
+
+def _publish_new_page_citing(pipeline, source_id: str, title: str) -> IngestProposal:
+    """Assemble, stage, and publish a NEW page citing ``source_id``.
+
+    Deterministic helper for the stale-``self._kb`` regressions: the page
+    has the same Compiled Page shape as ``_knowledge_base``'s and is
+    published through the ordinary pipeline journey, so the durable
+    Knowledge Base root gains a page another (already-open) pipeline's
+    in-memory snapshot does not know about.
+    """
+    markdown = textwrap.dedent(
+        f"""\
+        ---
+        title: "{title}"
+        aliases: []
+        tags:
+          - "{title.lower()}"
+        summary: "The {title.lower()}."
+        lifecycle: "approved"
+        visibility: "public"
+        sources:
+          - id: "{source_id}"
+            title: "{source_id} source"
+        synthetic: false
+        ---
+
+        # {title}
+
+        {title} text.
+        """
+    )
+    assembled = pipeline.assemble(
+        markdown, SourceProvenance(None, None, "test-helper"), f"{title.lower()}.md"
+    )
+    return pipeline.publish(pipeline.stage(assembled).id)
+
+
+def test_retire_source_impacts_cover_pages_published_after_pipeline_open(tmp_path) -> None:
+    # Plan 02 / P4 FINAL blocker: an already-open pipeline used to derive
+    # lifecycle impacts from its stale in-memory Knowledge Base snapshot, so
+    # a page another pipeline published (citing the same source) after this
+    # pipeline opened was silently missing from the staged retirement's
+    # impacts — and the lifecycle proposal's deliberately empty precondition
+    # set let that stale metadata publish. Lifecycle staging now reloads the
+    # CURRENT durable Knowledge Base under the Knowledge Base + store +
+    # registry boundary locks and derives the impacts from that state;
+    # publishing the retirement keeps every impact. Two separately opened
+    # pipelines, direct durable assertions, no sleeps.
+    kb_a = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline_a = ProposalPipeline(kb_a, store)
+    pipeline_a.register_source("policy", b"policy-v1")
+
+    # A separately opened pipeline publishes a NEW page citing the source.
+    kb_b, report_b = lw.load_knowledge_base(kb_a.root)
+    assert report_b.is_valid
+    pipeline_b = ProposalPipeline(kb_b, IngestStore(tmp_path / "ingest"))
+    published = _publish_new_page_citing(pipeline_b, "policy", "Handbook")
+    assert published.status == "published"
+    assert (kb_a.root / "handbook.md").is_file()
+
+    # Pipeline A retires while carrying its stale snapshot: the staged
+    # impacts must cover BOTH pages, derived from the reloaded current
+    # Knowledge Base (ADR-0014: page-level impacts for every affected page).
+    retirement = pipeline_a.retire_source("policy")
+    assert retirement.source_change is not None
+    assert {impact.page_title: impact.status for impact in retirement.source_change.impacts} == {
+        "Policy": "sole-source-lost",
+        "Handbook": "sole-source-lost",
+    }
+
+    # Publishing the retirement must not lose the new-page impact; the
+    # DURABLE record is the authority a Maintainer reviews.
+    pipeline_a.publish(retirement.id)
+    durable = pipeline_a.review(retirement.id)
+    assert durable is not None and durable.status == "published"
+    assert durable.source_change is not None
+    assert {impact.page_title for impact in durable.source_change.impacts} == {
+        "Policy",
+        "Handbook",
+    }
+    assert store.source_registry.get("policy").status == "retired"
+
+
+def test_reactivate_source_impacts_cover_pages_published_after_pipeline_open(tmp_path) -> None:
+    # Same stale-snapshot shape for reactivation: a page another pipeline
+    # published (citing the retired source) after this pipeline opened must
+    # appear among the staged reactivation's still-supported impacts, and
+    # publishing the reactivation must keep it.
+    kb_a = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline_a = ProposalPipeline(kb_a, store)
+    pipeline_a.register_source("policy", b"policy-v1")
+    pipeline_a.publish(pipeline_a.retire_source("policy").id)
+
+    kb_b, report_b = lw.load_knowledge_base(kb_a.root)
+    assert report_b.is_valid
+    pipeline_b = ProposalPipeline(kb_b, IngestStore(tmp_path / "ingest"))
+    published = _publish_new_page_citing(pipeline_b, "policy", "Handbook")
+    assert published.status == "published"
+
+    reactivation = pipeline_a.reactivate_source("policy", b"policy-v2")
+    assert reactivation.source_change is not None
+    assert {impact.page_title: impact.status for impact in reactivation.source_change.impacts} == {
+        "Policy": "still-supported",
+        "Handbook": "still-supported",
+    }
+
+    pipeline_a.publish(reactivation.id)
+    durable = pipeline_a.review(reactivation.id)
+    assert durable is not None and durable.status == "published"
+    assert durable.source_change is not None
+    assert {impact.page_title for impact in durable.source_change.impacts} == {
+        "Policy",
+        "Handbook",
+    }
+    active = store.source_registry.get("policy")
+    assert active.status == "active"
+    assert len(active.versions) == 2
+
+
+def test_confirm_retirement_candidate_impacts_derive_from_current_kb(tmp_path) -> None:
+    # The candidate confirm route stages through retire_source's ONE coherent
+    # boundary — there is no separate confirm-side impact derivation to keep
+    # in sync — so a page published after the pipeline opened is covered
+    # there too, and the candidate decision still records cleanly.
+    kb_a = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline_a = ProposalPipeline(kb_a, store)
+    pipeline_a.register_source("policy", b"policy-v1")
+    candidate = pipeline_a.record_retirement_candidate("policy", "watched file missing")
+
+    kb_b, report_b = lw.load_knowledge_base(kb_a.root)
+    assert report_b.is_valid
+    pipeline_b = ProposalPipeline(kb_b, IngestStore(tmp_path / "ingest"))
+    _publish_new_page_citing(pipeline_b, "policy", "Handbook")
+
+    proposal = pipeline_a.confirm_retirement_candidate(candidate.id)
+    assert proposal.source_change is not None
+    assert {impact.page_title for impact in proposal.source_change.impacts} == {
+        "Policy",
+        "Handbook",
+    }
+    assert store.source_registry.get_candidate(candidate.id).status == "confirmed"
+    assert store.source_registry.get("policy").status == "active"
+
+
+def test_lifecycle_staging_refuses_an_invalid_current_knowledge_base(tmp_path) -> None:
+    # Fail-closed reload: a durable Knowledge Base corrupted by a direct
+    # external edit after the pipeline opened must refuse lifecycle staging
+    # — no impacts derived from a broken load, no staged transition, no
+    # persisted proposal, the registry byte-untouched. Direct durable
+    # assertions, no sleeps.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+
+    # Phase 1 — retirement staging fails closed on the invalid reload.
+    (kb.root / "broken.md").write_text("---\ntitle: [broken\n", encoding="utf-8")
+    prior_registry = msgspec.json.encode(store.source_registry._state)
+    with pytest.raises(lw.ProposalPipelineError, match="no longer validates"):
+        pipeline.retire_source("policy")
+    assert msgspec.json.encode(store.source_registry._state) == prior_registry
+    assert pipeline.list() == []
+
+    # Phase 2 — the repaired Knowledge Base stages cleanly again.
+    (kb.root / "broken.md").unlink()
+    retirement = pipeline.retire_source("policy")
+    assert retirement.status == "staged"
+    pipeline.publish(retirement.id)
+
+    # Phase 3 — the same gate guards reactivation staging.
+    (kb.root / "broken.md").write_text("---\ntitle: [broken\n", encoding="utf-8")
+    prior_registry = msgspec.json.encode(store.source_registry._state)
+    with pytest.raises(lw.ProposalPipelineError, match="no longer validates"):
+        pipeline.reactivate_source("policy", b"policy-v2")
+    assert msgspec.json.encode(store.source_registry._state) == prior_registry
+    assert [item for item in pipeline.list() if lw.is_reviewable_proposal(item)] == []
+
+
 def test_terminal_proposal_persistence_failure_keeps_reactivation_state_unchanged(
     tmp_path, monkeypatch
 ) -> None:
@@ -424,7 +608,8 @@ def test_terminal_proposal_persistence_failure_keeps_reactivation_state_unchange
         pipeline.publish(reactivation.id)
 
     assert store.source_registry.get("policy") == before
-    assert pipeline.review(reactivation.id).status == "staged"
+    re_staged = pipeline.review(reactivation.id)
+    assert re_staged is not None and re_staged.status == "staged"
 
 
 def test_source_transition_persistence_failure_rolls_back_terminal_proposal(
@@ -448,7 +633,8 @@ def test_source_transition_persistence_failure_rolls_back_terminal_proposal(
         pipeline.publish(reactivation.id)
 
     assert store.source_registry.get("policy") == before
-    assert pipeline.review(reactivation.id).status == "staged"
+    re_staged = pipeline.review(reactivation.id)
+    assert re_staged is not None and re_staged.status == "staged"
 
 
 def test_reactivation_requires_a_retired_source(tmp_path) -> None:
@@ -1734,15 +1920,19 @@ def test_bind_pending_rejects_a_reactivation_without_a_valid_staged_version(tmp_
 
 
 def _gated_pipeline_stale_writer(pipeline, method_name, args, outcomes):
-    """Run one pipeline lifecycle call parked between stage and bind.
+    """Run one pipeline lifecycle call parked inside its staging boundary.
 
-    The gate parks the call inside ``_source_change_proposal`` — after
-    ``stage_*`` has released its lock, before ``_bind_and_persist`` takes
-    the store+registry locks — which is exactly the race window under test.
-    Coordination is two ``threading.Event`` barriers; there are no sleeps.
-    Returns (parked_event, release_event, started thread). The gated
-    ``pipeline`` is a test-local instance, so the attribute assignment does
-    not leak; after both events are set the gate is a pass-through.
+    The gate parks the call inside ``_source_change_proposal`` — which,
+    since the Plan 02 / P4 final remediation, runs INSIDE the one coherent
+    staging boundary (current-KB reload, registry staging, impact
+    derivation, reviewed binding, persistence under the Knowledge Base +
+    store + registry locks). Parking there therefore holds the whole
+    boundary open, so a conflicting writer's own lifecycle staging blocks
+    on the boundary locks until the gate releases. Coordination is
+    ``threading.Event`` barriers; there are no sleeps. Returns
+    (parked_event, release_event, started thread). The gated ``pipeline``
+    is a test-local instance, so the attribute assignment does not leak;
+    after both events are set the gate is a pass-through.
     """
     parked_at_bind_window = threading.Event()
     conflict_may_commit = threading.Event()
@@ -1769,11 +1959,34 @@ def _gated_pipeline_stale_writer(pipeline, method_name, args, outcomes):
     return parked_at_bind_window, conflict_may_commit, thread
 
 
-def test_retire_source_rejects_a_transition_stale_between_stage_and_bind(tmp_path) -> None:
-    # Review blocker 1, public journey: retire_source stages the transition,
-    # then assembles the proposal OUTSIDE any lock before binding. A writer
-    # that completes a full retire+publish inside that window must lose the
-    # stale bind — deterministically, via event barriers (no sleeps).
+def _run_conflicting_lifecycle_writer(pipeline, method_name, args, outcomes):
+    """Run a conflicting lifecycle staging on a daemon thread.
+
+    The conflicting writer is a separately opened pipeline over the same
+    durable roots; its result (``None`` on success, the exception otherwise)
+    is relayed through ``outcomes`` for order-independent assertions.
+    """
+
+    def conflicting_runner() -> None:
+        try:
+            getattr(pipeline, method_name)(*args)
+        except BaseException as exc:  # relayed to the main thread for asserting
+            outcomes.put(exc)
+        else:
+            outcomes.put(None)
+
+    return threading.Thread(target=conflicting_runner, daemon=True)
+
+
+def test_retire_source_boundary_serializes_a_conflicting_writer(tmp_path) -> None:
+    # Plan 02 / P4 FINAL blocker: the whole retire staging — current-KB
+    # reload, registry staging, impact derivation, reviewed binding,
+    # persistence — is ONE critical section under the Knowledge Base +
+    # store + registry locks. A separately opened conflicting writer can no
+    # longer commit a full retire+publish inside it: it blocks on the
+    # boundary locks, and its own staging is then refused because the gated
+    # writer's transition is already bound (one pending transition per
+    # source). Deterministic via event barriers — no sleeps.
     kb = _knowledge_base(tmp_path, ["policy"])
     store = IngestStore(tmp_path / "ingest")
     pipeline = ProposalPipeline(kb, store)
@@ -1784,36 +1997,46 @@ def test_retire_source_rejects_a_transition_stale_between_stage_and_bind(tmp_pat
         pipeline, "retire_source", ("policy",), outcomes
     )
     writer.start()
-    assert parked.wait(timeout=120), "writer never reached the stage→bind window"
+    assert parked.wait(timeout=120), "writer never reached its staging boundary"
 
-    # The conflicting journey commits while the stale writer is parked.
     conflict = ProposalPipeline(kb, IngestStore(tmp_path / "ingest"))
-    winner = conflict.retire_source("policy")
-    conflict.publish(winner.id)
+    conflicting = _run_conflicting_lifecycle_writer(
+        conflict, "retire_source", ("policy",), outcomes
+    )
+    conflicting.start()
     release.set()
 
     writer.join(timeout=120)
-    assert not writer.is_alive(), "stale writer never observed the conflict"
-    error = outcomes.get()
-    assert isinstance(error, SourceRegistryError)
-    assert "no longer active" in str(error)
+    conflicting.join(timeout=120)
+    assert not writer.is_alive() and not conflicting.is_alive()
+    results = [outcomes.get(timeout=120), outcomes.get(timeout=120)]
+    errors = [result for result in results if isinstance(result, BaseException)]
+    successes = [result for result in results if result is None]
+    assert len(successes) == 1 and len(errors) == 1
+    assert isinstance(errors[0], SourceRegistryError)
+    assert "already has a pending transition" in str(errors[0])
 
-    # Clean compensation on the public path: no stale proposal persisted, the
-    # winning proposal is the only durable one, and no orphan transition
-    # blocks the next lifecycle journey.
-    assert [proposal.id for proposal in pipeline.list()] == [winner.id]
-    published_winner = pipeline.review(winner.id)
-    assert published_winner is not None and published_winner.status == "published"
-    assert store.source_registry.get("policy").status == "retired"
+    # Exactly one durable staged retirement with its transition bound — the
+    # conflicting staging never persisted a proposal or an orphan state.
+    staged = [proposal for proposal in pipeline.list() if proposal.status == "staged"]
+    assert len(staged) == 1
+    assert staged[0].source_change is not None
+    assert staged[0].source_change.action == "retire"
+    pending = _pending_transitions(store.source_registry)
+    assert [transition.proposal_id for transition in pending] == [staged[0].id]
+    assert store.source_registry.get("policy").status == "active"
+    # Discarding the staged retirement releases the pending transition, so
+    # the next lifecycle journey stages cleanly (P3 compensation intact).
+    discarded = pipeline.discard(staged[0].id)
+    assert discarded is not None and discarded.status == "discarded"
     assert _pending_transitions(store.source_registry) == []
-    # No orphan transition blocks the next lifecycle journey.
-    assert pipeline.reactivate_source("policy", b"policy-v2").status == "staged"
+    assert pipeline.retire_source("policy").status == "staged"
 
 
-def test_reactivate_source_rejects_a_transition_stale_between_stage_and_bind(tmp_path) -> None:
-    # Review blocker 1, public reactivation journey: same barrier pattern —
-    # the stale reactivation is refused once a concurrent reactivation has
-    # published and the source is active again.
+def test_reactivate_source_boundary_serializes_a_conflicting_writer(tmp_path) -> None:
+    # Same one-boundary shape for the reactivation journey: the conflicting
+    # reactivation cannot interleave with the gated staging; it is refused
+    # once the gated writer's transition is durably bound.
     kb = _knowledge_base(tmp_path, ["policy"])
     store = IngestStore(tmp_path / "ingest")
     pipeline = ProposalPipeline(kb, store)
@@ -1826,25 +2049,38 @@ def test_reactivate_source_rejects_a_transition_stale_between_stage_and_bind(tmp
         pipeline, "reactivate_source", ("policy", b"policy-v2"), outcomes
     )
     writer.start()
-    assert parked.wait(timeout=120), "writer never reached the stage→bind window"
+    assert parked.wait(timeout=120), "writer never reached its staging boundary"
 
     conflict = ProposalPipeline(kb, IngestStore(tmp_path / "ingest"))
-    winner = conflict.reactivate_source("policy", b"policy-v2-conflict")
-    conflict.publish(winner.id)
+    conflicting = _run_conflicting_lifecycle_writer(
+        conflict, "reactivate_source", ("policy", b"policy-v2-conflict"), outcomes
+    )
+    conflicting.start()
     release.set()
 
     writer.join(timeout=120)
-    assert not writer.is_alive(), "stale writer never observed the conflict"
-    error = outcomes.get()
-    assert isinstance(error, SourceRegistryError)
-    assert "no longer retired" in str(error)
+    conflicting.join(timeout=120)
+    assert not writer.is_alive() and not conflicting.is_alive()
+    results = [outcomes.get(timeout=120), outcomes.get(timeout=120)]
+    errors = [result for result in results if isinstance(result, BaseException)]
+    successes = [result for result in results if result is None]
+    assert len(successes) == 1 and len(errors) == 1
+    assert isinstance(errors[0], SourceRegistryError)
+    assert "already has a pending transition" in str(errors[0])
 
-    persisted_ids = {proposal.id for proposal in pipeline.list()}
-    assert persisted_ids == {retirement.id, winner.id}
-    assert store.source_registry.get("policy").status == "active"
+    staged = [proposal for proposal in pipeline.list() if proposal.status == "staged"]
+    assert len(staged) == 1
+    assert staged[0].source_change is not None
+    assert staged[0].source_change.action == "reactivate"
+    pending = _pending_transitions(store.source_registry)
+    assert [transition.proposal_id for transition in pending] == [staged[0].id]
+    assert store.source_registry.get("policy").status == "retired"
+    # Discarding the staged reactivation releases the pending transition, so
+    # the next lifecycle journey stages cleanly (P3 compensation intact).
+    discarded = pipeline.discard(staged[0].id)
+    assert discarded is not None and discarded.status == "discarded"
     assert _pending_transitions(store.source_registry) == []
-    # No orphan transition blocks the next lifecycle journey.
-    assert pipeline.retire_source("policy").status == "staged"
+    assert pipeline.reactivate_source("policy", b"policy-v3").status == "staged"
 
 
 def test_mutation_lock_refuses_unsafe_nested_expansion_without_deadlock(tmp_path):

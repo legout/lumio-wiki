@@ -46,8 +46,11 @@ from lumio_wiki.ingest import (
 from lumio_wiki.knowledge_base import (
     CONTROL_FILE_BASENAME,
     HotIndexPin,
+    KnowledgeBase,
     KnowledgeBaseControlFile,
+    KnowledgeBaseError,
     append_activity_log_entry,
+    load_knowledge_base,
     make_activity_log_entry,
 )
 from lumio_wiki.knowledge_base import _extract_references as _extract_references
@@ -658,7 +661,46 @@ class ProposalPipeline:
         #    the registry; raw bytes never reach the KB root or Reader/export.
         return self.stage(proposal)
 
-    def _source_impacts(self, source_id: str, action: str) -> list[SourceChangeImpact]:
+    def _load_current_kb(self) -> KnowledgeBase:
+        """Reload the durable Knowledge Base under the staging locks (P4).
+
+        Source-lifecycle staging derives its page-level impacts from the
+        CURRENT durable Knowledge Base — never from the possibly stale
+        in-memory ``self._kb`` snapshot an already-open pipeline carries
+        (Plan 02 / P4 final blocker): another cooperating pipeline can
+        publish a new page citing the source between this pipeline's open
+        and its retire/reactivate call, and ADR-0014 requires a lifecycle
+        change to produce page-level impacts for EVERY affected Compiled
+        Page. Called under the Knowledge Base + store + registry mutation
+        locks, so the reloaded snapshot, the registry staging, the reviewed
+        binding, and the persistence are ONE consistent snapshot — a direct
+        current reload/recompute under the lock, which is acceptable for
+        lifecycle exactly because the impacts are computed inside the
+        boundary. An unloadable or invalid Knowledge Base fails closed:
+        no transition is staged and no proposal is persisted.
+        """
+        try:
+            kb, report = load_knowledge_base(self._kb.root)
+        except (KnowledgeBaseError, OSError) as exc:
+            raise ProposalPipelineError(
+                f"could not reload the current Knowledge Base from "
+                f"{self._kb.root} for source-lifecycle staging: {exc}. "
+                "Refusing to derive lifecycle impacts from an unloadable "
+                "Knowledge Base — restore it, then stage the lifecycle "
+                "change again"
+            ) from exc
+        if not report.is_valid:
+            raise ProposalPipelineError(
+                f"the current Knowledge Base at {self._kb.root} no longer "
+                f"validates: {report}. Refusing to derive lifecycle impacts "
+                "from an invalid Knowledge Base — repair or restore it, "
+                "then stage the lifecycle change again"
+            )
+        return kb
+
+    def _source_impacts(
+        self, source_id: str, action: str, kb: KnowledgeBase
+    ) -> list[SourceChangeImpact]:
         # Page-impact lookup matches the EXPLICIT registry ``source_id`` against
         # the ALREADY-PUBLIC ``CompiledPage.sources[].id`` declared on each page
         # (ADR-0014, decision A). The provenance id is part of portable public
@@ -677,7 +719,7 @@ class ProposalPipeline:
         # sole-source-lost.
         registry = self._require_store().source_registry
         impacts: list[SourceChangeImpact] = []
-        for page in self._kb.pages:
+        for page in kb.pages:
             page_source_ids = [source.id for source in page.sources]
             if source_id not in page_source_ids:
                 continue
@@ -739,6 +781,11 @@ class ProposalPipeline:
         the cancel compensation, so cooperating processes can never interleave
         a second bind for the same source (the registry re-checks the
         no-pending rule under the lock) nor a transition/proposal teardown.
+        Plan 02 / P4 (final blocker): retire/reactivate staging calls this
+        while ALREADY holding the Knowledge Base + store + registry locks —
+        the whole lifecycle staging (current-KB reload, staging, impact
+        derivation, binding, persistence) is ONE critical section, so the
+        nested store+registry acquisition here reenters.
 
         ``bind_pending`` also re-validates the staged transition against the
         durable source state re-read under those locks: a transition whose
@@ -766,32 +813,62 @@ class ProposalPipeline:
                 raise
 
     def retire_source(self, source_id: str) -> IngestProposal:
-        """Stage retirement while leaving the source active until publication."""
+        """Stage retirement while leaving the source active until publication.
+
+        Plan 02 / P4 (final blocker): the whole lifecycle staging is ONE
+        critical section under the Knowledge Base + store + registry
+        mutation locks (one consistent global order — see
+        :func:`lumio_wiki.mutation.mutation_lock`): the CURRENT durable
+        Knowledge Base is reloaded (:meth:`_load_current_kb`), the registry
+        transition is staged, the action-aware page impacts are derived
+        from that reloaded state (never from the possibly stale ``self._kb``
+        an already-open pipeline carries), the proposal is bound, and the
+        record is persisted. No provider or external work runs inside the
+        boundary: these routes touch only local durable state and raw
+        bytes. The registry's own staging/bind re-checks (P3) stay in
+        force inside the boundary as defense in depth.
+        """
         store = self._require_store()
-        transition = store.source_registry.stage_retirement(source_id)
-        change = SourceLifecycleChange(
-            action="retire",
-            source_id=source_id,
-            trigger=f"source {source_id} retired",
-            impacts=self._source_impacts(source_id, "retire"),
-        )
-        proposal = self._source_change_proposal(change)
-        self._bind_and_persist(transition, proposal)
-        return proposal
+        registry = store.source_registry
+        with mutation_lock(self._kb.root, store.root, registry.root):
+            current_kb = self._load_current_kb()
+            transition = registry.stage_retirement(source_id)
+            change = SourceLifecycleChange(
+                action="retire",
+                source_id=source_id,
+                trigger=f"source {source_id} retired",
+                impacts=self._source_impacts(source_id, "retire", current_kb),
+            )
+            proposal = self._source_change_proposal(change)
+            self._bind_and_persist(transition, proposal)
+            return proposal
 
     def reactivate_source(self, source_id: str, raw_bytes: bytes) -> IngestProposal:
-        """Stage a fresh version while leaving a retired source inactive."""
+        """Stage a fresh version while leaving a retired source inactive.
+
+        One critical section under the Knowledge Base + store + registry
+        mutation locks, exactly like :meth:`retire_source`: the CURRENT
+        durable Knowledge Base is reloaded, the reactivation transition is
+        staged, and the still-supported impacts are derived from that
+        reloaded state — a page another pipeline published (citing this
+        source) after this pipeline opened is never silently missing from
+        the staged impacts. The raw bytes stay in memory inside the
+        boundary (local registry work only).
+        """
         store = self._require_store()
-        transition = store.source_registry.stage_reactivation(source_id, raw_bytes)
-        change = SourceLifecycleChange(
-            action="reactivate",
-            source_id=source_id,
-            trigger=f"source {source_id} reactivated",
-            impacts=self._source_impacts(source_id, "reactivate"),
-        )
-        proposal = self._source_change_proposal(change)
-        self._bind_and_persist(transition, proposal)
-        return proposal
+        registry = store.source_registry
+        with mutation_lock(self._kb.root, store.root, registry.root):
+            current_kb = self._load_current_kb()
+            transition = registry.stage_reactivation(source_id, raw_bytes)
+            change = SourceLifecycleChange(
+                action="reactivate",
+                source_id=source_id,
+                trigger=f"source {source_id} reactivated",
+                impacts=self._source_impacts(source_id, "reactivate", current_kb),
+            )
+            proposal = self._source_change_proposal(change)
+            self._bind_and_persist(transition, proposal)
+            return proposal
 
     def record_retirement_candidate(self, source_id: str, trigger: str) -> RetirementCandidate:
         """Record a retirement signal without staging or changing support."""
@@ -833,6 +910,14 @@ class ProposalPipeline:
         :meth:`dismiss_retirement_candidate`. The web confirm route uses this to
         require explicit source identity from its route parameter so a mismatch
         can never stage a retirement for (or audit) the wrong source.
+
+        Plan 02 / P4 (final blocker): the staged retirement is
+        :meth:`retire_source`'s ONE coherent boundary (current durable
+        Knowledge Base reload → registry staging → impact derivation →
+        reviewed binding → persistence) — there is no separate confirm-side
+        impact derivation to keep in sync. The candidate's own decision is
+        recorded after the staging; if it fails, the compensation discards
+        the staged proposal so the candidate stays pending and retryable.
         """
         registry = self._require_store().source_registry
         if expected_source_id is not None:
