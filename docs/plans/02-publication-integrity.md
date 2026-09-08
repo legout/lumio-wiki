@@ -1,6 +1,6 @@
 # 02 — Publication and validation integrity
 
-**P1 implemented; P2–P5 proposed and unexecuted.** Goal: prevent silent canonical data loss and stale
+**P1–P2 implemented; P3–P5 proposed and unexecuted.** Goal: prevent silent canonical data loss and stale
 publication while preserving proposal-first local maintenance.
 Sources/requirements: [owner decisions and B01–B07](README.md#finding-to-task-map),
 [PRD aggregation](../prd/0002-core-sdk.md),
@@ -59,7 +59,7 @@ no alternate CLI mutation implementation. Global checks: [README](README.md#glob
 
 ## P2
 
-- [ ] **Resolve destinations before any candidate/live write (B01).**
+- [x] **Resolve destinations before any candidate/live write (B01).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/publish.py`,
   `packages/lumio-wiki/src/lumio_wiki/ingest.py`,
   `packages/lumio-wiki/tests/test_ingest_journey.py`,
@@ -88,6 +88,12 @@ no alternate CLI mutation implementation. Global checks: [README](README.md#glob
   **Done:** the collision repro leaves original bytes and proposal state intact;
   ordinary same-page revisions still publish; conflicting destination sets
   cannot silently delete another page in temporary validation or live apply.
+  **Evidence:** integrated locally in `e555374`; the final candidate passed
+  `1523 passed, 10 skipped` with four workers. Focused P2, removal, merge,
+  maintenance, and managed-ingest suites passed (136 focused tests), and
+  repository Ruff plus P2-file format checks passed. Final review confirmed
+  candidate/live parity for lexical symlinks, special files, permissions,
+  move/removal ownership, and no-partial-write preflights.
 
 ## P3
 
