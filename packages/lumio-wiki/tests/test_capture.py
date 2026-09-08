@@ -666,7 +666,11 @@ def test_cli_yes_stages_reviewable_proposal(tmp_path: Path):
     assert out.index("redactions applied:") < out.index("Staged proposal")
     store = IngestStore(kb_root / ".lumio" / "ingest")
     assert [s.source_id for s in store.source_registry.list()] == ["session-cli-yes"]
-    assert len(store._cache) == 0  # proposals persist on disk, not in memory
+    # Proposals persist on disk, not in memory (Plan 02 / P3 removed the
+    # in-memory proposal cache; durable state is the only authority).
+    staged_files = list((kb_root / ".lumio" / "ingest" / "proposals").glob("*.json"))
+    assert len(staged_files) == 1
+    assert not list((kb_root / ".lumio" / "ingest" / "proposals").glob("*.tmp"))
 
 
 def test_cli_manifest_secret_fields_are_redacted_in_output(tmp_path: Path):

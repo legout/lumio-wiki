@@ -35,6 +35,7 @@ from lumio_wiki.knowledge_base import (
     extend_control_file_categories,
     validate,
 )
+from lumio_wiki.mutation import atomic_write_bytes, mutation_lock
 from lumio_wiki.okf import (
     OKF_PROFILE1_QUERY,
     OkfImportDiagnostic,
@@ -1522,6 +1523,18 @@ class IngestStore:
 
     Raw bytes are kept in a separate tree from the compiled Knowledge Base so
     they never appear in a public or published export.
+
+    Durability contract (Plan 02 / P3, B03): durable proposal state is the
+    ONLY authority. There is no in-memory proposal cache — every
+    :meth:`get`/:meth:`list` (and therefore every pipeline review surface)
+    re-reads the durable proposal under the per-store interprocess mutation
+    lock (:func:`lumio_wiki.mutation.mutation_lock`), and every write —
+    staging or a terminal publish/discard transition — persists atomically
+    through a uniquely named temp file
+    (:func:`lumio_wiki.mutation.atomic_write_bytes`) while holding the same
+    lock through read/check/mutate. A terminal ``published``/``discarded``
+    status therefore cannot be resurrected by a stale instance, and a
+    concurrently discarded proposal can never be published by another one.
     """
 
     def __init__(self, root: str | Path) -> None:
@@ -1531,18 +1544,31 @@ class IngestStore:
         self.raw_dir = self.root / "raw"
         self.proposals_dir = self.root / "proposals"
         self.source_registry = SourceRegistry(self.root / "source-registry")
-        self._cache: dict[str, IngestProposal] = {}
 
     def _proposal_path(self, proposal_id: str) -> Path:
         return self.proposals_dir / f"{proposal_id}.json"
 
     def save_raw(self, proposal_id: str, raw_bytes: bytes, filename: str) -> Path:
+        """Persist one staged raw source atomically under the store lock.
+
+        A direct raw writer holds the same per-store interprocess mutation
+        lock as the proposal writers (nested acquisition from
+        :meth:`ProposalPipeline.stage`, which already holds it, reenters),
+        and the bytes land through a uniquely named temp file so a failed
+        write can never leave torn raw bytes behind.
+        """
         dir_path = self.raw_dir / proposal_id
         dir_path.mkdir(parents=True, exist_ok=True)
         safe_name = Path(filename).name
         path = dir_path / safe_name
-        path.write_bytes(raw_bytes)
+        with mutation_lock(self.root):
+            atomic_write_bytes(path, raw_bytes)
         return path
+
+    def _write_proposal(self, proposal: IngestProposal) -> None:
+        """Persist one proposal atomically; the caller holds the store lock."""
+        self.proposals_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(self._proposal_path(proposal.id), msgspec.json.encode(proposal))
 
     def save_proposal(self, proposal: IngestProposal, raw_path: Path | None = None) -> None:
         proposal_with_path = (
@@ -1550,48 +1576,60 @@ class IngestStore:
             if raw_path is not None
             else proposal
         )
-        self.proposals_dir.mkdir(parents=True, exist_ok=True)
-        path = self._proposal_path(proposal.id)
-        path.write_bytes(msgspec.json.encode(proposal_with_path))
-        self._cache[proposal.id] = proposal_with_path
+        with mutation_lock(self.root):
+            self._write_proposal(proposal_with_path)
 
-    def get(self, proposal_id: str) -> IngestProposal | None:
-        if proposal_id in self._cache:
-            return self._cache[proposal_id]
+    def _load(self, proposal_id: str) -> IngestProposal | None:
+        """Read one durable proposal; the caller holds the store lock."""
         path = self._proposal_path(proposal_id)
         if not path.exists():
             return None
-        proposal = msgspec.json.decode(path.read_bytes(), type=IngestProposal)
-        self._cache[proposal_id] = proposal
-        return proposal
+        return msgspec.json.decode(path.read_bytes(), type=IngestProposal)
+
+    def get(self, proposal_id: str) -> IngestProposal | None:
+        with mutation_lock(self.root):
+            return self._load(proposal_id)
 
     def list(self) -> list[IngestProposal]:
         proposals: list[IngestProposal] = []
-        for path in sorted(self.proposals_dir.glob("*.json")):
-            proposal = self.get(path.stem)
-            if proposal is not None:
-                proposals.append(proposal)
+        with mutation_lock(self.root):
+            for path in sorted(self.proposals_dir.glob("*.json")):
+                proposal = self._load(path.stem)
+                if proposal is not None:
+                    proposals.append(proposal)
         return proposals
 
     def _update_status(self, proposal: IngestProposal, status: str) -> IngestProposal:
         updated = msgspec.structs.replace(proposal, status=status)
-        self._proposal_path(proposal.id).write_bytes(msgspec.json.encode(updated))
-        self._cache[proposal.id] = updated
+        with mutation_lock(self.root):
+            self._write_proposal(updated)
         return updated
 
     def publish(self, proposal_id: str) -> IngestProposal | None:
-        """Mark a successfully published proposal as terminal."""
-        proposal = self.get(proposal_id)
-        if proposal is None or not is_reviewable_proposal(proposal):
-            return proposal
-        return self._update_status(proposal, "published")
+        """Mark a successfully published proposal as terminal.
+
+        The terminal decision is made against the DURABLE proposal re-read
+        under the store lock — never against a stale in-memory view — so a
+        proposal another instance already discarded or published keeps its
+        terminal status.
+        """
+        with mutation_lock(self.root):
+            proposal = self._load(proposal_id)
+            if proposal is None or not is_reviewable_proposal(proposal):
+                return proposal
+            return self._update_status(proposal, "published")
 
     def discard(self, proposal_id: str) -> IngestProposal | None:
-        """Mark a reviewable proposal as discarded."""
-        proposal = self.get(proposal_id)
-        if proposal is None or not is_reviewable_proposal(proposal):
-            return proposal
-        return self._update_status(proposal, "discarded")
+        """Mark a reviewable proposal as discarded.
+
+        Like :meth:`publish`, the transition re-reads durable state under the
+        store lock before writing, so terminal state always wins.
+        """
+        with mutation_lock(self.root):
+            proposal = self._load(proposal_id)
+            if proposal is None or not is_reviewable_proposal(proposal):
+                return proposal
+            return self._update_status(proposal, "discarded")
 
 
 __all__ = [

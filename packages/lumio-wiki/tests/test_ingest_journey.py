@@ -1694,3 +1694,40 @@ def test_unrelated_unix_socket_elsewhere_in_kb_returns_normal_candidate_report(
     lw.apply_proposed_pages([page], kb.root)
     assert (kb.root / "fresh.md").is_file()
     assert sock_path.exists()
+
+
+def test_discarded_proposal_cannot_publish_from_stale_store(tmp_path: Path):
+    # B03 (Plan 02 / P3): durable terminal state is the only authority. Two
+    # ALREADY-OPEN IngestStore/Pipeline instances over the same private store:
+    # instance B first takes a reviewable view of the staged proposal, then
+    # instance A discards it. B's publish attempt must fail against the freshly
+    # read durable state (read under the shared store lock) — the terminal
+    # discard wins, the proposal is never resurrected as published, and the
+    # proposed page never reaches the Knowledge Base root.
+    kb = _kb(tmp_path)
+    store_a = lw.IngestStore(tmp_path / "ingest")
+    store_b = lw.IngestStore(tmp_path / "ingest")
+    pipeline_a = lw.ProposalPipeline(kb, store_a)
+    pipeline_b = lw.ProposalPipeline(kb, store_b)
+
+    proposal = lw.create_proposal_without_provider(
+        RELATED_PAGE.encode("utf-8"), "text/markdown", "related.md", kb, store=store_a
+    )
+    stale = pipeline_b.review(proposal.id)
+    assert stale is not None and stale.status == "staged"
+
+    discarded = pipeline_a.discard(proposal.id)
+    assert discarded is not None and discarded.status == "discarded"
+
+    with pytest.raises(lw.ProposalPipelineError):
+        pipeline_b.publish(proposal.id)
+
+    # Terminal discard is durable and visible to every instance; nothing was
+    # published behind it.
+    assert not (kb.root / "journey_related_page.md").exists()
+    reloaded = lw.IngestStore(tmp_path / "ingest")
+    reloaded_proposal = reloaded.get(proposal.id)
+    assert reloaded_proposal is not None and reloaded_proposal.status == "discarded"
+    for pipeline in (pipeline_b, pipeline_a):
+        viewed = pipeline.review(proposal.id)
+        assert viewed is not None and viewed.status == "discarded"

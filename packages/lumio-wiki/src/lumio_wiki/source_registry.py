@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 import uuid
 from datetime import UTC, datetime
@@ -11,6 +10,8 @@ from pathlib import Path
 from typing import Literal
 
 import msgspec
+
+from lumio_wiki.mutation import atomic_write_bytes, mutation_lock
 
 #: Controlled action vocabulary for a staged Source lifecycle transition (#133).
 #: Names the primitive strings used by ``PendingSourceTransition.action`` and
@@ -246,6 +247,18 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _ensure_no_pending_transition(state: _RegistryState, source_id: str) -> None:
+    """Raise when ``source_id`` already has a pending lifecycle transition.
+
+    Operates on an explicit (freshly reloaded) ``_RegistryState`` so callers
+    inside the mutation lock validate the state they read under the lock.
+    """
+    if any(transition.source_id == source_id for transition in state.pending_transitions):
+        raise SourceRegistryError(
+            f"Knowledge Source {source_id!r} already has a pending transition"
+        )
+
+
 def _source_version(
     source_id: str,
     raw_bytes: bytes,
@@ -264,7 +277,22 @@ def _source_version(
 
 
 class SourceRegistry:
-    """Persist private source identities outside portable Knowledge Base content."""
+    """Persist private source identities outside portable Knowledge Base content.
+
+    Durability contract (Plan 02 / P3, B02): every read AND every mutation
+    goes through the per-registry interprocess mutation lock
+    (:func:`lumio_wiki.mutation.mutation_lock`, keyed on this registry's
+    normalized root, so a standalone instance and an
+    :class:`~lumio_wiki.ingest.IngestStore`-owned instance share one lock).
+    Each mutation reloads the durable state UNDER the lock, recomputes the
+    prospective state from that fresh read, validates against it, and
+    persists atomically (:func:`lumio_wiki.mutation.atomic_write_bytes`), so
+    separately opened instances and separate processes can never lose one
+    another's committed updates. Lock ownership covers the whole
+    read/check/mutate/commit/rollback sequence, not merely the file
+    replacement, and a failed persistence leaves the in-memory state equal
+    to the durable state.
+    """
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).resolve()
@@ -278,20 +306,30 @@ class SourceRegistry:
             return _RegistryState()
         return msgspec.json.decode(self._path.read_bytes(), type=_RegistryState)
 
+    def _reload(self) -> _RegistryState:
+        """Reload durable state under the resource lock and mirror it live.
+
+        Called with the registry mutation lock already held (it is
+        reentrant, so nesting is safe). Mutating methods recompute their
+        prospective state from the returned read; reads return fresh durable
+        state so a long-lived instance never answers from a stale snapshot.
+        """
+        self._state = self._read()
+        return self._state
+
     def _write(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        temporary = self._path.with_suffix(".tmp")
-        temporary.write_bytes(msgspec.json.encode(self._state))
-        os.replace(temporary, self._path)
+        atomic_write_bytes(self._path, msgspec.json.encode(self._state))
 
     def _commit(self, state: _RegistryState) -> None:
-        """Swap in-memory state and persist; restore the prior state on failure.
+        """Swap in-memory state and persist; restore the durable state on failure.
 
-        Every mutating method builds the prospective ``_RegistryState`` first and
-        routes it through here so a persistence failure can never leave the live
-        instance diverged from the durable file: the atomic ``os.replace`` in
-        :meth:`_write` keeps the on-disk file at the prior state, and this helper
-        restores the in-memory state to match.
+        Every mutating method builds the prospective ``_RegistryState`` from
+        the state re-read under the mutation lock and routes it through here,
+        so a persistence failure can never leave the live instance diverged
+        from the durable file: the atomic replace in :meth:`_write` keeps the
+        on-disk file at the prior state, and this helper restores the
+        in-memory state to that same prior (freshly reloaded) state.
         """
         previous = self._state
         self._state = state
@@ -307,13 +345,15 @@ class SourceRegistry:
         # unknown-source error). A validated-but-unknown id is a safe label and
         # may be echoed; an invalid id never reaches the lookup or the message.
         _validate_source_id(source_id)
-        for source in self._state.sources:
-            if source.source_id == source_id:
-                return source
+        with mutation_lock(self.root):
+            for source in self._reload().sources:
+                if source.source_id == source_id:
+                    return source
         raise SourceRegistryError(f"unknown Knowledge Source {source_id!r}")
 
     def list(self) -> list[KnowledgeSource]:
-        return list(self._state.sources)
+        with mutation_lock(self.root):
+            return list(self._reload().sources)
 
     def register_source(
         self,
@@ -339,18 +379,22 @@ class SourceRegistry:
         #133; registry integration for ordinary ingest is deferred.
         """
         _validate_source_id(source_id)
-        if any(source.source_id == source_id for source in self._state.sources):
-            raise SourceRegistryError(
-                "Knowledge Source already registered; replacement is not "
-                "available through register — retire and reactivate to add a "
-                "reviewed new version"
+        with mutation_lock(self.root):
+            state = self._reload()
+            if any(source.source_id == source_id for source in state.sources):
+                raise SourceRegistryError(
+                    "Knowledge Source already registered; replacement is not "
+                    "available through register — retire and reactivate to add a "
+                    "reviewed new version"
+                )
+            version = _source_version(
+                source_id, raw_bytes, filename=filename, content_type=content_type
             )
-        version = _source_version(
-            source_id, raw_bytes, filename=filename, content_type=content_type
-        )
-        sources = list(self._state.sources)
-        sources.append(KnowledgeSource(source_id=source_id, status="active", versions=[version]))
-        self._commit(msgspec.structs.replace(self._state, sources=sources))
+            sources = [
+                *state.sources,
+                KnowledgeSource(source_id=source_id, status="active", versions=[version]),
+            ]
+            self._commit(msgspec.structs.replace(state, sources=sources))
         return version
 
     def register_or_reuse(
@@ -388,32 +432,34 @@ class SourceRegistry:
         """
         _validate_source_id(source_id)
         new_hash = hashlib.sha256(raw_bytes).hexdigest()
-        existing = next(
-            (source for source in self._state.sources if source.source_id == source_id),
-            None,
-        )
-        if existing is None:
-            version = _source_version(
-                source_id, raw_bytes, filename=filename, content_type=content_type
+        with mutation_lock(self.root):
+            state = self._reload()
+            existing = next(
+                (source for source in state.sources if source.source_id == source_id),
+                None,
             )
-            sources = list(self._state.sources)
-            sources.append(
-                KnowledgeSource(source_id=source_id, status="active", versions=[version])
-            )
-            self._commit(msgspec.structs.replace(self._state, sources=sources))
-            return version, "registered"
-        if existing.status != "active":
+            if existing is None:
+                version = _source_version(
+                    source_id, raw_bytes, filename=filename, content_type=content_type
+                )
+                sources = [
+                    *state.sources,
+                    KnowledgeSource(source_id=source_id, status="active", versions=[version]),
+                ]
+                self._commit(msgspec.structs.replace(state, sources=sources))
+                return version, "registered"
+            if existing.status != "active":
+                raise SourceRegistryError(
+                    "Knowledge Source is retired; reactivate it to record a new Source Version"
+                )
+            current = existing.versions[-1]
+            if current.content_hash == new_hash:
+                return current, "reused"
             raise SourceRegistryError(
-                "Knowledge Source is retired; reactivate it to record a new Source Version"
+                "Knowledge Source is active with different bytes; replacement is "
+                "not available through managed ingest — retire and reactivate to "
+                "add a reviewed new version"
             )
-        current = existing.versions[-1]
-        if current.content_hash == new_hash:
-            return current, "reused"
-        raise SourceRegistryError(
-            "Knowledge Source is active with different bytes; replacement is "
-            "not available through managed ingest — retire and reactivate to "
-            "add a reviewed new version"
-        )
 
     def record_artifact_binding(self, source_id: str, content_hash: str) -> None:
         """Mark one exact Source Version as having a verified artifact (#164).
@@ -425,25 +471,30 @@ class SourceRegistry:
         a no-op — and it raises (never fabricates) when the identity or hash is
         unknown, so a failed upload can never be reported as retained.
         """
-        source = self.get(source_id)
-        versions = list(source.versions)
-        for index, version in enumerate(versions):
-            if version.content_hash != content_hash:
-                continue
-            if not version.artifact_available:
-                versions[index] = msgspec.structs.replace(version, artifact_available=True)
-                sources = list(self._state.sources)
-                source_index = next(
-                    i for i, item in enumerate(sources) if item.source_id == source_id
-                )
-                sources[source_index] = msgspec.structs.replace(
-                    sources[source_index], versions=versions
-                )
-                self._commit(msgspec.structs.replace(self._state, sources=sources))
-            return
-        raise SourceRegistryError(
-            f"Knowledge Source {source_id!r} has no Source Version {content_hash!r}"
-        )
+        _validate_source_id(source_id)
+        with mutation_lock(self.root):
+            state = self._reload()
+            source_index = next(
+                (i for i, item in enumerate(state.sources) if item.source_id == source_id),
+                None,
+            )
+            if source_index is None:
+                raise SourceRegistryError(f"unknown Knowledge Source {source_id!r}")
+            versions = list(state.sources[source_index].versions)
+            for index, version in enumerate(versions):
+                if version.content_hash != content_hash:
+                    continue
+                if not version.artifact_available:
+                    versions[index] = msgspec.structs.replace(version, artifact_available=True)
+                    sources = list(state.sources)
+                    sources[source_index] = msgspec.structs.replace(
+                        sources[source_index], versions=versions
+                    )
+                    self._commit(msgspec.structs.replace(state, sources=sources))
+                return
+            raise SourceRegistryError(
+                f"Knowledge Source {source_id!r} has no Source Version {content_hash!r}"
+            )
 
     def clear_artifact_binding(self, source_id: str, content_hash: str) -> None:
         """Mark a version's artifact unavailable after explicit deletion (#164).
@@ -452,123 +503,156 @@ class SourceRegistry:
         historical artifacts); the binding is cleared so inspection metadata
         never claims an artifact the store no longer holds.
         """
-        source = self.get(source_id)
-        versions = list(source.versions)
-        for index, version in enumerate(versions):
-            if version.content_hash != content_hash:
-                continue
-            if version.artifact_available:
-                versions[index] = msgspec.structs.replace(version, artifact_available=False)
-                sources = list(self._state.sources)
-                source_index = next(
-                    i for i, item in enumerate(sources) if item.source_id == source_id
-                )
-                sources[source_index] = msgspec.structs.replace(
-                    sources[source_index], versions=versions
-                )
-                self._commit(msgspec.structs.replace(self._state, sources=sources))
-            return
-        raise SourceRegistryError(
-            f"Knowledge Source {source_id!r} has no Source Version {content_hash!r}"
-        )
+        _validate_source_id(source_id)
+        with mutation_lock(self.root):
+            state = self._reload()
+            source_index = next(
+                (i for i, item in enumerate(state.sources) if item.source_id == source_id),
+                None,
+            )
+            if source_index is None:
+                raise SourceRegistryError(f"unknown Knowledge Source {source_id!r}")
+            versions = list(state.sources[source_index].versions)
+            for index, version in enumerate(versions):
+                if version.content_hash != content_hash:
+                    continue
+                if version.artifact_available:
+                    versions[index] = msgspec.structs.replace(version, artifact_available=False)
+                    sources = list(state.sources)
+                    sources[source_index] = msgspec.structs.replace(
+                        sources[source_index], versions=versions
+                    )
+                    self._commit(msgspec.structs.replace(state, sources=sources))
+                return
+            raise SourceRegistryError(
+                f"Knowledge Source {source_id!r} has no Source Version {content_hash!r}"
+            )
 
     def stage_retirement(self, source_id: str) -> PendingSourceTransition:
         """Validate and prepare a retirement without changing source status."""
-        source = self.get(source_id)
-        if source.status != "active":
-            raise SourceRegistryError(f"Knowledge Source {source_id!r} must be active to retire")
-        self._ensure_no_pending_transition(source_id)
-        return PendingSourceTransition("", "retire", source_id)
+        _validate_source_id(source_id)
+        with mutation_lock(self.root):
+            state = self._reload()
+            source = next((item for item in state.sources if item.source_id == source_id), None)
+            if source is None:
+                raise SourceRegistryError(f"unknown Knowledge Source {source_id!r}")
+            if source.status != "active":
+                raise SourceRegistryError(
+                    f"Knowledge Source {source_id!r} must be active to retire"
+                )
+            _ensure_no_pending_transition(state, source_id)
+            return PendingSourceTransition("", "retire", source_id)
 
     def stage_reactivation(self, source_id: str, raw_bytes: bytes) -> PendingSourceTransition:
         """Prepare a fresh version for a retired source without activating it."""
-        source = self.get(source_id)
-        if source.status != "retired":
-            raise SourceRegistryError(
-                f"Knowledge Source {source_id!r} must be retired to reactivate"
-            )
-        self._ensure_no_pending_transition(source_id)
-        return PendingSourceTransition(
-            "", "reactivate", source_id, _source_version(source_id, raw_bytes)
-        )
-
-    def _ensure_no_pending_transition(self, source_id: str) -> None:
-        if any(transition.source_id == source_id for transition in self._state.pending_transitions):
-            raise SourceRegistryError(
-                f"Knowledge Source {source_id!r} already has a pending transition"
+        _validate_source_id(source_id)
+        with mutation_lock(self.root):
+            state = self._reload()
+            source = next((item for item in state.sources if item.source_id == source_id), None)
+            if source is None:
+                raise SourceRegistryError(f"unknown Knowledge Source {source_id!r}")
+            if source.status != "retired":
+                raise SourceRegistryError(
+                    f"Knowledge Source {source_id!r} must be retired to reactivate"
+                )
+            _ensure_no_pending_transition(state, source_id)
+            return PendingSourceTransition(
+                "", "reactivate", source_id, _source_version(source_id, raw_bytes)
             )
 
     def bind_pending(self, transition: PendingSourceTransition, proposal_id: str) -> None:
-        """Persist a prepared transition under its staged proposal identity."""
-        bound = msgspec.structs.replace(transition, proposal_id=proposal_id)
-        self._commit(
-            msgspec.structs.replace(
-                self._state, pending_transitions=[*self._state.pending_transitions, bound]
+        """Persist a prepared transition under its staged proposal identity.
+
+        The no-pending-transition check is repeated here under the mutation
+        lock (Plan 02 / P3): the stage→assemble→bind sequence spans separate
+        critical sections, so a concurrent process could bind a transition
+        for the same source between them. Re-checking under the lock keeps
+        one transition per source even across processes.
+        """
+        with mutation_lock(self.root):
+            state = self._reload()
+            _ensure_no_pending_transition(state, transition.source_id)
+            bound = msgspec.structs.replace(transition, proposal_id=proposal_id)
+            self._commit(
+                msgspec.structs.replace(
+                    state, pending_transitions=[*state.pending_transitions, bound]
+                )
             )
-        )
 
     def cancel_transition(self, proposal_id: str) -> None:
         """Remove a pending transition when its proposal is discarded."""
-        pending = [
-            transition
-            for transition in self._state.pending_transitions
-            if transition.proposal_id != proposal_id
-        ]
-        if len(pending) == len(self._state.pending_transitions):
-            raise SourceRegistryError(f"proposal {proposal_id!r} has no pending source transition")
-        self._commit(msgspec.structs.replace(self._state, pending_transitions=pending))
+        with mutation_lock(self.root):
+            state = self._reload()
+            pending = [
+                transition
+                for transition in state.pending_transitions
+                if transition.proposal_id != proposal_id
+            ]
+            if len(pending) == len(state.pending_transitions):
+                raise SourceRegistryError(
+                    f"proposal {proposal_id!r} has no pending source transition"
+                )
+            self._commit(msgspec.structs.replace(state, pending_transitions=pending))
 
     def apply_transition(self, proposal_id: str) -> None:
         """Apply and remove the source transition bound to a published proposal."""
-        transition = next(
-            (
-                pending
-                for pending in self._state.pending_transitions
-                if pending.proposal_id == proposal_id
-            ),
-            None,
-        )
-        if transition is None:
-            raise SourceRegistryError(f"proposal {proposal_id!r} has no pending source transition")
-        sources = list(self._state.sources)
-        source_index = next(
-            index
-            for index, source in enumerate(sources)
-            if source.source_id == transition.source_id
-        )
-        source = sources[source_index]
-        if transition.action == "retire":
-            if source.status != "active":
-                raise SourceRegistryError(
-                    f"Knowledge Source {source.source_id!r} must be active to retire"
-                )
-            sources[source_index] = msgspec.structs.replace(source, status="retired")
-        elif transition.action == "reactivate":
-            if source.status != "retired" or transition.version is None:
-                raise SourceRegistryError(
-                    f"Knowledge Source {source.source_id!r} cannot be reactivated"
-                )
-            sources[source_index] = msgspec.structs.replace(
-                source,
-                status="active",
-                versions=[*source.versions, transition.version],
+        with mutation_lock(self.root):
+            state = self._reload()
+            transition = next(
+                (
+                    pending
+                    for pending in state.pending_transitions
+                    if pending.proposal_id == proposal_id
+                ),
+                None,
             )
-        else:
-            raise SourceRegistryError(f"unknown source transition action {transition.action!r}")
-        pending = [
-            item for item in self._state.pending_transitions if item.proposal_id != proposal_id
-        ]
-        self._commit(
-            msgspec.structs.replace(self._state, sources=sources, pending_transitions=pending)
-        )
+            if transition is None:
+                raise SourceRegistryError(
+                    f"proposal {proposal_id!r} has no pending source transition"
+                )
+            sources = list(state.sources)
+            source_index = next(
+                (
+                    index
+                    for index, source in enumerate(sources)
+                    if source.source_id == transition.source_id
+                ),
+                None,
+            )
+            if source_index is None:
+                raise SourceRegistryError(
+                    f"Knowledge Source {transition.source_id!r} is missing from the "
+                    f"registry; proposal {proposal_id!r} cannot apply its transition"
+                )
+            source = sources[source_index]
+            if transition.action == "retire":
+                if source.status != "active":
+                    raise SourceRegistryError(
+                        f"Knowledge Source {source.source_id!r} must be active to retire"
+                    )
+                sources[source_index] = msgspec.structs.replace(source, status="retired")
+            elif transition.action == "reactivate":
+                if source.status != "retired" or transition.version is None:
+                    raise SourceRegistryError(
+                        f"Knowledge Source {source.source_id!r} cannot be reactivated"
+                    )
+                sources[source_index] = msgspec.structs.replace(
+                    source,
+                    status="active",
+                    versions=[*source.versions, transition.version],
+                )
+            else:
+                raise SourceRegistryError(f"unknown source transition action {transition.action!r}")
+            pending = [
+                item for item in state.pending_transitions if item.proposal_id != proposal_id
+            ]
+            self._commit(
+                msgspec.structs.replace(state, sources=sources, pending_transitions=pending)
+            )
 
     def record_retirement_candidate(self, source_id: str, trigger: str) -> RetirementCandidate:
         """Record a missing-source signal without changing source support."""
-        source = self.get(source_id)
-        if source.status != "active":
-            raise SourceRegistryError(
-                f"Knowledge Source {source_id!r} must be active for retirement review"
-            )
+        _validate_source_id(source_id)
         _validate_retirement_trigger(trigger)
         candidate = RetirementCandidate(
             id=uuid.uuid4().hex,
@@ -577,9 +661,16 @@ class SourceRegistry:
             status="pending",
             created_at=_now(),
         )
-        self._commit(
-            msgspec.structs.replace(self._state, candidates=[*self._state.candidates, candidate])
-        )
+        with mutation_lock(self.root):
+            state = self._reload()
+            source = next((item for item in state.sources if item.source_id == source_id), None)
+            if source is None:
+                raise SourceRegistryError(f"unknown Knowledge Source {source_id!r}")
+            if source.status != "active":
+                raise SourceRegistryError(
+                    f"Knowledge Source {source_id!r} must be active for retirement review"
+                )
+            self._commit(msgspec.structs.replace(state, candidates=[*state.candidates, candidate]))
         return candidate
 
     def get_candidate(self, candidate_id: str) -> RetirementCandidate:
@@ -588,9 +679,10 @@ class SourceRegistry:
         # the unknown-candidate error). A validated-but-unknown id is a safe
         # UUID hex and may be echoed; an invalid id never reaches the lookup.
         _validate_candidate_id(candidate_id)
-        for candidate in self._state.candidates:
-            if candidate.id == candidate_id:
-                return candidate
+        with mutation_lock(self.root):
+            for candidate in self._reload().candidates:
+                if candidate.id == candidate_id:
+                    return candidate
         raise SourceRegistryError(f"unknown retirement candidate {candidate_id!r}")
 
     def list_candidates(self) -> list[RetirementCandidate]:
@@ -601,7 +693,8 @@ class SourceRegistry:
         reviewing caller can filter pending vs. decided without reaching past
         the registry's public seam.
         """
-        return list(self._state.candidates)
+        with mutation_lock(self.root):
+            return list(self._reload().candidates)
 
     def _decide_candidate(
         self, candidate_id: str, status: RetirementCandidateStatus
@@ -610,16 +703,20 @@ class SourceRegistry:
         # interpolation so a secret-bearing value is rejected generically and
         # never echoed into the pending/unknown error (mirrors get_candidate).
         _validate_candidate_id(candidate_id)
-        candidates = list(self._state.candidates)
-        for index, candidate in enumerate(candidates):
-            if candidate.id != candidate_id:
-                continue
-            if candidate.status != "pending":
-                raise SourceRegistryError(f"retirement candidate {candidate_id!r} is not pending")
-            decided = msgspec.structs.replace(candidate, status=status)
-            candidates[index] = decided
-            self._commit(msgspec.structs.replace(self._state, candidates=candidates))
-            return decided
+        with mutation_lock(self.root):
+            state = self._reload()
+            candidates = list(state.candidates)
+            for index, candidate in enumerate(candidates):
+                if candidate.id != candidate_id:
+                    continue
+                if candidate.status != "pending":
+                    raise SourceRegistryError(
+                        f"retirement candidate {candidate_id!r} is not pending"
+                    )
+                decided = msgspec.structs.replace(candidate, status=status)
+                candidates[index] = decided
+                self._commit(msgspec.structs.replace(state, candidates=candidates))
+                return decided
         raise SourceRegistryError(f"unknown retirement candidate {candidate_id!r}")
 
     def dismiss_retirement_candidate(self, candidate_id: str) -> RetirementCandidate:

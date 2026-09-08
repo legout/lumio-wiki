@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import os
+import queue
+import subprocess
+import sys
+import tempfile
+import textwrap
+import threading
 from pathlib import Path
 
 import lumio_wiki as lw
@@ -12,6 +20,7 @@ from lumio_wiki.ingest import (
     SourceLifecycleChange,
     SourceProvenance,
 )
+from lumio_wiki.mutation import lock_directory, mutation_lock
 from lumio_wiki.proposal_pipeline import ProposalPipeline
 from lumio_wiki.records import ValidationReport
 from lumio_wiki.source_registry import (
@@ -717,7 +726,7 @@ def test_discard_cancel_failure_restores_reviewable_proposal(tmp_path, monkeypat
         pipeline.discard(proposal.id)
 
     restored = pipeline.review(proposal.id)
-    assert restored.status == "staged"
+    assert restored is not None and restored.status == "staged"
     assert lw.is_reviewable_proposal(restored)
     with pytest.raises(SourceRegistryError, match="already has a pending transition"):
         pipeline.retire_source("policy")
@@ -1255,3 +1264,176 @@ def test_register_or_reuse_rejects_an_unsafe_id_at_the_boundary(tmp_path):
     with pytest.raises(SourceRegistryError):
         registry.register_or_reuse("reports/secret.md", b"v1")
     assert registry.list() == []
+
+
+# --- Plan 02 / P3: one durable lock/reload boundary (B02) ---
+
+# The writer each subprocess runs: it opens its own SourceRegistry instance
+# FIRST, signals the parent through a pipe, and waits on a second pipe until
+# the parent releases it. The pipes are the controlled barrier — there is no
+# sleep and no polling: a hung child is a failed rendezvous, not a timing
+# assumption.
+_REGISTRY_WRITER_CHILD = textwrap.dedent(
+    """
+    import os
+    import sys
+
+    from lumio_wiki.source_registry import SourceRegistry
+
+    root, source_id, raw = sys.argv[1], sys.argv[2], sys.argv[3]
+    release_fd, signal_fd = int(sys.argv[4]), int(sys.argv[5])
+
+    # Open this process's registry instance BEFORE the barrier so both
+    # writers hold an already-open pre-mutation view when they race.
+    registry = SourceRegistry(root)
+    os.write(signal_fd, b"open")
+    os.read(release_fd, 1)
+    registry.register_source(source_id, raw.encode("utf-8"))
+    os.write(signal_fd, b"done")
+    os.read(release_fd, 1)
+    """
+)
+
+
+def _signal_reader(fd: int, results: queue.Queue) -> None:
+    try:
+        results.put(os.read(fd, 8))
+    except OSError as exc:  # pragma: no cover - defensive
+        results.put(exc)
+
+
+def _await_signal(fd: int, expected: bytes, timeout: float = 120.0) -> None:
+    """Block until a writer subprocess signals ``expected`` through ``fd``.
+
+    The blocking pipe read IS the barrier rendezvous; the deadline only
+    converts a hung child into a test failure instead of a CI stall.
+    """
+    results: queue.Queue = queue.Queue()
+    reader = threading.Thread(target=_signal_reader, args=(fd, results), daemon=True)
+    reader.start()
+    try:
+        signal: object = results.get(timeout=timeout)
+    except queue.Empty:
+        signal = None
+    assert signal == expected, (
+        f"registry writer subprocess did not signal {expected!r} (got {signal!r}): "
+        "a hung or crashed writer is a failed rendezvous, not a timing assumption"
+    )
+
+
+def test_source_registry_process_writers_preserve_successful_updates(tmp_path):
+    # B02 (Plan 02 / P3): two SEPARATE processes, each with its own
+    # already-open SourceRegistry instance, register a different source.
+    # Mutations are serialized by the durable per-registry interprocess lock
+    # and each registration is recomputed from the state read UNDER that
+    # lock, so BOTH successful registrations survive a fresh reload —
+    # neither writer loses the other's committed update.
+    root = tmp_path / "ingest"
+    writers: list[tuple[subprocess.Popen, int, int]] = []
+    try:
+        for source_id in ("alpha", "beta"):
+            release_read, release_write = os.pipe()
+            signal_read, signal_write = os.pipe()
+            writer = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    _REGISTRY_WRITER_CHILD,
+                    str(root),
+                    source_id,
+                    f"{source_id}-v1",
+                    str(release_read),
+                    str(signal_write),
+                ],
+                # The rendezvous pipes must survive the child's default
+                # close_fds=True descriptor hygiene.
+                pass_fds=(release_read, signal_write),
+            )
+            os.close(release_read)
+            os.close(signal_write)
+            writers.append((writer, release_write, signal_read))
+
+        # Barrier 1: both processes hold an already-open registry instance.
+        for _writer, _release, signal_read in writers:
+            _await_signal(signal_read, b"open")
+        # Release both; each process registers a different source.
+        for _writer, release_write, _signal in writers:
+            os.write(release_write, b"1")
+        # Barrier 2: both registrations reported successful commit.
+        for _writer, _release, signal_read in writers:
+            _await_signal(signal_read, b"done")
+        for _writer, release_write, _signal in writers:
+            os.write(release_write, b"1")
+    finally:
+        for _writer, release_write, signal_read in writers:
+            os.close(release_write)
+            os.close(signal_read)
+    for writer, _release, _signal in writers:
+        assert writer.wait(timeout=120) == 0
+
+    reloaded = SourceRegistry(root)
+    assert {source.source_id for source in reloaded.list()} == {"alpha", "beta"}
+    for source_id in ("alpha", "beta"):
+        expected_hash = hashlib.sha256(f"{source_id}-v1".encode()).hexdigest()
+        assert [v.content_hash for v in reloaded.get(source_id).versions] == [expected_hash]
+
+
+def test_atomic_write_failure_cleans_temp_files_and_restores_state(tmp_path, monkeypatch):
+    # Plan 02 / P3 resource-bound behavior: a persistence failure inside the
+    # atomic write path (unique temp file + os.replace) must leave the private
+    # registry directory holding EXACTLY the durable file — no leaked temp
+    # artifacts a later writer or a portable export could trip over — and the
+    # live in-memory state must still agree with the durable state.
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("handbook", b"v1")
+    prior = _state_snapshot(registry)
+
+    def fail_replace(src, dst, *args, **kwargs):
+        raise OSError("atomic replace failed")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(OSError, match="atomic replace failed"):
+        registry.register_source("manual", b"v1")
+    monkeypatch.undo()
+
+    # Live state agrees with durable state; the durable file is intact.
+    assert _state_snapshot(registry) == prior
+    assert _state_snapshot(SourceRegistry(tmp_path / "ingest")) == prior
+    # No temp file survived the failed write.
+    leftovers = sorted(p.name for p in (tmp_path / "ingest").iterdir())
+    assert leftovers == ["sources.json"]
+    # A retry through the same path succeeds and persists exactly one file.
+    registry.register_source("manual", b"v1")
+    assert SourceRegistry(tmp_path / "ingest").get("manual").status == "active"
+    assert sorted(p.name for p in (tmp_path / "ingest").iterdir()) == ["sources.json"]
+
+
+def test_registry_lock_is_reentrant_for_nested_reads_and_writes(tmp_path):
+    # Lock ownership covers read/check/mutate/commit/rollback, and registry
+    # operations legitimately nest (a mutation method reads through get()).
+    # Acquiring the same resource lock from nested calls in one thread must
+    # reenter rather than deadlock; the durable result is one writer state.
+    registry = SourceRegistry(tmp_path / "ingest")
+    with mutation_lock(registry.root):
+        registry.register_source("handbook", b"v1")
+        assert registry.get("handbook").status == "active"
+        registry.register_source("policy", b"v1")
+    reloaded = SourceRegistry(tmp_path / "ingest")
+    assert {source.source_id for source in reloaded.list()} == {"handbook", "policy"}
+
+
+def test_mutation_lock_files_stay_outside_resource_roots(tmp_path):
+    # Lock files must never land in portable Knowledge Base or private store
+    # artifacts: they live in the dedicated temp-directory lock directory and
+    # are keyed by the normalized resource identity.
+    resource = tmp_path / "ingest"
+    registry = SourceRegistry(resource)
+    registry.register_source("handbook", b"v1")
+    with mutation_lock(resource):
+        lock_dir = lock_directory()
+        assert lock_dir == Path(tempfile.gettempdir()) / "lumio-mutation-locks"
+        resolved_resource = resource.resolve()
+        assert resolved_resource not in lock_dir.resolve().parents
+        assert lock_dir.resolve() not in resolved_resource.parents
+        # The private store itself holds only durable registry state.
+        assert sorted(p.name for p in resource.iterdir()) == ["sources.json"]

@@ -48,6 +48,7 @@ from lumio_wiki.knowledge_base import (
 )
 from lumio_wiki.knowledge_base import _extract_references as _extract_references
 from lumio_wiki.knowledge_base import _parse_frontmatter as parse_frontmatter
+from lumio_wiki.mutation import mutation_lock
 from lumio_wiki.publish import apply_proposed_pages, validate_candidate_knowledge_base
 from lumio_wiki.records import EntityRedirect, Ontology, ValidationIssue, ValidationReport
 from lumio_wiki.source_registry import (
@@ -519,14 +520,23 @@ class ProposalPipeline:
         transition is cancelled so the source can be re-staged (no orphan
         transition). Both writes are single-file atomic; this is exception
         compensation, not a transaction journal (ADR-0014).
+
+        Plan 02 / P3: the store and registry resources are held under their
+        interprocess mutation locks (one consistent global order — see
+        :func:`lumio_wiki.mutation.mutation_lock`) through bind, persist, and
+        the cancel compensation, so cooperating processes can never interleave
+        a second bind for the same source (the registry re-checks the
+        no-pending rule under the lock) nor a transition/proposal teardown.
         """
         store = self._require_store()
-        store.source_registry.bind_pending(transition, proposal.id)
-        try:
-            store.save_proposal(proposal)
-        except Exception:
-            store.source_registry.cancel_transition(proposal.id)
-            raise
+        registry = store.source_registry
+        with mutation_lock(store.root, registry.root):
+            registry.bind_pending(transition, proposal.id)
+            try:
+                store.save_proposal(proposal)
+            except Exception:
+                registry.cancel_transition(proposal.id)
+                raise
 
     def retire_source(self, source_id: str) -> IngestProposal:
         """Stage retirement while leaving the source active until publication."""
@@ -650,7 +660,10 @@ class ProposalPipeline:
             title, reason=reason, affected_claim_notes=affected_claim_notes or []
         )
         store.save_proposal(proposal)
-        return store.get(proposal.id)
+        persisted = store.get(proposal.id)
+        if persisted is None:  # pragma: no cover - just persisted under the store lock
+            raise ProposalPipelineError(f"proposal {proposal.id!r} disappeared after staging")
+        return persisted
 
     def _assemble_page_removal(
         self,
@@ -847,7 +860,10 @@ class ProposalPipeline:
             retired_entity_id, surviving_entity_id, reason=reason
         )
         store.save_proposal(proposal)
-        return store.get(proposal.id)
+        persisted = store.get(proposal.id)
+        if persisted is None:  # pragma: no cover - just persisted under the store lock
+            raise ProposalPipelineError(f"proposal {proposal.id!r} disappeared after staging")
+        return persisted
 
     def _assemble_entity_merge(
         self,
@@ -1100,14 +1116,23 @@ class ProposalPipeline:
         raw_bytes: bytes | None = None,
         filename: str | None = None,
     ) -> IngestProposal:
-        """Persist a proposal (and its raw source, isolated from the KB) for review."""
+        """Persist a proposal (and its raw source, isolated from the KB) for review.
+
+        Plan 02 / P3: raw-byte isolation and proposal persistence happen under
+        the store's interprocess mutation lock, and the returned proposal is
+        re-read from durable state.
+        """
         if self._store is None:
             raise RuntimeError("ProposalPipeline.stage requires an IngestStore")
-        raw_path: Path | None = None
-        if raw_bytes is not None and filename is not None:
-            raw_path = self._store.save_raw(proposal.id, raw_bytes, filename)
-        self._store.save_proposal(proposal, raw_path)
-        return self._store.get(proposal.id)
+        with mutation_lock(self._store.root):
+            raw_path: Path | None = None
+            if raw_bytes is not None and filename is not None:
+                raw_path = self._store.save_raw(proposal.id, raw_bytes, filename)
+            self._store.save_proposal(proposal, raw_path)
+            staged = self._store.get(proposal.id)
+            if staged is None:  # pragma: no cover - just persisted under the store lock
+                raise ProposalPipelineError(f"proposal {proposal.id!r} disappeared after staging")
+            return staged
 
     def review(self, proposal_id: str) -> IngestProposal | None:
         """Return a staged proposal by id, or ``None`` if absent / no store."""
@@ -1146,21 +1171,31 @@ class ProposalPipeline:
         return self._store.source_registry.list_candidates()
 
     def discard(self, proposal_id: str) -> IngestProposal | None:
-        """Mark a reviewable proposal as discarded."""
+        """Mark a reviewable proposal as discarded.
+
+        Plan 02 / P3: the whole read/check/mutate/compensate sequence runs
+        under the store + registry interprocess mutation locks (one consistent
+        global order). The reviewable check reads DURABLE proposal state — a
+        stale instance cannot discard over a terminal transition — and the
+        registry transition cancellation and its proposal-restore compensation
+        stay inside the same critical section.
+        """
         if self._store is None:
             return None
-        proposal = self._store.get(proposal_id)
-        if proposal is None or not is_reviewable_proposal(proposal):
-            return None
-        discarded = self._store.discard(proposal_id)
-        if discarded is not None and discarded.source_change is not None:
-            try:
-                self._store.source_registry.cancel_transition(proposal_id)
-            except Exception:
-                # Cancellation failed: restore the original reviewable proposal
-                # so the discard can be retried with its transition still bound.
-                self._store.save_proposal(proposal)
-                raise
+        store = self._store
+        with mutation_lock(store.root, store.source_registry.root):
+            proposal = store.get(proposal_id)
+            if proposal is None or not is_reviewable_proposal(proposal):
+                return None
+            discarded = store.discard(proposal_id)
+            if discarded is not None and discarded.source_change is not None:
+                try:
+                    store.source_registry.cancel_transition(proposal_id)
+                except Exception:
+                    # Cancellation failed: restore the original reviewable proposal
+                    # so the discard can be retried with its transition still bound.
+                    store.save_proposal(proposal)
+                    raise
         return discarded
 
     def publish(self, proposal_id: str) -> IngestProposal:
@@ -1179,74 +1214,90 @@ class ProposalPipeline:
         (alias uniqueness across the whole KB, relationship-target resolution)
         that the proposal's assemble-time ISOLATED validation cannot see for
         NON-compound proposals.
+
+        Plan 02 / P3 (B02/B03): the whole read/check/mutate/commit/rollback
+        sequence runs under the interprocess mutation locks of the three
+        resources it touches — Knowledge Base root, ingest store, and Source
+        Registry — acquired in the one consistent global order
+        (:func:`lumio_wiki.mutation.mutation_lock` sorts identities, so no
+        cooperating writer can deadlock). The proposal is re-read from DURABLE
+        store state under the lock and re-checked for reviewability, so a
+        proposal another instance already discarded or published can never be
+        published from a stale view, and exactly one of publish/discard wins.
+        The registry transition applies inside the same critical section, and
+        its failure compensation (restore the reviewable proposal) runs there
+        too, so in-memory and durable state agree after any exception.
         """
         if self._store is None:
             raise RuntimeError("ProposalPipeline.publish requires an IngestStore")
-        proposal = self._store.get(proposal_id)
-        if proposal is None or not is_reviewable_proposal(proposal):
-            raise ProposalPipelineError(f"proposal {proposal_id!r} is not reviewable")
-        if proposal.blocked:
-            raise ProposalBlockedError(f"proposal {proposal_id!r} is blocked by validation")
-        # issue #135: a Page Removal proposal carries removed titles and an
-        # optional Control File (Hot Index pin drop). Both are threaded
-        # through the authoritative candidate gate AND the apply step so the
-        # removal and its dependent-edge repairs publish as ONE atomic unit.
-        removed_titles = [removal.title for removal in proposal.removed_pages]
-        candidate_report = validate_candidate_knowledge_base(
-            proposal.proposed_pages,
-            self._kb.root,
-            removed_titles=removed_titles or None,
-            control_file=proposal.control_file,
-        )
-        if not candidate_report.is_valid:
-            raise ProposalBlockedError(
-                f"proposal {proposal_id!r} candidate failed validation: {candidate_report}"
+        store = self._store
+        registry = store.source_registry
+        with mutation_lock(self._kb.root, store.root, registry.root):
+            proposal = store.get(proposal_id)
+            if proposal is None or not is_reviewable_proposal(proposal):
+                raise ProposalPipelineError(f"proposal {proposal_id!r} is not reviewable")
+            if proposal.blocked:
+                raise ProposalBlockedError(f"proposal {proposal_id!r} is blocked by validation")
+            # issue #135: a Page Removal proposal carries removed titles and an
+            # optional Control File (Hot Index pin drop). Both are threaded
+            # through the authoritative candidate gate AND the apply step so the
+            # removal and its dependent-edge repairs publish as ONE atomic unit.
+            removed_titles = [removal.title for removal in proposal.removed_pages]
+            candidate_report = validate_candidate_knowledge_base(
+                proposal.proposed_pages,
+                self._kb.root,
+                removed_titles=removed_titles or None,
+                control_file=proposal.control_file,
             )
-        apply_proposed_pages(
-            proposal.proposed_pages,
-            self._kb.root,
-            removed_titles=removed_titles or None,
-            control_file=proposal.control_file,
-        )
-        publish_reserved_artifacts(self._kb.root)
-        # AC7: record the transition in the append-only Activity Log. Only a
-        # categorized Knowledge Base (one with a Control File) carries a
-        # portable Activity Log; legacy flat KBs do not. The entry records only
-        # the removed Canonical Titles and operation — never Claim Lineage
-        # (claim-level lineage is not modeled, ADR-0014).
-        if getattr(self._kb, "control", None) is not None:
-            if proposal.entity_merges:
-                # issue #169: a reviewed Entity Merge logs its own transition
-                # (retired Entity -> surviving Entity), not a page-removal.
-                append_activity_log_entry(
-                    self._kb.root,
-                    make_activity_log_entry(
-                        operation="entity-merge",
-                        description="merged entity(s): "
-                        + ", ".join(
-                            f"{merge.retired_entity_id} -> {merge.surviving_entity_id}"
-                            for merge in proposal.entity_merges
+            if not candidate_report.is_valid:
+                raise ProposalBlockedError(
+                    f"proposal {proposal_id!r} candidate failed validation: {candidate_report}"
+                )
+            apply_proposed_pages(
+                proposal.proposed_pages,
+                self._kb.root,
+                removed_titles=removed_titles or None,
+                control_file=proposal.control_file,
+            )
+            publish_reserved_artifacts(self._kb.root)
+            # AC7: record the transition in the append-only Activity Log. Only a
+            # categorized Knowledge Base (one with a Control File) carries a
+            # portable Activity Log; legacy flat KBs do not. The entry records only
+            # the removed Canonical Titles and operation — never Claim Lineage
+            # (claim-level lineage is not modeled, ADR-0014).
+            if getattr(self._kb, "control", None) is not None:
+                if proposal.entity_merges:
+                    # issue #169: a reviewed Entity Merge logs its own transition
+                    # (retired Entity -> surviving Entity), not a page-removal.
+                    append_activity_log_entry(
+                        self._kb.root,
+                        make_activity_log_entry(
+                            operation="entity-merge",
+                            description="merged entity(s): "
+                            + ", ".join(
+                                f"{merge.retired_entity_id} -> {merge.surviving_entity_id}"
+                                for merge in proposal.entity_merges
+                            ),
                         ),
-                    ),
-                )
-            elif proposal.removed_pages:
-                append_activity_log_entry(
-                    self._kb.root,
-                    make_activity_log_entry(
-                        operation="page-removal",
-                        description="removed page(s): "
-                        + ", ".join(removal.title for removal in proposal.removed_pages),
-                    ),
-                )
-        published = self._store.publish(proposal_id)
-        if published is None:
-            raise ProposalPipelineError(f"proposal {proposal_id!r} was not publishable")
-        if proposal.source_change is not None:
-            try:
-                self._store.source_registry.apply_transition(proposal.id)
-            except Exception:
-                self._store.save_proposal(proposal)
-                raise
+                    )
+                elif proposal.removed_pages:
+                    append_activity_log_entry(
+                        self._kb.root,
+                        make_activity_log_entry(
+                            operation="page-removal",
+                            description="removed page(s): "
+                            + ", ".join(removal.title for removal in proposal.removed_pages),
+                        ),
+                    )
+            published = store.publish(proposal_id)
+            if published is None:
+                raise ProposalPipelineError(f"proposal {proposal_id!r} was not publishable")
+            if proposal.source_change is not None:
+                try:
+                    registry.apply_transition(proposal.id)
+                except Exception:
+                    store.save_proposal(proposal)
+                    raise
         return published
 
 
