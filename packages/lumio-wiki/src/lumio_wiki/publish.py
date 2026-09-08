@@ -1391,7 +1391,7 @@ def apply_compound_revision(page, working_dir: str | Path) -> Path:
     return _write_destination(destination, root)
 
 
-def _copy_candidate_tree(source: Path, destination: Path) -> None:
+def _copy_candidate_tree(source: Path, destination: Path, root: Path, candidate_root: Path) -> None:
     """Copy the real Knowledge Base into the throwaway candidate tree (B01).
 
     This replaces the previous
@@ -1408,12 +1408,33 @@ def _copy_candidate_tree(source: Path, destination: Path) -> None:
     The copy mirrors the real tree's STRUCTURE instead — source-entry-relative
     by construction:
 
-    - a symlink — VALID or DANGLING — is re-created verbatim, so a relative
-      link keeps resolving against its own (mirrored) directory exactly as it
-      does in the live Knowledge Base and validation reads the same content
-      on both trees. Re-creating a dangling link cannot fail (``os.symlink``
-      needs no existing target), so dangling entries are handled consistently
-      instead of by CWD-dependent omission;
+    - a RELATIVE link resolving INSIDE the Knowledge Base (its own mirrored
+      counterpart position) and a DANGLING link are re-created verbatim, so a
+      relative link keeps resolving against its own (mirrored) directory
+      exactly as it does in the live Knowledge Base and validation reads the
+      same content on both trees. Re-creating a dangling link cannot fail
+      (``os.symlink`` needs no existing target), so dangling entries are
+      handled consistently instead of by CWD-dependent omission;
+    - an EXTERNAL relative link — one whose live resolution leaves the
+      Knowledge Base root, e.g. ``external-alias.md -> ../external.md`` — is
+      NOT representable verbatim: beside the temp candidate the same link
+      text resolves beside the TEMP directory, where nothing exists, so the
+      candidate would miss exactly the content live validation reads through
+      the link (P2 review fix11). Such a file link is source-resolved instead:
+      its live read-through content is materialized into the candidate as an
+      ordinary regular file at the link's own path — the same bytes at the
+      same relative path live validation reads — while the real Knowledge
+      Base is never touched (the candidate is a throwaway read-only
+      representation, and ``unlink`` removes only the candidate's own verbatim
+      recreation, never the source entry);
+    - an ABSOLUTE link keeps resolving to the very same target file on both
+      trees, and a link to a DIRECTORY reads through to no validation content
+      on either tree (``_markdown_files`` never descends a symlinked
+      directory and ``is_file()`` is False for the entry), so both stay
+      verbatim — content parity without invention;
+    - a link whose chain is unreadable on the LIVE tree too (dangling or
+      looped) stays verbatim: the contentless entry is as invisible to
+      validation as its live counterpart;
     - a platform that cannot re-create the link (e.g. unprivileged Windows)
       falls back to copying the link's read-through content, so nothing VALID
       is hidden; a dangling entry has no content and is skipped — the same
@@ -1427,6 +1448,11 @@ def _copy_candidate_tree(source: Path, destination: Path) -> None:
     - regular files are copied by content with fresh default permissions:
       every permission decision belongs to the real-root preflights, and
       candidate validation only reads.
+
+    Every resolution here is anchored to the entry's own source directory and
+    the candidate's own mirror directory (``os.path.realpath`` on absolute
+    paths) — the process CWD is never consulted, so the v9 CWD-relative skip
+    cannot reappear.
 
     Nothing here opens a FIFO or a socket: entries are classified by
     non-following ``DirEntry`` metadata alone (``stat(2)`` never opens a
@@ -1454,13 +1480,52 @@ def _copy_candidate_tree(source: Path, destination: Path) -> None:
                     except OSError:
                         continue
                     if stat.S_ISDIR(followed.st_mode):
-                        _copy_candidate_tree(Path(entry.path), target)
+                        _copy_candidate_tree(Path(entry.path), target, root, candidate_root)
                     elif stat.S_ISREG(followed.st_mode):
                         shutil.copyfile(entry.path, target)
                     continue
+                # Parity check (P2 review fix11): the verbatim recreation
+                # only represents the live entry when it reads through to
+                # the same content. Fully resolve BOTH sides — the entry
+                # against its own source directory, the recreation against
+                # its own mirror directory — and compare.
+                source_resolved = Path(os.path.realpath(entry.path))
+                candidate_resolved = Path(os.path.realpath(target))
+                if candidate_resolved == source_resolved:
+                    # An absolute target (or any link resolving to the very
+                    # same file): both trees read identical bytes.
+                    continue
+                if source_resolved.is_relative_to(root) and candidate_resolved == (
+                    candidate_root / source_resolved.relative_to(root)
+                ):
+                    # A KB-relative link at its mirrored counterpart: the
+                    # candidate reads its own byte-identical mirror of the
+                    # same entry (dangling included — both sides invisible).
+                    continue
+                try:
+                    followed = os.stat(entry.path)
+                except OSError:
+                    # The chain is unreadable on the LIVE tree too (dangling
+                    # or looped): keep the contentless verbatim entry, which
+                    # is exactly as invisible to validation as the live link.
+                    continue
+                if stat.S_ISREG(followed.st_mode):
+                    # EXTERNAL (or differently-resolving) FILE link: the
+                    # verbatim text would read beside the temp candidate and
+                    # miss the content live validation reads. Materialize the
+                    # link's live read-through content as an ordinary file at
+                    # the link's own mirror path (P2 review fix11). Only the
+                    # candidate's own verbatim recreation is removed first —
+                    # writing through it would mutate the real external file.
+                    os.unlink(target)
+                    shutil.copyfile(entry.path, target)
+                # A directory link (in-KB or external) reads through to no
+                # validation content on either tree, and any other followed
+                # type (FIFO, socket, device) is not Knowledge Base content:
+                # the verbatim entry is the faithful representation on both.
                 continue
             if entry.is_dir(follow_symlinks=False):
-                _copy_candidate_tree(Path(entry.path), target)
+                _copy_candidate_tree(Path(entry.path), target, root, candidate_root)
             elif entry.is_file(follow_symlinks=False):
                 shutil.copyfile(entry.path, target)
             # Any other entry type (FIFO, socket, device) is not Knowledge
@@ -1515,15 +1580,26 @@ def validate_candidate_knowledge_base(
     application would raise. The throwaway copy itself mirrors the real
     tree's STRUCTURE (:func:`_copy_candidate_tree`, P2 review v10) instead
     of relying on ``copytree``'s CWD-relative ``ignore_dangling_symlinks``
-    heuristic: a symlink — valid or dangling — is re-created verbatim, so a
-    KB-relative link such as ``alias.md -> real.md`` is represented on the
+    heuristic: a KB-relative link such as ``alias.md -> real.md`` — and any
+    dangling entry — is re-created verbatim, so it is represented on the
     candidate exactly as live validation reads it (the old skip judged the
     relative target against the process CWD and silently OMITTED the valid
-    link, hiding the very content the live tree still exposes through it),
-    a dangling entry re-created in the candidate stays as invisible to
-    validation as it is live (a rejected dangling destination legitimately
-    survives, and a user-authored dangling entry can predate any proposal —
-    P2 review v9), and an unrelated FIFO, socket, or device elsewhere in the
+    link, hiding the very content the live tree still exposes through it;
+    a re-created dangling entry stays as invisible to validation as it is
+    live — a rejected dangling destination legitimately survives, and a
+    user-authored dangling entry can predate any proposal, P2 review v9).
+    An EXTERNAL relative link — one whose live resolution leaves the
+    Knowledge Base root, e.g. ``external-alias.md -> ../external.md`` — is
+    not representable verbatim: beside the temp candidate the same link
+    text resolves beside the TEMP directory, where nothing exists, so the
+    verbatim mirror hid exactly the content live validation reads through
+    the link (P2 review fix11). Such a file link is source-resolved and its
+    live read-through content is materialized into the candidate as an
+    ordinary regular file at the link's own path — same bytes, same relative
+    path, real Knowledge Base never touched — so candidate validation and
+    the live gate read the same pages. Absolute links, directory links, and
+    unreadable/looped chains stay verbatim (content parity without
+    invention), and an unrelated FIFO, socket, or device elsewhere in the
     Knowledge Base is skipped as the contentless entry it is instead of
     surfacing a raw ``shutil.Error`` for a proposal that never touches it.
     Only :class:`DestinationConflict` is translated; unexpected errors still
@@ -1570,24 +1646,33 @@ def validate_candidate_knowledge_base(
     except DestinationConflict as exc:
         return _conflict_report(exc)
     with tempfile.TemporaryDirectory() as tmp:
-        candidate = Path(tmp) / "candidate"
+        # Resolved so the mirror's KB-relative parity check compares in one
+        # canonical namespace: a system temp dir reached THROUGH a symlink
+        # (e.g. macOS ``/tmp``) would otherwise map mirrored paths into a
+        # different textual prefix than ``realpath`` reports and downgrade
+        # valid KB-relative links to materialized copies (content parity
+        # would hold; the verbatim representation would not).
+        candidate = (Path(tmp) / "candidate").resolve()
         # The throwaway copy mirrors the real tree's STRUCTURE instead of
         # ``copytree``'s CWD-relative ``ignore_dangling_symlinks`` heuristic
-        # (P2 review v10): symlinks — valid or dangling — are re-created
-        # verbatim, so a KB-relative link such as ``alias.md -> real.md`` is
-        # represented on both trees exactly alike (the old skip judged the
-        # relative target against the process CWD and silently omitted the
-        # VALID link, hiding from candidate validation the very content live
-        # validation reads through it), an unrelated FIFO/socket/device is
-        # skipped as the contentless entry it is instead of surfacing a raw
-        # ``shutil.Error`` for a proposal that never touches it, and a
-        # dangling entry re-created in the candidate stays as invisible to
-        # validation as it is live. Masking nothing still holds: every
-        # conflict preflight above ran against the REAL root before this
-        # copy exists, a dangling or special entry can never be a page or
-        # Control File, and every write branch rejects destinations that
-        # lexically traverse one.
-        _copy_candidate_tree(root, candidate)
+        # (P2 review v10): KB-relative links — and dangling entries — are
+        # re-created verbatim, so they are represented on both trees exactly
+        # alike (the old skip judged the relative target against the process
+        # CWD and silently omitted the VALID link, hiding from candidate
+        # validation the very content live validation reads through it), an
+        # EXTERNAL relative FILE link's live read-through content is
+        # materialized into the candidate at the link's own path because the
+        # verbatim text would resolve beside the temp candidate and hide
+        # exactly the page the live gate reads (P2 review fix11), an
+        # unrelated FIFO/socket/device is skipped as the contentless entry it
+        # is instead of surfacing a raw ``shutil.Error`` for a proposal that
+        # never touches it, and a dangling entry re-created in the candidate
+        # stays as invisible to validation as it is live. Masking nothing
+        # still holds: every conflict preflight above ran against the REAL
+        # root before this copy exists, a dangling or special entry can never
+        # be a page or Control File, and every write branch rejects
+        # destinations that lexically traverse one.
+        _copy_candidate_tree(root, candidate, root, candidate)
         try:
             # The checked set applies unchanged to the byte-identical
             # candidate tree: every path is root-relative by construction.

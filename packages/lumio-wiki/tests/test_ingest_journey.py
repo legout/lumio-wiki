@@ -1313,6 +1313,116 @@ def test_valid_relative_symlink_is_represented_in_candidate_validation(
     assert dangling_report.is_valid, dangling_report
 
 
+def test_external_relative_symlink_content_is_represented_in_candidate_validation(
+    tmp_path: Path,
+):
+    # Review-fix regression (Plan 02 / P2 review fix11): the structural mirror
+    # re-created relative symlinks VERBATIM inside the throwaway candidate
+    # tree. For a valid link whose target lies OUTSIDE the Knowledge Base
+    # root — "external-alias.md -> ../outside.md" — that preserved nothing:
+    # the link text keeps resolving against its own directory in the live
+    # tree (live validation follows it and reads the external page), but the
+    # same text beside the candidate resolves beside the TEMP directory,
+    # where nothing exists. Candidate validation missed exactly the content
+    # the live gate reads, so an invalid-to-be Knowledge Base validated
+    # cleanly and publication bypassed the live gate. The mirror now
+    # source-resolves such external FILE links and materializes their live
+    # read-through content into the candidate as an ordinary regular file at
+    # the link's own path — same bytes, same relative path, the real
+    # Knowledge Base never touched — so candidate and live validation read
+    # the same pages.
+    _skip_if_symlinks_unavailable(tmp_path)
+    kb = _kb(tmp_path)
+    # The external target sits OUTSIDE the Knowledge Base root: a sibling of
+    # "kb/" in the parent directory, reachable only through the relative
+    # "../" hop — invisible to any candidate tree rooted at a temp path.
+    (tmp_path / "outside.md").write_text(
+        _probe_markdown("Dup Topic", "outside-external-symlink-review-fix"),
+        encoding="utf-8",
+    )
+    (kb.root / "external-alias.md").symlink_to("../outside.md")
+    # An EXISTING regular page whose canonical title collides with the
+    # external page's title. Its path deliberately sorts AFTER the link so
+    # the shared destination preflight's title map (one recorded path per
+    # title, last page wins) keeps pointing at this regular file and the
+    # proposal below reaches the candidate mirror at all.
+    (kb.root / "zdup.md").write_text(
+        _probe_markdown("Dup Topic", "zdup-external-symlink-review-fix"),
+        encoding="utf-8",
+    )
+    # Baseline: the LIVE tree reads through the link and reports the
+    # duplicated canonical title on BOTH entries — the link entry included.
+    live = lw.validate(kb.root)
+    live_errors = sorted(
+        (issue.file, issue.message) for issue in live.issues if issue.severity == "error"
+    )
+    assert live_errors == [
+        ("external-alias.md", "duplicate canonical title: Dup Topic"),
+        ("zdup.md", "duplicate canonical title: Dup Topic"),
+    ]
+
+    # Any innocuous new-page proposal must be rejected by the candidate gate
+    # with EXACTLY the issues live validation reports: the candidate now
+    # contains the external page's content, so the duplication the link
+    # exposes cannot hide from publication.
+    page = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-external-symlink-review-fix"),
+    )
+    report = lw.validate_candidate_knowledge_base([page], kb.root)
+    assert not report.is_valid, report
+    candidate_errors = sorted(
+        (issue.file, issue.message) for issue in report.issues if issue.severity == "error"
+    )
+    assert candidate_errors == live_errors
+
+    # Content parity in the other direction too: an external page the live
+    # gate reads as INVALID (here: missing every required frontmatter field)
+    # must fail candidate validation with the identical issues on the link's
+    # own relative path instead of vanishing beside the temp candidate. With
+    # no parseable title the page also stays out of the preflight's title
+    # map, so this is judged purely by what the mirror represents.
+    (tmp_path / "outside.md").write_text(
+        '---\nsummary: "External page missing every required frontmatter field."\n---\n',
+        encoding="utf-8",
+    )
+    live_invalid = lw.validate(kb.root)
+    assert not live_invalid.is_valid
+    external_live_errors = sorted(
+        (issue.file, issue.message)
+        for issue in live_invalid.issues
+        if issue.severity == "error" and issue.file == "external-alias.md"
+    )
+    assert external_live_errors == [
+        ("external-alias.md", "missing required field: lifecycle"),
+        ("external-alias.md", "missing required field: tags"),
+        ("external-alias.md", "missing required field: title"),
+        ("external-alias.md", "missing required field: visibility"),
+        ("external-alias.md", "non-synthetic page must have at least one source"),
+    ]
+    invalid_report = lw.validate_candidate_knowledge_base([page], kb.root)
+    assert not invalid_report.is_valid
+    external_candidate_errors = sorted(
+        (issue.file, issue.message)
+        for issue in invalid_report.issues
+        if issue.severity == "error" and issue.file == "external-alias.md"
+    )
+    assert external_candidate_errors == external_live_errors
+
+    # Positive control: with the external target gone the link dangles — as
+    # contentless on the candidate (verbatim recreation) as it is live — and
+    # the SAME innocuous proposal passes: the mirror represents external
+    # content, it does not invent conflicts. The real Knowledge Base was
+    # never touched: the entry survives as the symlink it is, and live
+    # validation agrees.
+    (tmp_path / "outside.md").unlink()
+    assert lw.validate(kb.root).is_valid
+    restored_report = lw.validate_candidate_knowledge_base([page], kb.root)
+    assert restored_report.is_valid, restored_report
+    assert (kb.root / "external-alias.md").is_symlink()
+
+
 @pytest.mark.skipif(
     os.name != "posix",
     reason="POSIX directory mode bits are required to deny a page write",
