@@ -2865,8 +2865,8 @@ def _existing_backups() -> set[Path]:
 
 def test_local_publish_failure_restores_complete_mutation(tmp_path, monkeypatch):
     # B05 (Plan 02 / P5): an ordinary local failure in the MIDDLE of the live
-    # mutation — here the third page's live write dies after a revision and a
-    # move already landed — must restore the COMPLETE pre-mutation state:
+    # mutation — here the SECOND page's live write dies after only the first
+    # revision landed — must restore the COMPLETE pre-mutation state:
     # every touched page/Control File/reserved artifact/Activity Log byte and
     # existence, the durable proposal metadata (still reviewable — never a
     # partial published marker), and the private registry state. The backup
@@ -2892,8 +2892,136 @@ def test_local_publish_failure_restores_complete_mutation(tmp_path, monkeypatch)
     assert not baseline.blocked, baseline.validation_report
     assert pipeline.publish(baseline.id).status == "published"
 
-    # The failing proposal: revise Gamma (first live write, succeeds), move
-    # Alpha into the archive category (second write plus source unlink), then
+    # The failing proposal: revise Gamma (first live write, succeeds), then
+    # move Alpha into the archive category — whose destination write is the
+    # SECOND live write and is injected to fail — then add Delta (never
+    # reached).
+    move_segment = (
+        "---\n"
+        'title: "Alpha"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        'summary: "Relocated Alpha page."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "category: archive\n"
+        "type: concept\n"
+        "durability_rationale: reviewed durable knowledge move\n"
+        "move_from_path: concepts/alpha.md\n"
+        "sources:\n"
+        '  - id: "alpha-src"\n'
+        '    title: "Alpha source"\n'
+        'id: "entity:alpha"\n'
+        "entity_types:\n  - concept\n"
+        "synthetic: false\n"
+        "---\n"
+        "# Alpha\n\nThe Alpha page relocated into the archive category.\n"
+    )
+    failing_markdown = (
+        _disjoint_revision("Gamma", "gamma", "Revised Gamma.")
+        + "\n<!-- lumio: page-break -->\n"
+        + move_segment
+        + "\n<!-- lumio: page-break -->\n"
+        + DELTA_NEW_PAGE
+    )
+    failing = lw.create_proposal_without_provider(
+        failing_markdown.encode("utf-8"),
+        "text/markdown",
+        "gamma-move-delta.md",
+        kb,
+        store=store,
+    )
+    assert not failing.blocked, failing.validation_report
+    durable = store.get(failing.id)
+    assert durable is not None and durable.preconditions
+
+    files_before = _rollback_snapshot(root)
+    durable_before = _durable_state_snapshot(store, failing.id)
+    backups_before = _existing_backups()
+
+    original_write_destination = publish_module._write_destination
+    attempted: list[str] = []
+
+    def fail_second_live_write(destination, working_root):
+        if Path(working_root) == root and destination.relative_path == "archive/alpha.md":
+            attempted.append(destination.relative_path)
+            # publish._write_destination creates the destination's parent
+            # directories BEFORE the byte write, so the real second-live-write
+            # failure window is "fresh directory created, bytes not written" —
+            # reproduce exactly that window, then die.
+            (root / "archive").mkdir(parents=True, exist_ok=True)
+            raise OSError("injected second-page live write failure")
+        return original_write_destination(destination, working_root)
+
+    monkeypatch.setattr(publish_module, "_write_destination", fail_second_live_write)
+
+    with pytest.raises(OSError, match="injected second-page live write failure"):
+        pipeline.publish(failing.id)
+
+    # Only the SECOND live write was injected; the first (the Gamma revision)
+    # landed before it and the third (Delta) was never reached.
+    assert attempted == ["archive/alpha.md"]
+
+    # The complete pre-mutation KB state is restored byte for byte: the
+    # landed Gamma revision reverts, the fresh archive directory the move
+    # created is pruned again, Alpha never left concepts/, and the never-
+    # written Delta page is absent; the Control File, reserved artifacts,
+    # and (absent) Activity Log match.
+    assert _rollback_snapshot(root) == files_before
+    assert not (root / "concepts/delta.md").exists()
+    assert not (root / "archive/alpha.md").exists()
+    assert not (root / "archive").exists()  # created directory pruned too
+    assert (root / "concepts/alpha.md").is_file()
+
+    # Durable proposal and registry state restored byte for byte: no partial
+    # published marker, the proposal is still reviewable.
+    assert _durable_state_snapshot(store, failing.id) == durable_before
+    reloaded = lw.IngestStore(tmp_path / "ingest").get(failing.id)
+    assert reloaded is not None and reloaded.status == "staged"
+    reviewable = pipeline.review(failing.id)
+    assert reviewable is not None and lw.is_reviewable_proposal(reviewable)
+
+    # The pre-mutation backup lived outside the KB and was cleaned up after
+    # the successful restoration.
+    assert _existing_backups() == backups_before
+
+    # Recovery works: with the injection gone the same durable proposal
+    # publishes completely.
+    monkeypatch.undo()
+    republished = pipeline.publish(failing.id)
+    assert republished.status == "published"
+    assert (root / "concepts/delta.md").is_file()
+    assert (root / "archive/alpha.md").is_file()
+    assert not (root / "concepts/alpha.md").exists()
+
+
+def test_local_publish_third_write_failure_restores_complete_mutation(tmp_path, monkeypatch):
+    # B05 (Plan 02 / P5) retained LATER-write coverage: the THIRD page's live
+    # write dies after a revision AND a move already landed. The complete
+    # pre-mutation state must still come back — the revised Gamma, the
+    # performed move (source unlinked, fresh archive directory pruned), the
+    # Control File, reserved artifacts, Activity Log, durable proposal, and
+    # registry state — and the proposal publishes on retry. Deterministic:
+    # an injected OSError on one checked live write, no sleeps.
+    import lumio_wiki.publish as publish_module
+
+    kb = _rollback_kb(tmp_path)
+    root = kb.root.resolve()
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+
+    baseline = lw.create_proposal_without_provider(
+        _disjoint_revision("Alpha", "alpha", "Baseline Alpha revision.").encode("utf-8"),
+        "text/markdown",
+        "alpha-baseline.md",
+        kb,
+        store=store,
+    )
+    assert not baseline.blocked, baseline.validation_report
+    assert pipeline.publish(baseline.id).status == "published"
+
+    # Write order: revise Gamma (first live write, succeeds), move Alpha into
+    # the archive category (second write plus source unlink, succeeds), then
     # add Delta — whose live write is injected to fail.
     move_segment = (
         "---\n"
@@ -2944,12 +3072,12 @@ def test_local_publish_failure_restores_complete_mutation(tmp_path, monkeypatch)
     def fail_delta_live_write(destination, working_root):
         if Path(working_root) == root and destination.relative_path == "concepts/delta.md":
             attempted.append(destination.relative_path)
-            raise OSError("injected second-page live write failure")
+            raise OSError("injected third-page live write failure")
         return original_write_destination(destination, working_root)
 
     monkeypatch.setattr(publish_module, "_write_destination", fail_delta_live_write)
 
-    with pytest.raises(OSError, match="injected second-page live write failure"):
+    with pytest.raises(OSError, match="injected third-page live write failure"):
         pipeline.publish(failing.id)
 
     # The proposal's earlier writes landed, then the injected failure fired.
@@ -3197,3 +3325,321 @@ def test_rollback_failure_raises_actionable_recovery_error(tmp_path, monkeypatch
     import shutil
 
     shutil.rmtree(error.backup_dir)
+
+
+def test_rollback_chmod_restoration_failure_reported_backup_retained(tmp_path, monkeypatch):
+    # P5 remediation: a restored file whose captured permission bits cannot
+    # be re-applied is a REAL restoration failure. The bytes come back but
+    # the mode does not (the restore's atomic replace leaves temp-file mode
+    # bits behind); the rollback must REPORT the failed path, keep the
+    # pre-mutation backup for manual recovery, and raise
+    # MutationRollbackError chaining the original publish failure — never
+    # clean the backup and claim the rollback complete. Deterministic: an
+    # injected os.chmod failure on exactly one restored path (os.chmod has
+    # exactly one caller in the package: the restoration), no sleeps.
+    import shutil
+    import stat as stat_module
+
+    import lumio_wiki.mutation as mutation_module
+    import lumio_wiki.publish as publish_module
+
+    kb = _rollback_kb(tmp_path)
+    root = kb.root.resolve()
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+
+    baseline = lw.create_proposal_without_provider(
+        _disjoint_revision("Alpha", "alpha", "Baseline Alpha revision.").encode("utf-8"),
+        "text/markdown",
+        "alpha-baseline.md",
+        kb,
+        store=store,
+    )
+    assert pipeline.publish(baseline.id).status == "published"
+
+    # A distinctive captured mode proves the permission bits are part of the
+    # exact pre-mutation state the restore must put back.
+    (root / "concepts/gamma.md").chmod(0o640)
+    gamma_bytes = (root / "concepts/gamma.md").read_bytes()
+
+    # Same gamma revision + Alpha move as the journey above; the SECOND live
+    # write (the move destination) dies so a per-file restoration runs.
+    move_segment = (
+        "---\n"
+        'title: "Alpha"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        'summary: "Relocated Alpha page."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "category: archive\n"
+        "type: concept\n"
+        "durability_rationale: reviewed durable knowledge move\n"
+        "move_from_path: concepts/alpha.md\n"
+        "sources:\n"
+        '  - id: "alpha-src"\n'
+        '    title: "Alpha source"\n'
+        'id: "entity:alpha"\n'
+        "entity_types:\n  - concept\n"
+        "synthetic: false\n"
+        "---\n"
+        "# Alpha\n\nThe Alpha page relocated into the archive category.\n"
+    )
+    failing_markdown = (
+        _disjoint_revision("Gamma", "gamma", "Revised Gamma.")
+        + "\n<!-- lumio: page-break -->\n"
+        + move_segment
+    )
+    failing = lw.create_proposal_without_provider(
+        failing_markdown.encode("utf-8"),
+        "text/markdown",
+        "gamma-move.md",
+        kb,
+        store=store,
+    )
+    assert not failing.blocked, failing.validation_report
+
+    files_before = _rollback_snapshot(root)
+    backups_before = _existing_backups()
+
+    original_write_destination = publish_module._write_destination
+    original_chmod = os.chmod
+
+    def fail_second_live_write(destination, working_root):
+        if Path(working_root) == root and destination.relative_path == "archive/alpha.md":
+            raise OSError("injected second-page live write failure")
+        return original_write_destination(destination, working_root)
+
+    def fail_gamma_restore_chmod(path, mode):
+        if Path(path) == root / "concepts/gamma.md":
+            raise OSError("injected chmod restoration failure")
+        return original_chmod(path, mode)
+
+    monkeypatch.setattr(publish_module, "_write_destination", fail_second_live_write)
+    monkeypatch.setattr(os, "chmod", fail_gamma_restore_chmod)
+
+    with pytest.raises(mutation_module.MutationRollbackError) as excinfo:
+        pipeline.publish(failing.id)
+
+    error = excinfo.value
+    # Actionable: the chmod failure names the restored path and reason, the
+    # original write failure is chained as the cause, and the pre-mutation
+    # backup is RETAINED for manual recovery (never cleaned up).
+    assert error.failed_paths == ("concepts/gamma.md (injected chmod restoration failure)",)
+    assert "concepts/gamma.md" in str(error)
+    assert "injected chmod restoration failure" in str(error)
+    assert isinstance(error.__cause__, OSError)
+    assert "injected second-page live write failure" in str(error.__cause__)
+    assert error.backup_dir is not None and error.backup_dir.is_dir()
+    assert str(error.backup_dir) in str(error)
+    assert error.backup_dir in _existing_backups()
+    assert _existing_backups() != backups_before
+
+    # The bytes came back but the captured 0o640 permission bits did not:
+    # this is exactly the unrecovered state the error reports.
+    assert (root / "concepts/gamma.md").read_bytes() == gamma_bytes
+    assert stat_module.S_IMODE((root / "concepts/gamma.md").stat().st_mode) != 0o640
+    assert _rollback_snapshot(root) == files_before
+
+    # The durable proposal was still restored to its reviewable pre-mutation
+    # bytes even though the file restoration reported the failure.
+    reloaded = lw.IngestStore(tmp_path / "ingest").get(failing.id)
+    assert reloaded is not None and reloaded.status == "staged"
+
+    # The retained recovery backup is removed by this test so the shared
+    # temporary backup root stays clean for other journeys.
+    shutil.rmtree(error.backup_dir)
+
+
+def test_rollback_created_directory_removal_failure_reported_backup_retained(tmp_path, monkeypatch):
+    # P5 remediation: a mutation-created directory the rollback cannot prune
+    # is a REAL restoration failure — the pre-mutation state had no such
+    # directory. The rollback must REPORT the leftover (deepest prune order),
+    # keep the pre-mutation backup, and raise MutationRollbackError chaining
+    # the original publish failure — never prune silently and claim the
+    # rollback complete. Deterministic: an injected rmdir failure on the one
+    # created directory, no sleeps.
+    import shutil
+
+    import lumio_wiki.mutation as mutation_module
+    import lumio_wiki.publish as publish_module
+
+    kb = _rollback_kb(tmp_path)
+    root = kb.root.resolve()
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+
+    baseline = lw.create_proposal_without_provider(
+        _disjoint_revision("Alpha", "alpha", "Baseline Alpha revision.").encode("utf-8"),
+        "text/markdown",
+        "alpha-baseline.md",
+        kb,
+        store=store,
+    )
+    assert pipeline.publish(baseline.id).status == "published"
+
+    move_segment = (
+        "---\n"
+        'title: "Alpha"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        'summary: "Relocated Alpha page."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "category: archive\n"
+        "type: concept\n"
+        "durability_rationale: reviewed durable knowledge move\n"
+        "move_from_path: concepts/alpha.md\n"
+        "sources:\n"
+        '  - id: "alpha-src"\n'
+        '    title: "Alpha source"\n'
+        'id: "entity:alpha"\n'
+        "entity_types:\n  - concept\n"
+        "synthetic: false\n"
+        "---\n"
+        "# Alpha\n\nThe Alpha page relocated into the archive category.\n"
+    )
+    failing_markdown = (
+        _disjoint_revision("Gamma", "gamma", "Revised Gamma.")
+        + "\n<!-- lumio: page-break -->\n"
+        + move_segment
+    )
+    failing = lw.create_proposal_without_provider(
+        failing_markdown.encode("utf-8"),
+        "text/markdown",
+        "gamma-move.md",
+        kb,
+        store=store,
+    )
+    assert not failing.blocked, failing.validation_report
+
+    files_before = _rollback_snapshot(root)
+    durable_before = _durable_state_snapshot(store, failing.id)
+
+    original_write_destination = publish_module._write_destination
+    original_rmdir = Path.rmdir
+
+    def fail_second_live_write(destination, working_root):
+        if Path(working_root) == root and destination.relative_path == "archive/alpha.md":
+            # Real second-write failure window: publish creates the fresh
+            # destination directory first, then dies writing the bytes.
+            (root / "archive").mkdir(parents=True, exist_ok=True)
+            raise OSError("injected second-page live write failure")
+        return original_write_destination(destination, working_root)
+
+    def fail_archive_prune(self):
+        if self == root / "archive":
+            raise OSError("injected created-directory removal failure")
+        return original_rmdir(self)
+
+    monkeypatch.setattr(publish_module, "_write_destination", fail_second_live_write)
+    monkeypatch.setattr(Path, "rmdir", fail_archive_prune)
+
+    with pytest.raises(mutation_module.MutationRollbackError) as excinfo:
+        pipeline.publish(failing.id)
+
+    error = excinfo.value
+    # Actionable: the prune failure names the leftover created directory and
+    # reason, the original write failure stays chained as the cause, and the
+    # pre-mutation backup is RETAINED (never cleaned up).
+    assert error.failed_paths == ("archive (injected created-directory removal failure)",)
+    assert "archive" in str(error)
+    assert "injected created-directory removal failure" in str(error)
+    assert isinstance(error.__cause__, OSError)
+    assert "injected second-page live write failure" in str(error.__cause__)
+    assert error.backup_dir is not None and error.backup_dir.is_dir()
+    assert error.backup_dir in _existing_backups()
+
+    # The unrecovered artifact is real: the mutation-created directory is
+    # still on disk even though every FILE byte came back.
+    assert (root / "archive").is_dir()
+    assert not (root / "archive/alpha.md").exists()
+    assert _rollback_snapshot(root) == files_before
+
+    # Durable proposal still restored to its reviewable pre-mutation bytes.
+    assert _durable_state_snapshot(store, failing.id) == durable_before
+    reloaded = lw.IngestStore(tmp_path / "ingest").get(failing.id)
+    assert reloaded is not None and reloaded.status == "staged"
+
+    # The retained recovery backup and the leftover directory are removed by
+    # this test so the shared temporary roots stay clean for other journeys.
+    shutil.rmtree(error.backup_dir)
+    shutil.rmtree(root / "archive")
+
+
+def test_mutation_backup_chmod_restoration_failure_is_reported(tmp_path, monkeypatch):
+    # P5 remediation, unit level: restore_all reports a restored file whose
+    # captured permission bits cannot be re-applied (bytes come back, mode
+    # does not) instead of silently suppressing the chmod failure.
+    import stat as stat_module
+
+    from lumio_wiki.mutation import MutationBackup
+
+    kb_root = tmp_path / "kb"
+    kb_root.mkdir()
+    target = kb_root / "page.md"
+    target.write_bytes(b"before")
+    target.chmod(0o640)
+
+    backup = MutationBackup("unit-chmod")
+    backup.capture_path(kb_root, "page.md")
+    target.write_bytes(b"mutated")
+
+    original_chmod = os.chmod
+
+    def fail_chmod(path, mode):
+        if Path(path) == target:
+            raise OSError("injected chmod failure")
+        return original_chmod(path, mode)
+
+    monkeypatch.setattr(os, "chmod", fail_chmod)
+
+    failures = backup.restore_all(kb_root)
+
+    assert failures == ["page.md (injected chmod failure)"]
+    # The bytes were restored; the captured 0o640 permission bits were not.
+    assert target.read_bytes() == b"before"
+    assert stat_module.S_IMODE(target.stat().st_mode) != 0o640
+
+    backup.cleanup()
+
+
+def test_mutation_backup_created_directory_prune_failures_deepest_first(tmp_path, monkeypatch):
+    # P5 remediation, unit level: restore_all reports directories the
+    # mutation created that the prune cannot remove — deepest first —
+    # instead of silently keeping them; a created directory that is already
+    # absent again is the restored pre-mutation state and never a failure.
+    from lumio_wiki.mutation import MutationBackup
+
+    kb_root = tmp_path / "kb"
+    kb_root.mkdir()
+
+    backup = MutationBackup("unit-prune")
+    backup.capture_path(kb_root, "a/b/c/new.md")  # records created ancestors a, a/b, a/b/c
+    backup.capture_path(kb_root, "gone/leaf.md")  # records created ancestor "gone"
+
+    (kb_root / "a/b/c").mkdir(parents=True)
+    (kb_root / "a/b/c/new.md").write_bytes(b"created")
+    # "gone" is never actually created by the mutation: the prune sees it
+    # already absent (the restored pre-mutation state) and never fails.
+
+    original_rmdir = Path.rmdir
+
+    def fail_deepest_rmdir(self):
+        if self == kb_root / "a/b/c":
+            raise OSError("injected deepest prune failure")
+        return original_rmdir(self)
+
+    monkeypatch.setattr(Path, "rmdir", fail_deepest_rmdir)
+
+    failures = backup.restore_all(kb_root)
+
+    # Deepest first: the injected a/b/c failure is reported before the
+    # natural cascade (a/b and a can no longer be pruned while a/b/c
+    # survives), and the never-created "gone" reports nothing.
+    assert [failure.split(" (")[0] for failure in failures] == ["a/b/c", "a/b", "a"]
+    assert "injected deepest prune failure" in failures[0]
+    assert (kb_root / "a/b/c").is_dir()
+
+    shutil.rmtree(kb_root / "a")
+    backup.cleanup()

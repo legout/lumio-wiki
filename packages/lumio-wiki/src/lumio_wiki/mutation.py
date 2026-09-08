@@ -417,8 +417,12 @@ class MutationBackup:
     pruned after a restore when empty, so a mutation that created a fresh
     directory tree does not leave it behind. Entries created by the mutation
     at untracked paths (below the ``remove_untracked_basenames`` sweep of
-    :meth:`restore_all`) are removed the same way. Empty-directory pruning is
-    best-effort: a directory that gained back content is kept.
+    :meth:`restore_all`) are removed the same way. A created directory the
+    prune cannot remove — and a restored file whose captured permission bits
+    could not be re-applied — is REPORTED as a restoration failure by
+    :meth:`restore_all` (P5): the pre-mutation state is not fully back, so
+    success is never silently claimed for it. A created directory that is
+    already absent again is fully restored, never a failure.
     """
 
     def __init__(self, label: str) -> None:
@@ -518,17 +522,23 @@ class MutationBackup:
         """Restore every captured path; return one message per failed path.
 
         An empty list means the captured pre-mutation state was fully
-        restored: replaced/deleted files back to their exact bytes, symlinks
-        recreated, created files and (empty, freshly created) directories
-        removed. ``remove_untracked_basenames`` sweeps disposable derived
-        entries the mutation may have created at untracked paths (matched
-        case-insensitively on the basename like the capture sweep); only
-        entries NOT present in the capture are removed — pre-existing ones
-        are restored from their snapshot instead.
+        restored: replaced/deleted files back to their exact bytes AND
+        permission bits, symlinks recreated, created files and (empty,
+        freshly created) directories removed. ``remove_untracked_basenames``
+        sweeps disposable derived entries the mutation may have created at
+        untracked paths (matched case-insensitively on the basename like the
+        capture sweep); only entries NOT present in the capture are removed —
+        pre-existing ones are restored from their snapshot instead.
 
         Never raises for individual path failures: each failure is reported
         in the returned list so the caller can raise ONE actionable recovery
-        error that names every failed path and the retained backup.
+        error that names every failed path and the retained backup. A
+        restored file whose captured permission bits cannot be re-applied
+        (``os.chmod`` failure) and a mutation-created directory the prune
+        cannot remove (``rmdir`` failure, reported deepest first) are
+        restoration failures like any other — never silently suppressed
+        (Plan 02 / P5): the backup caller retains the backup and reports an
+        incomplete rollback instead of claiming complete restoration.
         """
         root_path = Path(root)
         failures: list[str] = []
@@ -539,7 +549,7 @@ class MutationBackup:
                 failures.append(f"{relative} ({exc})")
         if remove_untracked_basenames:
             failures.extend(self._remove_untracked(root_path, remove_untracked_basenames))
-        self._prune_created_directories(root_path)
+        failures.extend(self._prune_created_directories(root_path))
         return failures
 
     def cleanup(self) -> None:
@@ -594,8 +604,12 @@ class MutationBackup:
             data = (self._directory / captured.backup_name).read_bytes()
             path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_bytes(path, data)
-            with suppress(OSError):
-                os.chmod(path, captured.mode)
+            # P5: the captured permission bits are part of the exact
+            # pre-mutation state. A chmod failure leaves bytes restored but
+            # mode unrecovered — reported like any other restoration failure
+            # (never suppressed), so the caller retains the backup and raises
+            # MutationRollbackError instead of claiming complete restoration.
+            os.chmod(path, captured.mode)
             return
         if captured.kind == "symlink":
             if os.path.lexists(path):
@@ -646,14 +660,24 @@ class MutationBackup:
                     failures.append(f"{relative} ({exc})")
         return failures
 
-    def _prune_created_directories(self, root_path: Path) -> None:
-        """Best-effort removal of directories the mutation created (now empty).
+    def _prune_created_directories(self, root_path: Path) -> list[str]:
+        """Remove directories the mutation created; report removal failures.
 
-        Deepest first; a directory that is not empty (it holds restored
-        content, or it pre-existed) or cannot be removed is simply kept —
-        leftover empty directories are cosmetic, never data loss, and are
-        deliberately not reported as restoration failures.
+        Walks deepest first so children are removed before their parents. A
+        created directory that is already absent again IS the pre-mutation
+        state — fully restored, never a failure. Any directory that cannot be
+        removed is a restoration failure and is reported (Plan 02 / P5): the
+        mutation created it, the pre-mutation state had no such directory, so
+        a leftover — even an empty one — means restoration is incomplete and
+        must surface in :meth:`restore_all`'s failures (and keep the backup
+        retained), never be silently suppressed as cosmetic.
         """
+        failures: list[str] = []
         for relative in sorted(self._created_dirs, key=lambda item: -item.count("/")):
-            with suppress(OSError):
+            try:
                 (root_path / relative).rmdir()
+            except FileNotFoundError:
+                continue  # already absent again: the pre-mutation state is back
+            except OSError as exc:
+                failures.append(f"{relative} ({exc})")
+        return failures
