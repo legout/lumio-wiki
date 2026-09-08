@@ -44,7 +44,24 @@ parent's mode bits and sticky bit, evaluated directly so a root-owned
 environment cannot false-pass), or a file that is not the recorded path of
 the proposed page's own title (a different page's file,
 the Control File, or any untracked file, so a move can never delete content
-the proposal does not own) — are rejected up front. The candidate gate
+the proposal does not own) — are rejected up front. So is a DANGLING
+symlink ANYWHERE along a submitted page destination's lexical path: the
+non-following check walks every existing component from the root through
+the destination's parents to its leaf (P2 review v9), because a dangling
+ANCESTOR such as ``link -> ghost`` in ``link/fresh.md`` used to resolve to
+the free ``ghost/fresh.md`` and strand the uncopyable entry in the
+candidate while the live write landed behind the dangling link. A page
+destination the write itself could not perform is rejected too (P2 review
+v9): a missing destination whose nearest existing parent directory denies
+the effective user write/search, or a same-title revision whose existing
+regular file denies write, evaluated with the same direct mode-bit
+algorithm (never ``os.access``, which false-passes as root), so neither
+candidate validation nor live apply can strand a partial apply behind a
+raw ``PermissionError``. And a move whose vacated source path the same
+proposal also declares to remove is rejected before any write: the
+removal is resolved from the pre-mutation path, so the move's own unlink
+would silently swallow it and leave the moved page behind (P2 review v9).
+The candidate gate
 resolves against the REAL root before its throwaway copy is made, so an
 occupant ``copytree`` could never get past still produces the same
 destination issue as live apply. There is no automatic suffix allocation
@@ -153,14 +170,45 @@ def _checked_relative_path(root: Path, relative_path: str, *, page_title: str) -
     checks accepted the write while the candidate's ``copytree`` retained
     the uncopyable dangling entry (raw ``shutil.Error``) and the live write
     silently landed at ``ghost.md`` behind the still-dangling link — a move
-    could even unlink its verified source. Because every write branch
-    resolves its destination here, one check covers the new page, compound
-    fallback, revision, rename, and move target alike. A valid symlink to
-    an EXISTING file still resolves (the occupancy rules then judge the
+    could even unlink its verified source. The SAME non-following check now
+    walks EVERY existing lexical component from the Knowledge Base root
+    through the submitted destination's parents down to its leaf (P2 review
+    v9): a dangling symlink ANCESTOR such as ``link -> ghost`` in
+    ``link/fresh.md`` used to resolve to the free ``ghost/fresh.md``
+    because only the leaf was examined — the occupancy and ancestor checks
+    then judged the RESOLVED path, candidate validation still died in
+    ``copytree`` on the uncopyable entry, and live apply silently created
+    the ``ghost/`` directory behind the still-dangling link. A VALID
+    symlink component (its target exists) keeps resolving like any other
+    component, and missing ordinary parents stay acceptable (they are
+    created on demand by the write). Because every write branch resolves
+    its destination here, one check covers the new page, compound fallback,
+    revision, rename, and move target alike. A valid symlink to an
+    EXISTING file still resolves (the occupancy rules then judge the
     resolved target, preserving regular-file revisions) and a genuinely
     missing destination stays acceptable.
     """
     link = root / relative_path
+    # Walk every lexical component BEFORE resolution (lstat-backed
+    # ``is_symlink``, never resolve()/exists() alone): a dangling symlink
+    # ANCESTOR is an EXISTING directory entry whose followed target is
+    # absent — exactly the entry the resolved-path checks used to miss
+    # because they examined the post-resolution route (P2 review v9; the
+    # same non-following detection as the leaf check and the Control File
+    # preflight).
+    ancestor = root
+    for component in Path(relative_path).parts[:-1]:
+        ancestor = ancestor / component
+        if ancestor.is_symlink() and not ancestor.exists():
+            raise DestinationConflict(
+                f"Proposed page {page_title!r} destination {relative_path!r} "
+                f"traverses the dangling symlink ancestor {component!r} that "
+                f"must not be followed to its missing target or copied: the "
+                f"dangling entry breaks the candidate copy and the live write "
+                f"would silently land at the linked path behind it; publish "
+                f"the page at a real, unoccupied path",
+                file=relative_path,
+            )
     # lstat-backed ``is_symlink`` (never resolve()/exists() alone): a
     # dangling symlink is an EXISTING directory entry whose followed target
     # is absent — exactly the entry the free-path verdict below used to
@@ -327,6 +375,132 @@ def _parent_denies_control_file_write(parent: Path, target: Path) -> str | None:
                 "replacing the existing file"
             )
     return None
+
+
+def _page_write_denial(root: Path, relative_path: str) -> str | None:
+    """Return why a page destination cannot be created or revised, or ``None``.
+
+    The write branches create a destination's missing parents and file with
+    ``mkdir(parents=True)`` plus ``write_text`` — or truncate an EXISTING
+    regular file in place for a revision. Both are permission-checked here
+    with the same root-safe mode-bit algorithm the removal, move-source, and
+    Control File preflights use (P2 review v9):
+
+    - a MISSING destination needs its nearest EXISTING parent directory to
+      grant the effective user WRITE and SEARCH: the intermediate missing
+      components are created fresh (owned by the publisher, default mode
+      bits), so only the nearest existing ancestor gates ``mkdir``;
+    - an EXISTING regular destination (a same-title revision, a rename, or
+      an in-place self-move — the occupancy checks already vetted the type
+      and owner) needs the effective user's WRITE bit on the FILE itself,
+      because ``write_text`` truncates in place.
+
+    Page writes never replace or remove a directory entry (no ``os.replace``
+    and no unlink), so the Control File's sticky-bit replacement rule has NO
+    page equivalent: a sticky parent adds no constraint beyond the
+    write/search bits above. Non-regular existing occupants (directories,
+    special files) are rejected with their own precise messages by the
+    occupancy preflights and are not re-judged here. Nothing is mutated and
+    nothing is opened — the probe is ``stat(2)`` metadata only, never
+    ``os.access``, which false-passes as root.
+    """
+    target = root / relative_path
+    try:
+        target_stat = os.stat(target)
+    except OSError as exc:
+        if isinstance(exc, FileNotFoundError):
+            # Vanished between resolution and now: the write (re)creates it.
+            target_stat = None
+        else:
+            return "the destination's metadata cannot be read to verify write permission"
+    if target_stat is not None:
+        if not stat.S_ISREG(target_stat.st_mode):
+            # Occupancy preflights reject non-regular occupants with their
+            # own precise messages; nothing further to add here.
+            return None
+        effective_uid = os.geteuid()
+        if effective_uid == target_stat.st_uid:
+            write_bit = stat.S_IWUSR
+        elif target_stat.st_gid in (os.getegid(), *os.getgroups()):
+            write_bit = stat.S_IWGRP
+        else:
+            write_bit = stat.S_IWOTH
+        if not target_stat.st_mode & write_bit:
+            return "the existing page file's mode bits deny the effective user write access"
+        return None
+    # Missing destination: walk UP to the nearest existing ancestor — every
+    # intermediate component is created fresh by ``mkdir(parents=True)``, so
+    # only that ancestor's mode bits gate the creation.
+    parent = target.parent
+    while True:
+        try:
+            parent_stat = os.stat(parent)
+        except OSError as exc:
+            if not isinstance(exc, FileNotFoundError):
+                return (
+                    "its nearest existing parent directory's metadata cannot be "
+                    "read to verify write permission"
+                )
+            # A vanished component is created on demand by the write; keep
+            # walking up to the nearest existing ancestor.
+            if parent == root:
+                return "its parent directory cannot be created"
+            parent = parent.parent
+            continue
+        break
+    if not stat.S_ISDIR(parent_stat.st_mode):
+        # Rejected with its own precise message by the non-directory-ancestor
+        # preflight.
+        return None
+    effective_uid = os.geteuid()
+    if effective_uid == parent_stat.st_uid:
+        write_bit, search_bit = stat.S_IWUSR, stat.S_IXUSR
+    elif parent_stat.st_gid in (os.getegid(), *os.getgroups()):
+        write_bit, search_bit = stat.S_IWGRP, stat.S_IXGRP
+    else:
+        write_bit, search_bit = stat.S_IWOTH, stat.S_IXOTH
+    if not parent_stat.st_mode & write_bit or not parent_stat.st_mode & search_bit:
+        nearest = parent.relative_to(root).as_posix()
+        return (
+            f"its nearest existing parent directory {nearest!r} denies the "
+            f"effective user write or search access"
+        )
+    return None
+
+
+def _reject_unwritable_page_destinations(
+    destinations: list[_Destination],
+    root: Path,
+) -> None:
+    """Reject a page destination the write itself could not perform (B01).
+
+    Runs in the shared check-only phase BEFORE any candidate or live byte is
+    written (P2 review v9): the resolution phase vetted occupancy, types,
+    and ownership, but the raw ``mkdir``/``write_text`` performed by
+    :func:`_write_destination` can still fail on permission metadata — a
+    missing destination whose nearest existing parent directory denies the
+    effective user write/search, or a same-title revision whose existing
+    regular file is read-only. Left unchecked, the FIRST such page wrote
+    successfully and a LATER page of the same proposal then died with a raw
+    ``PermissionError``, stranding a partial apply, while candidate
+    validation leaked the same filesystem exception from its throwaway tree.
+    The mode bits are evaluated directly with the same root-safe algorithm
+    as the other preflights — never ``os.access``, which false-passes as
+    root — so the conflict raises as :class:`DestinationConflict` before ANY
+    byte is written and candidate validation aggregates the identical
+    destination issue.
+    """
+    for destination in destinations:
+        denial = _page_write_denial(root, destination.relative_path)
+        if denial is not None:
+            raise DestinationConflict(
+                f"Proposed page {destination.page.title!r} cannot be written "
+                f"at {destination.relative_path} because {denial}; make the "
+                f"page file, or the directory that must host it, writable and "
+                f"searchable for the publishing user before publishing this "
+                f"proposal",
+                file=destination.relative_path,
+            )
 
 
 def _reject_occupied_target(
@@ -743,7 +917,11 @@ def _write_destination(destination: _Destination, root: Path) -> Path:
     mode bits and sticky bit permit removing entries) and owned by the
     proposed page's title at resolution time, so the unlink can never remove
     an undeclared file or fail with a raw PermissionError after the target
-    landed.
+    landed. The destination's own write — creating missing parents plus the
+    file, or truncating an existing regular revision in place — was
+    permission-preflighted at resolution time with the same root-safe
+    mode-bit evaluation (P2 review v9), so ``mkdir``/``write_text`` cannot
+    strand a partial apply behind a raw PermissionError either.
     """
     page = destination.page
     target = root / destination.relative_path
@@ -770,7 +948,13 @@ def _reject_proposal_overlaps(
     proposal also updates the Control File, so the file can never be
     replaced by a page the loader would then never see), and of the declared
     removals only the removal of the very page a write revises may overlap a
-    destination — any other overlap would silently discard content.
+    destination — any other overlap would silently discard content. A
+    removal also never overlaps a MOVE's vacated source path: apply unlinks
+    that path after writing the move target, so the removal — resolved from
+    the pre-mutation path — would find the entry already gone and be
+    silently skipped, leaving the moved page alive behind a removal the
+    proposal declared (P2 review v9). That source/removal overlap is
+    rejected here as hidden-removal safety, before any byte is written.
     """
     if CONTROL_FILE_BASENAME in {destination.relative_path for destination in destinations}:
         raise DestinationConflict(
@@ -779,9 +963,33 @@ def _reject_proposal_overlaps(
             file=CONTROL_FILE_BASENAME,
         )
     claimed = {destination.relative_path: destination for destination in destinations}
+    move_sources = {
+        destination.source_relative_path: destination
+        for destination in destinations
+        if destination.kind == "move" and destination.source_relative_path
+    }
     for title, relative in removals:
         claimant = claimed.get(relative)
         if claimant is None:
+            mover = move_sources.get(relative)
+            if mover is not None:
+                # The apply phase unlinks a move's source AFTER writing the
+                # target, so a declared removal resolved from the SAME
+                # pre-mutation path finds the entry already gone and is
+                # silently skipped: the proposal moves the page and then
+                # quietly keeps it, ignoring the removal it declares (P2
+                # review v9). Rejected before ANY write as hidden-removal
+                # safety; a same-title write/compound revision plus removal
+                # of that title stays allowed below (the removal wins there).
+                raise DestinationConflict(
+                    f"Proposed move of {mover.page.title!r} from {relative} "
+                    f"collides with the same proposal's removal of {title!r} "
+                    f"at {relative}: the removal is resolved from the pre-move "
+                    f"path, so the move's own unlink would silently swallow it "
+                    f"and leave the moved page behind; run the move and the "
+                    f"removal as separate proposals",
+                    file=relative,
+                )
             continue
         # A proposal may revise a page and remove that SAME page (the removal
         # stays authoritative and the file ends up gone, as before). Any other
@@ -1020,7 +1228,22 @@ def apply_proposed_pages(
     (and sticky-bit ownership) are evaluated directly with the same
     root-safe helper the move-source preflight uses, so an unremovable
     target is rejected as a conflict before any proposed page is written
-    instead of stranding the revisions behind a raw PermissionError.
+    instead of stranding the revisions behind a raw PermissionError. A
+    declared removal whose path the same proposal MOVES is rejected too
+    (P2 review v9): the removal is resolved from the pre-mutation path, so
+    the move's own source unlink would silently swallow it and leave the
+    moved page alive behind a removal the proposal declared.
+
+    Every proposed destination is also preflighted for the write the apply
+    phase actually performs (P2 review v9): a missing destination whose
+    nearest existing parent directory denies the effective user write and
+    search, and a same-title revision whose existing regular file denies
+    write, are rejected as :class:`DestinationConflict` BEFORE any page
+    byte is written — the first page of a proposal used to write
+    successfully and a later one die with a raw PermissionError, stranding
+    a partial apply (candidate validation leaked the same filesystem
+    exception). The mode bits are evaluated directly with the same
+    root-safe algorithm as the other preflights, never ``os.access``.
 
     ``control_file`` (issue #135) writes a proposed Knowledge Base Control
     File — used by a Page Removal that must drop a stale Hot Index pin
@@ -1047,7 +1270,10 @@ def apply_proposed_pages(
     rejection now guards every proposed page destination: a submitted path
     that lexically is a dangling symlink (``fresh.md -> ghost.md`` with
     ``ghost.md`` absent) is rejected on non-following ``lstat`` BEFORE
-    resolution reroutes the write to the missing target (P2 review v8).
+    resolution reroutes the write to the missing target (P2 review v8), and
+    the same walk covers a DANGLING symlink ANCESTOR such as
+    ``link -> ghost`` in ``link/fresh.md``, which used to resolve to the
+    free ``ghost/fresh.md`` behind the uncopyable entry (P2 review v9).
     """
     root = Path(working_dir).resolve()
     existing_by_title = _existing_paths_by_title(root)
@@ -1060,11 +1286,15 @@ def apply_proposed_pages(
     )
     _reject_proposal_overlaps(destinations, removals)
     # Phase 1b — preflight the write-tool paths themselves BEFORE any mutation
-    # (B01): an unusable Control File destination and every non-directory
+    # (B01): an unusable Control File destination, every non-directory
     # ancestor of every proposed destination, move source, removal target,
-    # and the Control File path are rejected while the KB is still untouched.
+    # and the Control File path, and every page destination's own creation /
+    # revision permission (nearest existing parent write+search for a
+    # missing destination, file write bits for an existing one) are rejected
+    # while the KB is still untouched.
     _reject_unusable_control_file_path(root, control_file)
     _reject_non_directory_ancestors(destinations, removals, root, control_file)
+    _reject_unwritable_page_destinations(destinations, root)
     # Phase 2 — apply the checked mutations in the documented order.
     _apply_checked_destinations(destinations, removals, root, control_file)
 
@@ -1153,6 +1383,7 @@ def apply_compound_revision(page, working_dir: str | Path) -> Path:
         [page], root, existing_by_title, force_compound=True
     )
     _reject_non_directory_ancestors([destination], [], root, None)
+    _reject_unwritable_page_destinations([destination], root)
     return _write_destination(destination, root)
 
 
@@ -1189,9 +1420,14 @@ def validate_candidate_knowledge_base(
     removal target (its parent directory's mode bits and sticky bit deny
     the unlink, evaluated directly), a non-directory ancestor of
     any write/removal/Control File path, a dangling page-destination
-    symlink that ``copytree`` could never copy, an unusable Control File
-    destination (a dangling ``lumio.yaml`` symlink that ``copytree`` could
-    never copy included), or a Control File parent whose mode bits deny the
+    symlink — leaf or ANCESTOR along the submitted lexical path — that
+    ``copytree`` could never copy, an unwritable page destination (a
+    missing destination whose nearest existing parent denies the effective
+    user write/search, or a read-only same-title revision file), an unusable
+    Control File destination (a dangling ``lumio.yaml`` symlink that
+    ``copytree`` could never copy included), a move combined with the
+    removal of its own moved path (the move's unlink would silently swallow
+    the declared removal), or a Control File parent whose mode bits deny the
     atomic temp-file creation and replace — comes back as an error
     ``ValidationIssue`` instead of raised, exactly the conflict live
     application would raise. Only
@@ -1227,12 +1463,15 @@ def validate_candidate_knowledge_base(
             else []
         )
         _reject_proposal_overlaps(destinations, removals)
-        # The same preflight runs here so a blocked Control File destination or
-        # a non-directory ancestor surfaces as an aggregated destination issue
-        # against the REAL root, never as a filesystem exception from the
-        # candidate apply phase (Plan 02 / P2, B01).
+        # The same preflights run here so a blocked Control File destination,
+        # a non-directory ancestor, or an unwritable page destination
+        # (missing destination under a mode-denied nearest existing parent,
+        # or a read-only same-title revision file) surfaces as an aggregated
+        # destination issue against the REAL root, never as a filesystem
+        # exception from the candidate apply phase (Plan 02 / P2, B01).
         _reject_unusable_control_file_path(root, control_file)
         _reject_non_directory_ancestors(destinations, removals, root, control_file)
+        _reject_unwritable_page_destinations(destinations, root)
     except DestinationConflict as exc:
         return _conflict_report(exc)
     with tempfile.TemporaryDirectory() as tmp:

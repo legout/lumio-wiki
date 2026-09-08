@@ -1161,3 +1161,280 @@ def test_dangling_symlink_move_destination_is_rejected_with_candidate_parity(
     assert issues[0].field == "destination"
     assert issues[0].message == str(live.value)
     assert "symlink" in issues[0].message
+
+
+def test_dangling_symlink_ancestor_is_rejected_with_candidate_parity(
+    tmp_path: Path,
+):
+    # Review-fix regression (Plan 02 / P2, review v9 blocker 1): a DANGLING
+    # symlink ANCESTOR of a submitted destination slipped through the
+    # dangling-entry preflight because only the LEAF was examined before
+    # resolution: "link -> ghost" (missing target) with the proposed path
+    # "link/fresh.md" resolved to the free "ghost/fresh.md" — the occupancy
+    # and ancestor checks judged the RESOLVED route, so candidate validation
+    # still reached ``copytree`` and died with a raw ``shutil.Error`` (the
+    # retained dangling entry has no content to copy) while live apply
+    # silently created the ``ghost/`` directory behind the still-dangling
+    # link and wrote the page THERE, not at the submitted path. Destination
+    # resolution now walks every existing lexical component from the root
+    # through the destination's parents down to its leaf with the same
+    # non-following metadata, so the conflict raises as a DestinationConflict
+    # before any candidate copy or live write, the submitted link survives
+    # untouched, and candidate validation returns the identical destination
+    # issue.
+    _skip_if_symlinks_unavailable(tmp_path)
+    kb = _kb(tmp_path)
+    link = kb.root / "link"
+    link.symlink_to("ghost")
+    page = lw.ProposedPage(
+        relative_path="link/fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-dangling-ancestor-review-fix"),
+    )
+
+    with pytest.raises(DestinationConflict) as live:
+        lw.apply_proposed_pages([page], kb.root)
+    # Rejected before ANY write: nothing was created behind the dangling
+    # ancestor and the submitted entry survives as the dangling link it was.
+    assert not (kb.root / "ghost").exists()
+    assert link.is_symlink()
+    assert not link.exists()
+
+    # Candidate validation returns the SAME blocking destination issue —
+    # never a raw ``shutil.Error`` from the candidate copy.
+    report = lw.validate_candidate_knowledge_base([page], kb.root)
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].file == "link/fresh.md"
+    assert issues[0].message == str(live.value)
+    assert "symlink" in issues[0].message
+    assert "link/fresh.md" in issues[0].message
+
+    # Positive controls: a genuinely MISSING ordinary parent stays valid in
+    # candidate validation and live apply alike — it is created on demand.
+    nested = lw.ProposedPage(
+        relative_path="fresh_sub/fresh.md",
+        title="Fresh Nested",
+        markdown=_probe_markdown("Fresh Nested", "fresh-nested-parent-review-fix"),
+    )
+    nested_report = lw.validate_candidate_knowledge_base([nested], kb.root)
+    assert nested_report.is_valid, nested_report
+    lw.apply_proposed_pages([nested], kb.root)
+    assert (kb.root / "fresh_sub/fresh.md").is_file()
+
+    # And a VALID symlink ancestor (its target exists) still resolves like an
+    # ordinary directory: the write lands at the resolved target and the
+    # alias survives intact. Live apply only — the candidate's ``copytree``
+    # dereferences directory aliases into a second copy (pre-existing copy
+    # semantics, unrelated to this preflight).
+    (kb.root / "real_dir").mkdir()
+    alias = kb.root / "alias"
+    alias.symlink_to("real_dir")
+    aliased = lw.ProposedPage(
+        relative_path="alias/aliased.md",
+        title="Aliased",
+        markdown=_probe_markdown("Aliased", "aliased-valid-ancestor-review-fix"),
+    )
+    lw.apply_proposed_pages([aliased], kb.root)
+    assert (kb.root / "real_dir/aliased.md").is_file()
+    assert alias.is_symlink()
+    assert alias.resolve() == (kb.root / "real_dir").resolve()
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX directory mode bits are required to deny a page write",
+)
+def test_unwritable_page_parent_is_blocked_with_candidate_parity(tmp_path: Path):
+    # Review-fix regression (Plan 02 / P2, review v9 blocker 2): a proposed
+    # page whose missing destination sits under a parent directory that does
+    # not permit creating entries (chmod 0555) passed every resolution-time
+    # preflight — mkdir(2) permission comes from the parent directory's mode
+    # bits, not from the destination. Live apply then wrote the FIRST page of
+    # the proposal and died creating the second with a raw PermissionError,
+    # stranding a partial apply, while candidate validation leaked the same
+    # filesystem exception from its throwaway tree. The shared check-only
+    # phase now preflights every destination's creation permission — the
+    # nearest EXISTING parent directory's write/search mode bits, evaluated
+    # directly (never ``os.access``, which false-passes as root) — so the
+    # conflict raises as a DestinationConflict before ANY byte is written,
+    # and candidate validation aggregates the identical destination issue.
+    kb = _kb(tmp_path)
+    locked = kb.root / "locked"
+    locked.mkdir()
+    pages = [
+        lw.ProposedPage(
+            relative_path="fresh.md",
+            title="Fresh",
+            markdown=_probe_markdown("Fresh", "fresh-locked-page-parent-review-fix"),
+        ),
+        lw.ProposedPage(
+            relative_path="locked/blocked.md",
+            title="Blocked",
+            markdown=_probe_markdown("Blocked", "blocked-locked-page-parent-review-fix"),
+        ),
+    ]
+
+    os.chmod(locked, 0o555)
+    try:
+        with pytest.raises(DestinationConflict) as live:
+            lw.apply_proposed_pages(pages, kb.root)
+        candidate_report = lw.validate_candidate_knowledge_base(pages, kb.root)
+        # No partial apply: even the first destination was never written —
+        # the whole proposal is rejected before any byte lands.
+        assert not (kb.root / "fresh.md").exists()
+        assert not (kb.root / "locked/blocked.md").exists()
+        assert not candidate_report.is_valid
+        issues = [issue for issue in candidate_report.issues if issue.severity == "error"]
+        assert len(issues) == 1, issues
+        assert issues[0].field == "destination"
+        assert issues[0].file == "locked/blocked.md"
+        # Candidate/live parity: the identical conflict, aggregated as an issue.
+        assert issues[0].message == str(live.value)
+        assert "locked/blocked.md" in issues[0].message
+        # The message names the fixable parent directory, not a raw OSError.
+        assert "locked" in issues[0].message
+    finally:
+        os.chmod(locked, 0o755)
+
+    # Positive control: with the parent writable the SAME proposal applies
+    # in candidate validation and live apply alike, exactly as before the
+    # new preflight.
+    writable_report = lw.validate_candidate_knowledge_base(pages, kb.root)
+    assert writable_report.is_valid, writable_report
+    lw.apply_proposed_pages(pages, kb.root)
+    assert (kb.root / "fresh.md").is_file()
+    assert (kb.root / "locked/blocked.md").is_file()
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX file mode bits are required to deny a page revision",
+)
+def test_readonly_page_revision_is_blocked_with_candidate_parity(tmp_path: Path):
+    # Review-fix regression (Plan 02 / P2, review v9 blocker 2): a same-title
+    # revision whose existing regular recorded file is read-only (chmod 0444)
+    # passed every occupancy preflight — the occupant is the page's own
+    # recorded path, readable, a regular file — but ``write_text`` truncates
+    # the file in place, and open(2) for writing is authorized by the FILE's
+    # own mode bits. Live apply then wrote the FIRST page of the proposal and
+    # died on the revision with a raw PermissionError, stranding a partial
+    # apply, while candidate validation leaked the same filesystem exception.
+    # The shared check-only phase now preflights every destination's revision
+    # permission too — the existing regular file's write bit for the
+    # effective user, evaluated directly (never ``os.access``, which
+    # false-passes as root; page writes never replace a directory entry, so
+    # the Control File's sticky-replacement rule has no page equivalent) —
+    # and candidate validation aggregates the identical destination issue.
+    kb = _kb(tmp_path)
+    recorded = kb.root / "overview.md"
+    original = recorded.read_text(encoding="utf-8")
+    pages = [
+        lw.ProposedPage(
+            relative_path="fresh.md",
+            title="Fresh",
+            markdown=_probe_markdown("Fresh", "fresh-readonly-revision-review-fix"),
+        ),
+        lw.ProposedPage(
+            relative_path="overview.md",
+            title="Lumio Overview",
+            markdown=_probe_markdown("Lumio Overview", "overview-readonly-revision-review-fix"),
+        ),
+    ]
+
+    os.chmod(recorded, 0o444)
+    try:
+        with pytest.raises(DestinationConflict) as live:
+            lw.apply_proposed_pages(pages, kb.root)
+        candidate_report = lw.validate_candidate_knowledge_base(pages, kb.root)
+        # No partial apply: the first page was never written and the
+        # read-only recorded page keeps its bytes.
+        assert not (kb.root / "fresh.md").exists()
+        assert recorded.read_text(encoding="utf-8") == original
+        assert not candidate_report.is_valid
+        issues = [issue for issue in candidate_report.issues if issue.severity == "error"]
+        assert len(issues) == 1, issues
+        assert issues[0].field == "destination"
+        assert issues[0].file == "overview.md"
+        # Candidate/live parity: the identical conflict, aggregated as an issue.
+        assert issues[0].message == str(live.value)
+        assert "overview.md" in issues[0].message
+        assert "write access" in issues[0].message
+
+        # The same protection covers an IN-PLACE self-move of the read-only
+        # page: it overwrites the file without unlinking anything, so the
+        # file's own write bits decide, exactly as for a revision.
+        in_place = lw.ProposedPage(
+            relative_path="overview.md",
+            title="Lumio Overview",
+            markdown=_probe_markdown("Lumio Overview", "overview-readonly-selfmove-review-fix"),
+            move_from_path="overview.md",
+        )
+        with pytest.raises(DestinationConflict) as live_move:
+            lw.apply_proposed_pages([in_place], kb.root)
+        assert recorded.read_text(encoding="utf-8") == original
+        assert "write access" in str(live_move.value)
+    finally:
+        os.chmod(recorded, 0o644)
+
+    # Positive control: a writable recorded file revises in place exactly as
+    # before the new preflight — read-only occupants that publication is
+    # meant to replace stay replaceable once the mode bits allow it.
+    writable_report = lw.validate_candidate_knowledge_base(pages, kb.root)
+    assert writable_report.is_valid, writable_report
+    lw.apply_proposed_pages(pages, kb.root)
+    assert (kb.root / "fresh.md").is_file()
+    assert recorded.read_text(encoding="utf-8") != original
+
+
+def test_move_plus_removal_of_same_title_is_rejected_before_any_write(tmp_path: Path):
+    # Review-fix regression (Plan 02 / P2, review v9 blocker 3): a proposal
+    # that MOVES a title to a new path while ``removed_titles`` also declares
+    # that same title silently ignored the removal. Removals are resolved
+    # from the pre-mutation path, but the overlap check only compared removal
+    # paths with move DESTINATIONS, and apply moves/unlinks the old source
+    # before the removal phase — which then found the entry already gone and
+    # skipped it, leaving the moved page alive behind a removal the proposal
+    # declared. The vacated source path is now claimed too: the
+    # source/removal overlap is rejected as hidden-removal safety BEFORE any
+    # write, and candidate validation returns the identical destination
+    # issue.
+    kb = _kb(tmp_path)
+    source = kb.root / "architecture.md"
+    original = source.read_text(encoding="utf-8")
+    page = lw.ProposedPage(
+        relative_path="moved.md",
+        title="Architecture",
+        markdown=_probe_markdown("Architecture", "arch-move-removal-review-fix"),
+        move_from_path="architecture.md",
+    )
+
+    with pytest.raises(DestinationConflict) as live:
+        lw.apply_proposed_pages([page], kb.root, removed_titles=["Architecture"])
+    candidate_report = lw.validate_candidate_knowledge_base(
+        [page], kb.root, removed_titles=["Architecture"]
+    )
+    # Rejected before ANY write: the source was neither moved nor removed and
+    # the move destination was never created.
+    assert source.read_text(encoding="utf-8") == original
+    assert not (kb.root / "moved.md").exists()
+    assert not candidate_report.is_valid
+    issues = [issue for issue in candidate_report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].file == "architecture.md"
+    # Candidate/live parity: the identical conflict, aggregated as an issue.
+    assert issues[0].message == str(live.value)
+    assert "removal" in issues[0].message
+    assert "moved page" in issues[0].message
+
+    # Positive control: the SAME move without the overlapping removal still
+    # publishes in candidate validation and live apply alike, so only the
+    # contradictory combination is blocked.
+    plain_report = lw.validate_candidate_knowledge_base([page], kb.root)
+    assert plain_report.is_valid, plain_report
+    lw.apply_proposed_pages([page], kb.root)
+    assert not source.exists()
+    assert (kb.root / "moved.md").is_file()
