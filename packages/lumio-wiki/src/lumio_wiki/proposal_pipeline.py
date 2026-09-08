@@ -37,6 +37,7 @@ from lumio_wiki.ingest import (
     _compute_diff,
     _existing_page_markdown,
     _extract_page_records,
+    _is_self_consistent_restage,
     _recomputed_mutation_identity,
     _validate_page_routing,
     compute_blast_radius,
@@ -436,6 +437,11 @@ class ProposalPipeline:
         so durable metadata and durable content can no longer be separated:
         publication recomputes it from the durable record under the mutation
         lock (:meth:`_reject_stale_base`) and fails closed on a mismatch.
+
+        The caller persists the freshly bound record through the private
+        staging seam (:meth:`_save_reviewed_proposal`) — ordinary
+        :meth:`IngestStore.save_proposal` would strip the just-bound claim
+        as an altering save.
         """
         mutates_knowledge_base = bool(
             proposal.proposed_pages or proposal.removed_pages or proposal.control_file is not None
@@ -504,6 +510,54 @@ class ProposalPipeline:
                 "review and publish it"
             )
         return list(snapshot)
+
+    def _save_reviewed_proposal(
+        self, proposal: IngestProposal, raw_path: Path | None = None
+    ) -> None:
+        """Persist a freshly bound reviewed proposal (authorized staging seam).
+
+        The ONLY write path that may persist reviewed metadata
+        (``preconditions`` + ``reviewed_identity``) over an existing
+        reviewable record, and the only alternative to
+        :meth:`IngestStore._restore_reviewable`'s rollback compensation
+        (Plan 02 / P4 final review). Every caller invokes this AFTER
+        :meth:`_bind_reviewed_state` — capture or assembly-snapshot
+        verification plus the identity binding — while ALREADY holding the
+        Knowledge Base + store (and, for source lifecycle, registry)
+        mutation locks, so the reviewed base, the durable record, and the
+        binding are one consistent snapshot.
+
+        Fail-closed guards, in order:
+
+        - the record must be self-consistent (its own freshly bound identity
+          matches its content and it carries a captured — possibly empty —
+          precondition set): the seam refuses to persist a binding that was
+          never made, so a pipeline bug can never dress altered content as
+          reviewed;
+        - terminal safety is re-checked by the store's authorized write
+          (:meth:`IngestStore._write_reviewed_proposal`) under the store
+          lock: a ``published``/``discarded`` durable proposal is never
+          replaced (the same :class:`ProposalTerminalStateError` refusal an
+          ordinary save gives).
+
+        Ordinary callers with altered content keep the public
+        :meth:`IngestStore.save_proposal`, which strips the reviewed claim
+        from every altering save — caller-side identity recomputation is
+        never a binding.
+        """
+        if not _is_self_consistent_restage(proposal):
+            raise ProposalPipelineError(
+                f"proposal {proposal.id!r} does not carry a freshly bound "
+                "reviewed state (preconditions and content identity must be "
+                "bound together by _bind_reviewed_state under the staging "
+                "locks); refusing to persist reviewed metadata"
+            )
+        proposal_with_path = (
+            msgspec.structs.replace(proposal, raw_source_path=str(raw_path))
+            if raw_path is not None
+            else proposal
+        )
+        self._require_store()._write_reviewed_proposal(proposal_with_path)
 
     def register_source(self, source_id: str, raw_bytes: bytes) -> SourceVersion:
         """Register bytes under an explicit, stable Knowledge Source identity.
@@ -691,8 +745,9 @@ class ProposalPipeline:
         precondition was invalidated between stage and bind (a concurrent
         retire/reactivate published in the window) is refused BEFORE any
         mutation, so the rejection compensates cleanly — no orphan pending
-        transition, and ``save_proposal`` is never reached, so no stale
-        proposal is persisted. The caller re-stages against the new state.
+        transition, and the reviewed staging write is never reached, so no
+        stale proposal is persisted. The caller re-stages against the new
+        state.
         """
         store = self._require_store()
         registry = store.source_registry
@@ -702,8 +757,10 @@ class ProposalPipeline:
                 # Plan 02 / P4: the source-lifecycle proposal mutates no
                 # Knowledge Base path (its captured-nothing precondition set
                 # is already bound), so only the content identity is bound
-                # here — under the same locks that persist the record.
-                store.save_proposal(self._bind_reviewed_state(proposal))
+                # here — under the same locks that persist the record. The
+                # authorized staging seam is the only writer of freshly
+                # bound reviewed metadata; an ordinary save would strip it.
+                self._save_reviewed_proposal(self._bind_reviewed_state(proposal))
             except Exception:
                 registry.cancel_transition(proposal.id)
                 raise
@@ -835,7 +892,10 @@ class ProposalPipeline:
             proposal = self._assemble_page_removal(
                 title, reason=reason, affected_claim_notes=affected_claim_notes or []
             )
-            store.save_proposal(self._bind_reviewed_state(proposal))
+            # Authorized staging seam: the removal's freshly verified
+            # reviewed state persists verbatim (an ordinary altering save
+            # would strip the claim it just bound).
+            self._save_reviewed_proposal(self._bind_reviewed_state(proposal))
             persisted = store.get(proposal.id)
             if persisted is None:  # pragma: no cover - just persisted under the store lock
                 raise ProposalPipelineError(f"proposal {proposal.id!r} disappeared after staging")
@@ -1052,7 +1112,10 @@ class ProposalPipeline:
             proposal = self._assemble_entity_merge(
                 retired_entity_id, surviving_entity_id, reason=reason
             )
-            store.save_proposal(self._bind_reviewed_state(proposal))
+            # Authorized staging seam: the merge's freshly verified reviewed
+            # state persists verbatim (an ordinary altering save would strip
+            # the claim it just bound).
+            self._save_reviewed_proposal(self._bind_reviewed_state(proposal))
             persisted = store.get(proposal.id)
             if persisted is None:  # pragma: no cover - just persisted under the store lock
                 raise ProposalPipelineError(f"proposal {proposal.id!r} disappeared after staging")
@@ -1336,9 +1399,9 @@ class ProposalPipeline:
         proposal has already reached a terminal ``published``/``discarded``
         state is refused with :class:`ProposalPipelineError` — no raw bytes
         are written and durable terminal state is never replaced (the
-        store's :meth:`IngestStore.save_proposal` refuses that overwrite
-        too; only the pipeline's explicit rollback compensation may restore
-        a reviewable proposal over terminal state).
+        authorized staging write re-checks the same terminal guard under
+        the store lock; only the pipeline's explicit rollback compensation
+        may restore a reviewable proposal over terminal state).
 
         Plan 02 / P4 (B03/B04): staging binds the proposal's reviewed state
         and persists it with it, holding the Knowledge Base + store
@@ -1354,6 +1417,12 @@ class ProposalPipeline:
         a snapshot (graph exchange, external import, hand-assembled) gets a
         freshly captured reviewed base at this boundary. Either way the
         deterministic content identity is bound next to the preconditions.
+        Persistence goes through the private authorized staging seam
+        (:meth:`_save_reviewed_proposal`): the ONLY writer of freshly bound
+        reviewed metadata — an ordinary
+        :meth:`IngestStore.save_proposal` strips the reviewed claim from
+        every content-altering save, however self-consistent the caller
+        made the record look (Plan 02 / P4 final review).
         """
         if self._store is None:
             raise RuntimeError("ProposalPipeline.stage requires an IngestStore")
@@ -1367,7 +1436,7 @@ class ProposalPipeline:
             raw_path: Path | None = None
             if raw_bytes is not None and filename is not None:
                 raw_path = self._store.save_raw(proposal.id, raw_bytes, filename)
-            self._store.save_proposal(reviewed, raw_path)
+            self._save_reviewed_proposal(reviewed, raw_path)
             staged = self._store.get(proposal.id)
             if staged is None:  # pragma: no cover - just persisted under the store lock
                 raise ProposalPipelineError(f"proposal {proposal.id!r} disappeared after staging")

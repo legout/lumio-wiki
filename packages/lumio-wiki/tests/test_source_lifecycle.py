@@ -20,6 +20,7 @@ from lumio_wiki.ingest import (
     SourceChangeImpact,
     SourceLifecycleChange,
     SourceProvenance,
+    _is_self_consistent_restage,
     _recomputed_mutation_identity,
 )
 from lumio_wiki.mutation import (
@@ -601,6 +602,61 @@ def test_publish_refuses_source_lifecycle_record_carrying_precondition_records(
     assert persisted is not None and persisted.status == "staged"
 
 
+def test_public_save_cannot_rebind_reviewed_identity_for_altered_lifecycle_content(
+    tmp_path,
+) -> None:
+    # P4 FINAL review blocker, source-lifecycle side: an ordinary save that
+    # alters the reviewed lifecycle content (here: the trigger prose) used to
+    # KEEP its reviewed claim whenever the caller recomputed the PUBLIC
+    # deterministic identity of the altered content and retained the old
+    # captured-empty preconditions — publish then accepted the forged
+    # identity against the unchanged EMPTY base and flipped the registry for
+    # unreviewed lifecycle content. Caller-side recomputation is not a
+    # reviewed binding: the altering save now strips the reviewed metadata,
+    # publication refuses with restage guidance, and the registry state is
+    # byte-untouched. Deterministic: direct public-API calls, no sleeps.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    proposal = pipeline.retire_source("policy")
+    durable = store.get(proposal.id)
+    assert durable is not None and durable.source_change is not None
+    assert durable.preconditions == [] and durable.reviewed_identity is not None
+    prior_registry = msgspec.json.encode(store.source_registry._state)
+
+    tampered = msgspec.structs.replace(
+        durable,
+        source_change=msgspec.structs.replace(
+            durable.source_change, trigger="TAMPERED: forged retirement trigger"
+        ),
+    )
+    forged = msgspec.structs.replace(
+        tampered, reviewed_identity=_recomputed_mutation_identity(tampered)
+    )
+    assert forged.preconditions == []  # old captured-nothing base retained
+    assert _is_self_consistent_restage(forged)  # the old bypass accepted this record
+
+    store.save_proposal(forged)
+
+    saved = store.get(proposal.id)
+    assert saved is not None and saved.status == "staged"
+    assert saved.source_change is not None
+    assert saved.source_change.trigger == "TAMPERED: forged retirement trigger"
+    # ...but the reviewed claim is gone: a caller-supplied identity — however
+    # self-consistent — is never a freshly reviewed binding.
+    assert saved.preconditions is None
+    assert saved.reviewed_identity is None
+
+    with pytest.raises(lw.ProposalPreconditionError) as excinfo:
+        pipeline.publish(proposal.id)
+    assert "restage" in str(excinfo.value).lower()
+
+    # The registry is untouched: the forged retirement never applied.
+    assert store.source_registry.get("policy").status == "active"
+    assert msgspec.json.encode(store.source_registry._state) == prior_registry
+
+
 def test_private_registry_activity_does_not_change_kb_or_export_bytes(tmp_path) -> None:
     kb = _knowledge_base(tmp_path, ["policy"])
     store = IngestStore(tmp_path / "ingest")
@@ -790,10 +846,13 @@ def test_retire_source_proposal_save_failure_cancels_bound_transition(
     pipeline = ProposalPipeline(kb, store)
     pipeline.register_source("policy", b"policy-v1")
 
-    def fail_save_proposal(proposal, raw_path=None):
+    def fail_reviewed_write(proposal):
         raise OSError("proposal persistence failed")
 
-    monkeypatch.setattr(store, "save_proposal", fail_save_proposal)
+    # The staging seam persists through the store's authorized reviewed
+    # write (Plan 02 / P4 final review): simulating its failure must still
+    # cancel the bound transition so no reviewable proposal is left behind.
+    monkeypatch.setattr(store, "_write_reviewed_proposal", fail_reviewed_write)
 
     with pytest.raises(OSError, match="proposal persistence failed"):
         pipeline.retire_source("policy")

@@ -624,6 +624,14 @@ def _is_self_consistent_restage(proposal: IngestProposal) -> bool:
     field matches its own content and it carries a captured (non-``None``)
     precondition set. Anything else — notably an altered copy of a previously
     reviewed proposal that RETAINED the original metadata — is not a restage.
+
+    This shape check is the ProposalPipeline's PRIVATE staging seam guard
+    (:meth:`ProposalPipeline._save_reviewed_proposal`): the pipeline calls it
+    on the record it just bound under the staging locks, immediately before
+    the authorized reviewed write. It is deliberately NOT a bypass in the
+    public :meth:`IngestStore.save_proposal` — recomputing the deterministic
+    identity is something ANY caller can do for ANY content, so caller-side
+    self-consistency alone is never evidence of a freshly reviewed binding.
     """
     return (
         proposal.reviewed_identity is not None
@@ -1742,20 +1750,27 @@ class IngestStore:
         :meth:`_restore_reviewable` instead, so this refusal never blocks a
         legitimate rollback.
 
-        Plan 02 / P4 review (durable-tampering defense): replacing an
-        existing REVIEWABLE proposal is still permitted — that is how
-        re-staging attaches fresh raw bytes and how the pipeline persists a
-        restage — but an ordinary save that ALTERS the reviewed mutation
-        content must not carry the old reviewed claim along. When the
-        incoming content differs from the durable content and the incoming
-        record is not a self-consistent restage (its own freshly bound
-        ``reviewed_identity`` plus a captured precondition set — exactly the
-        shape the staging pipeline writes), the reviewed metadata is STRIPPED
-        from the persisted record: the altered content stays inspectable and
-        discardable, but publication refuses it until a real re-stage binds
-        it to a freshly reviewed base. The authorized
-        :meth:`_restore_reviewable` rollback remains the only write path that
-        can restore a reviewed record verbatim.
+        Plan 02 / P4 review (durable-tampering defense, final): an ordinary
+        save that ALTERS the mutation content of an existing reviewable
+        proposal NEVER carries the old reviewed claim along — not even when
+        the caller recomputes the deterministic content identity of its own
+        altered content. Caller-side recomputation is not a reviewed
+        binding: the identity is a public, deterministic hash, so any
+        process can forge it for any content; only the Proposal Pipeline's
+        locked staging seam (:meth:`ProposalPipeline._save_reviewed_proposal`
+        → :meth:`_write_reviewed_proposal`) binds reviewed metadata after
+        verification, under the Knowledge Base + store locks. When the
+        incoming content differs from the durable content, the reviewed
+        metadata is therefore STRIPPED from the persisted record: the
+        altered content stays inspectable and discardable, but publication
+        refuses it until a real re-stage binds it to a freshly reviewed
+        base. Content-identical saves (attaching raw-byte path metadata,
+        persisting a status-carrying object) keep the record as-is — the
+        reviewed claim still describes exactly the durable content, and
+        publication re-verifies the claim against the filesystem under the
+        publish lock. The authorized :meth:`_restore_reviewable` rollback
+        remains the only other write path that can restore a reviewed
+        record verbatim.
         """
         proposal_with_path = (
             msgspec.structs.replace(proposal, raw_source_path=str(raw_path))
@@ -1770,22 +1785,48 @@ class IngestStore:
                     "durable ingest store; terminal proposals cannot be replaced by "
                     "an ordinary save"
                 )
-            if (
-                durable is not None
-                and _recomputed_mutation_identity(proposal_with_path)
-                != _recomputed_mutation_identity(durable)
-                and not _is_self_consistent_restage(proposal_with_path)
-            ):
-                # Altered mutation content over a reviewable record while
-                # RETAINING foreign/stale reviewed metadata (the old identity
-                # and/or preconditions): persist the altered content WITHOUT
-                # the reviewed claim, so publication fails closed until a
-                # real re-stage. Content-identical saves (raw-byte/path
-                # metadata, status-carrying objects) keep the durable claim.
+            if durable is not None and _recomputed_mutation_identity(
+                proposal_with_path
+            ) != _recomputed_mutation_identity(durable):
+                # Altered mutation content over a reviewable record: persist
+                # the altered content WITHOUT any reviewed claim, so
+                # publication fails closed until a real re-stage. No
+                # caller-supplied identity or precondition set survives an
+                # altering save — the deterministic identity is trivially
+                # recomputable by any caller and proves nothing (Plan 02 /
+                # P4 final review blocker).
                 proposal_with_path = msgspec.structs.replace(
                     proposal_with_path, preconditions=None, reviewed_identity=None
                 )
             self._write_proposal(proposal_with_path)
+
+    def _write_reviewed_proposal(self, proposal: IngestProposal) -> None:
+        """Authorized staging write: persist reviewed proposal metadata verbatim.
+
+        The private counterpart of :meth:`_restore_reviewable` (P4 final
+        review): the Proposal Pipeline's locked staging seam
+        (:meth:`ProposalPipeline._save_reviewed_proposal`) is the ONLY caller,
+        and it invokes this after binding and verifying the reviewed state
+        under the Knowledge Base + store mutation locks. The record is
+        written exactly as handed over — the strip guard of ordinary
+        :meth:`save_proposal` does not apply, because the pipeline already
+        bound the reviewed claim to the content it verified.
+
+        Terminal safety matches :meth:`save_proposal`: the durable proposal
+        is re-read under the store lock and a save over terminal
+        ``published``/``discarded`` state is refused with
+        :class:`ProposalTerminalStateError`. The store lock reenters when
+        the pipeline already holds it (every staging path does).
+        """
+        with mutation_lock(self.root):
+            durable = self._load(proposal.id)
+            if durable is not None and not is_reviewable_proposal(durable):
+                raise ProposalTerminalStateError(
+                    f"proposal {proposal.id!r} is already {durable.status!r} in the "
+                    "durable ingest store; terminal proposals cannot be replaced by "
+                    "a reviewed staging write"
+                )
+            self._write_proposal(proposal)
 
     def _restore_reviewable(self, proposal: IngestProposal) -> None:
         """Rollback compensation ONLY: restore a reviewable proposal verbatim.

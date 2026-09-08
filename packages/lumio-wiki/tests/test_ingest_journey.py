@@ -17,7 +17,7 @@ from pathlib import Path
 import lumio_wiki as lw
 import msgspec
 import pytest
-from lumio_wiki.ingest import _recomputed_mutation_identity
+from lumio_wiki.ingest import _is_self_consistent_restage, _recomputed_mutation_identity
 from lumio_wiki.publish import DestinationConflict
 
 ROOT = Path(__file__).parents[3]
@@ -2101,6 +2101,184 @@ def test_altered_reviewable_save_cannot_retain_reviewed_preconditions(tmp_path: 
     assert page_path.read_text(encoding="utf-8") == original
 
 
+def test_public_save_cannot_rebind_reviewed_identity_for_altered_content(tmp_path: Path):
+    # P4 FINAL review blocker: an ordinary save that ALTERS reviewed page
+    # content used to KEEP its reviewed claim whenever the caller made the
+    # record look self-consistent — recomputing the PUBLIC deterministic
+    # content identity of the altered content and retaining the old captured
+    # preconditions. Publication then accepted the forged identity against
+    # the unchanged path set and applied unreviewed content. Caller-side
+    # recomputation is not a reviewed binding — the identity is a public
+    # deterministic hash any process can compute for any content — so the
+    # public save now strips the reviewed metadata from EVERY altering save:
+    # publication fails closed with restage guidance and the Knowledge Base
+    # bytes never change. Deterministic: direct public-API calls, no sleeps.
+    kb = _kb(tmp_path)
+    page_path = kb.root / "overview.md"
+    original = page_path.read_text(encoding="utf-8")
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    staged = lw.create_proposal_without_provider(
+        OVERVIEW_REVISION.encode("utf-8"),
+        "text/markdown",
+        "overview-revision.md",
+        kb,
+        store=store,
+    )
+    assert not staged.blocked, staged.validation_report
+    durable = store.get(staged.id)
+    assert durable is not None
+    assert durable.preconditions and durable.reviewed_identity
+
+    # Forge the exact shape the old bypass accepted: altered page Markdown
+    # over the SAME paths, old preconditions retained verbatim, identity
+    # recomputed from the altered content.
+    tampered = msgspec.structs.replace(
+        durable,
+        proposed_pages=[
+            msgspec.structs.replace(
+                page, markdown=page.markdown.replace("revised", "UNREVIEWED TAMPERED")
+            )
+            for page in durable.proposed_pages
+        ],
+    )
+    forged = msgspec.structs.replace(
+        tampered, reviewed_identity=_recomputed_mutation_identity(tampered)
+    )
+    assert forged.preconditions == durable.preconditions
+    assert _is_self_consistent_restage(forged)  # the old bypass accepted this record
+
+    store.save_proposal(forged)
+
+    saved = store.get(staged.id)
+    assert saved is not None
+    assert saved.status == "staged"  # the save itself persisted (still reviewable)
+    assert "UNREVIEWED TAMPERED" in saved.proposed_pages[0].markdown
+    # ...but the reviewed claim is gone: a caller-supplied identity — however
+    # self-consistent — is never a freshly reviewed binding, so the altering
+    # save strips the metadata entirely.
+    assert saved.preconditions is None
+    assert saved.reviewed_identity is None
+
+    with pytest.raises(lw.ProposalPreconditionError) as excinfo:
+        pipeline.publish(staged.id)
+    assert "restage" in str(excinfo.value).lower()
+    # The Knowledge Base bytes are unchanged: the forged content never applied.
+    assert page_path.read_text(encoding="utf-8") == original
+
+
+def test_content_identical_save_keeps_reviewed_metadata_and_publishes(tmp_path: Path):
+    # The guard must stay surgical: an ordinary save that does NOT alter the
+    # mutation content (attaching raw-byte path metadata, persisting a
+    # status-carrying object) keeps the reviewed claim, because it still
+    # describes exactly the durable content — publication re-verifies it
+    # against the filesystem under the publish lock and applies the reviewed
+    # pages normally. Deterministic: direct public-API calls, no sleeps.
+    kb = _kb(tmp_path)
+    page_path = kb.root / "overview.md"
+    original = page_path.read_text(encoding="utf-8")
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    staged = lw.create_proposal_without_provider(
+        OVERVIEW_REVISION.encode("utf-8"),
+        "text/markdown",
+        "overview-revision.md",
+        kb,
+        store=store,
+    )
+    assert not staged.blocked, staged.validation_report
+    durable = store.get(staged.id)
+    assert durable is not None and durable.preconditions and durable.reviewed_identity
+
+    store.save_proposal(durable, raw_path=Path("/raw") / staged.id / "overview.md")
+    resaved = store.get(staged.id)
+    assert resaved is not None
+    assert resaved.raw_source_path == f"/raw/{staged.id}/overview.md"
+    assert resaved.preconditions == durable.preconditions
+    assert resaved.reviewed_identity == durable.reviewed_identity
+
+    published = pipeline.publish(staged.id)
+    assert published.status == "published"
+    revised = page_path.read_text(encoding="utf-8")
+    assert revised != original  # the reviewed content applied
+    assert "revised" in revised
+
+
+def test_restage_through_the_pipeline_rebinds_reviewed_state_and_publishes(tmp_path: Path):
+    # The authorized staging seam must keep the LEGITIMATE flow working: a
+    # proposal re-staged through the pipeline (metadata stripped, as built
+    # outside the pipeline) gets a freshly captured reviewed base plus a
+    # freshly bound content identity under the Knowledge Base + store locks,
+    # and then publishes normally. Deterministic: direct calls, no sleeps.
+    kb = _kb(tmp_path)
+    page_path = kb.root / "overview.md"
+    original = page_path.read_text(encoding="utf-8")
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    staged = lw.create_proposal_without_provider(
+        OVERVIEW_REVISION.encode("utf-8"),
+        "text/markdown",
+        "overview-revision.md",
+        kb,
+        store=store,
+    )
+    assert staged.preconditions is not None and staged.reviewed_identity is not None
+
+    stripped = msgspec.structs.replace(staged, preconditions=None, reviewed_identity=None)
+    restaged = pipeline.stage(stripped)
+    assert restaged.status == "staged"
+    durable = store.get(staged.id)
+    assert durable is not None
+    # The seam re-bound the reviewed state: captured base and identity are
+    # present again and identical to the original binding (content and base
+    # are unchanged).
+    assert durable.preconditions is not None and durable.preconditions
+    assert durable.preconditions == staged.preconditions
+    assert durable.reviewed_identity == staged.reviewed_identity
+
+    published = pipeline.publish(staged.id)
+    assert published.status == "published"
+    revised = page_path.read_text(encoding="utf-8")
+    assert revised != original
+    assert "revised" in revised
+
+
+def test_reviewed_staging_seam_refuses_unbound_and_terminal_records(tmp_path: Path):
+    # The authorized staging seam is the only writer of freshly bound
+    # reviewed metadata, so it must fail closed twice: a record whose binding
+    # was never made (identity stripped/mismatched) is refused — a pipeline
+    # bug must not dress altered content as reviewed — and a durable
+    # terminal state is never replaced, exactly like the ordinary save.
+    # Deterministic: direct private-seam calls, no sleeps.
+    kb = _kb(tmp_path)
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    staged = lw.create_proposal_without_provider(
+        RELATED_PAGE.encode("utf-8"), "text/markdown", "related.md", kb, store=store
+    )
+    assert staged.preconditions is not None and staged.reviewed_identity is not None
+    durable_bytes_before = (store.proposals_dir / f"{staged.id}.json").read_bytes()
+
+    unbound = msgspec.structs.replace(staged, reviewed_identity=None)
+    with pytest.raises(lw.ProposalPipelineError, match="freshly bound"):
+        pipeline._save_reviewed_proposal(unbound)
+    identity_mismatch = msgspec.structs.replace(staged, reviewed_identity="0" * 64)
+    with pytest.raises(lw.ProposalPipelineError, match="freshly bound"):
+        pipeline._save_reviewed_proposal(identity_mismatch)
+    # Nothing was written: the durable record is byte-identical.
+    assert (store.proposals_dir / f"{staged.id}.json").read_bytes() == durable_bytes_before
+
+    # Terminal safety: a stale second instance holding a reviewable view
+    # cannot write through the seam after the proposal was discarded.
+    stale_view = lw.ProposalPipeline(kb, lw.IngestStore(tmp_path / "ingest")).review(staged.id)
+    assert stale_view is not None and stale_view.status == "staged"
+    assert pipeline.discard(staged.id) is not None
+    with pytest.raises(lw.ProposalTerminalStateError):
+        pipeline._save_reviewed_proposal(stale_view)
+    reloaded = lw.IngestStore(tmp_path / "ingest").get(staged.id)
+    assert reloaded is not None and reloaded.status == "discarded"
+
+
 def test_publish_refuses_durable_content_diverging_from_reviewed_identity(tmp_path: Path):
     # Second layer of the same defense: a durable record rewritten BELOW the
     # public API (the store's JSON edited directly, old preconditions and
@@ -2138,12 +2316,17 @@ def test_publish_refuses_durable_content_diverging_from_reviewed_identity(tmp_pa
 
 
 def test_publish_refuses_preconditions_that_no_longer_describe_the_proposal(tmp_path: Path):
-    # Third layer: a caller who ALSO recomputes the private content identity
-    # of the altered content still cannot retain the old precondition records
-    # for changed destinations/removals: the affected-path set is freshly
-    # resolved from the durable proposal under the publish lock and must
-    # match the stored metadata. The forged removal never applies and the
-    # removed page's bytes stay unchanged.
+    # Third layer: a durable record rewritten BELOW the public API whose
+    # content identity was re-forged to match its altered content still
+    # cannot retain the old precondition records for changed
+    # destinations/removals: the affected-path set is freshly resolved from
+    # the durable proposal under the publish lock and must match the stored
+    # metadata. (Through the public API this record never even persists with
+    # its claim — every altering save strips the reviewed metadata; see the
+    # forged-identity regression above. Only a below-API rewrite can pair a
+    # re-forged identity with foreign preconditions.) The forged removal
+    # never applies and the removed page's bytes stay unchanged.
+    # Deterministic: direct durable-JSON edits, no sleeps.
     kb = _kb(tmp_path)
     technology_path = kb.root / "technology.md"
     original_technology = technology_path.read_text(encoding="utf-8")
@@ -2167,10 +2350,11 @@ def test_publish_refuses_preconditions_that_no_longer_describe_the_proposal(tmp_
     forged = msgspec.structs.replace(
         altered, reviewed_identity=_recomputed_mutation_identity(altered)
     )
-    store.save_proposal(forged)
+    proposal_path = store.proposals_dir / f"{staged.id}.json"
+    proposal_path.write_bytes(msgspec.json.encode(forged))
     saved = store.get(staged.id)
     assert saved is not None
-    assert saved.removed_pages and saved.reviewed_identity  # self-consistent restage shape
+    assert saved.removed_pages and saved.reviewed_identity  # forged below the API
 
     with pytest.raises(lw.ProposalPreconditionError) as excinfo:
         pipeline.publish(staged.id)
