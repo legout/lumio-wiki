@@ -839,6 +839,51 @@ def test_control_file_fifo_destination_is_rejected_without_opening_it(
     assert "special file" in issues[0].message
 
 
+def test_control_file_dangling_symlink_destination_is_rejected_before_page_writes(
+    tmp_path: Path,
+):
+    # Review-fix regression (Plan 02 / P2, review v7 blocker 1): a DANGLING
+    # lumio.yaml symlink slipped through the Control File preflight because
+    # exists() follows the link and saw an absent path. Candidate validation
+    # then reached ``copytree`` and leaked a raw ``shutil.Error`` (the link
+    # has no target to copy) while live apply wrote the proposal's pages and
+    # silently replaced the dangling entry with a regular Control File — and
+    # the parent-directory helper even skipped the sticky-bit replacement
+    # ownership check for the same reason, because it gated ``lstat`` on the
+    # same following ``exists()``. The preflight now detects the dangling
+    # entry with non-following metadata and rejects it BEFORE any candidate
+    # copy or page write, and candidate validation aggregates the identical
+    # destination issue instead of a filesystem exception.
+    _skip_if_symlinks_unavailable(tmp_path)
+    kb = _kb(tmp_path)
+    control_path = kb.root / "lumio.yaml"
+    control_path.symlink_to("ghost-target.yaml")
+    control = lw.KnowledgeBaseControlFile(version=1)
+    page = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-control-dangling-review-fix"),
+    )
+
+    with pytest.raises(DestinationConflict) as live:
+        lw.apply_proposed_pages([page], kb.root, control_file=control)
+    # No page write and no replacement: the dangling entry survives as a
+    # symlink pointing at the still-absent target.
+    assert not (kb.root / "fresh.md").exists()
+    assert control_path.is_symlink()
+    assert not control_path.exists()
+
+    # Candidate validation returns the SAME blocking destination issue.
+    report = lw.validate_candidate_knowledge_base([page], kb.root, control_file=control)
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].message == str(live.value)
+    assert "lumio.yaml" in issues[0].message
+    assert "symlink" in issues[0].message
+
+
 @pytest.mark.skipif(
     os.name != "posix",
     reason="POSIX directory mode bits are required to deny a Control File write",

@@ -20,11 +20,13 @@ targets within one proposal, existing directories, unreadable occupants,
 special-file occupants (FIFOs, sockets, devices — typed with a nonblocking
 ``stat`` so a FIFO is never opened), non-directory ancestors of any
 proposed destination, move source, removal target, or the Control File
-destination, an unusable Control File destination (an existing directory,
-special file, or unreadable file at ``lumio.yaml``, or a Knowledge Base
-root whose mode bits deny the publishing user the atomic temp-file creation
-and replace — evaluated directly so a root-owned environment cannot
-false-pass), an existing declared removal target whose parent directory
+destination, an unusable Control File destination (a dangling symlink,
+an existing directory, special file, or unreadable file at ``lumio.yaml``
+— the dangling link detected with non-following metadata, since
+``exists()`` follows the link away and used to treat the entry as absent —
+or a Knowledge Base root whose mode bits deny the publishing user the
+atomic temp-file creation and replace, evaluated directly so a root-owned
+environment cannot false-pass), an existing declared removal target whose parent directory
 cannot release it (the same direct mode-bit, sticky-bit unlink evaluation
 the move source preflight uses), escaping paths,
 compound-fallback collisions, and move sources that are not safely
@@ -260,7 +262,11 @@ def _parent_denies_control_file_write(parent: Path, target: Path) -> str | None:
         write_bit, search_bit = stat.S_IWOTH, stat.S_IXOTH
     if not parent_stat.st_mode & write_bit or not parent_stat.st_mode & search_bit:
         return "its parent directory's mode bits deny the effective user write or search access"
-    if parent_stat.st_mode & stat.S_ISVTX and target.exists():
+    # lexists (not exists): an entry's presence is lexical, so a DANGLING
+    # symlink is an existing entry whose sticky replacement ownership must
+    # be verified too — gating the probe on the following ``exists()`` used
+    # to skip the check for exactly those entries (P2 review v7).
+    if parent_stat.st_mode & stat.S_ISVTX and os.path.lexists(target):
         # Replacing an EXISTING entry in a sticky directory additionally
         # requires owning the parent or the replaced entry; creating a fresh
         # one needs only the write/search bits checked above. lstat (not
@@ -766,6 +772,12 @@ def _reject_unusable_control_file_path(
     nonblocking ``stat`` probe so a FIFO is never opened), or an unreadable
     file is rejected up front, and candidate validation aggregates the same
     conflict as a destination issue before its throwaway copy is even made.
+    A DANGLING symlink destination is rejected first, on non-following
+    metadata (P2 review v7): ``exists()`` follows the link away and used to
+    treat the entry as an absent path, so candidate validation reached
+    ``copytree`` and leaked a raw ``shutil.Error`` (the link has no target
+    to copy) while live apply silently replaced the dangling entry with a
+    regular Control File AFTER the proposal's page writes.
     The parent directory of the destination (the Knowledge Base root) must
     also permit the atomic write itself: its write/search mode bits — and the
     sticky-bit replacement rule for an existing entry — are evaluated
@@ -780,6 +792,18 @@ def _reject_unusable_control_file_path(
     if control_file is None:
         return
     target = root / CONTROL_FILE_BASENAME
+    # lstat-backed ``is_symlink`` (not exists): a DANGLING symlink is an
+    # existing directory entry that the missing-path branch below would
+    # otherwise accept for creation, breaking candidate/live parity (P2
+    # review v7).
+    if target.is_symlink() and not target.exists():
+        raise DestinationConflict(
+            f"Control File destination is a dangling symlink that must not be "
+            f"replaced by the proposed {CONTROL_FILE_BASENAME}: the dangling "
+            f"entry is an existing occupant that breaks the candidate copy "
+            f"and would be silently replaced link-and-all by the live write",
+            file=CONTROL_FILE_BASENAME,
+        )
     if not target.exists():
         # A missing path is created — but creating it still needs a parent
         # whose mode bits permit the temp file and the final atomic replace.
@@ -974,7 +998,10 @@ def apply_proposed_pages(
     and the Control File path must be an existing (or creatable) directory:
     a non-directory ancestor is rejected up front instead of surfacing as a
     ``NotADirectoryError``/``FileExistsError`` after earlier pages of the
-    same proposal were written.
+    same proposal were written. A Control File destination occupied by a
+    DANGLING symlink is likewise rejected up front — detected with
+    non-following metadata, because ``exists()`` follows the link away and
+    used to accept the entry as a missing path (P2 review v7).
     """
     root = Path(working_dir).resolve()
     existing_by_title = _existing_paths_by_title(root)
@@ -1116,8 +1143,9 @@ def validate_candidate_knowledge_base(
     removal target (its parent directory's mode bits and sticky bit deny
     the unlink, evaluated directly), a non-directory ancestor of
     any write/removal/Control File path, an unusable Control File
-    destination, or a Control File parent whose mode bits deny the atomic
-    temp-file creation and replace — comes back as an error
+    destination (a dangling ``lumio.yaml`` symlink that ``copytree`` could
+    never copy included), or a Control File parent whose mode bits deny the
+    atomic temp-file creation and replace — comes back as an error
     ``ValidationIssue`` instead of raised, exactly the conflict live
     application would raise. Only
     :class:`DestinationConflict` is translated; unexpected errors still
