@@ -3277,6 +3277,16 @@ def test_publish_rejects_external_symlink_activity_log_without_touching_the_targ
     # link and its target bytes stay exactly as they were, and no Knowledge
     # Base byte moves. Deterministic: byte equality proves the target was
     # never opened; no sleeps.
+    #
+    # P5 review remediation (gate ordering): the classification must ALSO
+    # precede candidate validation, because the candidate gate mirrors the
+    # live tree into a throwaway candidate and MATERIALIZES a symlink's
+    # read-through content by OPENING its referent (shutil.copyfile) — an
+    # external log.md referent must never even be opened before the occupant
+    # is classified. Two fail-fast guards turn a regression into an immediate
+    # failure instead of a silent pass: any candidate-mirroring copy of the
+    # external referent raises, and candidate validation running at all
+    # before the gate raises. The gate's own lstat never opens the entry.
     kb = _rollback_kb(tmp_path, hot_pins=["Alpha"])
     root = kb.root.resolve()
     store = lw.IngestStore(tmp_path / "ingest")
@@ -3317,6 +3327,39 @@ def test_publish_rejects_external_symlink_activity_log_without_touching_the_targ
         raise OSError("terminal proposal persistence must never run")
 
     monkeypatch.setattr(store, "publish", unreachable_terminal_write)
+
+    # Fail-fast guard 1 (candidate mirroring): candidate validation copies the
+    # live tree and materializes an external symlink's read-through content
+    # with shutil.copyfile FROM the referent. Any copy sourced from the
+    # external Activity Log target means the unsafe log.md reached candidate
+    # mirroring before classification — fail immediately instead of silently
+    # reading the external file.
+    external_referent = external_log.resolve()
+    real_copyfile = shutil.copyfile
+
+    def _never_copy_the_external_referent(src, dst, **kwargs):
+        if Path(src).resolve() == external_referent:
+            raise AssertionError(
+                "candidate mirroring opened the external log.md referent "
+                f"({src} -> {dst}) before the unsafe-activity-log gate"
+            )
+        return real_copyfile(src, dst, **kwargs)
+
+    monkeypatch.setattr(shutil, "copyfile", _never_copy_the_external_referent)
+
+    # Fail-fast guard 2 (gate ordering): the publish path must classify the
+    # unsafe log.md BEFORE candidate validation runs. A regression to the old
+    # order surfaces as this AssertionError instead of the gate's conflict.
+    def _candidate_gate_must_not_run(*_args, **_kwargs):
+        raise AssertionError(
+            "candidate validation ran before the unsafe-activity-log gate "
+            "rejected the non-regular log.md occupant"
+        )
+
+    monkeypatch.setattr(
+        "lumio_wiki.proposal_pipeline.validate_candidate_knowledge_base",
+        _candidate_gate_must_not_run,
+    )
 
     with pytest.raises(DestinationConflict, match="symlink"):
         pipeline.publish(removal.id)

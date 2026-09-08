@@ -1363,9 +1363,13 @@ def _reject_unsafe_activity_log_path(root: Path) -> None:
     restored). The classification runs on non-following ``lstat`` metadata —
     ``lstat(2)`` never opens the entry, so a FIFO is rejected without ever
     being opened and a symlink (a DANGLING one included) is classified as a
-    link without ever being followed. Runs under the publish mutation locks
-    AFTER the reviewed preconditions and the candidate gate, BEFORE the
-    pre-mutation backup and the first live write.
+    link without ever being followed. It runs under the publish mutation
+    locks AFTER the reviewed preconditions (the P4 stale-base gate) and
+    BEFORE the candidate gate — the candidate's throwaway tree mirrors the
+    live tree and materializes a link's read-through content by OPENING its
+    referent (``shutil.copyfile``), so an unsafe ``log.md`` occupant is
+    classified before any candidate mirroring can touch its target — and
+    also before the pre-mutation backup and the first live write.
     """
     log_path = root / ACTIVITY_LOG_BASENAME
     try:

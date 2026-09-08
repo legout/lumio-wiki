@@ -1831,13 +1831,16 @@ class ProposalPipeline:
         intervening changes that introduce alias/entity/Claim conflicts are
         still blocked.
 
-        Plan 02 / P5 review fix: immediately after those gates and still
-        before any live byte, an existing root ``log.md`` that is NOT a
-        regular non-symlink file — a symlink (internal or external target,
-        dangling included), a FIFO, socket, or device, or a directory — is
-        rejected with :class:`~lumio_wiki.publish.DestinationConflict` on
-        no-follow ``lstat`` metadata: the entry is never opened and a link is
-        never followed. The in-place Activity Log append writes THROUGH an
+        Plan 02 / P5 review fix: immediately after the P4 stale-base gate and
+        BEFORE the candidate gate — the candidate's throwaway tree mirrors the
+        live tree and materializes a link's read-through content by OPENING
+        its referent — and still before any live byte, an existing root
+        ``log.md`` that is NOT a regular non-symlink file — a symlink
+        (internal or external target, dangling included), a FIFO, socket, or
+        device, or a directory — is rejected with
+        :class:`~lumio_wiki.publish.DestinationConflict` on no-follow
+        ``lstat`` metadata: the entry is never opened and a link is never
+        followed. The in-place Activity Log append writes THROUGH an
         existing symlink, so a later failure could restore only the link
         while the appended entry stayed in its (possibly external) referent;
         a FIFO occupant would block that append's open, and a directory
@@ -1885,6 +1888,23 @@ class ProposalPipeline:
             # construction, the durable proposal's reviewed base must still
             # match the current filesystem/control state.
             self._reject_stale_base(proposal_id, proposal)
+            # Plan 02 / P5 review fix (remediation): while S1 keeps the
+            # Activity Log a plain append-only regular file, an existing root
+            # ``log.md`` that is NOT a regular non-symlink file is rejected
+            # BEFORE the candidate gate, the backup, and any page/Control
+            # write — on no-follow lstat metadata alone (never opened, never
+            # followed). The gate MUST precede candidate validation: the
+            # candidate gate mirrors the live tree into a throwaway candidate
+            # and materializes a symlink's read-through content by OPENING
+            # its referent (``shutil.copyfile``), so an external ``log.md``
+            # referent must never be opened before the occupant is
+            # classified. Past the gate: the append writes THROUGH a symlink
+            # so a later failure restores only the link while the appended
+            # entry stays in its (possibly external) target, a FIFO would
+            # block the append's open, and a directory fails only after the
+            # page writes. A missing log.md is still created normally and a
+            # regular one snapshotted, appended, and restored.
+            _reject_unsafe_activity_log_path(root)
             # issue #135: a Page Removal proposal carries removed titles and an
             # optional Control File (Hot Index pin drop). Both are threaded
             # through the authoritative candidate gate AND the apply step so the
@@ -1900,18 +1920,6 @@ class ProposalPipeline:
                 raise ProposalBlockedError(
                     f"proposal {proposal_id!r} candidate failed validation: {candidate_report}"
                 )
-            # Plan 02 / P5 review fix: while S1 keeps the Activity Log a
-            # plain append-only regular file, an existing root ``log.md``
-            # that is NOT a regular non-symlink file is rejected BEFORE the
-            # backup and before any page/Control write — on no-follow lstat
-            # metadata alone (never opened, never followed): the append
-            # writes THROUGH a symlink so a later failure restores only the
-            # link while the appended entry stays in its (possibly external)
-            # target, a FIFO would block the append's open, and a directory
-            # fails only after the page writes. A missing log.md is still
-            # created normally and a regular one snapshotted, appended, and
-            # restored.
-            _reject_unsafe_activity_log_path(root)
             # Plan 02 / P5 (B05): snapshot the exact pre-mutation state of
             # everything the live mutation can touch BEFORE any live byte —
             # the checked page/control destinations (the SAME resolution the
