@@ -1072,3 +1072,92 @@ def test_dangling_symlink_move_source_is_rejected_before_resolution(tmp_path: Pa
     assert issues[0].field == "destination"
     assert issues[0].message == str(live.value)
     assert "symlink" in issues[0].message
+
+
+def test_dangling_symlink_page_destination_is_rejected_with_candidate_parity(
+    tmp_path: Path,
+):
+    # Review-fix regression (Plan 02 / P2, review v8 blocker 1): a DANGLING
+    # symlink at the SUBMITTED page destination slipped through the new-page
+    # preflight because ``_checked_relative_path`` RESOLVED the link before
+    # the occupancy check ran: "fresh.md -> ghost.md" (missing target) was
+    # silently normalized to the free path "ghost.md" and accepted. Candidate
+    # validation then died inside ``copytree`` with a raw ``shutil.Error``
+    # (the retained dangling entry has no content to copy) while live apply
+    # wrote the page at ``ghost.md`` behind the still-dangling link — a
+    # different path than the one the proposal submitted. The shared
+    # destination resolution now detects the dangling entry with
+    # non-following ``lstat`` BEFORE resolution and rejects it for every
+    # write destination, so candidate validation returns the identical
+    # destination issue and the submitted link survives untouched.
+    _skip_if_symlinks_unavailable(tmp_path)
+    kb = _kb(tmp_path)
+    link = kb.root / "fresh.md"
+    link.symlink_to("ghost.md")
+    page = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-dangling-destination-review-fix"),
+    )
+
+    with pytest.raises(DestinationConflict) as live:
+        lw.apply_proposed_pages([page], kb.root)
+    # Rejected before ANY write: no file was created behind the link and the
+    # submitted entry survives as the dangling symlink it was.
+    assert not (kb.root / "ghost.md").exists()
+    assert link.is_symlink()
+    assert not link.exists()
+
+    # Candidate validation returns the SAME blocking destination issue —
+    # never a raw ``shutil.Error`` from the candidate copy.
+    report = lw.validate_candidate_knowledge_base([page], kb.root)
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].message == str(live.value)
+    assert "symlink" in issues[0].message
+    assert "fresh.md" in issues[0].message
+
+
+def test_dangling_symlink_move_destination_is_rejected_with_candidate_parity(
+    tmp_path: Path,
+):
+    # Same parity for a MOVE whose submitted destination is a dangling
+    # symlink: resolution normalized "fresh.md -> ghost.md" (missing target)
+    # to a free "ghost.md", so the move passed its occupancy guard — live
+    # apply then wrote ``ghost.md`` AND unlinked the verified move source
+    # ``technology.md``, leaving the dangling link silently pointing at the
+    # relocated page, while candidate validation died in ``copytree`` on the
+    # uncopyable entry. The destination is now rejected on non-following
+    # ``lstat`` BEFORE resolution, so the source is never unlinked and the
+    # candidate reports the identical destination issue.
+    _skip_if_symlinks_unavailable(tmp_path)
+    kb = _kb(tmp_path)
+    source = kb.root / "technology.md"
+    original = source.read_text(encoding="utf-8")
+    link = kb.root / "fresh.md"
+    link.symlink_to("ghost.md")
+    page = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Technology Stack",
+        markdown=_probe_markdown("Technology Stack", "tech-dangling-move-review-fix"),
+        move_from_path="technology.md",
+    )
+
+    with pytest.raises(DestinationConflict) as live:
+        lw.apply_proposed_pages([page], kb.root)
+    # Nothing written, nothing removed: the move source keeps its bytes and
+    # the dangling destination entry was never followed or replaced.
+    assert source.read_text(encoding="utf-8") == original
+    assert not (kb.root / "ghost.md").exists()
+    assert link.is_symlink()
+    assert not link.exists()
+
+    report = lw.validate_candidate_knowledge_base([page], kb.root)
+    assert not report.is_valid
+    issues = [issue for issue in report.issues if issue.severity == "error"]
+    assert len(issues) == 1, issues
+    assert issues[0].field == "destination"
+    assert issues[0].message == str(live.value)
+    assert "symlink" in issues[0].message

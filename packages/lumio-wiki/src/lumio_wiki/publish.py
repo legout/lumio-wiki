@@ -26,9 +26,13 @@ an existing directory, special file, or unreadable file at ``lumio.yaml``
 ``exists()`` follows the link away and used to treat the entry as absent —
 or a Knowledge Base root whose mode bits deny the publishing user the
 atomic temp-file creation and replace, evaluated directly so a root-owned
-environment cannot false-pass), an existing declared removal target whose parent directory
-cannot release it (the same direct mode-bit, sticky-bit unlink evaluation
-the move source preflight uses), escaping paths,
+environment cannot false-pass), a DANGLING page-destination symlink
+(rejected on non-following ``lstat`` BEFORE resolution — resolution would
+follow the link to its missing target and silently reroute the write that
+the candidate's ``copytree`` could never perform), an existing declared
+removal target whose parent directory cannot release it (the same direct
+mode-bit, sticky-bit unlink evaluation the move source preflight uses),
+escaping paths,
 compound-fallback collisions, and move sources that are not safely
 removable — an existing directory (unremovable after the write), a symlink
 (rejected by non-following ``lstat`` BEFORE resolution — dangling links
@@ -140,8 +144,39 @@ def _reserved_basenames() -> frozenset[str]:
 
 
 def _checked_relative_path(root: Path, relative_path: str, *, page_title: str) -> str:
-    """Return the normalized root-relative destination, rejecting escapes (B01)."""
-    target = (root / relative_path).resolve()
+    """Return the normalized root-relative destination, rejecting escapes (B01).
+
+    A DANGLING symlink at the submitted path is rejected FIRST, on
+    non-following ``lstat`` metadata, BEFORE ``resolve()`` follows the link
+    away (P2 review v8): resolution used to normalize ``fresh.md ->
+    ghost.md`` (missing target) to a free ``ghost.md``, so the occupancy
+    checks accepted the write while the candidate's ``copytree`` retained
+    the uncopyable dangling entry (raw ``shutil.Error``) and the live write
+    silently landed at ``ghost.md`` behind the still-dangling link — a move
+    could even unlink its verified source. Because every write branch
+    resolves its destination here, one check covers the new page, compound
+    fallback, revision, rename, and move target alike. A valid symlink to
+    an EXISTING file still resolves (the occupancy rules then judge the
+    resolved target, preserving regular-file revisions) and a genuinely
+    missing destination stays acceptable.
+    """
+    link = root / relative_path
+    # lstat-backed ``is_symlink`` (never resolve()/exists() alone): a
+    # dangling symlink is an EXISTING directory entry whose followed target
+    # is absent — exactly the entry the free-path verdict below used to
+    # hand out after resolution had rerouted the write to the missing
+    # target (P2 review v8; the same non-following detection as the
+    # Control File preflight).
+    if link.is_symlink() and not link.exists():
+        raise DestinationConflict(
+            f"Proposed page {page_title!r} destination {relative_path!r} is a "
+            f"dangling symlink that must not be followed to its missing target "
+            f"or copied: the dangling entry breaks the candidate copy and the "
+            f"live write would silently land at the linked path; publish the "
+            f"page at a real, unoccupied path",
+            file=relative_path,
+        )
+    target = link.resolve()
     if not target.is_relative_to(root):
         raise DestinationConflict(
             f"Proposed page {page_title!r} path escapes working directory: {relative_path}",
@@ -393,6 +428,13 @@ def _resolve_proposed_destinations(
       ``lstat`` BEFORE resolution (dangling links included): resolving would
       follow the link and lose the submitted lexical path, so only the actual
       regular recorded page file is movable;
+    - a submitted write destination that lexically is a DANGLING SYMLINK is
+      rejected on non-following ``lstat`` BEFORE resolution (new page,
+      compound fallback, revision, rename, and move target alike):
+      resolution follows the link to its missing target, which used to
+      normalize ``fresh.md -> ghost.md`` to a free ``ghost.md`` while the
+      candidate's ``copytree`` retained the uncopyable entry and the live
+      write silently landed at ``ghost.md`` behind the still-dangling link;
     - an EXISTING move source must be a removable, regular, readable file AND
       the recorded path of the proposed page's own title: a directory source
       (unremovable after the write), a special file (FIFO, socket, device —
@@ -1001,7 +1043,11 @@ def apply_proposed_pages(
     same proposal were written. A Control File destination occupied by a
     DANGLING symlink is likewise rejected up front — detected with
     non-following metadata, because ``exists()`` follows the link away and
-    used to accept the entry as a missing path (P2 review v7).
+    used to accept the entry as a missing path (P2 review v7). The SAME
+    rejection now guards every proposed page destination: a submitted path
+    that lexically is a dangling symlink (``fresh.md -> ghost.md`` with
+    ``ghost.md`` absent) is rejected on non-following ``lstat`` BEFORE
+    resolution reroutes the write to the missing target (P2 review v8).
     """
     root = Path(working_dir).resolve()
     existing_by_title = _existing_paths_by_title(root)
@@ -1142,7 +1188,8 @@ def validate_candidate_knowledge_base(
     unowned or special/unreadable move source, an unremovable existing
     removal target (its parent directory's mode bits and sticky bit deny
     the unlink, evaluated directly), a non-directory ancestor of
-    any write/removal/Control File path, an unusable Control File
+    any write/removal/Control File path, a dangling page-destination
+    symlink that ``copytree`` could never copy, an unusable Control File
     destination (a dangling ``lumio.yaml`` symlink that ``copytree`` could
     never copy included), or a Control File parent whose mode bits deny the
     atomic temp-file creation and replace — comes back as an error
