@@ -451,6 +451,66 @@ def test_unremovable_move_source_parent_is_blocked_with_candidate_parity(tmp_pat
         os.chmod(locked, 0o755)
 
 
+@pytest.mark.skipif(
+    os.name != "posix", reason="POSIX directory mode bits are required to deny an unlink"
+)
+def test_unremovable_removal_target_is_blocked_with_candidate_parity(tmp_path: Path):
+    # Review-fix regression (Plan 02 / P2, review v6 blocker 1): a DECLARED
+    # Page Removal whose existing target lives in a parent directory that
+    # does not permit removing entries (chmod 0555) passed every preflight —
+    # unlink(2) permission comes from the parent directory's mode bits, not
+    # from the target file. Live apply then wrote every proposed page first
+    # and died on the removal unlink with a raw PermissionError, stranding a
+    # partial apply, while candidate validation leaked the same filesystem
+    # exception instead of a destination issue. The removal resolution now
+    # preflights the removability of every existing declared target with the
+    # SAME mode-bit-aware parent check the move source preflight uses, so the
+    # conflict raises as a DestinationConflict before ANY byte is written,
+    # and candidate validation aggregates the identical destination issue.
+    kb = _kb(tmp_path)
+    locked = kb.root / "locked"
+    locked.mkdir()
+    recorded = locked / "overview.md"
+    (kb.root / "overview.md").rename(recorded)
+    kb, load_report = lw.load_knowledge_base(kb.root)
+    assert load_report.is_valid, load_report
+    original = recorded.read_text(encoding="utf-8")
+    fresh = lw.ProposedPage(
+        relative_path="fresh.md",
+        title="Fresh",
+        markdown=_probe_markdown("Fresh", "fresh-locked-removal-review-fix"),
+    )
+
+    os.chmod(locked, 0o555)
+    try:
+        with pytest.raises(DestinationConflict) as live:
+            lw.apply_proposed_pages([fresh], kb.root, removed_titles=["Lumio Overview"])
+        candidate_report = lw.validate_candidate_knowledge_base(
+            [fresh], kb.root, removed_titles=["Lumio Overview"]
+        )
+        # No partial apply: the proposed page was never written and the
+        # locked removal target survives byte-unchanged.
+        assert not (kb.root / "fresh.md").exists()
+        assert recorded.read_text(encoding="utf-8") == original
+        assert not candidate_report.is_valid
+        issues = [issue for issue in candidate_report.issues if issue.severity == "error"]
+        assert len(issues) == 1, issues
+        assert issues[0].field == "destination"
+        # Candidate/live parity: the identical conflict, aggregated as an issue.
+        assert issues[0].message == str(live.value)
+        assert "locked/overview.md" in issues[0].message
+        # The message names the fixable parent directory, not a raw OSError.
+        assert "locked" in issues[0].message
+    finally:
+        os.chmod(locked, 0o755)
+
+    # Positive control: with a writable parent the same proposal publishes —
+    # the proposed page lands and the declared removal performs its unlink.
+    lw.apply_proposed_pages([fresh], kb.root, removed_titles=["Lumio Overview"])
+    assert (kb.root / "fresh.md").is_file()
+    assert not recorded.exists()
+
+
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="requires Unix domain sockets")
 def test_move_source_socket_is_rejected_with_candidate_parity(tmp_path: Path):
     # Review-fix regression (Plan 02 / P2, review v3 blocker 2): the move
@@ -777,6 +837,77 @@ def test_control_file_fifo_destination_is_rejected_without_opening_it(
     assert issues[0].field == "destination"
     assert issues[0].message == str(live.value)
     assert "special file" in issues[0].message
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX directory mode bits are required to deny a Control File write",
+)
+def test_unwritable_control_file_parent_is_blocked_with_candidate_parity(tmp_path: Path):
+    # Review-fix regression (Plan 02 / P2, review v6 blocker 2): when a
+    # Control File is supplied, the parent directory of ``lumio.yaml`` (the
+    # Knowledge Base root) must permit the atomic write — the temp file is
+    # created there and ``os.replace`` modifies its directory entry. A
+    # mode-denied root (chmod 0555) passed every preflight: live apply wrote
+    # the proposed revision FIRST and then died creating the
+    # ``.lumio-artifact-*.tmp`` file with a raw PermissionError, while
+    # candidate validation leaked the same filesystem exception. The Control
+    # File preflight now evaluates the parent's write/search mode bits (and
+    # the sticky-bit replacement rule) DIRECTLY — never ``os.access``, which
+    # false-passes as root — so the conflict raises as a DestinationConflict
+    # before ANY page byte is written, and candidate validation aggregates
+    # the identical destination issue. The denial applies to a MISSING
+    # lumio.yaml (creation) and to an existing regular one (replacement)
+    # alike.
+    control = lw.KnowledgeBaseControlFile(version=1)
+    revision = lw.ProposedPage(
+        relative_path="overview.md",
+        title="Lumio Overview",
+        markdown=_probe_markdown("Lumio Overview", "overview-locked-control-review-fix"),
+    )
+    for name, preexisting in (("missing", False), ("regular", True)):
+        root = tmp_path / name
+        shutil.copytree(FIXTURES, root)
+        control_path = root / "lumio.yaml"
+        if preexisting:
+            control_path.write_text("legacy: junk\n", encoding="utf-8")
+        overview = root / "overview.md"
+        original = overview.read_text(encoding="utf-8")
+
+        os.chmod(root, 0o555)
+        try:
+            with pytest.raises(DestinationConflict) as live:
+                lw.apply_proposed_pages([revision], root, control_file=control)
+            report = lw.validate_candidate_knowledge_base([revision], root, control_file=control)
+            # No partial revision: the recorded page keeps its bytes, no
+            # temp file was ever created, and the Control File destination is
+            # unchanged (still missing, or still the legacy occupant).
+            assert overview.read_text(encoding="utf-8") == original, name
+            assert not list(root.glob(".lumio-artifact-*.tmp")), name
+            if preexisting:
+                assert "legacy" in control_path.read_text(encoding="utf-8"), name
+            else:
+                assert not control_path.exists(), name
+        finally:
+            os.chmod(root, 0o755)
+
+        assert not report.is_valid, name
+        issues = [issue for issue in report.issues if issue.severity == "error"]
+        assert len(issues) == 1, (name, issues)
+        assert issues[0].field == "destination"
+        # Candidate/live parity: the identical conflict, aggregated as an issue.
+        assert issues[0].message == str(live.value), name
+        assert "lumio.yaml" in issues[0].message, name
+
+        # Positive control: with a writable root the same proposal publishes
+        # the revision AND the Control File, exactly as before the new
+        # preflight.
+        lw.apply_proposed_pages([revision], root, control_file=control)
+        assert overview.read_text(encoding="utf-8") != original, name
+        written = control_path.read_text(encoding="utf-8")
+        assert "version: 1" in written, name
+        if preexisting:
+            assert "legacy" not in written, name
 
 
 def test_control_file_replacement_still_works_for_regular_and_missing_paths(tmp_path: Path):

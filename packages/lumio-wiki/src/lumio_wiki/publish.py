@@ -21,7 +21,12 @@ special-file occupants (FIFOs, sockets, devices — typed with a nonblocking
 ``stat`` so a FIFO is never opened), non-directory ancestors of any
 proposed destination, move source, removal target, or the Control File
 destination, an unusable Control File destination (an existing directory,
-special file, or unreadable file at ``lumio.yaml``), escaping paths,
+special file, or unreadable file at ``lumio.yaml``, or a Knowledge Base
+root whose mode bits deny the publishing user the atomic temp-file creation
+and replace — evaluated directly so a root-owned environment cannot
+false-pass), an existing declared removal target whose parent directory
+cannot release it (the same direct mode-bit, sticky-bit unlink evaluation
+the move source preflight uses), escaping paths,
 compound-fallback collisions, and move sources that are not safely
 removable — an existing directory (unremovable after the write), a symlink
 (rejected by non-following ``lstat`` BEFORE resolution — dangling links
@@ -212,6 +217,74 @@ def _parent_denies_removal(parent: Path, source: Path) -> str | None:
         source_stat.st_uid,
     ):
         return "its parent directory's sticky bit denies the effective user removing the entry"
+    return None
+
+
+def _parent_denies_control_file_write(parent: Path, target: Path) -> str | None:
+    """Return why ``parent`` cannot host the atomic Control File write, or ``None``.
+
+    ``write_control_file`` creates a temporary file in the parent directory
+    and atomically replaces ``lumio.yaml`` with it via ``os.replace``:
+    creating the temp file and modifying the directory entry both need WRITE
+    and SEARCH permission on the parent for the effective user, and
+    replacing an EXISTING entry in a sticky parent additionally requires
+    owning the parent or the replaced entry. As in
+    :func:`_parent_denies_removal`, the classic
+    owner/group/other mode-bit algorithm is evaluated directly from
+    ``stat(2)`` metadata — never ``os.access``, which false-passes as root —
+    so a mode-denied root (root-owned environments included) is rejected
+    before any page byte is written instead of stranding a partial revision
+    behind a raw PermissionError (B01, P2 review v6). Nothing is mutated and
+    nothing is opened — the probe is ``stat(2)`` metadata only. A missing
+    parent stays tolerated (it is created on demand) and a non-directory
+    parent is rejected with its own precise message by the
+    non-directory-ancestor preflight.
+    """
+    try:
+        parent_stat = os.stat(parent)
+    except OSError as exc:
+        if isinstance(exc, FileNotFoundError):
+            # The parent is created on demand by the write itself.
+            return None
+        return "its parent directory's metadata cannot be read to verify write permission"
+    if not stat.S_ISDIR(parent_stat.st_mode):
+        # A non-directory parent is rejected with its own precise message by
+        # the non-directory-ancestor preflight.
+        return None
+    effective_uid = os.geteuid()
+    if effective_uid == parent_stat.st_uid:
+        write_bit, search_bit = stat.S_IWUSR, stat.S_IXUSR
+    elif parent_stat.st_gid in (os.getegid(), *os.getgroups()):
+        write_bit, search_bit = stat.S_IWGRP, stat.S_IXGRP
+    else:
+        write_bit, search_bit = stat.S_IWOTH, stat.S_IXOTH
+    if not parent_stat.st_mode & write_bit or not parent_stat.st_mode & search_bit:
+        return "its parent directory's mode bits deny the effective user write or search access"
+    if parent_stat.st_mode & stat.S_ISVTX and target.exists():
+        # Replacing an EXISTING entry in a sticky directory additionally
+        # requires owning the parent or the replaced entry; creating a fresh
+        # one needs only the write/search bits checked above. lstat (not
+        # stat): rename(2) judges the entry itself, and a symlink at the
+        # destination is replaced link-and-all, never followed.
+        try:
+            target_stat = os.lstat(target)
+        except OSError as exc:
+            if not isinstance(exc, FileNotFoundError):
+                # A vanished entry is tolerated below (creation semantics);
+                # anything else cannot be verified.
+                return (
+                    "the existing Control File's metadata cannot be read to "
+                    "verify replacement permission"
+                )
+            target_stat = None
+        if target_stat is not None and effective_uid not in (
+            parent_stat.st_uid,
+            target_stat.st_uid,
+        ):
+            return (
+                "its parent directory's sticky bit denies the effective user "
+                "replacing the existing file"
+            )
     return None
 
 
@@ -547,9 +620,15 @@ def _resolve_removal_destinations(
     already absent on disk is skipped (nothing to remove — never inferred).
     Every resolved path must resolve inside the working directory, must not
     be a reserved published artifact (Navigation/Hot Index, Activity Log),
-    and must not be a directory. Resolving up front means a removal proposal
-    fails its checks before any dependent-page revision is written, so the
-    temporary candidate validation sees the same conflict live apply would.
+    and must not be a directory. Every EXISTING target must also be
+    removable: its parent directory's mode bits (and sticky-bit ownership)
+    are evaluated directly with the SAME helper the move source preflight
+    uses — never ``os.access``, which false-passes as root — so an
+    unremovable target is rejected up front and no proposed page is ever
+    written for a removal that could only fail mid-apply. Resolving up front
+    means a removal proposal fails its checks before any dependent-page
+    revision is written, so the temporary candidate validation sees the same
+    conflict live apply would.
     """
     reserved = _reserved_basenames()
     removals: list[tuple[str, str]] = []
@@ -576,6 +655,28 @@ def _resolve_removal_destinations(
         if (root / normalized).is_dir():
             raise DestinationConflict(
                 f"Cannot remove {title!r}: its path is an existing directory: {normalized}",
+                file=normalized,
+            )
+        # unlink(2) permission comes from the target's PARENT directory's
+        # permission metadata, not from the target file, and ``os.access``
+        # false-passes as root — so the parent's mode bits (and sticky bit)
+        # are evaluated directly with the same mode-bit-aware helper the move
+        # source preflight uses (P2 review v6). An existing removal target
+        # whose parent cannot release it is rejected BEFORE any proposed page
+        # is written, so candidate validation and live apply can never strand
+        # a partial apply (the revisions landed, the locked removal target
+        # still present) behind a raw PermissionError. A target that vanishes
+        # between the checks above and this probe stays tolerated: there is
+        # then nothing to unlink, exactly as at apply time.
+        removal_path = root / normalized
+        denial = _parent_denies_removal(removal_path.parent, removal_path)
+        if denial is not None:
+            raise DestinationConflict(
+                f"Cannot remove {title!r} at {normalized}: the removal target "
+                f"cannot be removed because {denial}; make the parent directory "
+                f"writable and searchable for the publishing user (for example "
+                f"chmod u+wx {Path(normalized).parent.as_posix()}) before "
+                f"publishing this removal",
                 file=normalized,
             )
         removals.append((title, normalized))
@@ -665,6 +766,14 @@ def _reject_unusable_control_file_path(
     nonblocking ``stat`` probe so a FIFO is never opened), or an unreadable
     file is rejected up front, and candidate validation aggregates the same
     conflict as a destination issue before its throwaway copy is even made.
+    The parent directory of the destination (the Knowledge Base root) must
+    also permit the atomic write itself: its write/search mode bits — and the
+    sticky-bit replacement rule for an existing entry — are evaluated
+    directly from ``stat(2)`` metadata with the same root-safe algorithm as
+    the removal and move-source preflights (never ``os.access``, which
+    false-passes as root), so a mode-denied root is rejected up front too
+    instead of surfacing as a raw PermissionError from the temp-file creation
+    only after the proposal's page writes had already landed (P2 review v6).
     A regular readable file keeps the normal replacement behavior and a
     missing path is created.
     """
@@ -672,6 +781,17 @@ def _reject_unusable_control_file_path(
         return
     target = root / CONTROL_FILE_BASENAME
     if not target.exists():
+        # A missing path is created — but creating it still needs a parent
+        # whose mode bits permit the temp file and the final atomic replace.
+        denial = _parent_denies_control_file_write(target.parent, target)
+        if denial is not None:
+            raise DestinationConflict(
+                f"Control File destination {CONTROL_FILE_BASENAME} cannot be "
+                f"created because {denial}; make the directory holding "
+                f"{CONTROL_FILE_BASENAME} writable and searchable for the "
+                f"publishing user before publishing this proposal",
+                file=CONTROL_FILE_BASENAME,
+            )
         return
     if target.is_dir():
         raise DestinationConflict(
@@ -697,6 +817,18 @@ def _reject_unusable_control_file_path(
             f"Control File destination is occupied by a special file (FIFO, "
             f"socket, or device) that must not be opened or replaced by the "
             f"proposed {CONTROL_FILE_BASENAME}",
+            file=CONTROL_FILE_BASENAME,
+        )
+    # The occupant is replaceable — but the atomic replacement still needs a
+    # parent whose mode bits permit the temp-file creation and the replace
+    # (P2 review v6).
+    denial = _parent_denies_control_file_write(target.parent, target)
+    if denial is not None:
+        raise DestinationConflict(
+            f"Control File destination {CONTROL_FILE_BASENAME} cannot be "
+            f"replaced because {denial}; make the directory holding "
+            f"{CONTROL_FILE_BASENAME} writable and searchable for the "
+            f"publishing user before publishing this proposal",
             file=CONTROL_FILE_BASENAME,
         )
 
@@ -766,10 +898,12 @@ def _apply_checked_destinations(
 
     Every path below was resolved, checked, and claimed before this runs, so
     the phase makes no further decisions: page writes in proposal order, then
-    the declared removals, then the optional Control File. Root-relative
-    checked paths apply unchanged to the live root and to the temporary
-    candidate tree alike, so candidate validation consumes exactly the same
-    mutations live application would perform.
+    the declared removals (each verified removable at resolution time), then
+    the optional Control File (whose parent's writability was verified at
+    resolution time). Root-relative checked paths apply unchanged to the
+    live root and to the temporary candidate tree alike, so candidate
+    validation consumes exactly the same mutations live application would
+    perform.
     """
     for destination in destinations:
         _write_destination(destination, root)
@@ -815,7 +949,12 @@ def apply_proposed_pages(
     throwaway tree. A removal is an explicit, declared mutation: a page
     simply absent from ``proposed_pages`` is never removed. A reserved
     published artifact (Navigation/Hot Index, Activity Log) is never removed,
-    and each removal path must resolve inside ``working_dir``.
+    and each removal path must resolve inside ``working_dir``. An EXISTING
+    removal target must also be removable: its parent directory's mode bits
+    (and sticky-bit ownership) are evaluated directly with the same
+    root-safe helper the move-source preflight uses, so an unremovable
+    target is rejected as a conflict before any proposed page is written
+    instead of stranding the revisions behind a raw PermissionError.
 
     ``control_file`` (issue #135) writes a proposed Knowledge Base Control
     File — used by a Page Removal that must drop a stale Hot Index pin
@@ -826,7 +965,11 @@ def apply_proposed_pages(
     directory, a special file (FIFO, socket, device), or an unreadable file
     is rejected in the same shared preflight, BEFORE any page write — the
     atomic Control File replacement could otherwise only fail after the
-    proposal's pages had already landed. Likewise, every parent
+    proposal's pages had already landed. The parent directory of the
+    destination must also permit the atomic write (temp-file creation and
+    replace): its write/search mode bits and the sticky-bit replacement rule
+    are evaluated directly, so a mode-denied root — root-owned environments
+    included — is rejected up front too. Likewise, every parent
     component of every proposed destination, move source, removal target,
     and the Control File path must be an existing (or creatable) directory:
     a non-directory ancestor is rejected up front instead of surfacing as a
@@ -969,9 +1112,12 @@ def validate_candidate_knowledge_base(
     tree is copied, so a conflict — including an uncopyable occupant such as
     a Unix socket at a proposed destination, which ``copytree`` itself could
     never get past, a FIFO occupant the preflight must never open, an
-    unowned or special/unreadable move source, a non-directory ancestor of
-    any write/removal/Control File path, or an unusable Control File
-    destination — comes back as an error
+    unowned or special/unreadable move source, an unremovable existing
+    removal target (its parent directory's mode bits and sticky bit deny
+    the unlink, evaluated directly), a non-directory ancestor of
+    any write/removal/Control File path, an unusable Control File
+    destination, or a Control File parent whose mode bits deny the atomic
+    temp-file creation and replace — comes back as an error
     ``ValidationIssue`` instead of raised, exactly the conflict live
     application would raise. Only
     :class:`DestinationConflict` is translated; unexpected errors still
