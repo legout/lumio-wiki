@@ -3262,6 +3262,188 @@ def test_activity_log_append_failure_restores_complete_mutation(tmp_path, monkey
     assert b"removed page(s): Alpha" in (root / "log.md").read_bytes()
 
 
+def test_publish_rejects_external_symlink_activity_log_without_touching_the_target(
+    tmp_path, monkeypatch
+):
+    # P5 review blocker: an existing root log.md SYMLINK (external target
+    # included) was accepted and the Activity Log append WROTE THROUGH the
+    # link into its referent — a later failure restored only the link while
+    # the appended bytes stayed in the (possibly external) target, so the
+    # pre-mutation Activity Log could never be restored completely. The
+    # publish gate now rejects every non-regular log.md occupant on no-follow
+    # lstat BEFORE the backup and before any page or Control File write: the
+    # injected late terminal-write failure below must stay unreachable (its
+    # OSError would otherwise surface instead of the gate's conflict), the
+    # link and its target bytes stay exactly as they were, and no Knowledge
+    # Base byte moves. Deterministic: byte equality proves the target was
+    # never opened; no sleeps.
+    kb = _rollback_kb(tmp_path, hot_pins=["Alpha"])
+    root = kb.root.resolve()
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+
+    baseline = lw.create_proposal_without_provider(
+        _disjoint_revision("Alpha", "alpha", "Baseline Alpha revision.").encode("utf-8"),
+        "text/markdown",
+        "alpha-baseline.md",
+        kb,
+        store=store,
+    )
+    assert pipeline.publish(baseline.id).status == "published"
+
+    external_log = tmp_path / "external-activity-log.md"
+    # A REAL external Activity Log carries the reserved activity-log marker,
+    # so staging validation reads through the link, classifies a valid
+    # reserved artifact, and stages the removal — exactly the accepted
+    # pre-gate state the review reproduced with its late store.publish
+    # failure (the append wrote through the link into these bytes).
+    external_bytes = (
+        b"---\nlumio:\n  artifact: activity-log\n  version: 1\n---"
+        b"\n\n# Activity Log\n\n2026-01-01T00:00:00Z publish: pre-existing external history\n"
+    )
+    external_log.write_bytes(external_bytes)
+    log_link = root / "log.md"
+    link_text = os.path.relpath(external_log, root)
+    os.symlink(link_text, log_link)
+
+    removal = pipeline.propose_page_removal("Gamma")
+    assert not removal.blocked, removal.validation_report
+
+    files_before = _rollback_snapshot(root)
+    durable_before = _durable_state_snapshot(store, removal.id)
+    backups_before = _existing_backups()
+
+    def unreachable_terminal_write(_proposal_id):
+        raise OSError("terminal proposal persistence must never run")
+
+    monkeypatch.setattr(store, "publish", unreachable_terminal_write)
+
+    with pytest.raises(DestinationConflict, match="symlink"):
+        pipeline.publish(removal.id)
+
+    # The gate rejected the publish BEFORE any live mutation: the link still
+    # points at the external file, the target bytes are unchanged (the append
+    # never followed the link), and no page, Control File, or registry byte
+    # moved — the injected terminal-write failure was never reached.
+    assert log_link.is_symlink() and os.readlink(log_link) == link_text
+    assert external_log.read_bytes() == external_bytes
+    assert _rollback_snapshot(root) == files_before
+    assert _durable_state_snapshot(store, removal.id) == durable_before
+    # The rejection predates the backup: no pre-mutation backup was created.
+    assert _existing_backups() == backups_before
+
+    # Recovery: removing the symlink lets the same reviewable proposal
+    # publish; the append creates a fresh regular log.md and the transition
+    # is recorded there — the external history file is never touched.
+    monkeypatch.undo()
+    log_link.unlink()
+    published = pipeline.publish(removal.id)
+    assert published.status == "published"
+    assert not (root / "concepts/gamma.md").exists()
+    assert log_link.is_file() and not log_link.is_symlink()
+    log_after = (root / "log.md").read_bytes()
+    assert external_bytes not in log_after  # the external file stayed external
+    assert b"removed page(s): Gamma" in log_after
+    assert external_log.read_bytes() == external_bytes
+
+
+@pytest.mark.parametrize(
+    ("occupant", "expected_message"),
+    [
+        ("fifo", "special file"),
+        ("socket", "special file"),
+        ("directory", "directory"),
+        ("dangling-symlink", "symlink"),
+    ],
+)
+def test_publish_rejects_special_activity_log_occupants_without_opening_them(
+    tmp_path, monkeypatch, occupant, expected_message
+):
+    # P5 review blocker: a FIFO named log.md staged and published "validly"
+    # and the append's open("a") blocked forever waiting for a writer; a
+    # directory occupant failed only AFTER the page and Control File writes
+    # had already landed; a dangling symlink was treated as an absent path
+    # and silently replaced link-and-all. The publish gate now rejects every
+    # non-regular occupant on non-following lstat BEFORE any live byte. The
+    # guarded Path.open turns a regression into a fast failure instead of a
+    # hung suite: the gate itself only ever lstats the entry.
+    kb = _rollback_kb(tmp_path, hot_pins=["Alpha"])
+    root = kb.root.resolve()
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    log_path = root / "log.md"
+
+    if occupant == "fifo":
+        os.mkfifo(log_path)
+    elif occupant == "socket":
+        occupant_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        occupant_socket.bind(str(log_path))
+        occupant_socket.close()  # the filesystem entry persists after close
+    elif occupant == "directory":
+        log_path.mkdir()
+    else:  # dangling-symlink
+        os.symlink(tmp_path / "missing-log-target.md", log_path)
+
+    real_open = Path.open
+
+    def _never_open_the_log(self, *args, **kwargs):
+        if self == log_path:
+            raise AssertionError("the publish path must never open a special log.md occupant")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _never_open_the_log)
+
+    gamma_before = (root / "concepts/gamma.md").read_bytes()
+    control_before = (root / "lumio.yaml").read_bytes()
+
+    def _entry_names(base: Path) -> set[str]:
+        names: set[str] = set()
+        for dirpath, dirnames, filenames in os.walk(base):
+            for name in dirnames + filenames:
+                names.add((Path(dirpath) / name).relative_to(base).as_posix())
+        return names
+
+    entries_before = _entry_names(root)
+
+    removal = pipeline.propose_page_removal("Gamma")
+    assert not removal.blocked, removal.validation_report
+
+    with pytest.raises(DestinationConflict, match=expected_message):
+        pipeline.publish(removal.id)
+
+    # Nothing was mutated: the occupant kept its exact non-regular type on
+    # lstat, every Knowledge Base entry is unchanged, the Gamma page and the
+    # Control File still hold their reviewed bytes, and the proposal is still
+    # reviewable for a corrected retry.
+    if occupant == "fifo":
+        assert log_path.is_fifo()
+    elif occupant == "socket":
+        assert log_path.is_socket()
+    elif occupant == "directory":
+        assert log_path.is_dir() and not log_path.is_symlink()
+    else:
+        assert log_path.is_symlink()
+    assert _entry_names(root) == entries_before
+    assert (root / "concepts/gamma.md").read_bytes() == gamma_before
+    assert (root / "lumio.yaml").read_bytes() == control_before
+    reviewable = pipeline.review(removal.id)
+    assert reviewable is not None and lw.is_reviewable_proposal(reviewable)
+
+    # Recovery: removing the non-regular occupant lets the same proposal
+    # publish; the append creates a fresh regular log.md (its reserved
+    # marker written by the Activity Log itself, never an empty file) and
+    # records the transition there.
+    monkeypatch.undo()
+    if occupant == "directory":
+        log_path.rmdir()
+    else:
+        log_path.unlink()
+    published = pipeline.publish(removal.id)
+    assert published.status == "published"
+    assert not (root / "concepts/gamma.md").exists()
+    assert b"removed page(s): Gamma" in log_path.read_bytes()
+
+
 def test_rollback_failure_raises_actionable_recovery_error(tmp_path, monkeypatch):
     # B05: when the restoration ITSELF fails, publish must never claim
     # success or a completed rollback: it raises an actionable recovery error

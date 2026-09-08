@@ -64,6 +64,7 @@ from lumio_wiki.publish import (
     _expected_precondition_pairs,
     _precondition_drift,
     _precondition_set_mismatch,
+    _reject_unsafe_activity_log_path,
     affected_mutation_paths,
     apply_proposed_pages,
     validate_candidate_knowledge_base,
@@ -1830,6 +1831,20 @@ class ProposalPipeline:
         intervening changes that introduce alias/entity/Claim conflicts are
         still blocked.
 
+        Plan 02 / P5 review fix: immediately after those gates and still
+        before any live byte, an existing root ``log.md`` that is NOT a
+        regular non-symlink file — a symlink (internal or external target,
+        dangling included), a FIFO, socket, or device, or a directory — is
+        rejected with :class:`~lumio_wiki.publish.DestinationConflict` on
+        no-follow ``lstat`` metadata: the entry is never opened and a link is
+        never followed. The in-place Activity Log append writes THROUGH an
+        existing symlink, so a later failure could restore only the link
+        while the appended entry stayed in its (possibly external) referent;
+        a FIFO occupant would block that append's open, and a directory
+        would fail only after the page writes. A missing ``log.md`` is still
+        created normally and a regular one is still snapshotted, appended,
+        and restored.
+
         Plan 02 / P5 (B05): after the gates pass and BEFORE the first live
         byte, the exact pre-mutation state is backed up outside the Knowledge
         Base (:class:`lumio_wiki.mutation.MutationBackup`): every affected
@@ -1885,6 +1900,18 @@ class ProposalPipeline:
                 raise ProposalBlockedError(
                     f"proposal {proposal_id!r} candidate failed validation: {candidate_report}"
                 )
+            # Plan 02 / P5 review fix: while S1 keeps the Activity Log a
+            # plain append-only regular file, an existing root ``log.md``
+            # that is NOT a regular non-symlink file is rejected BEFORE the
+            # backup and before any page/Control write — on no-follow lstat
+            # metadata alone (never opened, never followed): the append
+            # writes THROUGH a symlink so a later failure restores only the
+            # link while the appended entry stays in its (possibly external)
+            # target, a FIFO would block the append's open, and a directory
+            # fails only after the page writes. A missing log.md is still
+            # created normally and a regular one snapshotted, appended, and
+            # restored.
+            _reject_unsafe_activity_log_path(root)
             # Plan 02 / P5 (B05): snapshot the exact pre-mutation state of
             # everything the live mutation can touch BEFORE any live byte —
             # the checked page/control destinations (the SAME resolution the

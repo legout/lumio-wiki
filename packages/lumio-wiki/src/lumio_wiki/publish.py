@@ -1343,6 +1343,71 @@ def _reject_unusable_control_file_path(
         )
 
 
+def _reject_unsafe_activity_log_path(root: Path) -> None:
+    """Reject a non-regular Activity Log destination BEFORE any live byte (P5).
+
+    The local publish appends the transition to the root ``log.md`` in place
+    (:func:`~lumio_wiki.knowledge_base.append_activity_log_entry`), which opens
+    an EXISTING log with follow-the-link ``open("a")`` semantics. An existing
+    SYMLINK occupant is therefore written THROUGH: the appended entry lands in
+    the link's referent (possibly outside the Knowledge Base), and a later
+    failure's rollback restores only the link while the appended bytes stay in
+    the target — the pre-mutation Activity Log can never be fully restored.
+    An existing FIFO (or socket/device) would block that append's open until a
+    writer appears, and a directory occupant fails only AFTER the page and
+    Control File writes have already landed.
+
+    While S1 keeps the Activity Log a plain append-only regular file, the
+    publish gate therefore requires the path to be ABSENT (the append creates
+    it normally) or a REGULAR non-symlink file (snapshotted, appended, and
+    restored). The classification runs on non-following ``lstat`` metadata —
+    ``lstat(2)`` never opens the entry, so a FIFO is rejected without ever
+    being opened and a symlink (a DANGLING one included) is classified as a
+    link without ever being followed. Runs under the publish mutation locks
+    AFTER the reviewed preconditions and the candidate gate, BEFORE the
+    pre-mutation backup and the first live write.
+    """
+    log_path = root / ACTIVITY_LOG_BASENAME
+    try:
+        info = os.lstat(log_path)
+    except FileNotFoundError:
+        return  # absent: the Activity Log append creates it normally
+    except OSError as exc:
+        raise DestinationConflict(
+            f"Activity Log destination {ACTIVITY_LOG_BASENAME} could not be "
+            f"inspected before the publish ({exc}); resolve the error so the "
+            f"existing entry can be classified as a regular file",
+            file=ACTIVITY_LOG_BASENAME,
+        ) from exc
+    mode = info.st_mode
+    if stat.S_ISREG(mode):
+        return
+    if stat.S_ISLNK(mode):
+        raise DestinationConflict(
+            f"Activity Log destination is a symlink that must not be followed "
+            f"by the proposed {ACTIVITY_LOG_BASENAME} append: an append writes "
+            f"through the link into its (possibly external) target, and a "
+            f"later publish failure restores only the link while the appended "
+            f"entry stays in the target. Replace the {ACTIVITY_LOG_BASENAME} "
+            f"symlink with a regular file before publishing this proposal",
+            file=ACTIVITY_LOG_BASENAME,
+        )
+    if stat.S_ISDIR(mode):
+        raise DestinationConflict(
+            f"Activity Log destination is an existing directory and cannot be "
+            f"appended to by the proposed {ACTIVITY_LOG_BASENAME}: remove or "
+            f"rename the directory before publishing this proposal",
+            file=ACTIVITY_LOG_BASENAME,
+        )
+    raise DestinationConflict(
+        f"Activity Log destination is occupied by a special file (FIFO, "
+        f"socket, or device) that must not be opened by the proposed "
+        f"{ACTIVITY_LOG_BASENAME} append: remove or replace the special "
+        f"entry with a regular file before publishing this proposal",
+        file=ACTIVITY_LOG_BASENAME,
+    )
+
+
 def _reject_non_directory_ancestors(
     destinations: list[_Destination],
     removals: list[tuple[str, str]],
