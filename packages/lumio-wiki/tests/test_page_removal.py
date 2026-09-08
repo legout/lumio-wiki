@@ -635,3 +635,67 @@ def test_discard_transitions_a_page_removal_proposal(tmp_path):
         pipeline.publish(proposal.id)
     kb2, _ = load_knowledge_base(root)
     assert "Beta" in [p.title for p in kb2.pages]
+
+
+def test_removal_publish_checks_captured_control_and_path_preconditions(tmp_path):
+    # Plan 02 / P4 (B03/B04): a Page Removal captures the reviewed base of
+    # every affected path — the removed page's bytes, each repaired dependent
+    # page's bytes, and the Control File whose Hot Index pin the proposal
+    # drops. Publishing re-checks them under the mutation lock: a dependent
+    # page or the Control File that drifted after review refuses publication
+    # with restage guidance, preserves the newer bytes, and leaves the
+    # proposal reviewable; with every reviewed input intact it still publishes.
+    from lumio_wiki.proposal_pipeline import ProposalPreconditionError
+
+    root = _categorized_kb(tmp_path, hot_pins=["Beta"])
+    _write(
+        root,
+        "concepts/alpha.md",
+        _page("Alpha", relationships=[{"target": "Beta", "type": "see"}]),
+    )
+    _write(root, "concepts/beta.md", _page("Beta"))
+    kb, pipeline = _pipeline(root, tmp_path)
+
+    proposal = pipeline.propose_page_removal("Beta")
+    assert not proposal.blocked, proposal.validation_report
+    assert proposal.preconditions  # durable private reviewed base captured
+    assert any(item.path == "concepts/beta.md" for item in proposal.preconditions)
+    assert any(item.path == "concepts/alpha.md" for item in proposal.preconditions)
+    assert any(item.path == "lumio.yaml" for item in proposal.preconditions)
+
+    # A repaired dependent page drifts after review (an external editor that
+    # ignores advisory locks): publish refuses and preserves the newer bytes.
+    alpha_path = root / "concepts/alpha.md"
+    original_alpha = alpha_path.read_text(encoding="utf-8")
+    drifted_alpha = original_alpha.replace("Body.", "Newer independent content.")
+    alpha_path.write_text(drifted_alpha, encoding="utf-8")
+    with pytest.raises(ProposalPreconditionError) as excinfo:
+        pipeline.publish(proposal.id)
+    assert "concepts/alpha.md" in str(excinfo.value)
+    assert "restage" in str(excinfo.value).lower()
+    assert alpha_path.read_text(encoding="utf-8") == drifted_alpha
+
+    # Restored dependent bytes, but a Control File drift (the reviewed pin
+    # state) is rejected the same way.
+    alpha_path.write_text(original_alpha, encoding="utf-8")
+    control_path = root / "lumio.yaml"
+    original_control = control_path.read_text(encoding="utf-8")
+    control_path.write_text(original_control + "\n# drifted after review\n", encoding="utf-8")
+    with pytest.raises(ProposalPreconditionError):
+        pipeline.publish(proposal.id)
+    control_path.write_text(original_control, encoding="utf-8")
+
+    # With every reviewed input intact the removal still publishes atomically.
+    published = pipeline.publish(proposal.id)
+    assert published.status == "published"
+    assert not (root / "concepts/beta.md").exists()
+    control_yaml = control_path.read_text(encoding="utf-8")
+    assert 'title: "Beta"' not in control_yaml  # pin dropped with the removal
+    # The rewritten Control File preserves the reviewed ontology: only the
+    # Hot Index pin changed (a pin-drop that erased the ontology would be
+    # exactly the silent loss the reviewed preconditions exist to prevent).
+    assert "predicates:" in control_yaml and "depends-on:" in control_yaml
+    kb2, report2 = load_knowledge_base(root)
+    assert report2.is_valid, report2
+    alpha_markdown = alpha_path.read_text(encoding="utf-8")
+    assert "entity:beta" not in alpha_markdown  # dependent edge repaired

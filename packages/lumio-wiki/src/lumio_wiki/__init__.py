@@ -52,6 +52,7 @@ from lumio_wiki.ingest import (
     IngestStore,
     ManagedIngestError,
     PageRemoval,
+    PathPrecondition,
     ProposalTerminalStateError,
     ProposedPage,
     SourceChangeImpact,
@@ -210,6 +211,7 @@ from lumio_wiki.proposal_pipeline import (
     ProposalBlockedError,
     ProposalPipeline,
     ProposalPipelineError,
+    ProposalPreconditionError,
 )
 from lumio_wiki.publish import (
     PublishError,
@@ -536,6 +538,7 @@ __all__ = [
     "RankedLinkCandidate",
     "BodyLinkRepairCandidate",
     "PageRemoval",
+    "PathPrecondition",
     "ProposalTerminalStateError",
     "MarkItDownSourceProcessor",
     "MANIFEST_OBJECT",
@@ -571,6 +574,7 @@ __all__ = [
     "ProposalBlockedError",
     "ProposalPipeline",
     "ProposalPipelineError",
+    "ProposalPreconditionError",
     "ProposedPage",
     "PublishError",
     "RegistryEntry",

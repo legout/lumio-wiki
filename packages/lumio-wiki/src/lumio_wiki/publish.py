@@ -74,6 +74,7 @@ and no removal that was not declared.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import stat
@@ -571,6 +572,159 @@ def _reject_occupied_target(
         f"untracked file: {relative_path}",
         file=relative_path,
     )
+
+
+@dataclass(frozen=True)
+class _PathExpectation:
+    """One expected pre-mutation path state produced by precondition capture.
+
+    Internal capture shape; :meth:`ProposalPipeline._with_captured_preconditions`
+    converts these into the durable :class:`lumio_wiki.ingest.PathPrecondition`
+    records. ``kind`` is ``"file"`` (``digest`` carries the reviewed SHA-256)
+    or ``"absent"``; ``role`` is the stable restage-guidance vocabulary from
+    the ``PathPrecondition`` docstring.
+    """
+
+    relative_path: str
+    role: str
+    kind: str
+    digest: str = ""
+
+
+def _file_digest(path: Path) -> str | None:
+    """Return the SHA-256 of a readable regular file's bytes, else ``None``.
+
+    A path that is absent, a directory, a dangling or unreadable entry is not
+    a regular file, so it carries no reviewed bytes (drift, never a crash).
+    """
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _expect_path(root: Path, relative_path: str, role: str) -> _PathExpectation:
+    """Capture the current state of one path as a reviewed expectation."""
+    path = root / relative_path
+    digest = _file_digest(path)
+    if digest is not None:
+        return _PathExpectation(relative_path, role, "file", digest)
+    return _PathExpectation(relative_path, role, "absent")
+
+
+def _capture_mutation_preconditions(
+    proposed_pages: list,
+    working_dir: str | Path,
+    *,
+    removed_titles: list[str] | None = None,
+) -> list[_PathExpectation]:
+    """Capture the reviewed pre-mutation state of every affected path (P4).
+
+    The staging-side half of B03/B04: for a proposal about to be persisted,
+    record the CURRENT state of exactly the paths the reviewed mutation was
+    authoritatively told it would touch — never a whole-Knowledge-Base digest,
+    so disjoint proposals stay publishable after intervening disjoint
+    changes. The Control File (category catalog, Hot Index pins, ontology
+    redirects) is always captured, because every proposal either consumes it
+    (routing, pin and redirect state) or rewrites it.
+
+    Destination and removal paths come from the SAME resolution live
+    application uses (:func:`_resolve_proposed_destinations`,
+    :func:`_resolve_removal_destinations`), so the captured base covers
+    precisely the paths the checked write branches will consume: a
+    revision/compound/rename destination's reviewed bytes, a move's source
+    bytes and expected-absent target, a new page's expected-absent
+    destination, a declared removal's reviewed bytes. When resolution raises a
+    :class:`DestinationConflict` the proposal is (or will be) blocked anyway —
+    publication refuses blocked proposals before preconditions are consulted —
+    so capture degrades to the Control File expectation alone instead of
+    breaking staging.
+    """
+    root = Path(working_dir).resolve()
+    expectations: list[_PathExpectation] = [_expect_path(root, CONTROL_FILE_BASENAME, "control")]
+    existing_by_title = _existing_paths_by_title(root)
+    removal_expectations: list[_PathExpectation] = []
+    if removed_titles:
+        try:
+            removals = _resolve_removal_destinations(removed_titles, root, existing_by_title)
+        except DestinationConflict:
+            removals = []
+        removal_expectations = [
+            _expect_path(root, normalized, "removal") for _title, normalized in removals
+        ]
+    try:
+        destinations = _resolve_proposed_destinations(proposed_pages, root, existing_by_title)
+    except DestinationConflict:
+        # Blocked proposal: never publishable, so the reviewed base that
+        # matters is the Control File state (and any resolvable removals).
+        return expectations + removal_expectations
+    for destination in destinations:
+        if destination.kind == "move":
+            source = destination.source_relative_path
+            if source is not None and source != destination.relative_path:
+                # An existing move source is reviewed by bytes; a MISSING one
+                # is reviewed as absence, so a file the reviewer never saw
+                # appearing later refuses publication too.
+                expectations.append(_expect_path(root, source, "move-source"))
+                # The move's target must still be absent when it is applied.
+                expectations.append(_expect_path(root, destination.relative_path, "creation"))
+            else:
+                # A self-move overwrites its own recorded path in place.
+                expectations.append(_expect_path(root, destination.relative_path, "revision"))
+        else:
+            # write/compound/rename: the destination's reviewed bytes (or its
+            # reviewed absence, when the recorded file is already gone).
+            expectations.append(_expect_path(root, destination.relative_path, "revision"))
+    expectations.extend(removal_expectations)
+    unique: dict[str, _PathExpectation] = {}
+    for expectation in expectations:
+        unique.setdefault(expectation.relative_path, expectation)
+    return list(unique.values())
+
+
+def _precondition_drift(preconditions, root: str | Path) -> list[str]:
+    """Compare reviewed preconditions against the current state (P4, B03/B04).
+
+    The publish-side half: every record must still hold — a ``file`` record's
+    path must still be a readable regular file with the reviewed digest, and
+    an ``absent`` record's path must still be lexically free (a dangling
+    symlink counts as occupied). Returns one human-readable drift finding per
+    violated record; an empty list means the current state still matches what
+    the Maintainer reviewed. Records are duck-typed durable
+    :class:`lumio_wiki.ingest.PathPrecondition` rows (``path``/``role``/
+    ``kind``/``digest``), so no ingest-module import is needed here.
+    """
+    root = Path(root).resolve()
+    drift: list[str] = []
+    for record in preconditions:
+        path = root / record.path
+        # Records come from the durable private store, so their paths are
+        # trusted-but-verified like every reviewed relative path: anything
+        # escaping the Knowledge Base root is drift (a read-only check, and
+        # the P2 destination resolution escape-guards every real write).
+        if not Path(os.path.realpath(path, strict=False)).is_relative_to(root):
+            drift.append(
+                f"reviewed {record.role} precondition {record.path} no longer "
+                "resolves inside the Knowledge Base"
+            )
+            continue
+        if record.kind == "file":
+            digest = _file_digest(path)
+            if digest is None:
+                drift.append(
+                    f"reviewed {record.role} base for {record.path} is gone "
+                    "(the path is now absent or no longer a readable regular file)"
+                )
+            elif digest != record.digest:
+                drift.append(
+                    f"{record.path} changed since review "
+                    f"(reviewed {record.role} base no longer matches)"
+                )
+        elif os.path.lexists(path):
+            drift.append(
+                f"{record.path} is now occupied, but the reviewed {record.role} expected it absent"
+            )
+    return drift
 
 
 def _resolve_proposed_destinations(

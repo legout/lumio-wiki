@@ -29,6 +29,7 @@ from lumio_wiki.ingest import (
     IngestProposal,
     IngestStore,
     PageRemoval,
+    PathPrecondition,
     ProposedPage,
     SourceChangeImpact,
     SourceLifecycleChange,
@@ -41,6 +42,7 @@ from lumio_wiki.ingest import (
     is_reviewable_proposal,
 )
 from lumio_wiki.knowledge_base import (
+    CONTROL_FILE_BASENAME,
     HotIndexPin,
     KnowledgeBaseControlFile,
     append_activity_log_entry,
@@ -49,7 +51,12 @@ from lumio_wiki.knowledge_base import (
 from lumio_wiki.knowledge_base import _extract_references as _extract_references
 from lumio_wiki.knowledge_base import _parse_frontmatter as parse_frontmatter
 from lumio_wiki.mutation import mutation_lock
-from lumio_wiki.publish import apply_proposed_pages, validate_candidate_knowledge_base
+from lumio_wiki.publish import (
+    _capture_mutation_preconditions,
+    _precondition_drift,
+    apply_proposed_pages,
+    validate_candidate_knowledge_base,
+)
 from lumio_wiki.records import EntityRedirect, Ontology, ValidationIssue, ValidationReport
 from lumio_wiki.source_registry import (
     KnowledgeSource,
@@ -67,6 +74,21 @@ class ProposalPipelineError(Exception):
 
 class ProposalBlockedError(ProposalPipelineError):
     """A proposal cannot be published because validation blocks it."""
+
+
+class ProposalPreconditionError(ProposalPipelineError):
+    """A reviewed precondition no longer holds; the proposal must be re-staged.
+
+    Raised by :meth:`ProposalPipeline.publish` (Plan 02 / P4, B03/B04) under
+    the mutation lock, BEFORE any candidate is constructed or applied, when
+    the durable proposal's private reviewed preconditions no longer match the
+    Knowledge Base: an affected path's reviewed bytes changed or vanished, an
+    expected-absent destination is now occupied, the Control File changed, or
+    the proposal carries no reviewed preconditions at all (staged before they
+    were captured). Newer on-disk content is preserved and the proposal stays
+    reviewable: discard and re-stage it against the current state — never a
+    silent rebase, never an overwrite of newer content.
+    """
 
 
 def _drop_claims_for_entity(data: dict, removed_entity_id: str) -> bool:
@@ -353,6 +375,32 @@ class ProposalPipeline:
             raise RuntimeError("source lifecycle operations require an IngestStore")
         return self._store
 
+    def _with_captured_preconditions(self, proposal: IngestProposal) -> IngestProposal:
+        """Attach freshly captured reviewed preconditions (Plan 02 / P4).
+
+        Called under the Knowledge Base + store mutation lock at staging, so
+        the durable proposal and its reviewed base are ONE consistent
+        snapshot: the affected paths (replaced/merged/renamed bytes, move
+        source bytes and expected-absent target, created destinations,
+        removal bytes) plus the consumed/rewritten Control File state, as
+        resolved by the same destination resolution live application uses.
+        """
+        expectations = _capture_mutation_preconditions(
+            proposal.proposed_pages,
+            self._kb.root,
+            removed_titles=[removal.title for removal in proposal.removed_pages] or None,
+        )
+        preconditions = [
+            PathPrecondition(
+                path=expectation.relative_path,
+                role=expectation.role,
+                kind=expectation.kind,
+                digest=expectation.digest,
+            )
+            for expectation in expectations
+        ]
+        return msgspec.structs.replace(proposal, preconditions=preconditions)
+
     def register_source(self, source_id: str, raw_bytes: bytes) -> SourceVersion:
         """Register bytes under an explicit, stable Knowledge Source identity.
 
@@ -508,6 +556,12 @@ class ProposalPipeline:
             validation_report=report,
             blocked=not report.is_valid,
             source_change=change,
+            # Plan 02 / P4: a source-lifecycle proposal mutates no Knowledge
+            # Base path (the registry transition is private state), so its
+            # captured precondition set is deliberately empty — distinct from
+            # ``None``, which marks a proposal staged before preconditions
+            # were captured and is refused at publish.
+            preconditions=[],
         )
 
     def _bind_and_persist(
@@ -664,13 +718,18 @@ class ProposalPipeline:
         excerpts or Claim Lineage.
         """
         store = self._require_store()
-        proposal = self._assemble_page_removal(
-            title, reason=reason, affected_claim_notes=affected_claim_notes or []
-        )
-        store.save_proposal(proposal)
-        persisted = store.get(proposal.id)
-        if persisted is None:  # pragma: no cover - just persisted under the store lock
-            raise ProposalPipelineError(f"proposal {proposal.id!r} disappeared after staging")
+        # Plan 02 / P4 (B03/B04): assembly, reviewed-precondition capture, and
+        # persistence run under the Knowledge Base + store mutation locks, so
+        # the reviewed content and its captured base are one consistent
+        # snapshot and cooperating writers cannot interleave a publish.
+        with mutation_lock(self._kb.root, store.root):
+            proposal = self._assemble_page_removal(
+                title, reason=reason, affected_claim_notes=affected_claim_notes or []
+            )
+            store.save_proposal(self._with_captured_preconditions(proposal))
+            persisted = store.get(proposal.id)
+            if persisted is None:  # pragma: no cover - just persisted under the store lock
+                raise ProposalPipelineError(f"proposal {proposal.id!r} disappeared after staging")
         return persisted
 
     def _assemble_page_removal(
@@ -769,7 +828,12 @@ class ProposalPipeline:
 
         # Hot Index pin (AC7): an unresolved pin is a blocking validation
         # error, so when the removed title is pinned the proposal drops the
-        # pin atomically via a proposed Control File.
+        # pin atomically via a proposed Control File. The ontology travels
+        # through UNCHANGED (Plan 02 / P4 review): the pin-drop rewrites only
+        # the Hot Index section, so proposing a Control File without the
+        # reviewed ontology would silently erase every Entity Type, Predicate,
+        # and redirect on publication — the reviewed redirect/pin state the
+        # preconditions capture is preserved verbatim except for the pins.
         control_file: KnowledgeBaseControlFile | None = None
         kb_control = getattr(self._kb, "control", None)
         if kb_control is not None and any(pin.title == title for pin in kb_control.hot_index):
@@ -784,6 +848,7 @@ class ProposalPipeline:
                 hot_index=kept_pins,
                 mode=kb_control.mode,
                 path=kb_control.path,
+                ontology=kb_control.ontology,
             )
 
         # Validate the removal + repairs (+ pin drop) as ONE candidate. The
@@ -864,13 +929,18 @@ class ProposalPipeline:
         candidate gate and block publication.
         """
         store = self._require_store()
-        proposal = self._assemble_entity_merge(
-            retired_entity_id, surviving_entity_id, reason=reason
-        )
-        store.save_proposal(proposal)
-        persisted = store.get(proposal.id)
-        if persisted is None:  # pragma: no cover - just persisted under the store lock
-            raise ProposalPipelineError(f"proposal {proposal.id!r} disappeared after staging")
+        # Plan 02 / P4 (B03/B04): same lock + capture boundary as the removal
+        # journey — the merge's reviewed pages, redirect/pin Control File
+        # state, and retired-page bytes are captured under the locks that
+        # persist them.
+        with mutation_lock(self._kb.root, store.root):
+            proposal = self._assemble_entity_merge(
+                retired_entity_id, surviving_entity_id, reason=reason
+            )
+            store.save_proposal(self._with_captured_preconditions(proposal))
+            persisted = store.get(proposal.id)
+            if persisted is None:  # pragma: no cover - just persisted under the store lock
+                raise ProposalPipelineError(f"proposal {proposal.id!r} disappeared after staging")
         return persisted
 
     def _assemble_entity_merge(
@@ -1138,19 +1208,27 @@ class ProposalPipeline:
         store's :meth:`IngestStore.save_proposal` refuses that overwrite
         too; only the pipeline's explicit rollback compensation may restore
         a reviewable proposal over terminal state).
+
+        Plan 02 / P4 (B03/B04): staging captures the proposal's reviewed
+        pre-mutation preconditions and persists them with it, holding the
+        Knowledge Base + store interprocess mutation locks (one consistent
+        global order — see :func:`lumio_wiki.mutation.mutation_lock`) across
+        capture and persistence so the reviewed base and the durable record
+        are one consistent snapshot of the Knowledge Base.
         """
         if self._store is None:
             raise RuntimeError("ProposalPipeline.stage requires an IngestStore")
-        with mutation_lock(self._store.root):
+        with mutation_lock(self._kb.root, self._store.root):
             durable = self._store.get(proposal.id)
             if durable is not None and not is_reviewable_proposal(durable):
                 raise ProposalPipelineError(
                     f"proposal {proposal.id!r} is already {durable.status} and cannot be re-staged"
                 )
+            reviewed = self._with_captured_preconditions(proposal)
             raw_path: Path | None = None
             if raw_bytes is not None and filename is not None:
                 raw_path = self._store.save_raw(proposal.id, raw_bytes, filename)
-            self._store.save_proposal(proposal, raw_path)
+            self._store.save_proposal(reviewed, raw_path)
             staged = self._store.get(proposal.id)
             if staged is None:  # pragma: no cover - just persisted under the store lock
                 raise ProposalPipelineError(f"proposal {proposal.id!r} disappeared after staging")
@@ -1226,6 +1304,43 @@ class ProposalPipeline:
                     raise
         return discarded
 
+    def _reject_stale_base(self, proposal_id: str, proposal: IngestProposal) -> None:
+        """Refuse to publish over a base that no longer matches the review (P4).
+
+        Runs under the Knowledge Base + store + registry mutation locks,
+        immediately before candidate construction (Plan 02 / B03/B04). The
+        DURABLE proposal's private reviewed preconditions are compared against
+        the CURRENT filesystem/control state: any drift — and any mutating
+        proposal staged without reviewed preconditions — raises
+        :class:`ProposalPreconditionError` with restage guidance, preserving
+        newer on-disk content. Never a silent rebase, never a guess from the
+        current files.
+        """
+        mutates_knowledge_base = bool(
+            proposal.proposed_pages or proposal.removed_pages or proposal.control_file is not None
+        )
+        if not mutates_knowledge_base:
+            # A source-lifecycle proposal mutates only private registry state
+            # (its captured precondition set is deliberately empty).
+            return
+        if not proposal.preconditions:
+            raise ProposalPreconditionError(
+                f"proposal {proposal_id!r} carries no reviewed preconditions: it "
+                "was staged before reviewed bases were captured (Plan 02 / P4) "
+                "or by an older version. Inspect it, then discard and restage "
+                "it against the current Knowledge Base — the current files are "
+                "never guessed as the reviewed base"
+            )
+        drift = _precondition_drift(proposal.preconditions, Path(self._kb.root))
+        if drift:
+            details = "; ".join(drift)
+            raise ProposalPreconditionError(
+                f"proposal {proposal_id!r} no longer matches its reviewed base: "
+                f"{details}. Refusing to silently rebase or overwrite newer "
+                "content: discard this proposal and restage a fresh one against "
+                "the current state, then review and publish it"
+            )
+
     def publish(self, proposal_id: str) -> IngestProposal:
         """Publish a reviewable proposal to the local Knowledge Base root (AC3).
 
@@ -1255,6 +1370,17 @@ class ProposalPipeline:
         The registry transition applies inside the same critical section, and
         its failure compensation (restore the reviewable proposal) runs there
         too, so in-memory and durable state agree after any exception.
+
+        Plan 02 / P4 (B03/B04): still under the same locks and BEFORE the
+        candidate is constructed, the durable proposal's private reviewed
+        preconditions are compared against the current filesystem/control
+        state (:meth:`_reject_stale_base`): overlapping or altered proposal
+        content, changed Control File state, occupied expected-absent
+        destinations, and pre-precondition (legacy) proposals are rejected
+        with restage guidance — never silently rebased. The FULL current
+        candidate is then revalidated from the real root (never a stale
+        in-memory ``self._kb`` snapshot), so disjoint intervening changes that
+        introduce alias/entity/Claim conflicts are still blocked.
         """
         if self._store is None:
             raise RuntimeError("ProposalPipeline.publish requires an IngestStore")
@@ -1266,6 +1392,10 @@ class ProposalPipeline:
                 raise ProposalPipelineError(f"proposal {proposal_id!r} is not reviewable")
             if proposal.blocked:
                 raise ProposalBlockedError(f"proposal {proposal_id!r} is blocked by validation")
+            # Plan 02 / P4 (B03/B04): under the locks and before any candidate
+            # construction, the durable proposal's reviewed base must still
+            # match the current filesystem/control state.
+            self._reject_stale_base(proposal_id, proposal)
             # issue #135: a Page Removal proposal carries removed titles and an
             # optional Control File (Hot Index pin drop). Both are threaded
             # through the authoritative candidate gate AND the apply step so the
@@ -1292,8 +1422,12 @@ class ProposalPipeline:
             # categorized Knowledge Base (one with a Control File) carries a
             # portable Activity Log; legacy flat KBs do not. The entry records only
             # the removed Canonical Titles and operation — never Claim Lineage
-            # (claim-level lineage is not modeled, ADR-0014).
-            if getattr(self._kb, "control", None) is not None:
+            # (claim-level lineage is not modeled, ADR-0014). Plan 02 / P4: the
+            # categorized decision reads the CURRENT Control File presence from
+            # the root under the lock — never the possibly stale in-memory
+            # ``self._kb`` snapshot (a legacy→categorized migration publishes
+            # before the stale object would know about it).
+            if (Path(self._kb.root) / CONTROL_FILE_BASENAME).is_file():
                 if proposal.entity_merges:
                     # issue #169: a reviewed Entity Merge logs its own transition
                     # (retired Entity -> surviving Entity), not a page-removal.
@@ -1339,4 +1473,5 @@ __all__ = [
     "ProposalBlockedError",
     "ProposalPipeline",
     "ProposalPipelineError",
+    "ProposalPreconditionError",
 ]

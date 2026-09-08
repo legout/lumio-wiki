@@ -447,6 +447,37 @@ def safe_lifecycle_impact_status_display(status: str) -> str:
     return SOURCE_LIFECYCLE_IMPACT_STATUS_UNRECOGNIZED
 
 
+class PathPrecondition(msgspec.Struct, frozen=True):
+    """One reviewed expected pre-mutation path state (Plan 02 / P4, B03/B04).
+
+    Private, durable proposal metadata captured at staging/review: the state
+    of every Knowledge Base path the reviewed proposal was authoritatively
+    told it would replace, merge, rename in place, move, create, or remove,
+    plus the Control File state the proposal consumed or rewrites. It is the
+    reviewed base a publication is checked against immediately before any
+    candidate is constructed — never page Markdown, never inspection prose.
+
+    ``kind`` is ``"file"`` — ``digest`` then carries the SHA-256 of the
+    reviewed regular-file bytes (the existence/type expectation: a path that
+    is absent, a directory, a symlink, or otherwise not a readable regular
+    file no longer matches) — or ``"absent"`` (the reviewed destination must
+    not exist, lexically, when the proposal is applied). ``role`` is a stable,
+    content-free vocabulary used only for restage guidance: ``revision`` (a
+    page this proposal replaces, compound-merges, or renames in place),
+    ``creation`` (a new destination expected to stay absent), ``move-source``
+    (the bytes a move relocates), ``removal`` (the bytes a declared removal
+    deletes), and ``control`` (the Knowledge Base Control File: category
+    catalog, Hot Index pins, ontology redirects). Preconditions serialize
+    only inside the private durable proposal record; they never enter page
+    Markdown or the human-readable inspection surfaces.
+    """
+
+    path: str
+    role: str
+    kind: str
+    digest: str = ""
+
+
 class IngestProposal(msgspec.Struct, frozen=True):
     """A staged set of proposed Markdown changes with validation gate.
 
@@ -482,6 +513,18 @@ class IngestProposal(msgspec.Struct, frozen=True):
     # discloses the merge itself (retired/surviving ids and titles) for
     # inspection and the Activity Log.
     entity_merges: list[EntityMerge] = msgspec.field(default_factory=list)
+    # Plan 02 / P4 (B03/B04): the private reviewed pre-mutation state of every
+    # affected path, captured at staging/review and compared against the
+    # current filesystem/control state under the mutation lock immediately
+    # before a publish constructs or applies the candidate. ``None`` marks a
+    # proposal staged before reviewed preconditions existed (or assembled by
+    # hand without staging): publication refuses such proposals with restage
+    # guidance — the current files are never guessed as the reviewed base.
+    # Source-lifecycle proposals mutate no Knowledge Base path and carry an
+    # empty (captured-nothing) list. Serialized compatibility is preserved:
+    # older proposal records decode with ``preconditions=None`` and remain
+    # inspectable, but they must be re-staged before they can publish.
+    preconditions: list[PathPrecondition] | None = None
 
 
 class ExternalImportCategoryMapping(msgspec.Struct, frozen=True):
@@ -1702,6 +1745,7 @@ __all__ = [
     "IngestProposal",
     "IngestStore",
     "PageRemoval",
+    "PathPrecondition",
     "ProposalTerminalStateError",
     "ProposedPage",
     "SOURCE_LIFECYCLE_TRIGGER_UNRECOGNIZED",

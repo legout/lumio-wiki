@@ -1787,3 +1787,248 @@ def test_stale_restage_cannot_overwrite_discarded_proposal_or_publish(tmp_path: 
     for pipeline in (pipeline_b, pipeline_a):
         viewed = pipeline.review(proposal.id)
         assert viewed is not None and viewed.status == "discarded"
+
+
+OVERVIEW_REVISION = """---
+title: "Lumio Overview"
+aliases:
+  - "Lumio"
+tags:
+  - "lumio"
+  - "overview"
+summary: "A high-level introduction to Lumio, revised after review."
+lifecycle: "approved"
+visibility: "public"
+sources:
+  - id: "lumio-overview"
+    title: "Lumio public landing page"
+    url: "https://example.com/lumio"
+synthetic: false
+---
+
+# Lumio Overview
+
+Lumio is a deployable chat platform for trusted knowledge and data, revised.
+"""
+
+
+def test_overlapping_proposal_base_conflict_preserves_newer_content(tmp_path: Path):
+    # B03/B04 (Plan 02 / P4): a proposal must publish only against the base it
+    # was reviewed against. The revision below is staged while overview.md has
+    # its reviewed bytes; an OVERLAPPING newer change then lands on the same
+    # path (a cooperating publish or an external editor that ignores advisory
+    # locks). Publishing must refuse BEFORE any candidate is applied, preserve
+    # the newer on-disk content, and leave the proposal reviewable so it can be
+    # re-staged — never silently rebased onto, or overwriting, newer content.
+    kb = _kb(tmp_path)
+    page_path = kb.root / "overview.md"
+    newer = page_path.read_text(encoding="utf-8").replace(
+        "deployable chat platform", "deployable chat and agent platform"
+    )
+    assert newer != page_path.read_text(encoding="utf-8")
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+
+    staged = lw.create_proposal_without_provider(
+        OVERVIEW_REVISION.encode("utf-8"),
+        "text/markdown",
+        "overview-revision.md",
+        kb,
+        store=store,
+    )
+    assert not staged.blocked, staged.validation_report
+    # The durable proposal carries the private reviewed base captured at
+    # staging (digest of overview.md plus the consumed Control File state).
+    durable = store.get(staged.id)
+    assert durable is not None
+    assert durable.preconditions
+    assert any(item.path == "overview.md" for item in durable.preconditions)
+
+    # The overlapping newer change lands AFTER review.
+    page_path.write_text(newer, encoding="utf-8")
+
+    with pytest.raises(lw.ProposalPreconditionError) as excinfo:
+        pipeline.publish(staged.id)
+    assert "overview.md" in str(excinfo.value)
+    assert "restage" in str(excinfo.value).lower()
+    # The newer content was preserved byte for byte and the proposal stayed
+    # reviewable: nothing was applied behind the refusal.
+    assert page_path.read_text(encoding="utf-8") == newer
+    fresh = lw.IngestStore(tmp_path / "ingest").get(staged.id)
+    assert fresh is not None and fresh.status == "staged"
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 / P4 (B03/B04): disjoint proposals after intervening changes.
+# ---------------------------------------------------------------------------
+
+
+def _disjoint_control() -> str:
+    return (
+        "version: 2\n"
+        "mode: categorized\n"
+        "categories:\n"
+        "  - {name: concepts}\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    concept: {}\n"
+        "  predicates:\n"
+        "    see:\n"
+        "      subject_types: [concept]\n"
+        "      object_types: [concept]\n"
+    )
+
+
+def _disjoint_page(title: str, *, entity: str, claims: str = "", body: str = "Body.") -> str:
+    claims_block = f"claims:\n{claims}" if claims else ""
+    return (
+        "---\n"
+        f'title: "{title}"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        f'summary: "{title} summary."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "sources:\n"
+        f'  - id: "{entity}-src"\n'
+        f'    title: "{title} source"\n'
+        f'id: "entity:{entity}"\n'
+        "entity_types:\n  - concept\n"
+        f"{claims_block}"
+        "synthetic: false\n"
+        "---\n"
+        f"# {title}\n\n{body}\n\n## Evidence\n\nSupporting evidence.\n"
+    )
+
+
+def _disjoint_revision(title: str, entity: str, summary: str) -> str:
+    """A routed revision proposal for an existing categorized page."""
+    return (
+        "---\n"
+        f'title: "{title}"\n'
+        "aliases: []\n"
+        'tags:\n  - "t"\n'
+        f'summary: "{summary}"\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "category: concepts\n"
+        "type: concept\n"
+        "durability_rationale: reviewed durable knowledge revision\n"
+        "sources:\n"
+        f'  - id: "{entity}-src"\n'
+        f'    title: "{title} source"\n'
+        f'id: "entity:{entity}"\n'
+        "entity_types:\n  - concept\n"
+        "synthetic: false\n"
+        "---\n"
+        f"# {title}\n\nRevised {title} body published by the intervening change.\n"
+    )
+
+
+def _disjoint_kb(tmp_path: Path):
+    root = tmp_path / "kb"
+    root.mkdir(parents=True)
+    (root / "lumio.yaml").write_text(_disjoint_control(), encoding="utf-8")
+    (root / "concepts").mkdir()
+    (root / "concepts/alpha.md").write_text(
+        _disjoint_page("Alpha", entity="alpha"), encoding="utf-8"
+    )
+    (root / "concepts/gamma.md").write_text(
+        _disjoint_page("Gamma", entity="gamma"), encoding="utf-8"
+    )
+    kb, report = lw.load_knowledge_base(root)
+    assert report.is_valid, report
+    return kb
+
+
+DELTA_NEW_PAGE = (
+    "---\n"
+    'title: "Delta"\n'
+    "aliases: []\n"
+    'tags:\n  - "t"\n'
+    'summary: "Delta summary."\n'
+    'lifecycle: "approved"\n'
+    'visibility: "public"\n'
+    "category: concepts\n"
+    "type: concept\n"
+    "durability_rationale: reviewed durable knowledge page\n"
+    "sources:\n"
+    '  - id: "delta-src"\n'
+    '    title: "Delta source"\n'
+    'id: "entity:delta"\n'
+    "entity_types:\n  - concept\n"
+    "claims:\n"
+    '  - id: "claim:delta-alpha-0"\n'
+    '    predicate: "see"\n'
+    '    object: "entity:alpha"\n'
+    "    status: accepted\n"
+    "    evidence:\n"
+    '      - section: "Evidence"\n'
+    "synthetic: false\n"
+    "---\n"
+    "# Delta\n\nDelta body.\n\n## Evidence\n\nSupporting evidence.\n"
+)
+
+
+def test_disjoint_proposals_publish_after_intervening_change(tmp_path: Path):
+    # B03/B04 (Plan 02 / P4): preconditions are per affected path, never a
+    # whole-Knowledge-Base digest. After proposal A publishes (an intervening
+    # change to Alpha), the disjoint proposal B against Gamma still publishes:
+    # its reviewed base (gamma.md plus the Control File) is untouched. The
+    # publish-time gate then REVALIDATES THE FULL CURRENT CANDIDATE: a staged
+    # new page whose accepted Claim targets entity:alpha becomes blocked after
+    # a disjoint Page Removal of Alpha publishes, even though none of its own
+    # reviewed paths moved. Deterministic: direct ordered calls, no sleeps.
+    kb = _disjoint_kb(tmp_path)
+    root = kb.root
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+
+    proposal_a = lw.create_proposal_without_provider(
+        _disjoint_revision("Alpha", "alpha", "Revised Alpha.").encode("utf-8"),
+        "text/markdown",
+        "alpha-revision.md",
+        kb,
+        store=store,
+    )
+    proposal_b = lw.create_proposal_without_provider(
+        _disjoint_revision("Gamma", "gamma", "Revised Gamma.").encode("utf-8"),
+        "text/markdown",
+        "gamma-revision.md",
+        kb,
+        store=store,
+    )
+    assert not proposal_a.blocked and not proposal_b.blocked
+
+    # The intervening change: A publishes, mutating Alpha only.
+    published_a = pipeline.publish(proposal_a.id)
+    assert published_a.status == "published"
+
+    # The disjoint proposal still publishes against its untouched base.
+    published_b = pipeline.publish(proposal_b.id)
+    assert published_b.status == "published"
+    assert "Revised Alpha body" in (root / "concepts/alpha.md").read_text(encoding="utf-8")
+    assert "Revised Gamma body" in (root / "concepts/gamma.md").read_text(encoding="utf-8")
+
+    # Full-candidate revalidation: proposal C stages cleanly now, but a later
+    # DISJOINT change (removing Alpha) introduces a blocking Claim conflict the
+    # per-path preconditions cannot see — the full current candidate gate must.
+    proposal_c = lw.create_proposal_without_provider(
+        DELTA_NEW_PAGE.encode("utf-8"),
+        "text/markdown",
+        "delta-page.md",
+        kb,
+        store=store,
+    )
+    assert not proposal_c.blocked, proposal_c.validation_report
+    removal = pipeline.propose_page_removal("Alpha")
+    assert not removal.blocked, removal.validation_report
+    assert pipeline.publish(removal.id).status == "published"
+    assert not (root / "concepts/alpha.md").exists()
+
+    with pytest.raises(lw.ProposalBlockedError) as excinfo:
+        pipeline.publish(proposal_c.id)
+    assert "entity:alpha" in str(excinfo.value)
+    assert not (root / "concepts/delta.md").exists()
+    fresh = lw.IngestStore(tmp_path / "ingest").get(proposal_c.id)
+    assert fresh is not None and fresh.status == "staged"
