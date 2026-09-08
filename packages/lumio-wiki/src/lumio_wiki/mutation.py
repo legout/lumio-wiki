@@ -9,10 +9,11 @@ cooperating writers per resource across processes (Plan 02 findings B02/B03).
 Contract (one lock/reload boundary, not a transaction system):
 
 * **Normalized resource identity.** :func:`resource_identity` maps a resource
-  root to one canonical string (symlinks resolved, case normalized), so two
+  root to one canonical string (symlinks resolved, case lower-cased), so two
   instances opened over equivalent paths — a standalone
-  ``SourceRegistry(root)`` and an ``IngestStore(root).source_registry`` —
-  share exactly one lock.
+  ``SourceRegistry(root)`` and an ``IngestStore(root).source_registry``, or
+  two differently cased spellings of one case-insensitive location — share
+  exactly one lock.
 * **Real interprocess locks.** :func:`mutation_lock` takes a POSIX ``flock``
   (or ``msvcrt.locking`` on Windows) on a lock file, not merely a threading
   lock. A per-process :class:`threading.RLock` layer makes the OS lock
@@ -30,7 +31,14 @@ Contract (one lock/reload boundary, not a transaction system):
   root + ingest store + registry for a publish, store + registry for a
   discard — uses the same total order and cannot deadlock against another
   cooperating writer. Registry operations never acquire a second resource,
-  so the registry is the leaf of the order.
+  so the registry is the leaf of the order. Sorting per call alone cannot
+  make NESTED calls safe: a nested call that expands an already-held set
+  downward in the canonical order is the one remaining ABBA shape (two
+  writers each holding one resource and nesting the wider set wait on each
+  other forever). :func:`mutation_lock` therefore refuses that expansion
+  with :class:`MutationLockError` before acquiring anything; a nested call
+  may only re-enter held resources or add resources that sort after
+  everything the thread already holds.
 * **Lock ownership covers the whole critical section.** Callers hold the
   lock through read/check/mutate/commit/rollback — not merely around file
   replacement — and recompute each mutation from durable state re-read
@@ -82,16 +90,22 @@ def resource_identity(resource: str | os.PathLike[str]) -> str:
     """Return the canonical identity string for one mutable resource root.
 
     Equivalent paths — relative vs. absolute, symlinked parents, differing
-    case on case-insensitive filesystems — normalize to one identity, so
-    separately opened instances over the same registry/store/Knowledge Base
-    contend on exactly one lock.
+    case — normalize to one identity, so separately opened instances over
+    the same registry/store/Knowledge Base contend on exactly one lock.
+
+    Case is lower-cased explicitly and conservatively on EVERY platform:
+    :func:`os.path.normcase` is a no-op on POSIX, so on a case-insensitive
+    macOS filesystem it would leave differently cased spellings of one
+    location with separate lock identities that could race. Over-serializing
+    two genuinely distinct case-sensitive paths is the accepted cost — the
+    safe failure mode is extra mutual exclusion, never a missed lock.
     """
     path = Path(resource)
     try:
         resolved = path.resolve(strict=False)
     except OSError:  # pragma: no cover - defensive: unresolvable parents
         resolved = path.absolute()
-    return os.path.normcase(str(resolved))
+    return os.path.normcase(str(resolved)).lower()
 
 
 def lock_directory() -> Path:
@@ -126,6 +140,21 @@ class _ResourceLock:
 
 _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[str, _ResourceLock] = {}
+
+# Per-thread stack of held resource identity sets, innermost hold last. Each
+# :func:`mutation_lock` frame pushes the set it holds and pops it on exit, so
+# a nested call can compare its requested identities against everything its
+# thread already holds and refuse the one expansion shape per-call sorting
+# cannot make deadlock-safe (see :func:`mutation_lock`).
+_HELD_STACKS = threading.local()
+
+
+def _held_identities() -> frozenset[str]:
+    """Return the resource identities the current thread already holds."""
+    stack = getattr(_HELD_STACKS, "stack", None)
+    if not stack:
+        return frozenset()
+    return stack[-1]
 
 
 def _lock_descriptor(descriptor: int, identity: str, lock_path: Path) -> None:
@@ -204,13 +233,47 @@ def mutation_lock(*resources: str | os.PathLike[str]) -> Iterator[None]:
     cannot deadlock against another cooperating process. Acquiring the same
     resource again (from nested calls in the same thread) is reentrant.
 
+    Sorting each call is not sufficient for NESTED calls: a nested call that
+    expands an already-held set with a resource sorting BEFORE something the
+    thread holds is the one shape per-call sorting cannot order (two writers
+    each holding one resource and nesting the wider set would wait on each
+    other forever). That expansion is refused up front with
+    :class:`MutationLockError` — never entered. A nested call may re-request
+    held resources (reentrant) or add resources that sort after everything
+    its thread already holds; request every resource a critical section needs
+    in the single outermost call, which acquires them in sorted order.
+
     Holds the lock through the caller's read/check/mutate/commit/rollback
     sequence; owners recompute mutations from state read under the lock.
     """
     if not resources:
         raise MutationLockError("mutation_lock requires at least one resource identity")
     identities = sorted({resource_identity(resource) for resource in resources})
+    held = _held_identities()
+    if held:
+        # The one explicit deadlock-safety invariant: a thread's held identity
+        # set may only grow UPWARD in the canonical order. Check every new
+        # identity BEFORE acquiring anything, so a refusal never leaves a
+        # partially acquired hold behind.
+        ceiling = max(held)
+        for identity in identities:
+            if identity in held:
+                continue  # reentrant re-request of an already-held resource
+            if identity < ceiling:
+                raise MutationLockError(
+                    f"unsafe nested mutation_lock expansion: resource {identity!r} "
+                    f"precedes the already-held {ceiling!r} in the canonical resource "
+                    f"order, so acquiring it here could deadlock against a cooperating "
+                    f"writer that holds {identity!r} and nests the wider set. Acquire "
+                    f"every resource the critical section needs in the single outermost "
+                    f"mutation_lock call (which acquires them in sorted order)."
+                )
     acquired: list[_ResourceLock] = []
+    stack: list[frozenset[str]] = getattr(_HELD_STACKS, "stack", None) or []
+    if not stack:
+        stack = []
+        _HELD_STACKS.stack = stack
+    pushed = False
     try:
         for identity in identities:
             with _LOCKS_GUARD:
@@ -227,8 +290,12 @@ def mutation_lock(*resources: str | os.PathLike[str]) -> Iterator[None]:
                 entry.rlock.release()
                 raise
             acquired.append(entry)
+        stack.append(held | frozenset(identities))
+        pushed = True
         yield
     finally:
+        if pushed:
+            stack.pop()
         for entry in reversed(acquired):
             entry.depth -= 1
             try:

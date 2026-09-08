@@ -527,6 +527,14 @@ class ProposalPipeline:
         the cancel compensation, so cooperating processes can never interleave
         a second bind for the same source (the registry re-checks the
         no-pending rule under the lock) nor a transition/proposal teardown.
+
+        ``bind_pending`` also re-validates the staged transition against the
+        durable source state re-read under those locks: a transition whose
+        precondition was invalidated between stage and bind (a concurrent
+        retire/reactivate published in the window) is refused BEFORE any
+        mutation, so the rejection compensates cleanly — no orphan pending
+        transition, and ``save_proposal`` is never reached, so no stale
+        proposal is persisted. The caller re-stages against the new state.
         """
         store = self._require_store()
         registry = store.source_registry

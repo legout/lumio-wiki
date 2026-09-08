@@ -259,6 +259,49 @@ def _ensure_no_pending_transition(state: _RegistryState, source_id: str) -> None
         )
 
 
+def _require_transition_preconditions(
+    state: _RegistryState, transition: PendingSourceTransition
+) -> None:
+    """Raise when a staged transition no longer matches the source's durable state.
+
+    Called under the mutation lock with freshly reloaded ``state``: staging
+    validated the source's status OUTSIDE the bind critical section, so a
+    concurrent retirement/reactivation that published between stage and bind
+    must be caught here — never bound as a transition whose publication would
+    fail and strand a permanent pending transition (mirrors the status checks
+    in :meth:`apply_transition`).
+    """
+    source = next(
+        (item for item in state.sources if item.source_id == transition.source_id), None
+    )
+    if source is None:
+        raise SourceRegistryError(
+            f"Knowledge Source {transition.source_id!r} is missing from the registry; "
+            f"the staged {transition.action!r} transition is stale"
+        )
+    if transition.action == "retire":
+        if source.status != "active":
+            raise SourceRegistryError(
+                f"Knowledge Source {transition.source_id!r} is no longer active; "
+                f"the staged retirement is stale — stage it again from the current "
+                f"registry state"
+            )
+    elif transition.action == "reactivate":
+        if source.status != "retired":
+            raise SourceRegistryError(
+                f"Knowledge Source {transition.source_id!r} is no longer retired; "
+                f"the staged reactivation is stale — stage it again from the current "
+                f"registry state"
+            )
+        if transition.version is None or transition.version.source_id != transition.source_id:
+            raise SourceRegistryError(
+                f"the staged reactivation of Knowledge Source {transition.source_id!r} "
+                f"carries no valid new Source Version"
+            )
+    else:
+        raise SourceRegistryError(f"unknown source transition action {transition.action!r}")
+
+
 def _source_version(
     source_id: str,
     raw_bytes: bytes,
@@ -563,14 +606,21 @@ class SourceRegistry:
     def bind_pending(self, transition: PendingSourceTransition, proposal_id: str) -> None:
         """Persist a prepared transition under its staged proposal identity.
 
-        The no-pending-transition check is repeated here under the mutation
-        lock (Plan 02 / P3): the stage→assemble→bind sequence spans separate
-        critical sections, so a concurrent process could bind a transition
-        for the same source between them. Re-checking under the lock keeps
-        one transition per source even across processes.
+        The transition's precondition and the no-pending-transition rule are
+        both re-checked here against the durable state re-read under the
+        mutation lock (Plan 02 / P3): the stage→assemble→bind sequence spans
+        separate critical sections, so a concurrent process can retire or
+        reactivate the source between them. A transition whose precondition
+        no longer holds — a retirement whose source is no longer active, a
+        reactivation whose source is no longer retired — is refused BEFORE
+        any mutation, so no stale transition is bound and (in the pipeline's
+        bind/persist boundary) no proposal is persisted over it; the caller
+        re-stages to observe the new durable state.
         """
+        _validate_source_id(transition.source_id)
         with mutation_lock(self.root):
             state = self._reload()
+            _require_transition_preconditions(state, transition)
             _ensure_no_pending_transition(state, transition.source_id)
             bound = msgspec.structs.replace(transition, proposal_id=proposal_id)
             self._commit(

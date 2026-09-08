@@ -20,12 +20,18 @@ from lumio_wiki.ingest import (
     SourceLifecycleChange,
     SourceProvenance,
 )
-from lumio_wiki.mutation import lock_directory, mutation_lock
+from lumio_wiki.mutation import (
+    MutationLockError,
+    lock_directory,
+    mutation_lock,
+    resource_identity,
+)
 from lumio_wiki.proposal_pipeline import ProposalPipeline
 from lumio_wiki.records import ValidationReport
 from lumio_wiki.source_registry import (
     SourceRegistry,
     SourceRegistryError,
+    _RegistryState,
 )
 
 
@@ -1437,3 +1443,304 @@ def test_mutation_lock_files_stay_outside_resource_roots(tmp_path):
         assert lock_dir.resolve() not in resolved_resource.parents
         # The private store itself holds only durable registry state.
         assert sorted(p.name for p in resource.iterdir()) == ["sources.json"]
+
+
+# --- Plan 02 / P3 review remediation: stale-transition, nested-lock, and
+# --- case-identity regressions ---
+
+
+def _pending_transitions(registry: SourceRegistry) -> list:
+    state = msgspec.json.decode(_state_snapshot(registry), type=_RegistryState)
+    return state.pending_transitions
+
+
+def test_bind_pending_rejects_retirement_stale_after_a_concurrent_publish(tmp_path) -> None:
+    # Review blocker 1: stage_retirement validates the source OUTSIDE the
+    # bind/persist critical section. A concurrent retire+publish that commits
+    # in the stage→bind window must be caught by bind_pending's durable
+    # re-read UNDER the registry lock: the stale transition is refused before
+    # any mutation, so _bind_and_persist persists no stale proposal and binds
+    # no orphan transition.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+
+    stale = store.source_registry.stage_retirement("policy")
+    # The conflicting writer completes a FULL retire + publish in the window.
+    conflict = ProposalPipeline(kb, IngestStore(tmp_path / "ingest"))
+    winner = conflict.retire_source("policy")
+    conflict.publish(winner.id)
+
+    stale_proposal = pipeline._source_change_proposal(
+        SourceLifecycleChange(
+            action="retire", source_id="policy", trigger="source policy retired", impacts=[]
+        )
+    )
+    with pytest.raises(SourceRegistryError, match="no longer active"):
+        pipeline._bind_and_persist(stale, stale_proposal)
+
+    # Clean compensation: the published retirement is the only durable
+    # proposal, the source is retired, and no stale/orphan transition remains.
+    assert [proposal.id for proposal in pipeline.list()] == [winner.id]
+    published_winner = pipeline.review(winner.id)
+    assert published_winner is not None and published_winner.status == "published"
+    assert store.source_registry.get("policy").status == "retired"
+    assert _pending_transitions(store.source_registry) == []
+
+
+def test_bind_pending_rejects_reactivation_stale_after_a_concurrent_publish(tmp_path) -> None:
+    # Review blocker 1, reactivation side: a reactivation staged while the
+    # source was retired is refused at bind time once a concurrent
+    # reactivation+publish has made the source active again.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    retirement = pipeline.retire_source("policy")
+    pipeline.publish(retirement.id)
+
+    stale = store.source_registry.stage_reactivation("policy", b"policy-v2")
+    conflict = ProposalPipeline(kb, IngestStore(tmp_path / "ingest"))
+    winner = conflict.reactivate_source("policy", b"policy-v2-conflict")
+    conflict.publish(winner.id)
+
+    stale_proposal = pipeline._source_change_proposal(
+        SourceLifecycleChange(
+            action="reactivate",
+            source_id="policy",
+            trigger="source policy reactivated",
+            impacts=[],
+        )
+    )
+    with pytest.raises(SourceRegistryError, match="no longer retired"):
+        pipeline._bind_and_persist(stale, stale_proposal)
+
+    # Clean compensation: the conflicting reactivation won durably, and the
+    # active source carries no orphan transition (a fresh retirement can be
+    # staged immediately).
+    persisted_ids = {proposal.id for proposal in pipeline.list()}
+    assert persisted_ids == {retirement.id, winner.id}
+    assert stale_proposal.id not in persisted_ids
+    assert store.source_registry.get("policy").status == "active"
+    assert _pending_transitions(store.source_registry) == []
+    assert pipeline.retire_source("policy").status == "staged"
+
+
+def test_bind_pending_rejects_a_reactivation_without_a_valid_staged_version(tmp_path) -> None:
+    # Review blocker 1, version validation: a reactivation transition must
+    # carry a new Source Version for ITS OWN source id; a decoded or
+    # hand-assembled transition without one is refused before any mutation.
+    registry = SourceRegistry(tmp_path / "ingest")
+    registry.register_source("policy", b"policy-v1")
+    retirement = registry.stage_retirement("policy")
+    registry.bind_pending(retirement, "retire-proposal")
+    registry.apply_transition("retire-proposal")
+    broken = msgspec.structs.replace(
+        registry.stage_reactivation("policy", b"policy-v2"), version=None
+    )
+
+    with pytest.raises(SourceRegistryError, match="no valid new Source Version"):
+        registry.bind_pending(broken, "reactivate-proposal")
+
+    assert _pending_transitions(registry) == []
+
+
+def _gated_pipeline_stale_writer(pipeline, method_name, args, outcomes):
+    """Run one pipeline lifecycle call parked between stage and bind.
+
+    The gate parks the call inside ``_source_change_proposal`` — after
+    ``stage_*`` has released its lock, before ``_bind_and_persist`` takes
+    the store+registry locks — which is exactly the race window under test.
+    Coordination is two ``threading.Event`` barriers; there are no sleeps.
+    Returns (parked_event, release_event, started thread). The gated
+    ``pipeline`` is a test-local instance, so the attribute assignment does
+    not leak; after both events are set the gate is a pass-through.
+    """
+    parked_at_bind_window = threading.Event()
+    conflict_may_commit = threading.Event()
+    real_assemble = pipeline._source_change_proposal
+
+    def gated_assemble(change):
+        parked_at_bind_window.set()
+        assert conflict_may_commit.wait(timeout=120), (
+            "conflicting writer never committed; the barrier rendezvous failed"
+        )
+        return real_assemble(change)
+
+    pipeline._source_change_proposal = gated_assemble
+
+    def runner() -> None:
+        try:
+            getattr(pipeline, method_name)(*args)
+        except BaseException as exc:  # relayed to the main thread for asserting
+            outcomes.put(exc)
+        else:
+            outcomes.put(None)
+
+    thread = threading.Thread(target=runner, daemon=True)
+    return parked_at_bind_window, conflict_may_commit, thread
+
+
+def test_retire_source_rejects_a_transition_stale_between_stage_and_bind(tmp_path) -> None:
+    # Review blocker 1, public journey: retire_source stages the transition,
+    # then assembles the proposal OUTSIDE any lock before binding. A writer
+    # that completes a full retire+publish inside that window must lose the
+    # stale bind — deterministically, via event barriers (no sleeps).
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+
+    outcomes: queue.Queue = queue.Queue()
+    parked, release, writer = _gated_pipeline_stale_writer(
+        pipeline, "retire_source", ("policy",), outcomes
+    )
+    writer.start()
+    assert parked.wait(timeout=120), "writer never reached the stage→bind window"
+
+    # The conflicting journey commits while the stale writer is parked.
+    conflict = ProposalPipeline(kb, IngestStore(tmp_path / "ingest"))
+    winner = conflict.retire_source("policy")
+    conflict.publish(winner.id)
+    release.set()
+
+    writer.join(timeout=120)
+    assert not writer.is_alive(), "stale writer never observed the conflict"
+    error = outcomes.get()
+    assert isinstance(error, SourceRegistryError)
+    assert "no longer active" in str(error)
+
+    # Clean compensation on the public path: no stale proposal persisted, the
+    # winning proposal is the only durable one, and no orphan transition
+    # blocks the next lifecycle journey.
+    assert [proposal.id for proposal in pipeline.list()] == [winner.id]
+    published_winner = pipeline.review(winner.id)
+    assert published_winner is not None and published_winner.status == "published"
+    assert store.source_registry.get("policy").status == "retired"
+    assert _pending_transitions(store.source_registry) == []
+    # No orphan transition blocks the next lifecycle journey.
+    assert pipeline.reactivate_source("policy", b"policy-v2").status == "staged"
+
+
+def test_reactivate_source_rejects_a_transition_stale_between_stage_and_bind(tmp_path) -> None:
+    # Review blocker 1, public reactivation journey: same barrier pattern —
+    # the stale reactivation is refused once a concurrent reactivation has
+    # published and the source is active again.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    retirement = pipeline.retire_source("policy")
+    pipeline.publish(retirement.id)
+
+    outcomes: queue.Queue = queue.Queue()
+    parked, release, writer = _gated_pipeline_stale_writer(
+        pipeline, "reactivate_source", ("policy", b"policy-v2"), outcomes
+    )
+    writer.start()
+    assert parked.wait(timeout=120), "writer never reached the stage→bind window"
+
+    conflict = ProposalPipeline(kb, IngestStore(tmp_path / "ingest"))
+    winner = conflict.reactivate_source("policy", b"policy-v2-conflict")
+    conflict.publish(winner.id)
+    release.set()
+
+    writer.join(timeout=120)
+    assert not writer.is_alive(), "stale writer never observed the conflict"
+    error = outcomes.get()
+    assert isinstance(error, SourceRegistryError)
+    assert "no longer retired" in str(error)
+
+    persisted_ids = {proposal.id for proposal in pipeline.list()}
+    assert persisted_ids == {retirement.id, winner.id}
+    assert store.source_registry.get("policy").status == "active"
+    assert _pending_transitions(store.source_registry) == []
+    # No orphan transition blocks the next lifecycle journey.
+    assert pipeline.retire_source("policy").status == "staged"
+
+
+def test_mutation_lock_refuses_unsafe_nested_expansion_without_deadlock(tmp_path):
+    # Review blocker 2: sorting each call cannot order a NESTED call that
+    # expands an already-held set DOWNWARD in the canonical order — two
+    # writers each holding one resource and nesting the wider set wait on
+    # each other forever (ABBA). The lock refuses that expansion up front
+    # with an actionable MutationLockError instead of entering a possible
+    # deadlock; the refusal acquires nothing and the held lock stays intact.
+    early = tmp_path / "a-early"
+    late = tmp_path / "z-late"
+    early.mkdir()
+    late.mkdir()
+    assert resource_identity(early) < resource_identity(late)
+
+    with mutation_lock(late):
+        # Reentrant re-request of the held resource stays legal.
+        with mutation_lock(late):
+            pass
+        # A nested call adding the EARLIER identity is refused before any
+        # acquisition — it raises promptly (no timeout/sleep involved).
+        with pytest.raises(MutationLockError, match="unsafe nested mutation_lock expansion"):
+            with mutation_lock(early, late):
+                raise AssertionError("unsafe expansion must never be entered")
+    # After the outer hold ends, the refused resource acquires cleanly: the
+    # refusal left nothing half-acquired behind.
+    with mutation_lock(early):
+        pass
+
+
+def test_mutation_lock_allows_order_preserving_nested_expansion(tmp_path):
+    # Review blocker 2, safe side: a nested call may re-request held
+    # resources (reentrant) or add resources that sort AFTER everything its
+    # thread already holds — canonical order is preserved, so cooperating
+    # writers can never cycle.
+    early = tmp_path / "a-early"
+    late = tmp_path / "z-late"
+    early.mkdir()
+    late.mkdir()
+
+    with mutation_lock(early):
+        with mutation_lock(early, late):
+            # Both held: further reentrant requests of each still work.
+            with mutation_lock(late):
+                pass
+            with mutation_lock(early):
+                pass
+    # Release is complete: both resources re-acquire from scratch.
+    with mutation_lock(late, early):
+        pass
+
+
+def test_resource_identity_canonicalizes_case_variants_of_one_location(tmp_path):
+    # Review blocker 3: os.path.normcase is a no-op on POSIX, so on a
+    # case-insensitive macOS filesystem differently cased spellings of one
+    # location would take separate lock identities and race. The identity
+    # lower-cases explicitly (conservatively on every platform: over-
+    # serializing distinct case-sensitive paths only adds mutual exclusion).
+    root = tmp_path / "CamelCase-Store"
+    root.mkdir()
+    variants = [
+        root,
+        tmp_path / "camelcase-store",
+        tmp_path / "CAMELCASE-STORE",
+        tmp_path / "CamelCase-Store",
+    ]
+    identities = {resource_identity(variant) for variant in variants}
+    assert len(identities) == 1
+    assert resource_identity(root) == resource_identity(root).lower()
+
+    # One canonical identity means one lock file for every spelling...
+    digest = hashlib.sha256(resource_identity(root).encode("utf-8")).hexdigest()
+    assert lock_directory() / f"{digest}.lock" == lock_directory() / (
+        hashlib.sha256(resource_identity(tmp_path / "camelcase-store").encode("utf-8")).hexdigest()
+        + ".lock"
+    )
+
+    # ...and one lock end to end: a mutation_lock taken over one spelling is
+    # reentered (not re-acquired) through a differently cased spelling.
+    registry = SourceRegistry(root)
+    registry.register_source("handbook", b"v1")
+    with mutation_lock(tmp_path / "camelcase-store"):
+        with mutation_lock(root):
+            registry.register_source("policy", b"v1")
+    reloaded = SourceRegistry(root)
+    assert {source.source_id for source in reloaded.list()} == {"handbook", "policy"}
