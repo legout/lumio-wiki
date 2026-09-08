@@ -1,6 +1,6 @@
 # 02 — Publication and validation integrity
 
-**P1–P2 implemented; P3–P5 proposed and unexecuted.** Goal: prevent silent canonical data loss and stale
+**P1–P3 implemented; P4–P5 proposed and unexecuted.** Goal: prevent silent canonical data loss and stale
 publication while preserving proposal-first local maintenance.
 Sources/requirements: [owner decisions and B01–B07](README.md#finding-to-task-map),
 [PRD aggregation](../prd/0002-core-sdk.md),
@@ -97,7 +97,7 @@ no alternate CLI mutation implementation. Global checks: [README](README.md#glob
 
 ## P3
 
-- [ ] **One durable lock/reload boundary (B02/B03).**
+- [x] **One durable lock/reload boundary (B02/B03).**
   **Files:** create `packages/lumio-wiki/src/lumio_wiki/mutation.py` as a small
   internal filesystem critical-section helper; modify
   `packages/lumio-wiki/src/lumio_wiki/source_registry.py`,
@@ -132,6 +132,13 @@ no alternate CLI mutation implementation. Global checks: [README](README.md#glob
   **Done:** both successful registrations survive fresh reload; publish versus
   discard has one durable winner, terminal state cannot be resurrected, and
   all registry/proposal mutations use the same documented lock ownership.
+  **Evidence:** integrated locally in `67963a9` after cumulative remediation and
+  a clean read-only P3 gate. Focused lifecycle/ingest/capture and related
+  source/ingest suites passed serially; the final reviewer reran 167 P3 tests
+  plus 32 capture tests, Ruff, and format checks. The full suite passed with
+  four workers via the active uv environment: `1539 passed, 9 skipped`.
+  Complete live-KB rollback across ordinary publish failures remains the
+  separate P5 task.
 
 ## P4
 

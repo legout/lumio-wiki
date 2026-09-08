@@ -1,6 +1,6 @@
 # Library stabilization and simplification
 
-Status: **Plan 01 and Plan 02 / P1–P2 are implemented**. Plan 02 / P3–P5
+Status: **Plan 01 and Plan 02 / P1–P3 are implemented**. Plan 02 / P4–P5
 and Plans 03–05 remain proposed and require separate approval. The P2
 integration is recorded in `e555374`; no other planned production defect is
 fixed here.
@@ -61,12 +61,12 @@ in this documentation lane. Future tasks first reproduce against their own base.
 ## Order and ownership
 
 1. [01 — Test retention](01-test-retention.md): implemented reduction and evidence.
-2. [02 — Publication integrity](02-publication-integrity.md): P1–P2 implemented; P3–P5 proposed, one mutation owner.
+2. [02 — Publication integrity](02-publication-integrity.md): P1–P3 implemented; P4–P5 proposed, one mutation owner.
 3. [03 — Snapshot/retrieval](03-snapshot-retrieval.md): R1–R6, one captured identity.
 4. [04 — Agent workflows](04-agent-workflows.md): A1–A7, safety before additions.
 5. [05 — Simplification/release](05-simplification-release.md): S1–S4, migration before deletion.
 
-After new approval, integrate P3 → P4 → P5; R1 → R2/R3 → R4/R5 → R6;
+After new approval, integrate P4 → P5; R1 → R2/R3 → R4/R5 → R6;
 A1/A2/A4 and A3 safety repair → A5/A6/A7 additions; consumer inventory precedes
 S1/S2 API removals, R1 precedes S3, all fixes precede S4. A3 may centralize
 composition after its ingestion repair; S2 removes migrated old seams, not a
