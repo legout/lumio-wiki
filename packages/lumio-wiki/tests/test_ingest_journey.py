@@ -2038,6 +2038,74 @@ def test_disjoint_proposals_publish_after_intervening_change(tmp_path: Path):
     assert fresh is not None and fresh.status == "staged"
 
 
+def test_new_page_capture_records_creation_role_and_stays_blocked_if_occupied(
+    tmp_path: Path,
+):
+    # P4 review v3 (BLOCKER): every non-move destination was persisted with
+    # role "revision", so an ordinary new-page capture — whose destination is
+    # reviewed as expected-absent — violated the PathPrecondition role
+    # contract: "creation" is for new destinations expected to stay absent,
+    # "revision" only for replaced/merged/renamed bytes. A new page must
+    # stage with (creation, absent), and a destination occupied before
+    # staging stays safely blocked (capture degrades to the Control File
+    # record alone; publication refuses blocked proposals). Deterministic:
+    # direct public-API calls, no sleeps.
+    kb = _kb(tmp_path)
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+
+    staged = lw.create_proposal_without_provider(
+        RELATED_PAGE.encode("utf-8"),
+        "text/markdown",
+        "related.md",
+        kb,
+        store=store,
+    )
+    assert not staged.blocked, staged.validation_report
+    durable = store.get(staged.id)
+    assert durable is not None and durable.preconditions
+    snapshot = {(item.path, item.role, item.kind) for item in durable.preconditions}
+    # The unoccupied new destination is reviewed as a creation that must
+    # stay lexically absent — never as a revision.
+    assert ("journey_related_page.md", "creation", "absent") in snapshot
+    assert not any(
+        item.path == "journey_related_page.md" and item.role == "revision"
+        for item in durable.preconditions
+    )
+
+    # An occupant landing on the reviewed-new destination AFTER staging is
+    # drift: the publish-time re-resolution can no longer produce the
+    # reviewed (creation, absent) record, so publication refuses before any
+    # byte is written and preserves the newer file.
+    occupant = "An external file landed on the reviewed-new destination.\n"
+    (kb.root / "journey_related_page.md").write_text(occupant, encoding="utf-8")
+    with pytest.raises(lw.ProposalPreconditionError) as excinfo:
+        pipeline.publish(staged.id)
+    assert "journey_related_page.md" in str(excinfo.value)
+    assert "reviewed base" in str(excinfo.value)
+    assert (kb.root / "journey_related_page.md").read_text(encoding="utf-8") == occupant
+
+    # A destination occupied BEFORE staging blocks the proposal itself: the
+    # durable record captures only the Control File state (no record for the
+    # occupied path) and publication refuses.
+    occupied = lw.create_proposal_without_provider(
+        RELATED_PAGE.encode("utf-8"),
+        "text/markdown",
+        "related.md",
+        kb,
+        store=store,
+    )
+    assert occupied.blocked, occupied.validation_report
+    occupied_durable = store.get(occupied.id)
+    assert occupied_durable is not None and occupied_durable.preconditions
+    assert not any(
+        item.path == "journey_related_page.md" for item in occupied_durable.preconditions
+    )
+    with pytest.raises(lw.ProposalBlockedError):
+        pipeline.publish(occupied.id)
+    assert (kb.root / "journey_related_page.md").read_text(encoding="utf-8") == occupant
+
+
 # ---------------------------------------------------------------------------
 # Plan 02 / P4 review: durable proposal tampering defense.
 # ---------------------------------------------------------------------------

@@ -612,6 +612,24 @@ def _expect_path(root: Path, relative_path: str, role: str) -> _PathExpectation:
     return _PathExpectation(relative_path, role, "absent")
 
 
+def _expect_write_destination(root: Path, relative_path: str) -> _PathExpectation:
+    """Capture a non-move destination with its contract-correct role (P4).
+
+    A destination that currently holds a readable regular file is reviewed by
+    its bytes (role ``revision`` — a replaced page, a compound merge base, or
+    a reviewed rename's old file). An absent destination is a genuinely NEW
+    page destination (a new page, a compound fallback, or a recorded file
+    that is already gone) and is reviewed as expected-absent (role
+    ``creation``): the ``PathPrecondition`` role contract reserves
+    ``revision`` for existing/replaced/compound/rename destinations, so an
+    ordinary new-page capture is never mislabeled as a revision.
+    """
+    expectation = _expect_path(root, relative_path, "revision")
+    if expectation.kind == "absent":
+        return _PathExpectation(relative_path, "creation", "absent")
+    return expectation
+
+
 def _capture_mutation_preconditions(
     proposed_pages: list,
     working_dir: str | Path,
@@ -672,9 +690,11 @@ def _capture_mutation_preconditions(
                 # A self-move overwrites its own recorded path in place.
                 expectations.append(_expect_path(root, destination.relative_path, "revision"))
         else:
-            # write/compound/rename: the destination's reviewed bytes (or its
-            # reviewed absence, when the recorded file is already gone).
-            expectations.append(_expect_path(root, destination.relative_path, "revision"))
+            # write/compound/rename: an occupied destination (the page's own
+            # recorded file, a compound merge base, or a reviewed rename's
+            # old file) is reviewed by its bytes; an absent destination is a
+            # genuinely new page destination reviewed as a creation.
+            expectations.append(_expect_write_destination(root, destination.relative_path))
     expectations.extend(removal_expectations)
     unique: dict[str, _PathExpectation] = {}
     for expectation in expectations:
