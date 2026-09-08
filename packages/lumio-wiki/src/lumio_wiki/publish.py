@@ -1430,7 +1430,12 @@ def validate_candidate_knowledge_base(
     the declared removal), or a Control File parent whose mode bits deny the
     atomic temp-file creation and replace — comes back as an error
     ``ValidationIssue`` instead of raised, exactly the conflict live
-    application would raise. Only
+    application would raise. The throwaway copy itself also tolerates a
+    DANGLING symlink the real Knowledge Base already contains (a rejected
+    dangling destination legitimately survives, and a user-authored dangling
+    entry can predate any proposal): skipping that contentless entry in the
+    copy keeps candidate validation from leaking a raw ``shutil.Error`` for
+    ANY proposal on such a KB (P2 review v9). Only
     :class:`DestinationConflict` is translated; unexpected errors still
     propagate. The checked destination set is then applied to the candidate
     unchanged, so the validated tree is the tree publication would write.
@@ -1476,7 +1481,18 @@ def validate_candidate_knowledge_base(
         return _conflict_report(exc)
     with tempfile.TemporaryDirectory() as tmp:
         candidate = Path(tmp) / "candidate"
-        shutil.copytree(root, candidate, dirs_exist_ok=True)
+        # ``ignore_dangling_symlinks`` keeps the throwaway copy from dying on
+        # a DANGLING symlink the real Knowledge Base already contains (a
+        # proposal's rejected dangling destination legitimately survives, and
+        # a user-authored dangling entry can predate any proposal): the
+        # default dereferencing copy would raise a raw ``shutil.Error`` for
+        # ANY proposal on such a KB (P2 review v9). Skipping the entry in the
+        # throwaway copy masks nothing — every conflict preflight above ran
+        # against the REAL root before this copy exists, a dangling entry has
+        # no content to validate (it can never be a page or Control File),
+        # and every write branch rejects destinations that lexically traverse
+        # one. Valid symlinks keep the pre-existing dereferencing semantics.
+        shutil.copytree(root, candidate, dirs_exist_ok=True, ignore_dangling_symlinks=True)
         try:
             # The checked set applies unchanged to the byte-identical
             # candidate tree: every path is root-relative by construction.

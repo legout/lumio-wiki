@@ -1214,6 +1214,11 @@ def test_dangling_symlink_ancestor_is_rejected_with_candidate_parity(
 
     # Positive controls: a genuinely MISSING ordinary parent stays valid in
     # candidate validation and live apply alike — it is created on demand.
+    # These controls also pin the copy-side fix (P2 review v9): the rejected
+    # proposal's dangling ``link`` entry legitimately survives in the real
+    # Knowledge Base, so the throwaway candidate copy must tolerate it
+    # (``ignore_dangling_symlinks``) instead of leaking a raw
+    # ``shutil.Error`` for any subsequent proposal on the same KB.
     nested = lw.ProposedPage(
         relative_path="fresh_sub/fresh.md",
         title="Fresh Nested",
