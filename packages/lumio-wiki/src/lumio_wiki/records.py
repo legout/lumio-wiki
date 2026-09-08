@@ -251,6 +251,21 @@ class ExtractedReference(msgspec.Struct, frozen=True):
     extractor_version: str = EXTRACTOR_VERSION
 
 
+class PageRead(msgspec.Struct, frozen=True):
+    """A bounded, location-aware read of one canonical page."""
+
+    title: str
+    path: str
+    content: str
+    raw: bool = False
+    section: str | None = None
+    start_line: int = 1
+    end_line: int = 0
+    total_lines: int = 0
+    truncated: bool = False
+    omitted_lines: int = 0
+
+
 class CompiledPage(msgspec.Struct, frozen=True):
     """A loaded Markdown page from a Knowledge Base.
 
@@ -403,6 +418,7 @@ class CitationOpenActions(msgspec.Struct, frozen=True):
     source_id: str | None = None
     source_url: str | None = None
     source_command: str = ""
+    kb_location: str | None = None
 
 
 class Citation(msgspec.Struct, frozen=True):

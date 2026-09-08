@@ -42,6 +42,7 @@ from typing import Protocol, runtime_checkable
 
 import msgspec
 
+from lumio_wiki.composition import lancedb_available, load_lancedb_adapter
 from lumio_wiki.embeddings import (
     DEFAULT_SEMANTIC_THRESHOLD,
     Embedder,
@@ -136,6 +137,7 @@ class _GoldQueryYaml(msgspec.Struct):
     query: str
     relevant: list[str]
     seeds: list[str] | None = None
+    passages: list[str] | None = None
     note: str = ""
 
 
@@ -149,12 +151,18 @@ class _GoldSetYaml(msgspec.Struct):
 
 @dataclass(frozen=True)
 class GoldQuery:
-    """One gold-set row: a query, the relevant Canonical Page Titles, and optional graph seeds."""
+    """One gold row, including optional expected passage identities.
+
+    Empty ``relevant`` is an explicit negative query: it measures whether a
+    stage returns no answer rather than disappearing from the denominator.
+    ``passages`` use ``Page Title#Section Title`` (or just a section title).
+    """
 
     query: str
     relevant: frozenset[str]
     seed_titles: tuple[str, ...] = ()
     note: str = ""
+    passages: tuple[str, ...] = ()
 
     @property
     def has_graph_seeds(self) -> bool:
@@ -184,12 +192,17 @@ def load_gold_set(path: str | Path) -> GoldSet:
     queries: list[GoldQuery] = []
     for row in parsed.queries:
         relevant = frozenset(r.strip() for r in row.relevant if r and r.strip())
-        if row.query.strip() and relevant:
+        if row.query.strip():
             queries.append(
                 GoldQuery(
                     query=row.query.strip(),
                     relevant=relevant,
                     seed_titles=tuple(s.strip() for s in (row.seeds or []) if s and s.strip()),
+                    passages=tuple(
+                        passage.strip()
+                        for passage in (row.passages or [])
+                        if passage and passage.strip()
+                    ),
                     note=(row.note or "").strip(),
                 )
             )
@@ -215,7 +228,8 @@ class Stage(Protocol):
     ``available`` reports whether the stage's dependencies are present (e.g.
     LanceDB installed). ``applicable`` reports whether a given gold query
     supports this stage (graph expansion needs seed titles). ``run`` returns the
-    distinct retrieved page titles in rank order for recall@k.
+    distinct retrieved page titles in rank order for recall@k. Stages may also
+    provide ``run_results`` to make citation and passage metrics measurable.
     """
 
     name: str
@@ -245,11 +259,13 @@ class ZeroIndexLexicalStage:
         del query
         return True
 
-    def run(self, kb: KnowledgeBase, query: GoldQuery, *, k: int) -> list[str]:
+    def run_results(self, kb: KnowledgeBase, query: GoldQuery, *, k: int) -> list[RetrievalResult]:
         # Default adapter, no graph expansion. ``k`` is the retrieval limit so a
         # deeper ``k`` is measured from a deeper candidate pool.
-        results = kb.retrieve(query.query, limit=k)
-        return distinct_page_titles(results)
+        return kb.retrieve(query.query, limit=k)
+
+    def run(self, kb: KnowledgeBase, query: GoldQuery, *, k: int) -> list[str]:
+        return distinct_page_titles(self.run_results(kb, query, k=k))
 
 
 class GraphExpansionStage:
@@ -280,8 +296,8 @@ class GraphExpansionStage:
     def applicable(self, query: GoldQuery) -> bool:
         return query.has_graph_seeds
 
-    def run(self, kb: KnowledgeBase, query: GoldQuery, *, k: int) -> list[str]:
-        results = kb.retrieve(
+    def run_results(self, kb: KnowledgeBase, query: GoldQuery, *, k: int) -> list[RetrievalResult]:
+        return kb.retrieve(
             query.query,
             limit=k,
             graph_seed_titles=list(query.seed_titles),
@@ -289,44 +305,9 @@ class GraphExpansionStage:
             graph_direction=GRAPH_DIRECTION_OUTGOING,
             graph_max_depth=self._max_depth,
         )
-        return distinct_page_titles(results)
 
-
-def lancedb_available() -> bool:
-    """Return True when the optional ``lumio-lancedb`` adapter is importable.
-
-    Probed with :func:`importlib.util.find_spec` (a string lookup, never an
-    import statement) so this module never trips lumio-wiki's downward-
-    dependency guard (ADR-0010): the ``lumio-wiki`` package must not import
-    ``lumio_lancedb`` / ``lancedb`` / ``pyarrow``. The caller loads the adapter
-    lazily via :func:`load_lancedb_adapter` only when this returns True.
-    """
-    import importlib.util
-
-    return (
-        importlib.util.find_spec("lumio_lancedb") is not None
-        and importlib.util.find_spec("lancedb") is not None
-        and importlib.util.find_spec("pyarrow") is not None
-    )
-
-
-def load_lancedb_adapter() -> RetrievalAdapter | None:
-    """Construct and return the LanceDB retrieval adapter, or ``None`` if absent.
-
-    Loaded via :func:`importlib.import_module` (a string lookup) so lumio-wiki
-    contains no ``import lumio_lancedb`` statement (ADR-0010 dependency guard);
-    this is the optional-plugin path — ``lumio-wiki`` has no static dependency
-    on ``lumio-lancedb``, but uses it when the workspace installs it.
-    """
-    if not lancedb_available():
-        return None
-    try:
-        import importlib
-
-        module = importlib.import_module("lumio_lancedb.index")
-        return module.LanceDBRetrievalAdapter()
-    except Exception:
-        return None
+    def run(self, kb: KnowledgeBase, query: GoldQuery, *, k: int) -> list[str]:
+        return distinct_page_titles(self.run_results(kb, query, k=k))
 
 
 class _LanceDBStageBase:
@@ -359,11 +340,11 @@ class _LanceDBStageBase:
         del query
         return True
 
-    def run(self, kb: KnowledgeBase, query: GoldQuery, *, k: int) -> list[str]:
+    def run_results(self, kb: KnowledgeBase, query: GoldQuery, *, k: int) -> list[RetrievalResult]:
         if not self.available():
             return []
         bound = self._bound_kb if self._bound_kb is not None else kb
-        results = bound.retrieve(
+        return bound.retrieve(
             query.query,
             limit=k,
             mode=self._mode,
@@ -371,7 +352,9 @@ class _LanceDBStageBase:
             score_threshold=self._score_threshold,
             index_dir=self._index_dir,
         )
-        return distinct_page_titles(results)
+
+    def run(self, kb: KnowledgeBase, query: GoldQuery, *, k: int) -> list[str]:
+        return distinct_page_titles(self.run_results(kb, query, k=k))
 
 
 class LanceDBBM25Stage(_LanceDBStageBase):
@@ -442,11 +425,7 @@ def default_stages(
     also supplied.
     """
     stages: list[Stage] = [ZeroIndexLexicalStage(), GraphExpansionStage()]
-    if (
-        lancedb_index_dir is not None
-        and lancedb_adapter is not None
-        and lancedb_available()
-    ):
+    if lancedb_index_dir is not None and lancedb_adapter is not None and lancedb_available():
         stages.append(LanceDBBM25Stage(index_dir=lancedb_index_dir))
         if embedder is not None:
             stages.append(LanceDBSemanticStage(index_dir=lancedb_index_dir, embedder=embedder))
@@ -461,10 +440,14 @@ def default_stages(
 
 @dataclass(frozen=True)
 class QueryStageOutcome:
-    """One (query, stage) cell: retrieved titles and recall@k."""
+    """One (query, stage) cell: titles, recall, and evidence disclosures."""
 
     retrieved: list[str]
     recall_by_k: dict[int, float]
+    citation_coverage: float = 0.0
+    passage_hits: int = 0
+    passage_expected: int = 0
+    negative_success: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -477,11 +460,12 @@ class QueryOutcome:
     note: str
     per_stage: dict[str, QueryStageOutcome]
     skipped_stages: dict[str, str]
+    passages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class StageAggregate:
-    """Aggregate recall@k for one stage over the queries it applied to."""
+    """Aggregate recall plus negative, citation, and passage measurements."""
 
     name: str
     description: str
@@ -489,6 +473,10 @@ class StageAggregate:
     mean_recall_by_k: dict[int, float]
     available: bool
     skipped_reason: str | None
+    negative_n: int = 0
+    negative_success_rate: float | None = None
+    citation_coverage: float | None = None
+    passage_recall: float | None = None
 
 
 @dataclass(frozen=True)
@@ -505,13 +493,25 @@ class EvalReport:
     # reviewer can tell the deterministic hash stand-in from a real embedding
     # model at a glance (issue #158).
     embedder: str | None = None
+    corpus_pages: int = 0
+    disclosures: tuple[str, ...] = (
+        "lifecycle mutation/edit/delete transitions are covered by focused "
+        "regression tests, not this gold-set run",
+        "semantic ranking quality is not certified by the deterministic hash embedder",
+    )
 
     def to_dict(self) -> dict:
         """Machine-readable serialization (stable for CI diffing / JSON output)."""
         return {
             "gold_set": self.gold_set,
             "gold_set_size": self.gold_set_size,
+            "corpus_pages": self.corpus_pages,
             "embedder": self.embedder,
+            "disclosures": list(self.disclosures),
+            "lifecycle": {
+                "measured": False,
+                "note": "edit/delete/rebuild lifecycle is covered by focused regression tests",
+            },
             "ks": list(self.ks),
             "stages": [
                 {
@@ -523,6 +523,18 @@ class EvalReport:
                     },
                     "available": s.available,
                     "skipped_reason": s.skipped_reason,
+                    "negative_n": s.negative_n,
+                    "negative_success_rate": (
+                        round(s.negative_success_rate, 4)
+                        if s.negative_success_rate is not None
+                        else None
+                    ),
+                    "citation_coverage": (
+                        round(s.citation_coverage, 4) if s.citation_coverage is not None else None
+                    ),
+                    "passage_recall": (
+                        round(s.passage_recall, 4) if s.passage_recall is not None else None
+                    ),
                 }
                 for s in self.stages
             ],
@@ -531,14 +543,18 @@ class EvalReport:
                     "query": q.query,
                     "relevant": list(q.relevant),
                     "seed_titles": list(q.seed_titles),
+                    "passages": list(q.passages),
                     "note": q.note,
                     "per_stage": {
                         name: {
                             "retrieved": out.retrieved,
                             "recall_by_k": {
-                                str(k): round(v, 4)
-                                for k, v in out.recall_by_k.items()
+                                str(k): round(v, 4) for k, v in out.recall_by_k.items()
                             },
+                            "citation_coverage": round(out.citation_coverage, 4),
+                            "passage_hits": out.passage_hits,
+                            "passage_expected": out.passage_expected,
+                            "negative_success": out.negative_success,
                         }
                         for name, out in q.per_stage.items()
                     },
@@ -600,6 +616,47 @@ def _build_lancedb_index(
     return kb.build_index(index_dir, retrieval=retrieval_adapter, embedder=embedder)
 
 
+def _citation_is_valid(result: RetrievalResult) -> bool:
+    citation = result.citation
+    has_coordinates = (
+        citation.line_start is not None
+        and citation.line_end is not None
+        and citation.line_start <= citation.line_end
+    )
+    return bool(
+        citation.page_title
+        and citation.relative_path
+        and has_coordinates
+        and result.snippet.strip()
+    )
+
+
+def _passage_matches(results: Sequence[RetrievalResult], expected: Sequence[str]) -> int:
+    if not expected:
+        return 0
+    found = {
+        f"{result.citation.page_title}#{result.citation.section_title}"
+        for result in results
+        if result.citation.section_title
+    }
+    found.update(
+        result.citation.section_title for result in results if result.citation.section_title
+    )
+    return sum(1 for passage in expected if passage in found)
+
+
+def _run_stage_results(
+    stage: Stage, kb: KnowledgeBase, query: GoldQuery, *, k: int
+) -> list[RetrievalResult]:
+    run_results = getattr(stage, "run_results", None)
+    if run_results is None:
+        # Third-party stages retain the original title-only contract. Their
+        # recall remains measurable, while evidence metrics are disclosed as
+        # unavailable rather than fabricated.
+        return []
+    return run_results(kb, query, k=k)
+
+
 def evaluate(
     kb: KnowledgeBase,
     gold_set: GoldSet,
@@ -623,11 +680,7 @@ def evaluate(
     resolved_ks = tuple(ks) if ks is not None else (gold_set.ks or DEFAULT_KS)
 
     if stages is None:
-        if (
-            lancedb_adapter is not None
-            and lancedb_available()
-            and lancedb_index_dir is None
-        ):
+        if lancedb_adapter is not None and lancedb_available() and lancedb_index_dir is None:
             import tempfile
 
             lancedb_index_dir = Path(tempfile.mkdtemp(prefix="lumio-eval-lance-"))
@@ -648,10 +701,17 @@ def evaluate(
     query_outcomes: list[QueryOutcome] = []
     # Accumulators: stage_name -> {k -> [recall, ...]} over applicable queries.
     accum: dict[str, dict[int, list[float]]] = {}
+    measurements: dict[str, dict[str, list[float]]] = {}
     stage_meta: dict[str, Stage] = {}
     for stage in stages:
         stage_meta[stage.name] = stage
         accum.setdefault(stage.name, {k: [] for k in resolved_ks})
+        measurements[stage.name] = {
+            "negative": [],
+            "citation": [],
+            "passage_hits": [],
+            "passage_expected": [],
+        }
 
     for gq in gold_set.queries:
         per_stage: dict[str, QueryStageOutcome] = {}
@@ -663,11 +723,37 @@ def evaluate(
             if not stage.applicable(gq):
                 skipped[stage.name] = "not applicable (e.g. no graph seeds)"
                 continue
-            retrieved = stage.run(kb, gq, k=max(resolved_ks))
-            recall_by_k = {k: recall_at_k(retrieved, set(gq.relevant), k) for k in resolved_ks}
-            per_stage[stage.name] = QueryStageOutcome(
-                retrieved=retrieved, recall_by_k=recall_by_k
+            run_results = getattr(stage, "run_results", None)
+            has_evidence_results = callable(run_results)
+            results = _run_stage_results(stage, kb, gq, k=max(resolved_ks))
+            retrieved = (
+                distinct_page_titles(results)
+                if has_evidence_results
+                else stage.run(kb, gq, k=max(resolved_ks))
             )
+            recall_by_k = {k: recall_at_k(retrieved, set(gq.relevant), k) for k in resolved_ks}
+            citation_coverage = (
+                sum(_citation_is_valid(result) for result in results) / len(results)
+                if results
+                else 0.0
+            )
+            passage_hits = _passage_matches(results, gq.passages)
+            negative_success = (not retrieved) if not gq.relevant else None
+            per_stage[stage.name] = QueryStageOutcome(
+                retrieved=retrieved,
+                recall_by_k=recall_by_k,
+                citation_coverage=citation_coverage,
+                passage_hits=passage_hits,
+                passage_expected=len(gq.passages),
+                negative_success=negative_success,
+            )
+            if has_evidence_results and results:
+                measurements[stage.name]["citation"].append(citation_coverage)
+            if negative_success is not None:
+                measurements[stage.name]["negative"].append(1.0 if negative_success else 0.0)
+            if has_evidence_results and gq.passages:
+                measurements[stage.name]["passage_hits"].append(passage_hits)
+                measurements[stage.name]["passage_expected"].append(len(gq.passages))
             for k in resolved_ks:
                 accum[stage.name][k].append(recall_by_k[k])
         query_outcomes.append(
@@ -678,6 +764,7 @@ def evaluate(
                 note=gq.note,
                 per_stage=per_stage,
                 skipped_stages=skipped,
+                passages=gq.passages,
             )
         )
 
@@ -697,9 +784,10 @@ def evaluate(
             counts = {k: len(recalls[k]) for k in resolved_ks}
             n = max(counts.values()) if counts else 0
             means = {
-                k: (sum(recalls[k]) / len(recalls[k]) if recalls[k] else 0.0)
-                for k in resolved_ks
+                k: (sum(recalls[k]) / len(recalls[k]) if recalls[k] else 0.0) for k in resolved_ks
             }
+            stage_measurements = measurements[stage.name]
+            passage_expected = sum(stage_measurements["passage_expected"])
             agg = StageAggregate(
                 name=stage.name,
                 description=stage.description,
@@ -707,6 +795,22 @@ def evaluate(
                 mean_recall_by_k=means,
                 available=True,
                 skipped_reason=None,
+                negative_n=len(stage_measurements["negative"]),
+                negative_success_rate=(
+                    sum(stage_measurements["negative"]) / len(stage_measurements["negative"])
+                    if stage_measurements["negative"]
+                    else None
+                ),
+                citation_coverage=(
+                    sum(stage_measurements["citation"]) / len(stage_measurements["citation"])
+                    if stage_measurements["citation"]
+                    else None
+                ),
+                passage_recall=(
+                    sum(stage_measurements["passage_hits"]) / passage_expected
+                    if passage_expected
+                    else None
+                ),
             )
         stage_aggregates.append(agg)
 
@@ -717,6 +821,7 @@ def evaluate(
         stages=stage_aggregates,
         queries=query_outcomes,
         embedder=embedder.model_info.name if embedder is not None else None,
+        corpus_pages=len(kb.pages),
     )
 
 

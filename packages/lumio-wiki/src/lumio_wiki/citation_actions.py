@@ -49,9 +49,7 @@ _READER_URL_SCHEMES: frozenset[str] = frozenset({"http", "https"})
 #: Object-store URI schemes that must never surface as user-facing document
 #: URLs (issue #177 AC): an authored ``sources[].url`` holding one is storage
 #: provenance, not an openable link.
-_OBJECT_STORE_URL_SCHEMES: frozenset[str] = frozenset(
-    {"s3", "s3a", "gs", "gcs", "az", "abfs"}
-)
+_OBJECT_STORE_URL_SCHEMES: frozenset[str] = frozenset({"s3", "s3a", "gs", "gcs", "az", "abfs"})
 
 #: Characters that make a shell word safe to interpolate bare. A subset of
 #: ``shlex``-safe characters: no whitespace, no quoting, no expansion.
@@ -66,10 +64,7 @@ def _shell_double_quoted(value: str) -> str:
     Title can never alter the printed command.
     """
     escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("$", "\\$")
-        .replace("`", "\\`")
+        value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
     )
     return f'"{escaped}"'
 
@@ -135,13 +130,10 @@ def normalize_reader_base_url(raw: str) -> str:
             "browser URLs"
         )
     if not parts.netloc or not parts.hostname:
-        raise ReaderBaseURLError(
-            f"Reader base URL is missing a host (got {value!r})"
-        )
+        raise ReaderBaseURLError(f"Reader base URL is missing a host (got {value!r})")
     if parts.username or parts.password:
         raise ReaderBaseURLError(
-            "Reader base URL must not embed credentials; credentials never "
-            "belong in a public URL"
+            "Reader base URL must not embed credentials; credentials never belong in a public URL"
         )
     if parts.query or parts.fragment:
         raise ReaderBaseURLError(
@@ -154,14 +146,10 @@ def normalize_reader_base_url(raw: str) -> str:
     except ValueError:
         port = -1
     if port is not None and not 1 <= port <= 65535:
-        raise ReaderBaseURLError(
-            f"Reader base URL has an invalid port (got {value!r})"
-        )
+        raise ReaderBaseURLError(f"Reader base URL has an invalid port (got {value!r})")
     # urlsplit keeps the case of the scheme; normalize it for joining.
     normalized = (
-        value
-        if parts.scheme.islower()
-        else parts.scheme.lower() + value[len(parts.scheme) :]
+        value if parts.scheme.islower() else parts.scheme.lower() + value[len(parts.scheme) :]
     )
     return normalized.rstrip("/")
 
@@ -183,24 +171,27 @@ def reader_page_url(reader_base_url: str, page_title: str) -> str:
     return urljoin(base + "/", reader_page_path(page_title).lstrip("/"))
 
 
-def page_open_command(page_title: str) -> str:
-    """The copyable, shell-safe CLI action that opens a cited Compiled Page."""
-    return f"lumio-wiki page {_shell_double_quoted(page_title)}"
+def page_open_command(page_title: str, kb_location: str | None = None) -> str:
+    """The copyable CLI action that opens a page in its original KB."""
+    location = f"{_shell_double_quoted(kb_location)} " if kb_location else ""
+    return f"lumio-wiki page {location}{_shell_double_quoted(page_title)}"
 
 
-def source_inspect_command(source_id: str) -> str:
+def source_inspect_command(source_id: str, kb_location: str | None = None) -> str:
     """The explicit private-Source action (ADR-0020).
 
     A private Source Artifact is opened through explicit, inspectable
     commands — never an implicitly emitted signed or public URL. The id is
     quoted only when it is not a safe bare shell word.
     """
-    return f"lumio-wiki source inspect --source-id {_shell_arg(source_id)}"
+    location = f"{_shell_double_quoted(kb_location)} " if kb_location else ""
+    return f"lumio-wiki source inspect {location}--source-id {_shell_arg(source_id)}"
 
 
 def page_open_actions(
     page: CompiledPage,
     *,
+    kb_location: str | None = None,
     reader_base_url: str | None = None,
 ) -> CitationOpenActions:
     """Derive the open actions for a Compiled Page (search/index surfaces)."""
@@ -208,6 +199,7 @@ def page_open_actions(
         page_title=page.title,
         page_path=page.path,
         entity_id=page.id or None,
+        kb_location=kb_location,
         reader_base_url=reader_base_url,
     )
 
@@ -219,6 +211,7 @@ def citation_open_actions(
     entity_id: str | None = None,
     source_id: str | None = None,
     source_url: str | None = None,
+    kb_location: str | None = None,
     reader_base_url: str | None = None,
 ) -> CitationOpenActions:
     """Derive the labelled open actions for one citation or page.
@@ -232,18 +225,17 @@ def citation_open_actions(
     dropped: object keys are never presented as user-facing document
     URLs (issue #177 AC).
     """
-    reader_url = (
-        reader_page_url(reader_base_url, page_title) if reader_base_url else None
-    )
+    reader_url = reader_page_url(reader_base_url, page_title) if reader_base_url else None
     return CitationOpenActions(
         page_title=page_title,
         page_path=page_path,
         entity_id=entity_id,
-        open_command=page_open_command(page_title) if page_title else "",
+        kb_location=kb_location,
+        open_command=(page_open_command(page_title, kb_location) if page_title else ""),
         reader_url=reader_url,
         source_id=source_id,
         source_url=_external_document_url(source_url),
-        source_command=source_inspect_command(source_id) if source_id else "",
+        source_command=(source_inspect_command(source_id, kb_location) if source_id else ""),
     )
 
 
@@ -251,6 +243,7 @@ def source_action_lines(
     *,
     source_id: str | None = None,
     source_url: str | None = None,
+    kb_location: str | None = None,
 ) -> list[str]:
     """Render ONLY the Source-provenance action lines for one Source.
 
@@ -262,7 +255,7 @@ def source_action_lines(
         page_path="",
         source_id=source_id,
         source_url=_external_document_url(source_url),
-        source_command=source_inspect_command(source_id) if source_id else "",
+        source_command=(source_inspect_command(source_id, kb_location) if source_id else ""),
     )
     return render_open_actions(actions)
 
@@ -295,7 +288,5 @@ def render_open_actions(actions: CitationOpenActions) -> list[str]:
     if actions.source_url:
         lines.append(_line(_SOURCE_URL_LABEL, actions.source_url))
     if actions.source_command:
-        lines.append(
-            _line(_SOURCE_ARTIFACT_LABEL, actions.source_command)
-        )
+        lines.append(_line(_SOURCE_ARTIFACT_LABEL, actions.source_command))
     return lines

@@ -295,7 +295,7 @@ lumio-wiki search "password reset" --limit 2
 summary: How Aurora support verifies a requester and forces a password reset.
 path:    procedures/password_reset_runbook.md
 ...
-open:            lumio-wiki page "Password Reset Runbook"
+open:            lumio-wiki page ./kb "Password Reset Runbook"
 ```
 
 Read the page (ladder step 3) to copy the exact passage before citing it:
@@ -308,7 +308,7 @@ The page read adds the private-Source action — an explicit, authorized
 inspection command, never an implicit URL:
 
 ```text
-source-artifact: lumio-wiki source inspect --source-id support-runbook-2026
+source-artifact: lumio-wiki source inspect ./kb --source-id support-runbook-2026
 ```
 
 Traverse the Discovery Graph over the accepted Claim you seeded (add
@@ -470,8 +470,8 @@ memory**:
 >
 > — Password Reset Runbook (`procedures/password_reset_runbook.md`):
 > "The reset link expires after 30 minutes."
-> Open: `lumio-wiki page "Password Reset Runbook"`
-> Source artifact: `lumio-wiki source inspect --source-id support-runbook-2026`
+> Open: `lumio-wiki page ./kb "Password Reset Runbook"`
+> Source artifact: `lumio-wiki source inspect ./kb --source-id support-runbook-2026`
 
 Every domain claim carries a citation with an open action; a question the
 Knowledge Base cannot support returns **"not covered by this knowledge

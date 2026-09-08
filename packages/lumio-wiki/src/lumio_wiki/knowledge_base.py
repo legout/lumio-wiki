@@ -8,6 +8,7 @@ import tempfile
 import uuid
 from collections import deque
 from collections.abc import Iterable, Sequence
+from contextlib import suppress
 from datetime import UTC, datetime
 from datetime import date as _date_cls
 from functools import cached_property
@@ -23,6 +24,7 @@ from lumio_wiki.embeddings import (
     Embedder,
     RetrievalMode,
 )
+from lumio_wiki.evidence import body_sections
 from lumio_wiki.fingerprint_store import load_stored_fingerprint
 from lumio_wiki.graph_state import (
     GRAPH_ARTIFACT_FILENAME,
@@ -72,6 +74,7 @@ from lumio_wiki.records import (
     LinkCandidate,
     LinkImpactSignal,
     Ontology,
+    PageRead,
     PageSearchResult,
     PredicateDefinition,
     RankedLinkCandidate,
@@ -411,14 +414,53 @@ RESERVED_ARTIFACT_LABELS: dict[str, str] = {
 }
 
 
+def _section_line_range(lines: list[str], title: str, body_start_line: int) -> tuple[int, int]:
+    """Return the inclusive full-file range for one Markdown heading section."""
+    headings: list[tuple[int, int, str]] = []
+    heading_re = re.compile(r"^(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*(?:\r?\n)?$")
+    for index, line in enumerate(lines, start=1):
+        if index < body_start_line:
+            continue
+        match = heading_re.match(line)
+        if match:
+            headings.append((index, len(match.group(1)), match.group(2).strip()))
+    selected = [heading for heading in headings if heading[2] == title]
+    if not selected:
+        raise KnowledgeBaseError(f"section not found: {title}")
+    if len(selected) > 1:
+        raise KnowledgeBaseError(f"section is ambiguous: {title}")
+    start, level, _ = selected[0]
+    end = len(lines)
+    for next_start, next_level, _ in headings:
+        if next_start > start and next_level <= level:
+            end = next_start - 1
+            break
+    return start, end
+
+
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    """Truncate text at a UTF-8 boundary without producing invalid text."""
+    return text.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
+
+
 class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
-    """A loaded Knowledge Base view; callers replace rather than mutate pages."""
+    """A loaded Knowledge Base view; callers replace rather than mutate pages.
+
+    ``source_fingerprint`` is computed from the same captured bytes used to
+    parse ``pages``. Record-only instances created by callers leave it unset;
+    they can still serve in-memory retrieval, but never claim a fresh derived
+    index for live disk content.
+    """
 
     root: Path
     pages: list[CompiledPage] = msgspec.field(default_factory=list)
     index_dir: Path | None = None
     control: KnowledgeBaseControlFile | None = None
     retrieval: Any | None = None
+    source_fingerprint: SourceFingerprint | None = None
+    # Captured canonical bytes make page reads lossless and keep local/S3
+    # snapshots on the same read seam. Record-only callers may leave this empty.
+    canonical_pages: dict[str, bytes] = msgspec.field(default_factory=dict)
 
     @cached_property
     def _cached_knowledge_index(self) -> _KnowledgeIndex:  # noqa: F821
@@ -440,6 +482,99 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
     def lookup_by_alias(self, alias: str) -> list[CompiledPage]:
         """Return pages that declare ``alias`` as an alternate lookup phrase."""
         return self._knowledge_index().by_alias.get(alias, [])
+
+    def read_page(
+        self,
+        title: str,
+        *,
+        raw: bool = False,
+        section: str | None = None,
+        line_start: int | None = None,
+        line_end: int | None = None,
+        max_lines: int | None = None,
+        max_bytes: int | None = None,
+    ) -> PageRead:
+        """Read one page through a bounded, canonical and location-aware seam.
+
+        The default returns the parsed authored body. ``raw`` and absolute line
+        bounds read the captured canonical Markdown, preserving frontmatter and
+        exact newlines. Section selection is heading-based and deterministic;
+        all limits truncate with explicit disclosure rather than silently
+        claiming a complete read.
+        """
+        matches = self.lookup_by_title(title)
+        if not matches:
+            matches = self.lookup_by_alias(title)
+        if len(matches) != 1:
+            if not matches:
+                raise KnowledgeBaseError(f"page not found: {title}")
+            raise KnowledgeBaseError(f"page reference is ambiguous: {title}")
+        page = matches[0]
+        if line_start is not None and line_start < 1:
+            raise ValueError("line_start must be at least 1")
+        if line_end is not None and line_end < 1:
+            raise ValueError("line_end must be at least 1")
+        if line_start is not None and line_end is not None and line_start > line_end:
+            raise ValueError("line_start must not exceed line_end")
+        if max_lines is not None and max_lines < 1:
+            raise ValueError("max_lines must be at least 1")
+        if max_bytes is not None and max_bytes < 1:
+            raise ValueError("max_bytes must be at least 1")
+        if section is not None and (line_start is not None or line_end is not None):
+            raise ValueError("section cannot be combined with absolute line bounds")
+
+        canonical = self.canonical_pages.get(page.path)
+        if canonical is None:
+            path = self.root / page.path
+            if not path.is_file():
+                raise KnowledgeBaseError(f"canonical page bytes unavailable: {page.path}")
+            canonical = path.read_bytes()
+        canonical_text = canonical.decode("utf-8")
+        canonical_lines = canonical_text.splitlines(keepends=True)
+        selected_raw = raw or any(
+            value is not None for value in (section, line_start, line_end, max_lines, max_bytes)
+        )
+        if selected_raw:
+            start = line_start or 1
+            end = line_end or len(canonical_lines)
+            if section is not None:
+                start, end = _section_line_range(canonical_lines, section, page.body_start_line)
+            if start < 1 or end < start or end > len(canonical_lines):
+                raise ValueError("requested line range is outside the canonical page")
+            content = "".join(canonical_lines[start - 1 : end])
+            total_lines = end - start + 1
+        else:
+            body_lines = page.body.splitlines(keepends=True)
+            start = page.body_start_line
+            end = start + len(body_lines) - 1 if body_lines else start
+            content = page.body
+            total_lines = len(body_lines)
+
+        truncated = False
+        if max_lines is not None and total_lines > max_lines:
+            content = "".join(content.splitlines(keepends=True)[:max_lines])
+            end = start + max_lines - 1
+            truncated = True
+        if max_bytes is not None and len(content.encode("utf-8")) > max_bytes:
+            content = _truncate_utf8(content, max_bytes)
+            end = start + len(content.splitlines()) - 1
+            truncated = True
+        returned_lines = len(content.splitlines())
+        if content and not returned_lines:
+            returned_lines = 1
+        omitted_lines = max(0, total_lines - returned_lines)
+        return PageRead(
+            title=page.title,
+            path=page.path,
+            content=content,
+            raw=selected_raw,
+            section=section,
+            start_line=start,
+            end_line=(start + returned_lines - 1 if returned_lines else start - 1),
+            total_lines=total_lines,
+            truncated=truncated,
+            omitted_lines=omitted_lines,
+        )
 
     def lookup_by_tag(self, tag: str) -> list[CompiledPage]:
         """Return pages tagged with ``tag``."""
@@ -887,24 +1022,25 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
 
         if direction == GRAPH_DIRECTION_OUTGOING:
 
-            def neighbors(key: str):
+            def outgoing_neighbors(key: str):
                 return outgoing.get(key, ())
 
-        elif direction == GRAPH_DIRECTION_INCOMING:
+            return outgoing_neighbors
+        if direction == GRAPH_DIRECTION_INCOMING:
 
-            def neighbors(key: str):
+            def incoming_neighbors(key: str):
                 return incoming.get(key, ())
 
-        else:  # GRAPH_DIRECTION_BOTH
+            return incoming_neighbors
 
-            def neighbors(key: str):
-                return heapq.merge(
-                    outgoing.get(key, ()),
-                    incoming.get(key, ()),
-                    key=_graph_edge_sort_key,
-                )
+        def both_neighbors(key: str):
+            return heapq.merge(
+                outgoing.get(key, ()),
+                incoming.get(key, ()),
+                key=_graph_edge_sort_key,
+            )
 
-        return neighbors
+        return both_neighbors
 
     # ------------------------------------------------------------------
     # Discovery Graph inspection (issue #107, ADR-0011).
@@ -961,11 +1097,10 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         over unchanged Markdown reproduces byte-identical adjacency and
         identical public traversal results.
         """
-        fingerprint = fingerprint_sources(self.root)
-        index = self._knowledge_index()
+        fingerprint = self._graph_fingerprint()
         return write_graph_artifact(
             index_dir,
-            index=index,
+            index=self._knowledge_index(),
             fingerprint=fingerprint,
             extractor_version=EXTRACTOR_VERSION,
         )
@@ -979,7 +1114,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         Never raises on a bad artifact: stale, corrupt, partial, or
         incompatible artifacts fall back to in-memory derivation.
         """
-        fingerprint = fingerprint_sources(self.root)
+        fingerprint = self._graph_fingerprint()
         state = load_graph_artifact(
             index_dir,
             fingerprint=fingerprint,
@@ -1006,7 +1141,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         import time
 
         index_dir_path = Path(index_dir)
-        fingerprint = fingerprint_sources(self.root)
+        fingerprint = self._graph_fingerprint()
         artifact_path = index_dir_path / GRAPH_ARTIFACT_FILENAME
         materialized = artifact_path.is_file()
         materialized_size_bytes = artifact_path.stat().st_size if materialized else None
@@ -1033,7 +1168,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
             materialized_size_bytes=materialized_size_bytes,
             startup_ms=startup_ms,
             traversal_latency_ms=self._graph_traversal_latency_ms(),
-            fingerprint_digest=fingerprint.digest,
+            fingerprint_digest=state.fingerprint_digest,
         )
 
     def _graph_traversal_latency_ms(self) -> int | None:
@@ -1418,18 +1553,31 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         adapter: RetrievalAdapter = (
             retrieval if retrieval is not None else self._retrieval_adapter()
         )
+        fingerprint = self._current_captured_fingerprint_for_build()
+        pages = self.pages
+        control = self.control
+        if fingerprint is None and self.root.is_dir():
+            # A record-only KB may opt into a verified capture at build time,
+            # but never claims freshness from its records alone.
+            captured, report = load_knowledge_base(self.root)
+            if report.is_valid and captured.source_fingerprint is not None:
+                pages = captured.pages
+                control = captured.control
+                fingerprint = captured.source_fingerprint
         adapter.build_index(
-            self.pages,
+            pages,
             chosen_dir,
             embedder=embedder,
-            fingerprint=fingerprint_sources(self.root),
+            fingerprint=fingerprint,
         )
         return KnowledgeBase(
             root=self.root,
-            pages=self.pages,
+            pages=pages,
             index_dir=chosen_dir,
-            control=self.control,
+            control=control,
             retrieval=adapter,
+            source_fingerprint=fingerprint,
+            canonical_pages=self.canonical_pages,
         )
 
     def _eligible_pages_for_graph(
@@ -1650,21 +1798,21 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
             # missing fingerprint) is stale and triggers a rebuild so graph and
             # Evidence never disagree (issue #112, ADR-0011).
             if resolved is not None:
-                current_fp = fingerprint_sources(self.root)
+                current_fp = self._current_captured_fingerprint_for_build()
                 stored_fp = load_stored_fingerprint(resolved)
-                if stored_fp is None or stored_fp.digest != current_fp.digest:
+                if current_fp is None or stored_fp is None or stored_fp.digest != current_fp.digest:
                     self._retrieval_adapter().build_index(
                         self.pages,
                         resolved,
                         embedder=embedder,
                         fingerprint=current_fp,
                     )
-                    prepended_stages.append(
-                        TraceStage(
-                            "fingerprint-check",
-                            "stale derived index rebuilt from current source before compose",
-                        )
+                    detail = (
+                        "record-only derived index rebuilt before compose"
+                        if current_fp is None
+                        else "stale derived index rebuilt from current source before compose"
                     )
+                    prepended_stages.append(TraceStage("fingerprint-check", detail))
 
         results = self._retrieval_adapter().retrieve(
             self.pages,
@@ -1675,6 +1823,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
             embedder=embedder,
             score_threshold=score_threshold,
             eligible_pages=eligible_pages,
+            expected_fingerprint=self.source_fingerprint,
         )
 
         if prepended_stages:
@@ -1683,9 +1832,37 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
             ]
         return results
 
-    def fingerprint(self) -> SourceFingerprint:
-        """Return the current source fingerprint for this Knowledge Base."""
+    def _captured_or_legacy_fingerprint(self) -> SourceFingerprint:
+        """Return this view's captured identity, or preserve legacy root behavior."""
+        if self.source_fingerprint is not None:
+            return self.source_fingerprint
         return fingerprint_sources(self.root)
+
+    def _graph_fingerprint(self) -> SourceFingerprint:
+        """Return a graph-artifact identity without hashing unrelated live files."""
+        if self.source_fingerprint is not None:
+            return self.source_fingerprint
+        return SourceFingerprint(
+            digest=hashlib.sha256(msgspec.msgpack.encode(self.pages)).hexdigest()
+        )
+
+    def _current_captured_fingerprint_for_build(self) -> SourceFingerprint | None:
+        """Reject a captured filesystem view when live canonical bytes drifted."""
+        captured = self.source_fingerprint
+        if captured is None:
+            return None
+        if self.root.is_dir():
+            current = fingerprint_sources(self.root)
+            if current.digest != captured.digest:
+                raise KnowledgeBaseError(
+                    "Knowledge Base source changed after this view was loaded; "
+                    "reload it before building derived state"
+                )
+        return captured
+
+    def fingerprint(self) -> SourceFingerprint:
+        """Return the immutable identity captured for this Knowledge Base view."""
+        return self._captured_or_legacy_fingerprint()
 
     def stored_fingerprint(self) -> SourceFingerprint | None:
         """Return the source fingerprint stored with the last index build, if any."""
@@ -1715,11 +1892,13 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         ]
 
     def is_fresh(self) -> bool:
-        """Return whether the derived index still matches the current Markdown source."""
+        """Return whether the derived index still matches current canonical content."""
         stored = self.stored_fingerprint()
-        if stored is None:
+        if stored is None or self.source_fingerprint is None:
             return False
-        return self.fingerprint().digest == stored.digest
+        if self.root.is_dir() and fingerprint_sources(self.root) != self.source_fingerprint:
+            return False
+        return self.source_fingerprint.digest == stored.digest
 
     def health_report(self) -> HealthReport:
         """Return a deterministic, zero-LLM health report for this Knowledge Base.
@@ -2690,7 +2869,9 @@ class _InMemoryKbSource:
 
     def __init__(self, files: dict[str, bytes], root: Path) -> None:
         self.root = root
-        self._files = files
+        # Copy the mapping so a resolved Published Version cannot drift through
+        # a caller mutating the input dictionary after capture.
+        self._files = dict(files)
 
     def markdown_files(self) -> list[str]:
         return sorted(rel for rel in self._files if PurePosixPath(rel).suffix.lower() == ".md")
@@ -2700,6 +2881,21 @@ class _InMemoryKbSource:
 
     def control_file_bytes(self) -> bytes | None:
         return self._files.get(CONTROL_FILE_BASENAME)
+
+
+def _capture_source(source: _KbSource) -> tuple[_InMemoryKbSource, SourceFingerprint]:
+    """Capture canonical source bytes once and fingerprint that capture.
+
+    Filesystem loading must not parse one read, hash a later read, and then
+    build derived state from a third read. The in-memory source is the small
+    existing source seam used by S3 snapshots, reused here for local loads.
+    """
+    files = {relative: source.read_bytes(relative) for relative in source.markdown_files()}
+    control = source.control_file_bytes()
+    if control is not None:
+        files[CONTROL_FILE_BASENAME] = control
+    captured = _InMemoryKbSource(files, root=source.root)
+    return captured, _fingerprint_sources(captured)
 
 
 def _reserved_artifact_basename_of(relative: str) -> str | None:
@@ -2991,8 +3187,9 @@ def _body_line_count(page: CompiledPage) -> int:
 def _body_sections(page: CompiledPage) -> set[str]:
     """Markdown ATX headings present in the page body."""
     return {
-        match.group(1).strip()
-        for match in re.finditer(r"^#{1,6}\s+(.+?)\s*#*\s*$", page.body, re.MULTILINE)
+        title
+        for title, _start, _end, _text in body_sections(page.body, page.body_start_line)
+        if title is not None
     }
 
 
@@ -4493,14 +4690,16 @@ def _atomic_write_text(target: Path, content: str) -> None:
             handle.write(content)
         os.replace(Path(tmp_name), target)
     except Exception:
-        try:
+        with suppress(OSError):
             os.unlink(tmp_name)
-        except OSError:
-            pass
         raise
 
 
-def _load_and_validate(source: _KbSource) -> tuple[KnowledgeBase, ValidationReport]:
+def _load_and_validate(
+    source: _KbSource,
+    *,
+    fingerprint: SourceFingerprint | None = None,
+) -> tuple[KnowledgeBase, ValidationReport]:
     """Load and fully validate canonical Knowledge Base content from ``source``.
 
     Source-agnostic (issue #120, ADR-0013): the resolved ``source.root`` is the
@@ -4515,9 +4714,14 @@ def _load_and_validate(source: _KbSource) -> tuple[KnowledgeBase, ValidationRepo
     # parsed ontology when a Control File is present, and in identity-only
     # mode (uniqueness + dangling objects) in Legacy Flat Mode.
     issues.extend(_ontology_issues(pages, control.ontology if control else None))
-    return KnowledgeBase(root=source.root, pages=pages, control=control), ValidationReport(
-        issues=issues
-    )
+    captured_fingerprint = fingerprint or _fingerprint_sources(source)
+    return KnowledgeBase(
+        root=source.root,
+        pages=pages,
+        control=control,
+        source_fingerprint=captured_fingerprint,
+        canonical_pages=canonical_content(source),
+    ), ValidationReport(issues=issues)
 
 
 def load_knowledge_base(path: str | Path) -> tuple[KnowledgeBase, ValidationReport]:
@@ -4532,7 +4736,8 @@ def load_knowledge_base(path: str | Path) -> tuple[KnowledgeBase, ValidationRepo
     if not root.is_dir():
         raise KnowledgeBaseError(f"path is not a directory: {root}")
 
-    return _load_and_validate(_FilesystemKbSource(root))
+    captured, fingerprint = _capture_source(_FilesystemKbSource(root))
+    return _load_and_validate(captured, fingerprint=fingerprint)
 
 
 def validate(path: str | Path) -> ValidationReport:
@@ -4551,7 +4756,8 @@ def validate(path: str | Path) -> ValidationReport:
             ]
         )
 
-    return _load_and_validate(_FilesystemKbSource(root))[1]
+    captured, fingerprint = _capture_source(_FilesystemKbSource(root))
+    return _load_and_validate(captured, fingerprint=fingerprint)[1]
 
 
 def fingerprint_sources(root: str | Path) -> SourceFingerprint:
@@ -4566,7 +4772,8 @@ def fingerprint_sources(root: str | Path) -> SourceFingerprint:
     escape hatch from fingerprinting without occupying the valid reserved
     artifact role (issues #64 and #77).
     """
-    return _fingerprint_sources(_FilesystemKbSource(Path(root).resolve()))
+    _captured, fingerprint = _capture_source(_FilesystemKbSource(Path(root).resolve()))
+    return fingerprint
 
 
 def _fingerprint_sources(source: _KbSource) -> SourceFingerprint:
@@ -5069,15 +5276,11 @@ def _commit_reserved_artifacts(
         # canonical target only when it is physically distinct from the restored
         # case-variant original.
         for temp_path, _target, _original_target in staged:
-            try:
+            with suppress(OSError):
                 temp_path.unlink()
-            except OSError:
-                pass
         for backup, original_target in backups:
-            try:
+            with suppress(OSError):
                 os.replace(backup, original_target)
-            except OSError:
-                pass
         for _temp_path, target, original_target in staged:
             if not target.exists():
                 continue
@@ -5085,18 +5288,14 @@ def _commit_reserved_artifacts(
                 target == original_target or _same_physical_file(target, original_target)
             ):
                 continue
-            try:
+            with suppress(OSError):
                 target.unlink()
-            except OSError:
-                pass
         raise
 
     # Success: the old content and pruned files survive only in backups now.
     for backup, _target in backups:
-        try:
+        with suppress(OSError):
             backup.unlink()
-        except OSError:
-            pass
 
     return written
 

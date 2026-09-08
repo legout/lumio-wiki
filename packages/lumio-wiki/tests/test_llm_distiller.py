@@ -66,9 +66,7 @@ Body distilled by the provider.
 
 def _chat_completion(content: str | None) -> SimpleNamespace:
     """Build a minimal OpenAI chat-completion response object."""
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
-    )
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
 
 def _fake_client(content: str | None = PROVIDER_MARKDOWN) -> MagicMock:
@@ -143,9 +141,7 @@ def test_openai_distiller_with_injected_client_does_not_import_openai():
 
     sys.modules.pop("openai", None)
     distiller = OpenAIDistiller(model="fake-model", client=_fake_client())
-    normalized = TextMarkdownSourceProcessor().process(
-        "source.txt", "text/plain", b"text"
-    )
+    normalized = TextMarkdownSourceProcessor().process("source.txt", "text/plain", b"text")
     distiller.distill(normalized)
     # ``openai`` was never imported because the client was injected.
     assert "openai" not in sys.modules
@@ -171,9 +167,7 @@ def test_openai_distiller_retries_transient_provider_errors():
         backoff_seconds=0,
         retry_errors=("_TransientError",),
     )
-    normalized = TextMarkdownSourceProcessor().process(
-        "source.txt", "text/plain", b"text"
-    )
+    normalized = TextMarkdownSourceProcessor().process("source.txt", "text/plain", b"text")
     assert distiller.distill(normalized) == PROVIDER_MARKDOWN
     assert client.chat.completions.create.call_count == 3
 
@@ -189,9 +183,7 @@ def test_openai_distiller_raises_after_exhausting_retries():
         backoff_seconds=0,
         retry_errors=("_TransientError",),
     )
-    normalized = TextMarkdownSourceProcessor().process(
-        "source.txt", "text/plain", b"text"
-    )
+    normalized = TextMarkdownSourceProcessor().process("source.txt", "text/plain", b"text")
     with pytest.raises(OpenAIDistillerError, match="lumio-wiki\\[llm\\]|provider"):
         distiller.distill(normalized)
     # initial attempt + 2 retries == 3 total calls
@@ -201,12 +193,8 @@ def test_openai_distiller_raises_after_exhausting_retries():
 def test_openai_distiller_surfaces_empty_model_output_as_actionable_error():
     """AC2: an empty / None model response surfaces an actionable error."""
     client = _fake_client(content=None)
-    distiller = OpenAIDistiller(
-        model="fake-model", client=client, max_retries=1, backoff_seconds=0
-    )
-    normalized = TextMarkdownSourceProcessor().process(
-        "source.txt", "text/plain", b"text"
-    )
+    distiller = OpenAIDistiller(model="fake-model", client=client, max_retries=1, backoff_seconds=0)
+    normalized = TextMarkdownSourceProcessor().process("source.txt", "text/plain", b"text")
     with pytest.raises(OpenAIDistillerError, match="empty|no content"):
         distiller.distill(normalized)
 
@@ -226,9 +214,7 @@ def test_openai_distiller_non_retryable_error_is_not_retried():
         backoff_seconds=0,
         retry_errors=("_TransientError",),  # only retry this one
     )
-    normalized = TextMarkdownSourceProcessor().process(
-        "source.txt", "text/plain", b"text"
-    )
+    normalized = TextMarkdownSourceProcessor().process("source.txt", "text/plain", b"text")
     with pytest.raises(OpenAIDistillerError):
         distiller.distill(normalized)
     assert client.chat.completions.create.call_count == 1
@@ -247,9 +233,7 @@ def test_openai_distiller_passes_configured_categories_into_the_prompt():
     """
     client = _fake_client()
     distiller = OpenAIDistiller(model="fake-model", client=client)
-    normalized = TextMarkdownSourceProcessor().process(
-        "source.txt", "text/plain", b"text"
-    )
+    normalized = TextMarkdownSourceProcessor().process("source.txt", "text/plain", b"text")
     distiller.distill(normalized, categories=["concepts", "synthesis"])
     args, kwargs = client.chat.completions.create.call_args
     messages = kwargs.get("messages") or args[0]
@@ -277,9 +261,7 @@ def test_provider_distilled_markdown_flows_through_the_proposal_pipeline(tmp_pat
     kb = _kb(tmp_path)
     store = lw.IngestStore(tmp_path / "ingest")
     distiller = OpenAIDistiller(model="fake-model", client=_fake_client())
-    normalized = TextMarkdownSourceProcessor().process(
-        "source.txt", "text/plain", b"raw source"
-    )
+    normalized = TextMarkdownSourceProcessor().process("source.txt", "text/plain", b"raw source")
     provenance = lw.SourceProvenance(
         original_filename="source.txt",
         content_type="text/plain",
@@ -341,3 +323,18 @@ def test_provider_driven_and_passthrough_proposals_share_the_same_shape(tmp_path
     b = pipeline.assemble(PROVIDER_MARKDOWN, provenance, "source.txt")
     assert set(a.__struct_fields__) == set(b.__struct_fields__)
     assert [p.title for p in a.proposed_pages] == [p.title for p in b.proposed_pages]
+
+
+def test_provider_request_failure_is_safe_at_cli_boundary():
+    """Provider exception text never crosses the public distiller boundary."""
+    secret = "synthetic-provider-value-should-never-escape"
+    client = MagicMock()
+    client.chat.completions.create.side_effect = RuntimeError(secret)
+    normalized = TextMarkdownSourceProcessor().process("source.txt", "text/plain", b"source")
+    distiller = OpenAIDistiller(client=client, model="test", max_retries=0)
+
+    with pytest.raises(OpenAIDistillerError) as caught:
+        distiller.distill(normalized)
+    message = str(caught.value)
+    assert secret not in message
+    assert "provider request failed" in message

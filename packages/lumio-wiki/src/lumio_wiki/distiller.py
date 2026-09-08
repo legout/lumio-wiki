@@ -20,6 +20,7 @@ import importlib
 import time
 from typing import Any, Protocol, runtime_checkable
 
+from lumio_wiki.records import Ontology
 from lumio_wiki.source_processor import NormalizedSource
 
 
@@ -69,8 +70,15 @@ _DISTILL_SYSTEM_PROMPT_TEMPLATE = (
     "'runbook', 'dataset descriptor'), durability_rationale (one sentence on why this page "
     "is durable knowledge worth maintaining), lifecycle (draft/review/approved/deprecated), "
     "visibility (public/internal/restricted), tags (list of strings), and sources (list "
-    "with id and title). Optional fields: aliases, summary, synthetic. "
-    "{synthesis_clause}Do not invent facts not present in the source text."
+    "with id and title). Optional fields: aliases, summary, claims, synthetic. "
+    "For categorized v2 Knowledge Bases, also emit a stable Entity id using the "
+    "authored `entity:<slug>` form and one or more declared entity_types from "
+    "the supplied ontology. Claims must use a supplied predicate, exactly one "
+    "Entity object or typed literal, and status accepted/disputed/superseded plus "
+    "published-page Evidence anchors (`section` or bounded `lines`). Preserve raw "
+    "source IDs in `sources[].id`; do not derive identity from titles or paths. "
+    "{synthesis_clause}Do not invent facts not present "
+    "in the source text."
 )
 
 
@@ -79,7 +87,12 @@ class Distiller(Protocol):
     """Convert normalized material into proposed Compiled Page Markdown."""
 
     def distill(
-        self, normalized: NormalizedSource, *, categories: list[str] | None = None
+        self,
+        normalized: NormalizedSource,
+        *,
+        categories: list[str] | None = None,
+        ontology: Ontology | None = None,
+        authoring_mode: str = "legacy-flat",
     ) -> str: ...
 
 
@@ -94,7 +107,12 @@ class PassthroughMarkdownDistiller:
     """
 
     def distill(
-        self, normalized: NormalizedSource, *, categories: list[str] | None = None
+        self,
+        normalized: NormalizedSource,
+        *,
+        categories: list[str] | None = None,
+        ontology: Ontology | None = None,
+        authoring_mode: str = "legacy-flat",
     ) -> str:
         return normalized.text
 
@@ -170,7 +188,12 @@ class OpenAIDistiller:
         return openai_module.OpenAI(**kwargs)
 
     def distill(
-        self, normalized: NormalizedSource, *, categories: list[str] | None = None
+        self,
+        normalized: NormalizedSource,
+        *,
+        categories: list[str] | None = None,
+        ontology: Ontology | None = None,
+        authoring_mode: str = "legacy-flat",
     ) -> str:
         """Distill normalized source text into proposed Compiled Page Markdown.
 
@@ -179,14 +202,17 @@ class OpenAIDistiller:
         Retries transient provider errors and surfaces actionable errors on
         empty model output or exhausted retries (AC2).
         """
-        system_prompt = _build_distill_system_prompt(categories)
+        system_prompt = _build_distill_system_prompt(
+            categories,
+            ontology=ontology,
+            authoring_mode=authoring_mode,
+        )
         messages = [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": (
-                    f"Source filename: {normalized.filename or 'unknown'}\n\n"
-                    f"{normalized.text}"
+                    f"Source filename: {normalized.filename or 'unknown'}\n\n{normalized.text}"
                 ),
             },
         ]
@@ -217,24 +243,39 @@ class OpenAIDistiller:
                 )
             except Exception as exc:  # noqa: BLE001 - provider surface is open
                 last_exc = exc
-                if self._is_retryable(exc) and attempt < attempts - 1:
-                    time.sleep(self._backoff_seconds * (attempt + 1))
-                    continue
+                if self._is_retryable(exc):
+                    if attempt < attempts - 1:
+                        time.sleep(self._backoff_seconds * (attempt + 1))
+                        continue
+                # Provider exception text can contain credentials, headers, or
+                # raw response bodies. Keep the exception as a private cause,
+                # but expose only the stable actionable boundary message.
                 raise OpenAIDistillerError(
-                    f"provider request failed after {attempt + 1} attempt(s): {exc}"
+                    f"provider request failed after {attempt + 1} attempt(s); "
+                    "check provider configuration or network connectivity"
                 ) from exc
-            choice = _first_choice(response)
-            if choice is None:
+            try:
+                choice = _first_choice(response)
+                if choice is None:
+                    raise OpenAIDistillerError(
+                        "provider returned no completion choice; "
+                        "check the model response or provider configuration"
+                    )
+                message = getattr(choice, "message", None)
+                return getattr(message, "content", None) if message is not None else None
+            except OpenAIDistillerError:
+                raise
+            except Exception as exc:
+                # Malformed provider objects are untrusted just like request
+                # failures; never include their repr/str in the public error.
                 raise OpenAIDistillerError(
-                    "provider returned no completion choice; "
+                    "provider returned malformed completion data; "
                     "check the model response or provider configuration"
-                )
-            message = getattr(choice, "message", None)
-            return getattr(message, "content", None) if message is not None else None
+                ) from exc
         # Unreachable: the loop either returns or raises. Kept for type safety.
         raise OpenAIDistillerError(
-            f"provider request failed: {last_exc}"
-        )  # pragma: no cover
+            "provider request failed; check provider configuration or network connectivity"
+        ) from last_exc  # pragma: no cover
 
     def _is_retryable(self, exc: Exception) -> bool:
         """Return whether ``exc`` is a configured retryable provider error.
@@ -246,10 +287,7 @@ class OpenAIDistiller:
         """
         if type(exc).__name__ in self._retry_error_names:
             return True
-        return any(
-            type(base).__name__ in self._retry_error_names
-            for base in type(exc).__mro__[1:]
-        )
+        return any(type(base).__name__ in self._retry_error_names for base in type(exc).__mro__[1:])
 
 
 def _first_choice(response: Any) -> Any:
@@ -263,20 +301,22 @@ def _first_choice(response: Any) -> Any:
         return None
 
 
-def _build_distill_system_prompt(categories: list[str] | None) -> str:
-    """Build the distill system prompt offering exactly the configured categories.
+def _build_distill_system_prompt(
+    categories: list[str] | None,
+    *,
+    ontology: Ontology | None = None,
+    authoring_mode: str = "legacy-flat",
+) -> str:
+    """Build bounded guidance from the selected KB's public authoring schema.
 
-    ``categories`` is the Knowledge Base's configured Content Category catalog
-    (``None`` for Legacy Flat Mode). The prompt lists only those categories —
-    never a hard-coded catalog — so a custom-catalog KB only sees its own
-    categories offered (issue #78, P2.7). Synthesis routing guidance is included
-    only when ``synthesis`` is configured.
+    Only validated category/type/predicate names and their descriptions are
+    included. Registry entries, source artifacts, credentials, and provider
+    configuration never enter this prompt. ``None`` ontology means the KB has
+    no declared vocabulary yet; it is not permission to invent one.
     """
     if categories:
         catalog = ", ".join(categories)
-        category_clause = (
-            f", category (one of the configured Content Categories: {catalog})"
-        )
+        category_clause = f", category (one of the configured Content Categories: {catalog})"
         if "synthesis" in categories:
             synthesis_clause = (
                 "Use category 'synthesis' only for cross-source or cross-page "
@@ -289,10 +329,71 @@ def _build_distill_system_prompt(categories: list[str] | None) -> str:
     else:
         category_clause = ""
         synthesis_clause = ""
-    return _DISTILL_SYSTEM_PROMPT_TEMPLATE.format(
-        category_clause=category_clause,
-        synthesis_clause=synthesis_clause,
+    mode_clause = f"Authoring mode: {authoring_mode}. "
+    ontology_clause = _build_ontology_guidance(ontology, authoring_mode)
+    return (
+        _DISTILL_SYSTEM_PROMPT_TEMPLATE.format(
+            category_clause=category_clause,
+            synthesis_clause=synthesis_clause,
+        )
+        + "\n\n"
+        + mode_clause
+        + ontology_clause
     )
+
+
+def _build_ontology_guidance(ontology: Ontology | None, authoring_mode: str) -> str:
+    """Render the small, public ontology context a provider needs."""
+    if authoring_mode != "categorized":
+        return (
+            "Legacy Flat Mode has no controlled Entity/Claim ontology. Preserve "
+            "the legacy page shape and do not invent ontology fields."
+        )
+    if ontology is None:
+        return (
+            "No ontology is declared. Do not invent entity types or predicates; "
+            "a Maintainer must author and review the Control File ontology before "
+            "a categorized v2 page can be valid."
+        )
+    lines = [
+        "Use only these validated Knowledge Base ontology declarations (names are case-sensitive):",
+        "Entity types:",
+    ]
+    if ontology.entity_types:
+        for name, definition in sorted(ontology.entity_types.items()):
+            detail = f" — {definition.description}" if definition.description else ""
+            lines.append(f"- {name}{detail}")
+    else:
+        lines.append("- (none declared; do not invent one)")
+    lines.append("Predicates:")
+    if ontology.predicates:
+        for name, predicate in sorted(ontology.predicates.items()):
+            parts: list[str] = []
+            if predicate.subject_types:
+                parts.append(f"subjects={', '.join(predicate.subject_types)}")
+            if predicate.object_types:
+                parts.append(f"objects={', '.join(predicate.object_types)}")
+            if predicate.literal_kind:
+                parts.append(f"literal={predicate.literal_kind}")
+            if predicate.inverse:
+                parts.append(f"inverse={predicate.inverse}")
+            if predicate.description:
+                parts.append(predicate.description)
+            lines.append(f"- {name}" + (f" ({'; '.join(parts)})" if parts else ""))
+    else:
+        lines.append("- (none declared; do not invent one)")
+    lines.extend(
+        [
+            "Stable IDs use the authored `entity:<slug>` and `claim:<slug>` convention; "
+            "never derive identity from a title or path.",
+            "A Claim has a controlled predicate, exactly one entity object or one "
+            "typed literal, status accepted/disputed/superseded, and at least one "
+            "Evidence anchor (`section` or bounded body `lines`) on the published page.",
+            "If a required type or predicate is absent, stop and report that the "
+            "Maintainer must extend the Control File; do not auto-extract or publish.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 __all__ = [

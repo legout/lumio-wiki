@@ -1,6 +1,6 @@
 # 04 — Safe, usable agent workflows
 
-**Proposed; unexecuted.** Goal: repair actual safety/command defects before adding
+**Implemented.** Goal: repair actual safety/command defects before adding
 bounded machine-facing capabilities. Requirements:
 [B13–B18, B21, I01/I02/I04, C01/C04](README.md#finding-to-task-map),
 [host-as-Distiller and optional packaging](../adr/0010-uv-workspace-and-progressive-packaging.md),
@@ -16,7 +16,7 @@ then uses A5/A6's approved interface. Coordinate all `cli.py` edits serially;
 
 ## A1
 
-- [ ] **Redact quoted credentials and contain provider errors (B13/B17).**
+- [x] **Redact quoted credentials and contain provider errors (B13/B17).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/capture.py`,
   `packages/lumio-wiki/src/lumio_wiki/distiller.py`,
   `packages/lumio-wiki/src/lumio_wiki/cli.py`;
@@ -53,7 +53,7 @@ then uses A5/A6's approved interface. Coordinate all `cli.py` edits serially;
 
 ## A2
 
-- [ ] **Apply remaining deadline while reading headers (B14).**
+- [x] **Apply remaining deadline while reading headers (B14).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/url_fetch.py`;
   `packages/lumio-wiki/tests/test_url_ingest.py`.
   **Consumes → produces:** `UrlFetchPolicy` and validated/pinned addresses →
@@ -83,7 +83,7 @@ then uses A5/A6's approved interface. Coordinate all `cli.py` edits serially;
 
 ## A3
 
-- [ ] **One ingest preparation path; one optional composition owner (B15/B21).**
+- [x] **One ingest preparation path; one optional composition owner (B15/B21).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/ingest.py`,
   `packages/lumio-wiki/src/lumio_wiki/cli.py`,
   `packages/lumio-wiki/src/lumio_wiki/retrieval_eval.py`;
@@ -128,7 +128,7 @@ then uses A5/A6's approved interface. Coordinate all `cli.py` edits serially;
 
 ## A4
 
-- [ ] **Executable citation actions retain original KB location (B16).**
+- [x] **Executable citation actions retain original KB location (B16).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/citation_actions.py`,
   `packages/lumio-wiki/src/lumio_wiki/cli.py`;
   `packages/lumio-wiki/tests/test_cli_open_actions.py`,
@@ -159,7 +159,7 @@ then uses A5/A6's approved interface. Coordinate all `cli.py` edits serially;
 
 ## A5
 
-- [ ] **Give host/provider authors the actual v2 KB schema (B18/I02/C01).**
+- [x] **Give host/provider authors the actual v2 KB schema (B18/I02/C01).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/distiller.py`,
   `packages/lumio-wiki/src/lumio_wiki/cli.py`,
   `packages/lumio-wiki/src/lumio_wiki/data/skill/SKILL.md`,
@@ -193,7 +193,7 @@ then uses A5/A6's approved interface. Coordinate all `cli.py` edits serially;
 
 ## A6
 
-- [ ] **Add lossless bounded reads and stable opt-in machine results (I01).**
+- [x] **Add lossless bounded reads and stable opt-in machine results (I01).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/cli.py`,
   `packages/lumio-wiki/src/lumio_wiki/location.py`,
   `packages/lumio-wiki/src/lumio_wiki/knowledge_base.py`;
@@ -227,7 +227,7 @@ then uses A5/A6's approved interface. Coordinate all `cli.py` edits serially;
 
 ## A7
 
-- [ ] **Correct packaged commands and make the safe local journey first (B18/I02/I04).**
+- [x] **Correct packaged commands and make the safe local journey first (B18/I02/I04).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/data/skill/SKILL.md`,
   `packages/lumio-wiki/src/lumio_wiki/data/skill/PROTOCOL.md`,
   `packages/lumio-wiki/src/lumio_wiki/cli.py` (generated project guidance),
@@ -270,9 +270,10 @@ then uses A5/A6's approved interface. Coordinate all `cli.py` edits serially;
 
 ## Approval and remaining limits
 
-No tasks above are implemented here. Tests use synthetic secrets, temporary KBs,
-loopback and injected providers; no real capture history or installed skill writes.
-Provider output quality, universal secret detection and prompt-injection immunity
-are not claimed. Changes to Distiller signatures, citation helper parameters and
-machine contracts require [consumer coordination](05-simplification-release.md#s2)
-before release, not indefinite compatibility shims.
+All tasks above are implemented and verified with synthetic secrets, temporary
+KBs, loopback servers, and injected providers; no real capture history or
+installed skill writes are required. Provider output quality, universal secret
+detection, and prompt-injection immunity are not claimed. Changes to Distiller
+signatures, citation helper parameters, and machine contracts require [consumer
+coordination](05-simplification-release.md#s2) before release, not indefinite
+compatibility shims.

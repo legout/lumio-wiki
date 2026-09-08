@@ -92,7 +92,17 @@ _CREDENTIAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ),
         # Private object-store keys / artifact object URIs.
         ("object-key", r"\bs3://\S+"),
-        # Credential-shaped assignments (password=, api_key:, "token": ...).
+        # Quoted JSON/YAML credential assignments ("api_key": "...",
+        # api_key: '...', and their unquoted-value equivalents). Replace the
+        # whole assignment so the value cannot survive quoting or escaping.
+        (
+            "credential",
+            r"(?i)[\"']?(?:api[_-]?key|passwd|password|secret|token|access[_-]?key)[\"']?"
+            r"\s*[:=]\s*(?P<quote>[\"'])"
+            r"(?=(?:\\.|(?!(?P=quote))[^\\\r\n]){8})"
+            r"(?:\\.|(?!(?P=quote))[^\\\r\n])*(?P=quote)",
+        ),
+        # Credential-shaped unquoted assignments (password=, api_key:, ...).
         (
             "credential",
             r"(?i)\b(?:api[_-]?key|passwd|password|secret|token|access[_-]?key)\b\s*[:=]\s*[\"']?[A-Za-z0-9._/~+=-]{8,}",
@@ -210,9 +220,7 @@ def load_capture_manifest(path: str | Path) -> tuple[CaptureManifest, bytes]:
     except OSError as exc:
         raise CaptureError(f"capture manifest not readable: {path} ({exc})") from exc
     if len(raw) > MAX_MANIFEST_BYTES:
-        raise CaptureError(
-            f"capture manifest exceeds {MAX_MANIFEST_BYTES} bytes: {path}"
-        )
+        raise CaptureError(f"capture manifest exceeds {MAX_MANIFEST_BYTES} bytes: {path}")
     try:
         manifest = msgspec.yaml.decode(raw, type=CaptureManifest)
     except (msgspec.DecodeError, msgspec.ValidationError, TypeError) as exc:
@@ -232,9 +240,7 @@ def _validate_manifest(manifest: CaptureManifest) -> None:
         if value is not None and not value.strip():
             raise CaptureError(f"capture manifest {field_name} must be non-empty")
     if len(manifest.artifacts) > MAX_ARTIFACTS:
-        raise CaptureError(
-            f"capture manifest lists more than {MAX_ARTIFACTS} artifacts"
-        )
+        raise CaptureError(f"capture manifest lists more than {MAX_ARTIFACTS} artifacts")
     if len(manifest.redactions) > MAX_REDACTION_LABELS:
         raise CaptureError(
             f"capture manifest lists more than {MAX_REDACTION_LABELS} redaction labels"
@@ -352,11 +358,7 @@ def _resolve_transcript_bytes(
         return _checked_transcript(raw, explicit.name, named)
 
     if named is not None and not _DIGEST_REFERENCE.match(named):
-        path = (
-            Path(named)
-            if Path(named).is_absolute()
-            else manifest_path.parent / named
-        )
+        path = Path(named) if Path(named).is_absolute() else manifest_path.parent / named
         if not path.is_file():
             raise CaptureError(
                 f"capture transcript not found at manifest location: {path} — "
@@ -379,8 +381,7 @@ def _resolve_transcript_bytes(
         )
     else:
         warnings.append(
-            "no transcript bound; the manifest is registered as the private "
-            "capture record"
+            "no transcript bound; the manifest is registered as the private capture record"
         )
     return manifest_bytes, None, manifest_path.name, "application/yaml", warnings
 
@@ -389,9 +390,7 @@ def _checked_transcript(
     raw: bytes, filename: str, declared: str | None
 ) -> tuple[bytes, str | None, str, str | None, list[str]]:
     if len(raw) > MAX_TRANSCRIPT_BYTES:
-        raise CaptureError(
-            f"capture transcript exceeds {MAX_TRANSCRIPT_BYTES} bytes: {filename}"
-        )
+        raise CaptureError(f"capture transcript exceeds {MAX_TRANSCRIPT_BYTES} bytes: {filename}")
     redacted, transcript_counts = redact_capture_text(raw.decode("utf-8", errors="replace"))
     redacted_bytes = redacted.encode("utf-8")
     digest = hashlib.sha256(redacted_bytes).hexdigest()
@@ -424,9 +423,7 @@ def _write_capture_record(
         "manifest": msgspec.to_builtins(manifest),
         "transcript_digest": transcript_digest,
     }
-    (captures / f"{source_id}.json").write_text(
-        json.dumps(record, indent=2), encoding="utf-8"
-    )
+    (captures / f"{source_id}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
 
 
 def _redact_manifest(
@@ -523,9 +520,7 @@ def capture_session(
     #    a transcript. The returned bytes are REDACTED transcript bytes; the
     #    registry hash and provenance cover exactly what is registered.
     capture_source_bytes, transcript_digest, filename, content_type, transcript_warnings = (
-        _resolve_transcript_bytes(
-            manifest, manifest_path, manifest_bytes, transcript_path
-        )
+        _resolve_transcript_bytes(manifest, manifest_path, manifest_bytes, transcript_path)
     )
 
     # 4. The authored page must declare the source identity — checked BEFORE
@@ -569,26 +564,17 @@ def format_capture_preview(preview: CapturePreview) -> str:
         f"project:          {preview.project or '(none)'}",
         f"source_id:        {preview.source_id}",
         f"transcript:       {'bound' if preview.transcript_bound else 'not bound'}"
-        + (
-            f" (sha256:{preview.transcript_digest[:12]}…)"
-            if preview.transcript_digest
-            else ""
-        ),
+        + (f" (sha256:{preview.transcript_digest[:12]}…)" if preview.transcript_digest else ""),
         f"artifacts:        {', '.join(preview.artifacts) or '(none)'}",
         f"declared redactions: {len(preview.declared_redactions)}"
-        + (
-            f" ({', '.join(preview.declared_redactions)})"
-            if preview.declared_redactions
-            else ""
-        ),
+        + (f" ({', '.join(preview.declared_redactions)})" if preview.declared_redactions else ""),
         "sections:",
     ]
     lines += [f"  - {section}" for section in preview.sections] or ["  (none)"]
     if preview.redaction_counts:
         total = sum(preview.redaction_counts.values())
         detail = ", ".join(
-            f"{count} {category}"
-            for category, count in sorted(preview.redaction_counts.items())
+            f"{count} {category}" for category, count in sorted(preview.redaction_counts.items())
         )
         lines.append(f"redactions applied: {total} ({detail})")
     else:
@@ -697,12 +683,8 @@ def _discovered(
             continue
         if project is not None and info.project != project:
             continue
-        if (
-            since_dt is not None
-            and (
-                info.started_at is None
-                or _parse_timestamp(info.started_at, "started_at") < since_dt
-            )
+        if since_dt is not None and (
+            info.started_at is None or _parse_timestamp(info.started_at, "started_at") < since_dt
         ):
             continue
         sessions.append(info)
@@ -726,11 +708,7 @@ def _read_session_info(client: str, path: Path) -> ClientSession | None:
             return None
     else:  # codex
         meta = next(
-            (
-                line
-                for line in _jsonl_headers(path, 8)
-                if line.get("type") == "session_meta"
-            ),
+            (line for line in _jsonl_headers(path, 8) if line.get("type") == "session_meta"),
             None,
         )
         payload = meta.get("payload") if isinstance(meta, dict) else None
@@ -782,9 +760,7 @@ def discover_sessions(
         )
     root_path = Path(root) if root is not None else Path.home() / _DEFAULT_ROOTS[client]
     files = [
-        path
-        for path in sorted(root_path.rglob("*.jsonl"), key=lambda p: str(p))
-        if path.is_file()
+        path for path in sorted(root_path.rglob("*.jsonl"), key=lambda p: str(p)) if path.is_file()
     ][:MAX_DISCOVERY_FILES]
     return _discovered(client, root_path, files, project, since, limit)
 
@@ -827,21 +803,16 @@ def export_session(
     except OSError as exc:
         raise CaptureError(f"client session file not readable: {source.name}") from exc
     if len(raw) > MAX_TRANSCRIPT_BYTES:
-        raise CaptureError(
-            f"client session exceeds {MAX_TRANSCRIPT_BYTES} bytes: {source.name}"
-        )
+        raise CaptureError(f"client session exceeds {MAX_TRANSCRIPT_BYTES} bytes: {source.name}")
     digest = hashlib.sha256(raw).hexdigest()
 
     out = Path(output_dir)
     if out.exists() and not out.is_dir():
         raise CaptureError(
-            f"output path is a file, not a directory: {out.name} — "
-            "choose an output directory path"
+            f"output path is a file, not a directory: {out.name} — choose an output directory path"
         )
     if out.exists() and any(out.iterdir()):
-        raise CaptureError(
-            f"output directory not empty: {out.name} — choose an empty directory"
-        )
+        raise CaptureError(f"output directory not empty: {out.name} — choose an empty directory")
     out.mkdir(parents=True, exist_ok=True)
     transcript_path = out / "transcript.jsonl"
     transcript_path.write_bytes(raw)

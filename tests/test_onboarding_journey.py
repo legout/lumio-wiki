@@ -154,20 +154,24 @@ def test_fresh_environment_local_journey(fresh_project):
 
     entities = fresh_project / "kb" / "entities"
     entities.mkdir()
-    (entities / "aurora-helpdesk.md").write_text(
-        RAW_PAGE_AURORA, encoding="utf-8"
-    )
+    (entities / "aurora-helpdesk.md").write_text(RAW_PAGE_AURORA, encoding="utf-8")
     (entities / "starlight-db.md").write_text(RAW_PAGE_STARLIGHT, encoding="utf-8")
     assert "Knowledge base is valid" in _run_cli(["validate", "./kb"])
 
     # Managed document ingest of the example's raw source.
     authored = fresh_project / "password-reset-page.md"
     authored.write_text(RAW_PAGE_RUNBOOK, encoding="utf-8")
-    out = _run_cli([
-        "ingest", "./kb", str(RAW_SOURCE),
-        "--compiled-page", str(authored),
-        "--source-id", "support-runbook-2026",
-    ])
+    out = _run_cli(
+        [
+            "ingest",
+            "./kb",
+            str(RAW_SOURCE),
+            "--compiled-page",
+            str(authored),
+            "--source-id",
+            "support-runbook-2026",
+        ]
+    )
     proposal_id = re.search(r"Staged proposal ([0-9a-f]+)", out)
     assert proposal_id, out
     pid = proposal_id.group(1)
@@ -176,9 +180,15 @@ def test_fresh_environment_local_journey(fresh_project):
 
     # Retrieval keeps an open action on every citation.
     out = _run_cli(["search", "password reset", "--limit", "2"])
-    assert 'open:            lumio-wiki page "Password Reset Runbook"' in out
+    assert (
+        f'open:            lumio-wiki page "{(fresh_project / "kb").resolve()}" '
+        '"Password Reset Runbook"' in out
+    )
     out = _run_cli(["page", "Password Reset Runbook"])
-    assert "source-artifact: lumio-wiki source inspect --source-id support-runbook-2026" in out
+    assert (
+        f'source-artifact: lumio-wiki source inspect "{(fresh_project / "kb").resolve()}" '
+        "--source-id support-runbook-2026" in out
+    )
 
     # Canonical traversal over the seeded accepted Claim.
     out = _run_cli(["related", "Aurora Helpdesk", "--scope", "canonical", "--trace"])
@@ -190,10 +200,17 @@ def test_fresh_environment_local_journey(fresh_project):
     out = _run_cli(["source", "inspect", "./kb", "--source-id", "support-runbook-2026"])
     assert "not retained (no Source Artifact Store configured)" in out
     with pytest.raises(AssertionError):
-        _run_cli([
-            "source", "fetch", "./kb", "--source-id", "support-runbook-2026",
-            "--output", str(fresh_project / "out.md"),
-        ])
+        _run_cli(
+            [
+                "source",
+                "fetch",
+                "./kb",
+                "--source-id",
+                "support-runbook-2026",
+                "--output",
+                str(fresh_project / "out.md"),
+            ]
+        )
 
 
 RAW_PAGE_AURORA = """---
@@ -293,14 +310,10 @@ def test_minio_smoke_journey_script(tmp_path):
     """The scriptable journey runs end-to-end against the configured MinIO:
     S3 publication with and without LanceDB, read-only Reader setup, the
     disclosed zero-index fallback, and truthful mode/backend errors."""
-    lumio_wiki = shutil.which("lumio-wiki") or str(
-        Path(sys.executable).parent / "lumio-wiki"
-    )
+    lumio_wiki = shutil.which("lumio-wiki") or str(Path(sys.executable).parent / "lumio-wiki")
     assert Path(lumio_wiki).exists(), "lumio-wiki console script not found"
     env = _scrubbed_env()
-    env["LUMIO_S3_TEST_BUCKET"] = os.environ.get(
-        "LUMIO_S3_TEST_BUCKET", "lumio-quickstart"
-    )
+    env["LUMIO_S3_TEST_BUCKET"] = os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-quickstart")
     result = subprocess.run(
         ["bash", str(SCRIPT), str(tmp_path / "journey")],
         env=env,

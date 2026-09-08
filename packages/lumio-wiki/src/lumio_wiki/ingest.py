@@ -52,6 +52,7 @@ from lumio_wiki.records import (
 from lumio_wiki.source_registry import SourceRegistry
 
 if TYPE_CHECKING:
+    from lumio_wiki.distiller import Distiller
     from lumio_wiki.source_processor import SourceProcessor
 
 
@@ -784,6 +785,40 @@ def select_source_processor(filename: str | None, content_type: str | None) -> S
     return TextMarkdownSourceProcessor()
 
 
+def prepare_proposal_content(
+    raw_bytes: bytes,
+    content_type: str | None,
+    filename: str | None,
+    *,
+    distiller: Distiller | None = None,
+    categories: list[str] | None = None,
+    ontology=None,
+    authoring_mode: str = "legacy-flat",
+) -> tuple[str, SourceProvenance]:
+    """Convert one source and return proposed Markdown plus its provenance.
+
+    This is the single preparation policy shared by SDK and CLI ingestion.
+    Document converters produce extracted text, so their output is wrapped in
+    the smallest proposal frontmatter needed for review; managed host ingest
+    intentionally bypasses this function and preserves its authored page.
+    """
+    from lumio_wiki.distiller import PassthroughMarkdownDistiller
+
+    processor = select_source_processor(filename, content_type)
+    normalized = processor.process(filename, content_type, raw_bytes)
+    provenance = _provenance_for(normalized, filename, content_type)
+    chosen_distiller: Distiller = distiller or PassthroughMarkdownDistiller()
+    distilled = chosen_distiller.distill(
+        normalized,
+        categories=categories,
+        ontology=ontology,
+        authoring_mode=authoring_mode,
+    )
+    if normalized.converted_by in ("liteparse", "anydoc", "markitdown"):
+        distilled = _ensure_page_frontmatter(distilled, filename)
+    return distilled, provenance
+
+
 def create_proposal_without_provider(
     raw_bytes: bytes,
     content_type: str | None,
@@ -804,18 +839,13 @@ def create_proposal_without_provider(
     Knowledge Base). The host coding agent authors the Compiled Page Markdown;
     this entry packages it through the same Proposal Pipeline.
     """
-    from lumio_wiki.distiller import PassthroughMarkdownDistiller
     from lumio_wiki.proposal_pipeline import ProposalPipeline
 
-    processor = select_source_processor(filename, content_type)
-    normalized = processor.process(filename, content_type, raw_bytes)
-    provenance = _provenance_for(normalized, filename, content_type)
-    distilled = PassthroughMarkdownDistiller().distill(normalized)
-    # Document sources produce extracted text, not authored page Markdown.
-    # Wrap it in minimal frontmatter so the Proposal Pipeline can process it;
-    # the host agent refines the page during review (issue #100, AC3).
-    if normalized.converted_by in ("liteparse", "anydoc", "markitdown"):
-        distilled = _ensure_page_frontmatter(distilled, filename)
+    distilled, provenance = prepare_proposal_content(
+        raw_bytes,
+        content_type,
+        filename,
+    )
     pipeline = ProposalPipeline(kb, store=store)
     proposal = pipeline.assemble(distilled, provenance, filename)
     if store is not None:
@@ -2003,6 +2033,7 @@ __all__ = [
     "TERMINAL_PROPOSAL_STATUSES",
     "compute_blast_radius",
     "create_proposal_without_provider",
+    "prepare_proposal_content",
     "import_page_category",
     "is_reviewable_proposal",
     "map_external_import_categories",

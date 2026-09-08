@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -195,6 +196,38 @@ def local_server():
     server, base = _serve(_PageHandler)
     yield base
     server.shutdown()
+
+
+def test_slow_response_headers_respect_remaining_deadline():
+    """Trickling header bytes cannot reset the per-hop I/O budget."""
+
+    class SlowHeadersHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server API
+            self.wfile.write(b"HTTP/1.0 200 OK\\r\\n")
+            self.wfile.flush()
+            time.sleep(0.4)
+            self.wfile.write(b"Content-Type: text/plain\\r\\n\\r\\nbody")
+            self.wfile.flush()
+
+        def log_message(self, format, *args):  # noqa: A002 - stdlib API
+            return
+
+    server, base = _serve(SlowHeadersHandler)
+    started = time.monotonic()
+    try:
+        with pytest.raises(UrlFetchError):
+            fetch_url(
+                base,
+                UrlFetchPolicy(
+                    allow_http=True,
+                    allow_private_destinations=True,
+                    timeout_seconds=0.1,
+                ),
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert time.monotonic() - started < 0.8
 
 
 def test_fetch_url_follows_redirects_and_records_truthful_provenance(local_server):

@@ -52,14 +52,15 @@ install LanceDB/PyArrow or any model provider. Optional capabilities:
 | `lumio-wiki[documents]` | LiteParse, MarkItDown, AnyDoc | PDF / scanned-PDF / image (OCR + page numbers), office formats, HTML. The base wheel handles text and Markdown. |
 | `lumio-wiki[llm]` | `openai` | Unattended Distiller backed by an OpenAI-compatible provider. The base wheel uses the host coding agent as the Distiller. |
 | `lumio-wiki[all]` | both | Document conversion + unattended distillation together. |
-| `lumio-lancedb` | LanceDB, PyArrow | BM25 / vector / semantic / hybrid retrieval. `lumio-wiki` never imports it. |
+| `lumio-lancedb` | LanceDB, PyArrow | BM25 / vector / semantic / hybrid retrieval. The canonical SDK never imports it. |
 | `lumio-lancedb[embeddings]` | `sentence-transformers` | Local embeddings for the LanceDB adapter. Torch stays out of the base adapter and out of `lumio-wiki`. |
 | `lumio-lancedb[s3]` | `obstore` | Remote (S3) index support. |
 
 **Adapter selection.** `lumio-wiki` provides the always-available zero-index
 retrieval; installing `lumio-lancedb` adds BM25 / semantic / hybrid retrieval
-behind the same `RetrievalResult` contract. `lumio-wiki` never imports the
-adapter — the dependency graph is one-way.
+behind the same `RetrievalResult` contract. The canonical SDK stays
+adapter-neutral; explicitly selected CLI/evaluation composition lazily loads the
+separately installed adapter, preserving the one-way dependency graph.
 
 ## CLI reference
 
@@ -71,20 +72,26 @@ lumio-wiki --version
 lumio-wiki init <path>                           # scaffold a categorized Knowledge Base
 lumio-wiki validate <kb-path>                    # exit 0 if valid, 1 otherwise
 lumio-wiki search <kb-path> "<query>"            # lexical search over titles, aliases, tags, summaries, bodies
-lumio-wiki page <kb-path> "<title>"              # read a Compiled Page by Canonical Title or alias
+lumio-wiki page [<kb-path>] "<title>" [--raw|--json] # lossless or bounded Compiled Page read
 lumio-wiki related <kb-path> "<title>"           # list pages related to a title
 lumio-wiki paths <kb-path> "<src>" "<dst>"       # shortest typed path between two titles
 lumio-wiki ingest <kb-path> <source> [--distiller passthrough|llm]   # stage a Knowledge Source as a proposal
 lumio-wiki ingest-url <kb-path> <url> --compiled-page <page.md> --source-id <id>  # safe URL ingestion (HTTPS-only, bounded, SSRF-safe)
 lumio-wiki ingest-research <kb-path> <report.md> --manifest <manifest.yaml> --source-id <id>  # research bundle (consulted URLs = provenance)
-lumio-wiki proposal list|inspect|validate <kb-path> [id]      # review staged proposals
-lumio-wiki publish <kb-path> <id>                # publish a reviewed proposal
+lumio-wiki proposal list <kb-path>                 # list staged proposals
+lumio-wiki proposal inspect <kb-path> <id>         # inspect one proposal
+lumio-wiki proposal validate <kb-path> <id>        # validate one proposal
+lumio-wiki publish <kb-path> <id>                  # publish a reviewed proposal
 lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]  # secret-free metadata for the exact bound Source Version
 lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>  # byte-exact original, digest re-verified
 lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]   # short-lived signed GET URL (max 1h; bearer secret)
 lumio-wiki health <kb-path>                      # Knowledge Base health and diagnostics
 lumio-wiki doctor                                # install shape: version, optionals, packaged skill location
-lumio-wiki skill [--install|--path]              # locate or install the packaged Agent Skill
+lumio-wiki skill path                              # locate packaged SKILL.md
+lumio-wiki skill protocol                          # locate packaged PROTOCOL.md
+lumio-wiki skill install --scope user              # explicit skill installation
+lumio-wiki skill status --scope user               # inspect installed skill drift
+lumio-wiki skill update --scope user               # explicitly refresh the skill
 ```
 
 `ingest --distiller llm` requires `lumio-wiki[llm]`; PDF/DOCX/image sources
@@ -94,22 +101,53 @@ extra is missing.
 ## Knowledge Base format
 
 A Knowledge Base is a directory of compiled Markdown pages (YAML frontmatter +
-body). Minimal example:
+body). A fresh v2 setup starts with an empty ontology, so declare the types you
+intend to use in `lumio.yaml` before adding Entity pages:
+
+```bash
+lumio-wiki init ./knowledge-base
+mkdir -p ./knowledge-base/concepts
+python - <<'PY'
+from pathlib import Path
+p = Path("./knowledge-base/lumio.yaml")
+s = p.read_text()
+s = s.replace(
+    "ontology:\n  entity_types:\n  predicates:\n  redirects:\n",
+    "ontology:\n  entity_types:\n    software-system:\n      description: A deployed software product or platform.\n  predicates:\n    described-as:\n      literal_kind: string\n  redirects: {}\n",
+)
+p.write_text(s)
+PY
+```
+
+Then author a valid Entity page:
 
 ```markdown
 ---
 title: "Technology Stack"
+id: "entity:technology-stack"
+entity_types: ["software-system"]
+aliases: []
 tags: ["technology"]
-lifecycle: "approved"
+summary: "The project's technology stack."
+category: "concepts"
+type: "definition"
+durability_rationale: "A stable reference for the project stack."
+lifecycle: "draft"
 visibility: "internal"
 sources:
   - id: "stack-doc"
     title: "Stack decision"
+claims: []
+synthetic: false
 ---
 
 # Technology Stack
 
 Python-first: msgspec, LanceDB (optional adapter).
+```
+
+```bash
+lumio-wiki validate ./knowledge-base
 ```
 
 For the full field table, see **[`docs/kb-format.md`](docs/kb-format.md)**. A
@@ -133,7 +171,7 @@ uv run lumio-wiki validate tests/fixtures/valid   # sanity check the sample KB
 
 ### Codebase layout
 
-```
+```text
 packages/lumio-wiki/src/lumio_wiki/       # Canonical portable Knowledge Base owner
 packages/lumio-lancedb/src/lumio_lancedb/ # Optional LanceDB enhanced-retrieval adapter
 ```

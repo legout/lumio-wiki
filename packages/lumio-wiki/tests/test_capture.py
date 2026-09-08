@@ -173,9 +173,7 @@ def test_unclosed_reasoning_tag_strips_to_end_of_text():
 
 
 def test_private_key_blocks_are_redacted():
-    pem = (
-        "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----"
-    )
+    pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----"
     redacted, counts = redact_capture_text(f"signing key:\n{pem}\ndone")
     assert "MIIEowIBAAKCAQEA" not in redacted
     assert counts.get("private-key", 0) == 1
@@ -320,9 +318,7 @@ def test_confirmed_capture_stages_single_reviewable_proposal(tmp_path: Path):
     assert "Verified findings" in proposal.proposed_pages[0].markdown
     assert "Retrieval found no Evidence" not in proposal.proposed_pages[0].markdown
     # Private manifest record under the ingest store only.
-    record = json.loads(
-        (Path(store.root) / "captures" / "session-2026-pi.json").read_text()
-    )
+    record = json.loads((Path(store.root) / "captures" / "session-2026-pi.json").read_text())
     assert record["manifest"]["client"] == "pi"
     assert record["transcript_digest"] is not None
     # Not published: the KB still has no captured page.
@@ -432,9 +428,7 @@ def test_secret_bearing_transcript_is_registered_redacted(tmp_path: Path):
     source = store.source_registry.get("session-secret-transcript")
     redacted_bytes = redact_capture_text(transcript.read_text())[0].encode()
     assert source.versions[-1].content_hash == hashlib.sha256(redacted_bytes).hexdigest()
-    assert "ghp_" not in json.dumps(
-        json.loads(json.dumps(_registry_state(store))), default=str
-    )
+    assert "ghp_" not in json.dumps(json.loads(json.dumps(_registry_state(store))), default=str)
 
 
 def _registry_state(store) -> dict:
@@ -765,3 +759,34 @@ def test_cli_missing_manifest_errors_cleanly(tmp_path: Path):
     )
     assert code == 2
     assert "capture manifest not found" in out
+
+
+def test_quoted_json_credentials_are_redacted_before_capture_staging(tmp_path: Path):
+    kb = _kb(tmp_path)
+    pipeline, store = _pipeline(kb, tmp_path)
+    manifest, raw = load_capture_manifest(CAPTURE_FIXTURES / "pi.yaml")
+    page = _page(
+        "session-json-secret",
+        body=(
+            "# Findings\n\n"
+            '```json\n{"api_key": "synthetic-json-credential-value"}\n'
+            '{"password": "synthetic p@ss\\"word-value"}\n```\n'
+        ),
+    )
+
+    outcome = capture_session(
+        pipeline,
+        store,
+        compiled_page_markdown=page,
+        manifest=manifest,
+        manifest_bytes=raw,
+        manifest_path=CAPTURE_FIXTURES / "pi.yaml",
+        source_id="session-json-secret",
+        transcript_path=CAPTURE_FIXTURES / "pi-session.jsonl",
+        confirmed=True,
+    )
+
+    assert outcome.proposal is not None
+    staged = outcome.proposal.proposed_pages[0].markdown
+    assert "synthetic-json-credential-value" not in staged
+    assert "[REDACTED]" in staged

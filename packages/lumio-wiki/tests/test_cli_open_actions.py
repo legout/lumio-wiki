@@ -71,7 +71,8 @@ def test_page_labels_authored_source_url_and_private_source_action(
     assert "source-url:      https://example.com/lumio" in out
     # The private Source action is the explicit inspect command, never a URL.
     assert (
-        "source-artifact: lumio-wiki source inspect --source-id lumio-overview" in out
+        f'source-artifact: lumio-wiki source inspect "{kb_root.resolve()}" '
+        "--source-id lumio-overview" in out
     )
     assert "signed" not in out.lower()
 
@@ -89,6 +90,4 @@ def test_rendered_open_actions_never_contain_object_store_urls():
         source_url="https://example.com/doc.pdf",
     )
     lines = render_open_actions(actions)
-    assert not any(
-        scheme in line for line in lines for scheme in ("s3://", "gs://", "az://")
-    )
+    assert not any(scheme in line for line in lines for scheme in ("s3://", "gs://", "az://"))

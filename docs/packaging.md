@@ -71,8 +71,10 @@ its own retrieval stack. Owns:
 - Hybrid and reciprocal-rank-fusion behavior.
 
 It implements `lumio-wiki`'s retrieval interface without changing client
-contracts. `lumio-wiki` never imports it, including through a convenience
-extra — the dependency graph is one-way.
+contracts. Importing the canonical `lumio_wiki` package never imports it and
+there is no dependency edge from the foundation wheel. The CLI/evaluation
+composition boundary may discover and lazily load it only when an operator
+explicitly selects a LanceDB backend — the dependency graph remains one-way.
 
 **Dependencies:** `lumio-wiki>=0.1.1,<0.2.0`, `lancedb`, `pyarrow`,
 `msgspec[yaml]`. Optional `embeddings` extra pulls in
@@ -101,7 +103,7 @@ plus the operational stack (`stario`, `piccolo[sqlite]`, `openai`,
 
 ## Dependency direction
 
-```
+```text
 lumio-wiki  ←  lumio-lancedb
     ↑              ↑
     └────  lumio ──┘
@@ -214,9 +216,11 @@ as wheel data. Coding agents locate them deterministically without cloning
 the Lumio repository:
 
 ```bash
-lumio-wiki skill --path      # print the absolute path to the packaged SKILL.md
-lumio-wiki skill --install <dest>   # copy SKILL.md into a coding-agent skills directory
-lumio-wiki doctor            # report version, optionals, and the skill path
+lumio-wiki skill path                         # print the packaged SKILL.md path
+lumio-wiki skill protocol                     # print the packaged PROTOCOL.md path
+lumio-wiki skill install --scope user         # explicit shared-scope install
+lumio-wiki skill install --agent <name>       # compatibility install for one agent
+lumio-wiki doctor                             # report version, optionals, and skill path
 ```
 
 The protocol and skill are force-included into the wheel via the

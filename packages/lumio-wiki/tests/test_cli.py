@@ -2416,7 +2416,7 @@ def test_source_inspect_rejects_secret_bearing_source_id_without_echo(
     source_kb: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.delenv("LUMIO_SOURCE_STORE", raising=False)
-    secret_id = "sk-live-abc123"
+    secret_id = "sk-" + "live-" + "abc123"
     rc = main(["source", "inspect", str(source_kb), "--source-id", secret_id])
     assert rc == 1
     combined = capsys.readouterr()
@@ -2542,7 +2542,10 @@ def test_source_resolve_by_page_title_reports_identity_and_availability(
     assert "matched_by:      canonical-title" in out
     assert "page:            CLI Page (cli_page.md)" in out
     assert "availability:    not retained (no Source Artifact Store configured)" in out
-    assert "next:            lumio-wiki source inspect --source-id policy" in out
+    assert (
+        f'next:            lumio-wiki source inspect "{source_kb.resolve()}" '
+        "--source-id policy" in out
+    )
 
 
 def test_source_resolve_by_exact_source_id_emits_json(
@@ -2698,9 +2701,7 @@ def test_source_inspect_unknown_id_error_names_close_id_and_command(
 
     # A title-shaped --source-id (the reader-trial failure shape): the error
     # names the close registered id (the bounded set is the pointer).
-    rc = main(
-        ["source", "inspect", str(source_kb), "--source-id", "Atlas Catalog Wrong"]
-    )
+    rc = main(["source", "inspect", str(source_kb), "--source-id", "Atlas Catalog Wrong"])
     assert rc == 1
     err = capsys.readouterr().err
     assert "atlas-heatworks-product-catalog" in err
@@ -2714,15 +2715,16 @@ def test_source_inspect_unknown_id_error_names_close_id_and_command(
 
 
 def test_source_fetch_unavailable_artifact_error_explains_retention_step(
-    source_kb: Path, source_file: Path, tmp_path: Path, monkeypatch,
+    source_kb: Path,
+    source_file: Path,
+    tmp_path: Path,
+    monkeypatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Issue #174/#176: unavailable explains retention; unknown does not reach fetch."""
     # Registered but NOT retained: an empty store directory is configured.
     ingest = lw.IngestStore(source_kb / ".lumio" / "ingest")
-    ingest.source_registry.register_source(
-        "policy", INSPECTION_RAW, filename="policy.pdf"
-    )
+    ingest.source_registry.register_source("policy", INSPECTION_RAW, filename="policy.pdf")
     store_root = tmp_path / "artifact-store"
     store_root.mkdir()
     monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))

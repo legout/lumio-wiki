@@ -72,13 +72,13 @@ _Avoid_: stale_after (OKF exchange vocabulary), expiry, TTL.
 A provenance reference on a Compiled Page (an identifier, a title, and an optional URL). Non-synthetic pages must have at least one.
 _Avoid_: reference, link.
 
-**Relationship**:
-A typed, directed edge from one Compiled Page to another, expressed in frontmatter by canonical title. It is a reviewed semantic claim, not an ordinary body link.
-_Avoid_: link (too generic), connection.
+**Claim**:
+A proposition owned by an Entity's Compiled Page. It uses a Control File predicate and exactly one Entity object or typed literal, has status `accepted`, `disputed`, or `superseded`, and carries Evidence anchors on the published page. Accepted entity-to-entity Claims form canonical graph edges.
+_Avoid_: Relationship (retired vocabulary), connection.
 
 **Extracted Reference**:
-A deterministic, non-canonical directed reference derived from an internal Markdown link in a Compiled Page body. It supports navigation and context discovery but does not assert Relationship semantics.
-_Avoid_: inferred relationship, automatic relationship, link edge.
+A deterministic, non-canonical directed reference derived from an internal Markdown link in a Compiled Page body. It supports navigation and context discovery but does not assert Claim semantics.
+_Avoid_: inferred claim, automatic claim, link edge.
 
 ### Retrieval
 
@@ -99,7 +99,7 @@ A structured explanation of the retrieval stages (validation, lexical search, gr
 _Avoid_: debug log, explanation.
 
 **Discovery Graph**:
-The derived graph used to find context, containing canonical Relationships plus Extracted References. Its topology selects Evidence to inspect; an Extracted Reference is never Evidence and cannot support an answer claim by itself.
+The derived graph used to find context, containing accepted canonical Claims plus Extracted References. Its topology selects Evidence to inspect; an Extracted Reference is never Evidence and cannot support an answer claim by itself.
 _Avoid_: knowledge graph (ambiguous), assertion graph, link graph.
 
 **Index Freshness**:
@@ -180,7 +180,7 @@ _Avoid_: session metadata export, transcript header.
 
 **Page Removal**:
 An explicit, reviewed Ingest Proposal mutation that excludes a Compiled Page
-from the next Published Version and repairs invalid canonical Relationships in
+from the next Published Version and repairs invalid canonical Claims in
 the same proposal. It is never inferred from an omitted page.
 _Avoid_: missing page, automatic deletion.
 
@@ -278,8 +278,8 @@ _Avoid_: document viewer, article view, citation popup, Library (the retired
 Reader browse/reading concept; stable `/kb` routes remain for compatibility).
 
 **Constellation**:
-A contextual Relationship lens seeded from an answer, Citation, Compiled Page,
-or Maintainer/Owner diagnostic task. It explains how Compiled Pages relate; it
+A contextual lens seeded from an answer, Citation, Compiled Page, or
+Maintainer/Owner diagnostic task. It explains how Compiled Pages connect; it
 is not the Reader home.
 _Avoid_: graph homepage, mind map, knowledge graph app.
 
@@ -304,29 +304,6 @@ _Avoid_: operations cockpit, control center, debug dashboard.
 ### Platform capabilities
 
 These named capabilities are part of Lumio's ubiquitous language. Each is a seam, not a module dictate.
-
-**Core SDK**:
-The framework-independent boundary that owns loading, validating, indexing, and retrieving over a Knowledge Base. Every client (web, API, future CLI, local coding-agent adapter) calls the same Core SDK behavior.
-_Avoid_: the engine, the backend.
-
-**Agent Runtime**:
-The Lumio-owned loop that classifies a question, retrieves evidence via the Core SDK, calls the model, synthesizes a cited answer, exposes a trace, and refuses unsupported claims.
-_Avoid_: the LLM layer, the brain.
-
-**Chat Gateway**:
-The boundary that exposes chat to clients (native web API and a future OpenAI-compatible endpoint), enforcing auth, roles, and guardrails so no client bypasses the Agent Runtime.
-_Avoid_: the API, the endpoint.
-
-## Future extension
-
-**Connector**:
-A future adapter exposing knowledge or data from a non-Markdown source (table, database, data lake). Not part of the MVP. Retrieval results already allow non-Markdown evidence so connectors can be added without changing client contracts.
-_Avoid_: integration, plugin.
-
-**Dataset**:
-A future structured data source exposed through a Connector (tables, extracts, Parquet, data-lake artifacts). Query execution is post-MVP.
-_Avoid_: database (too narrow), table.
-abilities are part of Lumio's ubiquitous language. Each is a seam, not a module dictate.
 
 **Core SDK**:
 The framework-independent boundary that owns loading, validating, indexing, and retrieving over a Knowledge Base. Every client (web, API, future CLI, local coding-agent adapter) calls the same Core SDK behavior.

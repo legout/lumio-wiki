@@ -132,7 +132,9 @@ lumio-wiki setup <kb-path> [--skill-scope user|project | --agent <name>]  # proj
 lumio-wiki init <path>                       # lower-level KB-only: scaffold a categorized Knowledge Base
 lumio-wiki validate <kb>                     # exit 0 if valid, 1 otherwise
 lumio-wiki search <kb> "<query>" [--limit N] # lexical search over titles, aliases, tags, summaries, bodies
-lumio-wiki page <kb> "<title>"               # read a Compiled Page by Canonical Title or alias
+lumio-wiki page [<kb>] "<title>" [--raw|--json] # lossless or bounded page read
+              [--section "<heading>"] [--line-start N] [--line-end N]
+              [--max-lines N] [--max-bytes N]
 lumio-wiki related <kb> "<title>"            # list pages related to a title
               [--scope canonical|discovery] [--direction outgoing|incoming|both]
               [--depth N] [--max-edges N] [--max-results N] [--trace]
@@ -148,13 +150,15 @@ lumio-wiki ingest-url <kb> <url> --compiled-page <page.md> --source-id <id> # sa
 lumio-wiki ingest-research <kb> <report.md> --manifest <manifest.yaml> --source-id <id>  # bounded research bundle (consulted URLs = provenance; issue #178)
 lumio-wiki proposal list <kb>                # list staged proposals
 lumio-wiki proposal inspect <kb> <id> [--json]   # review a proposal (metadata + diff)
-lumio-wiki proposal validate <kb> <id>       # validate a proposal
-lumio-wiki publish <kb> <id>                 # publish a reviewed proposal
-lumio-wiki discard <kb> <id>                 # discard a proposal
+lumio-wiki proposal validate <kb> <id> [--json] # validate a proposal
+lumio-wiki publish <kb> <id> [--json]      # publish a reviewed proposal
+lumio-wiki discard <kb> <id> [--json]      # discard a proposal
 lumio-wiki cross-link <kb> [--stage]         # missing-link candidates (Extracted References); --stage repairs as links
 lumio-wiki dream <kb> [--stage] [--semantic] # read-only Dream Cycle reflection; Source Drift diagnostics are
                                              #   advisory (never staged, never blocking, no exit-code change)
-lumio-wiki source <kb> <list|retire|reactivate> --source-id <id>  # manage private Source lifecycle (ADR-0014)
+lumio-wiki source list [<kb>]                    # list private Source identities (ADR-0014)
+lumio-wiki source retire [<kb>] --source-id <id> # stage Source retirement
+lumio-wiki source reactivate [<kb>] --source-id <id> --file <path> # stage reactivation
 lumio-wiki source resolve <kb> "<query>" [--published-version <v>] [--json]  # resolve a Source ID, Entity ID, page title, alias, or path to ONE registered Source (identity + availability; bounded candidates; never a signed URL)
 lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]  # secret-free metadata for the exact bound Source Version (ADR-0020)
 lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>  # byte-exact original, digest/size re-verified (private, optional)
@@ -289,7 +293,7 @@ for r in results:
 
 Output:
 
-```
+```text
 Title:    Technology Stack
 Path:     technology.md
 Score:    4.0
@@ -334,6 +338,12 @@ and `superseded` Claims and Extracted References never masquerade as
 accepted support (ADR-0021).
 
 ### Reading a page by Canonical Title or alias
+
+Use `page [<kb>] "<title>" --raw` for lossless canonical Markdown. Add
+`--section`, line bounds, or `--max-lines`/`--max-bytes` for a bounded read;
+truncation and omitted ranges are reported. Add `--json` for stable page
+identity and coordinates. Machine errors are nonzero, safe, and do not include
+provider exceptions, credentials, registry data, signed URLs, or raw Sources.
 
 ```python
 from lumio_wiki import load_knowledge_base

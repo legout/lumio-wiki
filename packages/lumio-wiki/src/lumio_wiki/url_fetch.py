@@ -229,6 +229,7 @@ def _request_once(
     parsed: urllib.parse.ParseResult,
     address: str,
     policy: UrlFetchPolicy,
+    deadline: float,
 ) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
     """Issue ONE GET over a connection pinned to the validated address.
 
@@ -236,18 +237,19 @@ def _request_once(
     shrinking the socket timeout against the per-hop deadline while reading
     the body (a trickling peer cannot outlast the deadline).
     """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("URL fetch deadline expired before connecting")
     if parsed.scheme == "https":
         conn: http.client.HTTPConnection = _PinnedHTTPSConnection(
             address,
             parsed.hostname or "",
             parsed.port or 443,
-            policy.timeout_seconds,
+            remaining,
             ssl.create_default_context(),
         )
     else:
-        conn = http.client.HTTPConnection(
-            address, port=parsed.port or 80, timeout=policy.timeout_seconds
-        )
+        conn = http.client.HTTPConnection(address, port=parsed.port or 80, timeout=remaining)
     target = urllib.parse.urlunparse(parsed._replace(scheme="", netloc="")) or "/"
     try:
         conn.request(
@@ -259,6 +261,13 @@ def _request_once(
                 "Accept": "*/*",
             },
         )
+        # ``getresponse`` parses the status line and headers synchronously;
+        # set the shrinking timeout before it, not only before body reads.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("URL fetch deadline expired while waiting for headers")
+        if conn.sock is not None:
+            conn.sock.settimeout(remaining)
         return conn, conn.getresponse()
     except Exception:
         conn.close()
@@ -296,16 +305,21 @@ def fetch_url(url: str, policy: UrlFetchPolicy | None = None) -> UrlFetchResult:
         # Per-hop END-TO-END deadline: connect, headers, and body must all
         # complete within one timeout window, so a trickling peer cannot
         # outlast per-read timeouts (spec: "bounded bytes/time/redirects").
+        # DNS resolution intentionally precedes this timer: the synchronous
+        # resolver is not claimed to have a wall-clock bound here.
         deadline = time.monotonic() + policy.timeout_seconds
         conn: http.client.HTTPConnection | None = None
         response: http.client.HTTPResponse | None = None
         try:
             for address in addresses:
+                if deadline <= time.monotonic():
+                    break
                 try:
-                    conn, response = _request_once(parsed, address, policy)
+                    conn, response = _request_once(parsed, address, policy, deadline)
                     break
                 except OSError:
                     conn = None
+                    response = None
                     continue  # try the next resolved address
             if response is None or conn is None:
                 raise UrlFetchError(f"failed connecting to {parsed.hostname!r}")
