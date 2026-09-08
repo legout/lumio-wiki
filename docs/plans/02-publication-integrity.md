@@ -1,6 +1,6 @@
 # 02 — Publication and validation integrity
 
-**P1–P3 implemented; P4–P5 proposed and unexecuted.** Goal: prevent silent canonical data loss and stale
+**P1–P4 implemented; P5 proposed and unexecuted.** Goal: prevent silent canonical data loss and stale
 publication while preserving proposal-first local maintenance.
 Sources/requirements: [owner decisions and B01–B07](README.md#finding-to-task-map),
 [PRD aggregation](../prd/0002-core-sdk.md),
@@ -142,7 +142,7 @@ no alternate CLI mutation implementation. Global checks: [README](README.md#glob
 
 ## P4
 
-- [ ] **Persist reviewed affected-file/control preconditions (B03/B04).**
+- [x] **Persist reviewed affected-file/control preconditions (B03/B04).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/ingest.py`,
   `packages/lumio-wiki/src/lumio_wiki/proposal_pipeline.py`,
   `packages/lumio-wiki/src/lumio_wiki/publish.py`;
@@ -175,6 +175,13 @@ no alternate CLI mutation implementation. Global checks: [README](README.md#glob
 
   **Done:** reviewed overlapping state cannot overwrite newer content; disjoint
   proposals remain publishable; all routes persist/consume the same preconditions.
+  **Evidence:** integrated locally in `864d64b` after cumulative remediation and
+  a clean read-only P4 gate. Private reviewed identities and exact path/control
+  preconditions fail closed across ordinary, removal, merge, and source-lifecycle
+  routes; focused P4/P3 suites and the final reviewer checks passed. The full
+  suite passed with four workers via the active uv environment: `1569 passed,
+  9 skipped`. Complete live-KB rollback across ordinary publish failures remains
+  the separate P5 task.
 
 ## P5
 
