@@ -271,9 +271,7 @@ def _require_transition_preconditions(
     fail and strand a permanent pending transition (mirrors the status checks
     in :meth:`apply_transition`).
     """
-    source = next(
-        (item for item in state.sources if item.source_id == transition.source_id), None
-    )
+    source = next((item for item in state.sources if item.source_id == transition.source_id), None)
     if source is None:
         raise SourceRegistryError(
             f"Knowledge Source {transition.source_id!r} is missing from the registry; "

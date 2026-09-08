@@ -1744,3 +1744,55 @@ def test_resource_identity_canonicalizes_case_variants_of_one_location(tmp_path)
             registry.register_source("policy", b"v1")
     reloaded = SourceRegistry(root)
     assert {source.source_id for source in reloaded.list()} == {"handbook", "policy"}
+
+
+def test_save_raw_performs_every_filesystem_mutation_inside_the_store_lock(tmp_path, monkeypatch):
+    # Review blocker (Plan 02 / P3 remediation v3): save_raw used to create
+    # the raw source directory BEFORE acquiring the store mutation lock, so a
+    # direct raw writer whose lock acquisition failed still mutated the
+    # filesystem outside the locked atomic boundary. Every raw mutation —
+    # directory creation, safe-name/path derivation, and the atomic byte
+    # write — must happen INSIDE the critical section: a refused lock leaves
+    # zero filesystem state behind, and the success path persists durable
+    # bytes at the returned path. Nested acquisition reenters (the store lock
+    # is reentrant), exactly as :meth:`ProposalPipeline.stage` stages raw
+    # bytes while already holding the lock.
+    from typing import NoReturn
+
+    import lumio_wiki.ingest as ingest_module
+
+    store = IngestStore(tmp_path / "ingest")
+    raw_dir = tmp_path / "ingest" / "raw"
+
+    def refuse_lock(*args: object, **kwargs: object) -> NoReturn:
+        raise MutationLockError("store mutation lock unavailable")
+
+    # save_raw resolves mutation_lock from the ingest module's globals, so
+    # patching it there simulates a refused lock acquisition deterministically.
+    monkeypatch.setattr(ingest_module, "mutation_lock", refuse_lock)
+    with pytest.raises(MutationLockError, match="store mutation lock unavailable"):
+        store.save_raw("proposal-1", b"raw bytes", "notes.md")
+    # The refused lock left ZERO filesystem mutation: no raw tree, no
+    # proposal artifacts, no temp files — the store root was never created.
+    assert not (tmp_path / "ingest").exists()
+
+    monkeypatch.undo()
+    path = store.save_raw("proposal-1", b"raw bytes", "notes.md")
+    # The success path keeps the raw bytes isolated under the proposal's own
+    # raw directory, flattens the filename, and returns that durable path.
+    assert path == raw_dir / "proposal-1" / "notes.md"
+    assert path.read_bytes() == b"raw bytes"
+    assert sorted(p.name for p in raw_dir.iterdir()) == ["proposal-1"]
+
+    # A direct raw writer called while the store lock is already held
+    # (nested stage) reenters instead of deadlocking and lands the same
+    # durable atomic write.
+    with mutation_lock(store.root):
+        nested = store.save_raw("proposal-1", b"raw bytes 2", "notes.md")
+    assert nested == path
+    assert nested.read_bytes() == b"raw bytes 2"
+    # save_raw touches ONLY the raw tree; the registry stays write-lazy
+    # (no sources.json until a registry mutation) and no temp files leak.
+    assert sorted(p.name for p in (tmp_path / "ingest").iterdir()) == ["raw"]
+    assert sorted(p.name for p in raw_dir.iterdir()) == ["proposal-1"]
+    assert sorted(p.name for p in (raw_dir / "proposal-1").iterdir()) == ["notes.md"]

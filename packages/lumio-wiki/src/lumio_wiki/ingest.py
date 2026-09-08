@@ -1579,12 +1579,18 @@ class IngestStore:
         :meth:`ProposalPipeline.stage`, which already holds it, reenters),
         and the bytes land through a uniquely named temp file so a failed
         write can never leave torn raw bytes behind.
+
+        EVERY raw mutation — the raw directory creation, the safe-name/path
+        derivation, and the atomic byte write — happens inside the critical
+        section: a direct raw writer whose lock acquisition fails (or that
+        loses to a terminal-state refusal) mutates no filesystem state at
+        all, exactly like the proposal writers (Plan 02 / P3).
         """
-        dir_path = self.raw_dir / proposal_id
-        dir_path.mkdir(parents=True, exist_ok=True)
-        safe_name = Path(filename).name
-        path = dir_path / safe_name
         with mutation_lock(self.root):
+            dir_path = self.raw_dir / proposal_id
+            dir_path.mkdir(parents=True, exist_ok=True)
+            safe_name = Path(filename).name
+            path = dir_path / safe_name
             atomic_write_bytes(path, raw_bytes)
         return path
 
