@@ -843,6 +843,55 @@ def test_public_save_cannot_rebind_reviewed_identity_for_altered_lifecycle_conte
     assert msgspec.json.encode(store.source_registry._state) == prior_registry
 
 
+def test_public_save_refuses_incoming_terminal_status_and_keeps_decision_open(
+    tmp_path,
+) -> None:
+    # Plan 02 / P3 (incoming terminal-status guard), source-lifecycle side: a
+    # public save of a staged RETIREMENT proposal carrying an incoming
+    # ``published``/``discarded`` status must be refused BEFORE any write.
+    # Writing it would mark the proposal terminal without applying the
+    # pending registry transition — stranding the retirement behind a
+    # terminal record the pipeline's publish/discard paths refuse. The
+    # refusal preserves the staged proposal AND the bound transition, so the
+    # maintainer decision stays open in BOTH directions: discarding releases
+    # the transition, publishing applies it. Deterministic: direct ordered
+    # public-API calls, no sleeps, no threads.
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"policy-v1")
+    proposal = pipeline.retire_source("policy")
+    durable = store.get(proposal.id)
+    assert durable is not None and durable.status == "staged"
+    assert durable.source_change is not None
+    prior_registry = msgspec.json.encode(store.source_registry._state)
+
+    for terminal_status in ("published", "discarded"):
+        with pytest.raises(lw.ProposalTerminalStateError):
+            store.save_proposal(msgspec.structs.replace(durable, status=terminal_status))
+
+    # Nothing was written: the proposal keeps its reviewable staged status
+    # and the registry keeps its bound pending transition (a second
+    # retirement for the same source is still refused while it is bound).
+    reloaded = IngestStore(tmp_path / "ingest")
+    preserved = reloaded.get(proposal.id)
+    assert preserved is not None and preserved.status == "staged"
+    assert preserved == durable
+    assert msgspec.json.encode(store.source_registry._state) == prior_registry
+    with pytest.raises(SourceRegistryError, match="already has a pending transition"):
+        pipeline.retire_source("policy")
+
+    # The decision stays open: discarding releases the transition ...
+    discarded = pipeline.discard(proposal.id)
+    assert discarded is not None and discarded.status == "discarded"
+    replacement = pipeline.retire_source("policy")
+    assert replacement.status == "staged"
+    # ... and publishing the replacement applies it: the source retires.
+    published = pipeline.publish(replacement.id)
+    assert published.status == "published"
+    assert store.source_registry.get("policy").status == "retired"
+
+
 def test_private_registry_activity_does_not_change_kb_or_export_bytes(tmp_path) -> None:
     kb = _knowledge_base(tmp_path, ["policy"])
     store = IngestStore(tmp_path / "ingest")

@@ -649,17 +649,22 @@ def is_reviewable_proposal(proposal: IngestProposal) -> bool:
 
 
 class ProposalTerminalStateError(RuntimeError):
-    """An ordinary proposal write would replace durable terminal state.
+    """An ordinary proposal write would create or replace terminal state.
 
     Raised by :meth:`IngestStore.save_proposal` when the durable proposal
     re-read under the store mutation lock is already ``published`` or
     ``discarded``: that terminal decision is the durable authority, and a
     stale caller re-saving an old staged object must never resurrect it
-    (Plan 02 / P3 review). The explicit reviewable-restore rollback inside
-    the Proposal Pipeline's publish/discard compensation is the ONE
-    authorized path past this guard
-    (:meth:`IngestStore._restore_reviewable`); ordinary saves and
-    re-staging are refused instead.
+    (Plan 02 / P3 review). The same guard refuses an ordinary save whose
+    INCOMING status is already terminal — whether or not a durable record
+    exists yet — because only the store's locked ``publish``/``discard``
+    transitions (and the explicit reviewable-restore rollback inside the
+    Proposal Pipeline's publish/discard compensation,
+    :meth:`IngestStore._restore_reviewable`) may move a proposal to or past
+    terminal state; a public save that wrote ``published``/``discarded``
+    would mark the proposal decided without applying its Knowledge Base or
+    registry effects (Plan 02 / P3 terminal-status guard). Ordinary saves
+    and re-staging are refused instead.
     """
 
 
@@ -1692,11 +1697,15 @@ class IngestStore:
     Ordinary writes are terminal-safe too: :meth:`save_proposal` re-reads the
     durable proposal under the lock and refuses (with
     :class:`ProposalTerminalStateError`) any save that would replace a
-    ``published``/``discarded`` proposal. Only the explicit
-    :meth:`_restore_reviewable` rollback compensation inside the Proposal
-    Pipeline's publish/discard failure handling may deliberately restore a
-    reviewable proposal over terminal state, and it runs inside the very
-    critical section that created that terminal state.
+    ``published``/``discarded`` proposal — and equally any save whose
+    INCOMING status is already terminal, so an ordinary save can never mark a
+    proposal decided by itself (a terminal write applies Knowledge Base and
+    registry effects only through the store's locked ``publish``/``discard``
+    transitions). Only the explicit :meth:`_restore_reviewable` rollback
+    compensation inside the Proposal Pipeline's publish/discard failure
+    handling may deliberately restore a reviewable proposal over terminal
+    state, and it runs inside the very critical section that created that
+    terminal state.
     """
 
     def __init__(self, root: str | Path) -> None:
@@ -1741,14 +1750,24 @@ class IngestStore:
     def save_proposal(self, proposal: IngestProposal, raw_path: Path | None = None) -> None:
         """Persist one proposal atomically under the store lock.
 
-        The durable proposal is re-read under the lock BEFORE the write. If
-        it already reached a terminal ``published``/``discarded`` state, the
-        save is refused with :class:`ProposalTerminalStateError`: a stale
-        caller re-saving an old staged object must never overwrite a decided
+        Terminal state is guarded on BOTH sides (Plan 02 / P3). The durable
+        proposal is re-read under the lock BEFORE the write: if it already
+        reached a terminal ``published``/``discarded`` state, the save is
+        refused with :class:`ProposalTerminalStateError` — a stale caller
+        re-saving an old staged object must never overwrite a decided
         proposal back to ``staged`` (from which it could then be published).
-        The Proposal Pipeline's explicit rollback compensation uses
-        :meth:`_restore_reviewable` instead, so this refusal never blocks a
-        legitimate rollback.
+        Symmetrically, an INCOMING terminal status is refused too, before any
+        write and whether or not a durable record exists yet: an ordinary
+        save carries a reviewable status only. A save that wrote
+        ``published``/``discarded`` itself would mark the proposal decided
+        WITHOUT applying its Knowledge Base changes or pending registry
+        transition — stranding the lifecycle decision behind a terminal
+        record no pipeline decision path can reach. The authorized terminal
+        writers are the store's own locked :meth:`publish`/:meth:`discard`
+        transitions and the Proposal Pipeline's explicit rollback
+        compensation (:meth:`_restore_reviewable`); none of them route
+        through this method, so the refusals never block a legitimate
+        decision or rollback.
 
         Plan 02 / P4 review (durable-tampering defense, final): an ordinary
         save NEVER carries a reviewed claim along. For an EXISTING
@@ -1786,6 +1805,25 @@ class IngestStore:
             else proposal
         )
         with mutation_lock(self.root):
+            # Plan 02 / P3 (incoming terminal-status guard): the durable
+            # terminal transition is the store's EXCLUSIVE authority. An
+            # ordinary save carries a reviewable status only — an incoming
+            # ``published``/``discarded`` status is refused BEFORE any write,
+            # whether or not a durable record exists yet. Writing terminal
+            # status here would mark the proposal decided without applying
+            # its Knowledge Base changes or pending registry transition,
+            # stranding the lifecycle decision behind a terminal record no
+            # pipeline decision path can reach. The authorized terminal
+            # writers — the locked :meth:`publish`/:meth:`discard`
+            # transitions and the :meth:`_restore_reviewable` rollback — do
+            # not route through this method.
+            if proposal_with_path.status in TERMINAL_PROPOSAL_STATUSES:
+                raise ProposalTerminalStateError(
+                    f"proposal {proposal.id!r} carries terminal status "
+                    f"{proposal_with_path.status!r}; an ordinary save cannot "
+                    "create or move terminal state — decide it through the "
+                    "Proposal Pipeline's publish/discard path instead"
+                )
             durable = self._load(proposal.id)
             if durable is not None and not is_reviewable_proposal(durable):
                 raise ProposalTerminalStateError(

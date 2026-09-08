@@ -1793,6 +1793,73 @@ def test_stale_restage_cannot_overwrite_discarded_proposal_or_publish(tmp_path: 
         assert viewed is not None and viewed.status == "discarded"
 
 
+def test_public_save_refuses_incoming_terminal_status_on_staged_proposal(tmp_path: Path):
+    # Plan 02 / P3 (incoming terminal-status guard): the durable terminal
+    # transition belongs to the store's locked publish/discard path ONLY. A
+    # public save of an otherwise identical STAGED proposal carrying an
+    # incoming ``published``/``discarded`` status must be refused BEFORE any
+    # write: writing it would mark the proposal decided without applying the
+    # Knowledge Base changes. The refusal preserves the durable ``staged``
+    # status, and the ordinary review decision keeps working afterwards.
+    # Deterministic: direct ordered public-API calls, no sleeps, no threads.
+    kb = _kb(tmp_path)
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    staged = lw.create_proposal_without_provider(
+        RELATED_PAGE.encode("utf-8"), "text/markdown", "related.md", kb, store=store
+    )
+    durable = store.get(staged.id)
+    assert durable is not None and durable.status == "staged"
+
+    for terminal_status in ("published", "discarded"):
+        with pytest.raises(lw.ProposalTerminalStateError):
+            store.save_proposal(msgspec.structs.replace(durable, status=terminal_status))
+
+    # Nothing was written: the durable proposal keeps its reviewable staged
+    # status, byte-for-byte, and the proposed page never reached the KB root.
+    reloaded = lw.IngestStore(tmp_path / "ingest")
+    preserved = reloaded.get(staged.id)
+    assert preserved is not None and preserved.status == "staged"
+    assert preserved == durable
+    assert not (kb.root / "journey_related_page.md").exists()
+
+    # The proposal is not stranded: the legitimate review decision still
+    # publishes it through the pipeline's locked transition.
+    published = pipeline.publish(staged.id)
+    assert published.status == "published"
+    assert (kb.root / "journey_related_page.md").exists()
+
+
+def test_public_save_refuses_terminal_status_for_new_proposal_record(tmp_path: Path):
+    # Same guard for a NEW record: a public save that would create a fresh
+    # proposal directly in terminal ``published``/``discarded`` state is
+    # refused before any write — no decided proposal may ever come into
+    # existence outside the store's locked publish/discard transitions. A
+    # reviewable save of the same fresh id stays allowed (with the reviewed
+    # claim stripped, as for every public new-record save).
+    kb = _kb(tmp_path)
+    store = lw.IngestStore(tmp_path / "ingest")
+    staged = lw.create_proposal_without_provider(
+        RELATED_PAGE.encode("utf-8"), "text/markdown", "related.md", kb, store=store
+    )
+    fresh_id = "fresh-proposal-record"
+    assert store.get(fresh_id) is None
+
+    for terminal_status in ("published", "discarded"):
+        incoming = msgspec.structs.replace(staged, id=fresh_id, status=terminal_status)
+        with pytest.raises(lw.ProposalTerminalStateError):
+            store.save_proposal(incoming)
+        assert store.get(fresh_id) is None
+
+    # The refusal is about the terminal status, not the id: the same fresh
+    # record persists once it carries a reviewable status (metadata stripped,
+    # as for every public new-record save).
+    store.save_proposal(msgspec.structs.replace(staged, id=fresh_id))
+    created = store.get(fresh_id)
+    assert created is not None and created.status == "staged"
+    assert created.preconditions is None and created.reviewed_identity is None
+
+
 OVERVIEW_REVISION = """---
 title: "Lumio Overview"
 aliases:
