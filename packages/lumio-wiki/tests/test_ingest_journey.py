@@ -7,13 +7,17 @@ review, publish and discard behavior without optional dependencies.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import socket
 from pathlib import Path
 
 import lumio_wiki as lw
+import msgspec
 import pytest
+from lumio_wiki.ingest import _recomputed_mutation_identity
 from lumio_wiki.publish import DestinationConflict
 
 ROOT = Path(__file__).parents[3]
@@ -2032,3 +2036,230 @@ def test_disjoint_proposals_publish_after_intervening_change(tmp_path: Path):
     assert not (root / "concepts/delta.md").exists()
     fresh = lw.IngestStore(tmp_path / "ingest").get(proposal_c.id)
     assert fresh is not None and fresh.status == "staged"
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 / P4 review: durable proposal tampering defense.
+# ---------------------------------------------------------------------------
+
+
+def test_altered_reviewable_save_cannot_retain_reviewed_preconditions(tmp_path: Path):
+    # P4 review (BLOCKER: durable proposal tampering). IngestStore.save_proposal
+    # permits replacing a REVIEWABLE proposal, so a caller could alter the
+    # reviewed Markdown (or Control File / removals) while RETAINING the old
+    # reviewed preconditions and content identity — and publish applied the
+    # unreviewed content whenever the old paths had not drifted. An ordinary
+    # reviewable save that alters mutation content must not retain the
+    # reviewed claim: the durable record loses its reviewed metadata, publish
+    # fails closed with restage guidance, and the Knowledge Base bytes never
+    # change. Deterministic: direct public-API calls, no sleeps.
+    kb = _kb(tmp_path)
+    page_path = kb.root / "overview.md"
+    original = page_path.read_text(encoding="utf-8")
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    staged = lw.create_proposal_without_provider(
+        OVERVIEW_REVISION.encode("utf-8"),
+        "text/markdown",
+        "overview-revision.md",
+        kb,
+        store=store,
+    )
+    assert not staged.blocked, staged.validation_report
+    durable = store.get(staged.id)
+    assert durable is not None
+    assert durable.preconditions and durable.reviewed_identity
+
+    tampered = msgspec.structs.replace(
+        durable,
+        proposed_pages=[
+            msgspec.structs.replace(
+                page, markdown=page.markdown.replace("revised", "UNREVIEWED TAMPERED")
+            )
+            for page in durable.proposed_pages
+        ],
+    )
+    assert tampered.proposed_pages[0].markdown != durable.proposed_pages[0].markdown
+    # The public save carries the OLD reviewed metadata verbatim.
+    assert tampered.preconditions == durable.preconditions
+    assert tampered.reviewed_identity == durable.reviewed_identity
+    store.save_proposal(tampered)
+
+    saved = store.get(staged.id)
+    assert saved is not None
+    assert saved.status == "staged"  # the save itself persisted (still reviewable)
+    assert "UNREVIEWED TAMPERED" in saved.proposed_pages[0].markdown
+    # ...but the altered content may not retain the reviewed claim: the
+    # ordinary save stripped the stale reviewed metadata.
+    assert saved.preconditions is None
+    assert saved.reviewed_identity is None
+
+    with pytest.raises(lw.ProposalPreconditionError) as excinfo:
+        pipeline.publish(staged.id)
+    assert "restage" in str(excinfo.value).lower()
+    # The Knowledge Base bytes are unchanged: the tampered content never applied.
+    assert page_path.read_text(encoding="utf-8") == original
+
+
+def test_publish_refuses_durable_content_diverging_from_reviewed_identity(tmp_path: Path):
+    # Second layer of the same defense: a durable record rewritten BELOW the
+    # public API (the store's JSON edited directly, old preconditions and
+    # identity retained verbatim) is still refused under the publish lock —
+    # the content identity is recomputed from the DURABLE record and must
+    # equal the stored reviewed identity. Old serialized proposals stay
+    # decodable and inspectable, but they cannot publish.
+    kb = _kb(tmp_path)
+    page_path = kb.root / "overview.md"
+    original = page_path.read_text(encoding="utf-8")
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    staged = lw.create_proposal_without_provider(
+        OVERVIEW_REVISION.encode("utf-8"),
+        "text/markdown",
+        "overview-revision.md",
+        kb,
+        store=store,
+    )
+    assert not staged.blocked, staged.validation_report
+
+    proposal_path = store.proposals_dir / f"{staged.id}.json"
+    record = json.loads(proposal_path.read_text(encoding="utf-8"))
+    record["proposed_pages"][0]["markdown"] = record["proposed_pages"][0]["markdown"].replace(
+        "revised", "UNREVIEWED TAMPERED"
+    )
+    proposal_path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(lw.ProposalPreconditionError) as excinfo:
+        pipeline.publish(staged.id)
+    assert "content identity" in str(excinfo.value)
+    assert "restage" in str(excinfo.value).lower()
+    assert "UNREVIEWED TAMPERED" not in page_path.read_text(encoding="utf-8")
+    assert page_path.read_text(encoding="utf-8") == original
+
+
+def test_publish_refuses_preconditions_that_no_longer_describe_the_proposal(tmp_path: Path):
+    # Third layer: a caller who ALSO recomputes the private content identity
+    # of the altered content still cannot retain the old precondition records
+    # for changed destinations/removals: the affected-path set is freshly
+    # resolved from the durable proposal under the publish lock and must
+    # match the stored metadata. The forged removal never applies and the
+    # removed page's bytes stay unchanged.
+    kb = _kb(tmp_path)
+    technology_path = kb.root / "technology.md"
+    original_technology = technology_path.read_text(encoding="utf-8")
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    staged = lw.create_proposal_without_provider(
+        OVERVIEW_REVISION.encode("utf-8"),
+        "text/markdown",
+        "overview-revision.md",
+        kb,
+        store=store,
+    )
+    assert not staged.blocked, staged.validation_report
+    durable = store.get(staged.id)
+    assert durable is not None and durable.preconditions
+
+    altered = msgspec.structs.replace(
+        durable,
+        removed_pages=[lw.PageRemoval(title="Technology Stack", lost_support_reason="forged")],
+    )
+    forged = msgspec.structs.replace(
+        altered, reviewed_identity=_recomputed_mutation_identity(altered)
+    )
+    store.save_proposal(forged)
+    saved = store.get(staged.id)
+    assert saved is not None
+    assert saved.removed_pages and saved.reviewed_identity  # self-consistent restage shape
+
+    with pytest.raises(lw.ProposalPreconditionError) as excinfo:
+        pipeline.publish(staged.id)
+    assert "technology.md" in str(excinfo.value)
+    assert "restage" in str(excinfo.value).lower()
+    assert technology_path.read_text(encoding="utf-8") == original_technology
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 / P4 review: stale-assembly defense (assemble -> stage window).
+# ---------------------------------------------------------------------------
+
+
+def test_stage_refuses_assembly_snapshot_drift(tmp_path: Path):
+    # P4 review (BLOCKER: stale self._kb during assembly/stage). assemble
+    # built the proposed pages, diff, and review report from the loaded KB
+    # snapshot OUTSIDE the staging locks, and stage then captured
+    # preconditions from CURRENT disk — so an overlapping change landing
+    # between assembly and staging became the captured base while the review
+    # still described the older snapshot, and publish could overwrite it.
+    # Every assemble route now binds its snapshot at assembly, and stage
+    # re-verifies it under the KB + store locks and refuses a drifted
+    # assembly — never a recapture that would bless stale content.
+    # Deterministic: direct ordered calls, no sleeps.
+    kb = _kb(tmp_path)
+    page_path = kb.root / "overview.md"
+    original = page_path.read_text(encoding="utf-8")
+    store = lw.IngestStore(tmp_path / "ingest")
+    pipeline = lw.ProposalPipeline(kb, store)
+    proposal = pipeline.assemble(
+        OVERVIEW_REVISION,
+        lw.SourceProvenance(None, None, "text/markdown"),
+        "overview-revision.md",
+    )
+    assert not proposal.blocked, proposal.validation_report
+    # The assembly-time reviewed snapshot rides on the UNSTAGED proposal.
+    assert proposal.preconditions
+    assert any(
+        item.path == "overview.md"
+        and item.kind == "file"
+        and item.digest == hashlib.sha256(original.encode("utf-8")).hexdigest()
+        for item in proposal.preconditions
+    )
+    assert proposal.reviewed_identity is None  # identity binds only at staging
+
+    # The overlapping change lands AFTER assembly, BEFORE staging.
+    drifted = original.replace("deployable chat platform", "deployable chat and agent platform")
+    assert drifted != original
+    page_path.write_text(drifted, encoding="utf-8")
+
+    with pytest.raises(lw.ProposalPreconditionError) as excinfo:
+        pipeline.stage(proposal)
+    assert "overview.md" in str(excinfo.value)
+    assert "re-assemble" in str(excinfo.value).lower()
+    # Nothing was persisted: no reviewed record blesses the stale assembly,
+    # and the newer on-disk content is preserved.
+    assert store.get(proposal.id) is None
+    assert page_path.read_text(encoding="utf-8") == drifted
+
+    # The restage guidance works: re-assembly against the current state
+    # stages cleanly, and its verified snapshot describes the current bytes.
+    restaged = pipeline.stage(
+        pipeline.assemble(
+            OVERVIEW_REVISION,
+            lw.SourceProvenance(None, None, "text/markdown"),
+            "overview-revision.md",
+        )
+    )
+    assert restaged.status == "staged"
+    assert restaged.reviewed_identity
+    restaged_preconditions = restaged.preconditions
+    assert restaged_preconditions
+    assert any(
+        item.path == "overview.md"
+        and item.digest == hashlib.sha256(drifted.encode("utf-8")).hexdigest()
+        for item in restaged_preconditions
+    )
+
+    # The same refusal covers the Control File state consumed at assembly:
+    # a Control File appearing after assembly drifts the captured absence.
+    control_proposal = pipeline.assemble(
+        RELATED_PAGE, lw.SourceProvenance(None, None, "text/markdown"), "related.md"
+    )
+    assert not control_proposal.blocked, control_proposal.validation_report
+    control_snapshot = control_proposal.preconditions
+    assert control_snapshot
+    assert any(item.path == "lumio.yaml" for item in control_snapshot)
+    (kb.root / "lumio.yaml").write_text(_disjoint_control(), encoding="utf-8")
+    with pytest.raises(lw.ProposalPreconditionError) as control_excinfo:
+        pipeline.stage(control_proposal)
+    assert "lumio.yaml" in str(control_excinfo.value)
+    assert store.get(control_proposal.id) is None

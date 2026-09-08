@@ -578,7 +578,7 @@ def _reject_occupied_target(
 class _PathExpectation:
     """One expected pre-mutation path state produced by precondition capture.
 
-    Internal capture shape; :meth:`ProposalPipeline._with_captured_preconditions`
+    Internal capture shape; :meth:`ProposalPipeline._bind_reviewed_state`
     converts these into the durable :class:`lumio_wiki.ingest.PathPrecondition`
     records. ``kind`` is ``"file"`` (``digest`` carries the reviewed SHA-256)
     or ``"absent"``; ``role`` is the stable restage-guidance vocabulary from
@@ -725,6 +725,64 @@ def _precondition_drift(preconditions, root: str | Path) -> list[str]:
                 f"{record.path} is now occupied, but the reviewed {record.role} expected it absent"
             )
     return drift
+
+
+def _expected_precondition_pairs(
+    proposed_pages: list,
+    working_dir: str | Path,
+    *,
+    removed_titles: list[str] | None = None,
+) -> list[tuple[str, str]]:
+    """Freshly resolve the (path, role) set a proposal must carry (P4).
+
+    The structural half of the durable-tampering defense: the affected-path
+    set is resolved from the proposal's OWN content against the CURRENT
+    title→path map with the SAME resolution live capture uses, so stored
+    precondition records can be held to exactly the paths the durable
+    proposal still touches — changed destinations, removals, or moves can
+    never retain records captured for the original structure. Never raises
+    for resolvable-but-conflicting content: a ``DestinationConflict``
+    degrades to the Control File expectation exactly like capture does (a
+    proposal in that state can never publish anyway).
+    """
+    expectations = _capture_mutation_preconditions(
+        proposed_pages, working_dir, removed_titles=removed_titles
+    )
+    return sorted((expectation.relative_path, expectation.role) for expectation in expectations)
+
+
+def _precondition_set_mismatch(
+    stored: list,
+    expected_pairs: list[tuple[str, str]],
+) -> list[str]:
+    """Compare stored precondition records with a freshly resolved set (P4).
+
+    ``stored`` rows are duck-typed durable
+    :class:`lumio_wiki.ingest.PathPrecondition` records. Compares the exact
+    (path, role) multisets — ``kind``/``digest`` depend on the current bytes
+    and belong to the drift check. One human-readable finding per divergent
+    record; an empty list means the durable metadata still describes exactly
+    the proposal's own affected paths.
+    """
+    stored_pairs = sorted((record.path, record.role) for record in stored)
+    expected = sorted(expected_pairs)
+    if stored_pairs == expected:
+        return []
+    expected_set = set(expected)
+    stored_set = set(stored_pairs)
+    findings = [
+        f"no reviewed {role} precondition for {path} is recorded, but the "
+        "durable proposal still affects that path"
+        for path, role in expected
+        if (path, role) not in stored_set
+    ]
+    findings.extend(
+        f"durable metadata still carries a reviewed {role} record for {path}, "
+        "which the durable proposal no longer touches"
+        for path, role in stored_pairs
+        if (path, role) not in expected_set
+    )
+    return findings
 
 
 def _resolve_proposed_destinations(

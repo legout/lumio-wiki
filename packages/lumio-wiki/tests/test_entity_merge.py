@@ -877,3 +877,42 @@ def test_proposal_inspect_json_carries_claim_changes_and_merges(tmp_path, capsys
     payload = capsys.readouterr().out
     assert '"entity_merges"' in payload
     assert '"claim_changes"' in payload
+
+
+def test_entity_merge_assembly_binds_its_reviewed_snapshot(tmp_path):
+    # Plan 02 / P4 review (stale-assembly defense): the Entity Merge route
+    # assembles under the staging locks, and the ASSEMBLY OUTPUT itself now
+    # binds the reviewed snapshot — repaired/surviving revisions, retired
+    # page bytes, and the Control File state whose ontology redirect the
+    # merge records — so the persisted record and its reviewed base are ONE
+    # consistent snapshot. The durable proposal carries exactly the assembly
+    # snapshot, and publishing still refuses when a reviewed input drifts.
+    from lumio_wiki.proposal_pipeline import ProposalPreconditionError
+
+    root = _merge_kb(tmp_path)
+    kb, pipeline = _pipeline(root, tmp_path)
+
+    assembled = pipeline._assemble_entity_merge("entity:beta", "entity:gamma", reason="")
+    assert assembled.preconditions
+    assert assembled.reviewed_identity is None  # identity binds only at staging
+    snapshot = {(item.path, item.role, item.kind) for item in assembled.preconditions}
+    assert ("concepts/beta.md", "removal", "file") in snapshot
+    assert ("concepts/gamma.md", "revision", "file") in snapshot
+    assert ("concepts/alpha.md", "revision", "file") in snapshot
+    assert ("lumio.yaml", "control", "file") in snapshot
+
+    proposal = pipeline.propose_entity_merge("entity:beta", "entity:gamma")
+    assert not proposal.blocked, proposal.validation_report
+    assert proposal.preconditions == assembled.preconditions
+
+    # The surviving page's bytes drifting after the reviewed snapshot still
+    # refuse publication with restage guidance, preserving the newer bytes.
+    gamma_path = root / "concepts/gamma.md"
+    drifted_gamma = gamma_path.read_text(encoding="utf-8").replace(
+        "Body.", "Newer independent content."
+    )
+    gamma_path.write_text(drifted_gamma, encoding="utf-8")
+    with pytest.raises(ProposalPreconditionError) as excinfo:
+        pipeline.publish(proposal.id)
+    assert "concepts/gamma.md" in str(excinfo.value)
+    assert gamma_path.read_text(encoding="utf-8") == drifted_gamma

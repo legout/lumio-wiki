@@ -39,7 +39,11 @@ from lumio_wiki.ingest import (
     SourceProvenance,
 )
 from lumio_wiki.knowledge_base import load_knowledge_base
-from lumio_wiki.proposal_pipeline import ProposalBlockedError, ProposalPipeline
+from lumio_wiki.proposal_pipeline import (
+    ProposalBlockedError,
+    ProposalPipeline,
+    ProposalPreconditionError,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -358,8 +362,24 @@ def test_unresolved_canonical_dependency_blocks_publication(tmp_path):
     assert pipeline._store is not None
     pipeline._store.save_proposal(sabotaged)
 
-    with pytest.raises(ProposalBlockedError):
+    # P4 review: the altering save over the reviewable record STRIPS the
+    # reviewed claim — an altered proposal can no longer publish against its
+    # old reviewed base — so publication refuses at the precondition gate.
+    saved = pipeline._store.get(proposal.id)
+    assert saved is not None and saved.preconditions is None
+    with pytest.raises(ProposalPreconditionError):
         pipeline.publish(proposal.id)
+
+    # The full-candidate gate still blocks the same dangling edge when the
+    # sabotaged content is properly re-staged against a fresh reviewed base.
+    restaged = pipeline.stage(
+        msgspec.structs.replace(
+            proposal, proposed_pages=[], preconditions=None, reviewed_identity=None
+        )
+    )
+    with pytest.raises(ProposalBlockedError):
+        pipeline.publish(restaged.id)
+
     # AC9: unchanged — Beta still on disk and resolvable.
     kb2, _ = load_knowledge_base(root)
     assert "Beta" in [p.title for p in kb2.pages]
@@ -610,8 +630,20 @@ def test_blocked_removal_leaves_knowledge_base_unchanged(tmp_path):
     pipeline._store.save_proposal(sabotaged)
     snapshot_before = {p.title: (kb.root / p.path).read_text() for p in kb.pages}
 
-    with pytest.raises(ProposalBlockedError):
+    # P4 review: the altering save strips the reviewed claim, so publication
+    # of the altered record refuses at the precondition gate...
+    with pytest.raises(ProposalPreconditionError):
         pipeline.publish(proposal.id)
+
+    # ...and the full-candidate gate still blocks the same dangling edge
+    # when the sabotaged content is properly re-staged.
+    restaged = pipeline.stage(
+        msgspec.structs.replace(
+            proposal, proposed_pages=[], preconditions=None, reviewed_identity=None
+        )
+    )
+    with pytest.raises(ProposalBlockedError):
+        pipeline.publish(restaged.id)
 
     kb2, _ = load_knowledge_base(root)
     for title, text in snapshot_before.items():
@@ -699,3 +731,48 @@ def test_removal_publish_checks_captured_control_and_path_preconditions(tmp_path
     assert report2.is_valid, report2
     alpha_markdown = alpha_path.read_text(encoding="utf-8")
     assert "entity:beta" not in alpha_markdown  # dependent edge repaired
+
+
+def test_page_removal_assembly_binds_its_reviewed_snapshot(tmp_path):
+    # Plan 02 / P4 review (stale-assembly defense): the Page Removal route
+    # assembles under the staging locks, and the ASSEMBLY OUTPUT itself now
+    # binds the reviewed snapshot — removed bytes, repair destinations, and
+    # the Control File state — so the persisted record and its reviewed base
+    # are ONE consistent snapshot and stage-time capture can never describe
+    # a newer state than the review does. The durable proposal carries
+    # exactly the assembly snapshot (identical paths, roles, kinds, and
+    # digests), and publishing still refuses when a reviewed input drifts.
+    from lumio_wiki.proposal_pipeline import ProposalPreconditionError
+
+    root = _categorized_kb(tmp_path, hot_pins=["Beta"])
+    _write(
+        root,
+        "concepts/alpha.md",
+        _page("Alpha", relationships=[{"target": "Beta", "type": "see"}]),
+    )
+    _write(root, "concepts/beta.md", _page("Beta"))
+    kb, pipeline = _pipeline(root, tmp_path)
+
+    assembled = pipeline._assemble_page_removal("Beta", reason="", affected_claim_notes=[])
+    assert assembled.preconditions
+    assert assembled.reviewed_identity is None  # identity binds only at staging
+    snapshot = {(item.path, item.role, item.kind) for item in assembled.preconditions}
+    assert ("concepts/beta.md", "removal", "file") in snapshot
+    assert ("concepts/alpha.md", "revision", "file") in snapshot
+    assert ("lumio.yaml", "control", "file") in snapshot
+
+    proposal = pipeline.propose_page_removal("Beta")
+    assert not proposal.blocked, proposal.validation_report
+    assert proposal.preconditions == assembled.preconditions
+
+    # A repaired page drifting after the reviewed snapshot still refuses
+    # publication with restage guidance, preserving the newer bytes.
+    alpha_path = root / "concepts/alpha.md"
+    drifted_alpha = alpha_path.read_text(encoding="utf-8").replace(
+        "Body.", "Newer independent content."
+    )
+    alpha_path.write_text(drifted_alpha, encoding="utf-8")
+    with pytest.raises(ProposalPreconditionError) as excinfo:
+        pipeline.publish(proposal.id)
+    assert "concepts/alpha.md" in str(excinfo.value)
+    assert alpha_path.read_text(encoding="utf-8") == drifted_alpha

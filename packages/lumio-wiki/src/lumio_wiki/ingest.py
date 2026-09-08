@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import json
 import tempfile
 import uuid
 from collections.abc import Iterable
@@ -525,6 +526,26 @@ class IngestProposal(msgspec.Struct, frozen=True):
     # older proposal records decode with ``preconditions=None`` and remain
     # inspectable, but they must be re-staged before they can publish.
     preconditions: list[PathPrecondition] | None = None
+    # Plan 02 / P4 review (durable-tampering defense): the deterministic
+    # private content identity of the reviewed mutation — one SHA-256 over a
+    # canonical JSON payload covering EVERY publish-relevant proposal field
+    # (proposed pages with their paths and Markdown, declared removals,
+    # entity merges/moves, body-link repairs, the proposed Control File with
+    # categories, Hot Index pins, and the full ontology, the source-lifecycle
+    # change, and the affected titles). Deliberately EXCLUDED: ``id``,
+    # ``status``, ``created_at``, ``raw_source_path``, provenance, and every
+    # derived review surface (diff, validation report, blast radius, OKF
+    # diagnostics) — none of them alter what publication writes. The pipeline
+    # computes the identity ONLY at the reviewed staging boundary, next to
+    # the reviewed preconditions, so durable mutation content and its
+    # reviewed metadata cannot be separated afterwards: publication
+    # recomputes the identity from the DURABLE record under the mutation lock
+    # and refuses a mismatch (or a missing identity) with restage guidance.
+    # ``None`` marks a proposal whose content identity was never bound
+    # (staged before this field existed, or altered afterwards); such
+    # records stay decodable and inspectable but must be re-staged before
+    # they can publish.
+    reviewed_identity: str | None = None
 
 
 class ExternalImportCategoryMapping(msgspec.Struct, frozen=True):
@@ -542,6 +563,73 @@ class ExternalImportCategoryMapping(msgspec.Struct, frozen=True):
     proposed_pages: list[ProposedPage] = msgspec.field(default_factory=list)
     extension_control_file: KnowledgeBaseControlFile | None = None
     diagnostics: list[OkfImportDiagnostic] = msgspec.field(default_factory=list)
+
+
+def _mutation_content_payload(proposal: IngestProposal) -> dict:
+    """Canonical payload over every publish-relevant mutation field (P4).
+
+    The input of the reviewed content identity: exactly the fields a
+    publication consumes or applies — proposed pages (paths, titles,
+    Markdown, routing/compound/move/rename markers), declared removals,
+    entity merges, body-link repairs, the proposed Control File (including
+    its category catalog, Hot Index pins, and full ontology with redirects),
+    the source-lifecycle change, and the affected titles. Derived review
+    surfaces (diff, validation report, blast radius, diagnostics),
+    provenance, and lifecycle/state fields are deliberately excluded: they
+    never alter what publication writes.
+    """
+    return {
+        "affected_pages": list(proposal.affected_pages),
+        "body_link_repairs": [msgspec.to_builtins(repair) for repair in proposal.body_link_repairs],
+        "control_file": (
+            msgspec.to_builtins(proposal.control_file)
+            if proposal.control_file is not None
+            else None
+        ),
+        "entity_merges": [msgspec.to_builtins(merge) for merge in proposal.entity_merges],
+        "proposed_pages": [msgspec.to_builtins(page) for page in proposal.proposed_pages],
+        "removed_pages": [msgspec.to_builtins(removal) for removal in proposal.removed_pages],
+        "source_change": (
+            msgspec.to_builtins(proposal.source_change)
+            if proposal.source_change is not None
+            else None
+        ),
+    }
+
+
+def _recomputed_mutation_identity(proposal: IngestProposal) -> str:
+    """Recompute the deterministic content identity of one proposal (P4).
+
+    SHA-256 over the canonical (key-sorted, whitespace-free) JSON encoding of
+    :func:`_mutation_content_payload`, so the value is stable across
+    processes, dict insertion orders, and JSON decode/encode round-trips.
+    The pipeline binds it at the reviewed staging boundary; publication
+    recomputes it from the DURABLE record under the mutation lock and fails
+    closed when the stored identity differs or is missing.
+    """
+    canonical = json.dumps(
+        msgspec.to_builtins(_mutation_content_payload(proposal)),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _is_self_consistent_restage(proposal: IngestProposal) -> bool:
+    """Whether a proposal carries its OWN freshly bound reviewed metadata (P4).
+
+    The staging pipeline binds ``preconditions`` and ``reviewed_identity``
+    together under the staging locks; a self-consistent record's identity
+    field matches its own content and it carries a captured (non-``None``)
+    precondition set. Anything else — notably an altered copy of a previously
+    reviewed proposal that RETAINED the original metadata — is not a restage.
+    """
+    return (
+        proposal.reviewed_identity is not None
+        and proposal.reviewed_identity == _recomputed_mutation_identity(proposal)
+        and proposal.preconditions is not None
+    )
 
 
 TERMINAL_PROPOSAL_STATUSES = frozenset({"discarded", "published"})
@@ -1653,6 +1741,21 @@ class IngestStore:
         The Proposal Pipeline's explicit rollback compensation uses
         :meth:`_restore_reviewable` instead, so this refusal never blocks a
         legitimate rollback.
+
+        Plan 02 / P4 review (durable-tampering defense): replacing an
+        existing REVIEWABLE proposal is still permitted — that is how
+        re-staging attaches fresh raw bytes and how the pipeline persists a
+        restage — but an ordinary save that ALTERS the reviewed mutation
+        content must not carry the old reviewed claim along. When the
+        incoming content differs from the durable content and the incoming
+        record is not a self-consistent restage (its own freshly bound
+        ``reviewed_identity`` plus a captured precondition set — exactly the
+        shape the staging pipeline writes), the reviewed metadata is STRIPPED
+        from the persisted record: the altered content stays inspectable and
+        discardable, but publication refuses it until a real re-stage binds
+        it to a freshly reviewed base. The authorized
+        :meth:`_restore_reviewable` rollback remains the only write path that
+        can restore a reviewed record verbatim.
         """
         proposal_with_path = (
             msgspec.structs.replace(proposal, raw_source_path=str(raw_path))
@@ -1667,6 +1770,21 @@ class IngestStore:
                     "durable ingest store; terminal proposals cannot be replaced by "
                     "an ordinary save"
                 )
+            if (
+                durable is not None
+                and _recomputed_mutation_identity(proposal_with_path)
+                != _recomputed_mutation_identity(durable)
+                and not _is_self_consistent_restage(proposal_with_path)
+            ):
+                # Altered mutation content over a reviewable record while
+                # RETAINING foreign/stale reviewed metadata (the old identity
+                # and/or preconditions): persist the altered content WITHOUT
+                # the reviewed claim, so publication fails closed until a
+                # real re-stage. Content-identical saves (raw-byte/path
+                # metadata, status-carrying objects) keep the durable claim.
+                proposal_with_path = msgspec.structs.replace(
+                    proposal_with_path, preconditions=None, reviewed_identity=None
+                )
             self._write_proposal(proposal_with_path)
 
     def _restore_reviewable(self, proposal: IngestProposal) -> None:
@@ -1678,10 +1796,12 @@ class IngestStore:
         proposal was already marked terminal, to restore the reviewable
         proposal for retry. The restored object is the very proposal that
         was re-read from durable state and verified reviewable at the start
-        of the SAME critical section this write runs in, so it is a
-        deliberate rollback — never a path a stale caller can use to
-        resurrect terminal state. Ordinary :meth:`save_proposal` and
-        re-staging remain refused; the caller holds the store mutation lock.
+        of the SAME critical section this write runs in (its reviewed
+        preconditions and content identity were also re-verified under the
+        publish locks before any terminal write), so it is a deliberate
+        rollback — never a path a stale caller can use to resurrect terminal
+        state. Ordinary :meth:`save_proposal` and re-staging remain refused;
+        the caller holds the store mutation lock.
         """
         self._write_proposal(proposal)
 

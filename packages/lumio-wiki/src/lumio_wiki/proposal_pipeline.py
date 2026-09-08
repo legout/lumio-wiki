@@ -37,6 +37,7 @@ from lumio_wiki.ingest import (
     _compute_diff,
     _existing_page_markdown,
     _extract_page_records,
+    _recomputed_mutation_identity,
     _validate_page_routing,
     compute_blast_radius,
     is_reviewable_proposal,
@@ -53,7 +54,9 @@ from lumio_wiki.knowledge_base import _parse_frontmatter as parse_frontmatter
 from lumio_wiki.mutation import mutation_lock
 from lumio_wiki.publish import (
     _capture_mutation_preconditions,
+    _expected_precondition_pairs,
     _precondition_drift,
+    _precondition_set_mismatch,
     apply_proposed_pages,
     validate_candidate_knowledge_base,
 )
@@ -89,6 +92,19 @@ class ProposalPreconditionError(ProposalPipelineError):
     reviewable: discard and re-stage it against the current state — never a
     silent rebase, never an overwrite of newer content.
     """
+
+
+def _as_path_preconditions(expectations) -> list[PathPrecondition]:
+    """Convert publish-side capture expectations into durable records (P4)."""
+    return [
+        PathPrecondition(
+            path=expectation.relative_path,
+            role=expectation.role,
+            kind=expectation.kind,
+            digest=expectation.digest,
+        )
+        for expectation in expectations
+    ]
 
 
 def _drop_claims_for_entity(data: dict, removed_entity_id: str) -> bool:
@@ -375,31 +391,119 @@ class ProposalPipeline:
             raise RuntimeError("source lifecycle operations require an IngestStore")
         return self._store
 
-    def _with_captured_preconditions(self, proposal: IngestProposal) -> IngestProposal:
-        """Attach freshly captured reviewed preconditions (Plan 02 / P4).
+    def _assembly_preconditions(
+        self, proposed_pages: list[ProposedPage], removed_titles: list[str] | None
+    ) -> list[PathPrecondition]:
+        """Capture the assembly-time reviewed snapshot (Plan 02 / P4, B03/B04).
 
-        Called under the Knowledge Base + store mutation lock at staging, so
-        the durable proposal and its reviewed base are ONE consistent
-        snapshot: the affected paths (replaced/merged/renamed bytes, move
-        source bytes and expected-absent target, created destinations,
-        removal bytes) plus the consumed/rewritten Control File state, as
-        resolved by the same destination resolution live application uses.
+        Every assemble route binds this snapshot to its returned proposal so
+        the reviewed content and the base it was reviewed against are ONE
+        snapshot even though assembly runs outside any lock. The staging
+        boundary re-verifies the snapshot under the Knowledge Base + store
+        locks (:meth:`_bind_reviewed_state`) and refuses a drifted assembly
+        — a recapture there would bless stale content instead.
         """
-        expectations = _capture_mutation_preconditions(
+        return _as_path_preconditions(
+            _capture_mutation_preconditions(
+                proposed_pages, self._kb.root, removed_titles=removed_titles
+            )
+        )
+
+    def _bind_reviewed_state(self, proposal: IngestProposal) -> IngestProposal:
+        """Bind reviewed preconditions and content identity (Plan 02 / P4).
+
+        Called under the Knowledge Base + store mutation locks at staging, so
+        the durable proposal and its reviewed base are ONE consistent
+        snapshot. Two binding shapes:
+
+        - A proposal WITHOUT preconditions (built outside the pipeline —
+          graph exchange, external import, hand-assembled) gets a freshly
+          captured reviewed base at this first stage boundary: the affected
+          paths (replaced/merged/renamed bytes, move source bytes and
+          expected-absent target, created destinations, removal bytes) plus
+          the consumed/rewritten Control File state, as resolved by the same
+          destination resolution live application uses.
+        - A proposal CARRYING an assembly snapshot (every pipeline assemble
+          route binds one) has that snapshot VERIFIED against the current
+          filesystem/control state instead of being recaptured: any drift or
+          structural divergence raises :class:`ProposalPreconditionError` so
+          the stale assembly is re-assembled against the current state —
+          never silently rebased (a recapture here would bless content
+          assembled from an older snapshot).
+
+        Finally the deterministic content identity covering every
+        publish-relevant mutation field is bound next to the preconditions,
+        so durable metadata and durable content can no longer be separated:
+        publication recomputes it from the durable record under the mutation
+        lock (:meth:`_reject_stale_base`) and fails closed on a mismatch.
+        """
+        mutates_knowledge_base = bool(
+            proposal.proposed_pages or proposal.removed_pages or proposal.control_file is not None
+        )
+        if not proposal.preconditions:
+            if mutates_knowledge_base:
+                expectations = _capture_mutation_preconditions(
+                    proposal.proposed_pages,
+                    self._kb.root,
+                    removed_titles=[removal.title for removal in proposal.removed_pages] or None,
+                )
+                preconditions = _as_path_preconditions(expectations)
+            else:
+                # A source-lifecycle proposal mutates no Knowledge Base path:
+                # its captured-nothing precondition set stays deliberately
+                # empty (distinct from ``None``, which means "never captured").
+                preconditions: list[PathPrecondition] = []
+        else:
+            preconditions = self._verify_assembly_snapshot(proposal, list(proposal.preconditions))
+        return msgspec.structs.replace(
+            proposal,
+            preconditions=preconditions,
+            reviewed_identity=_recomputed_mutation_identity(proposal),
+        )
+
+    def _verify_assembly_snapshot(
+        self, proposal: IngestProposal, snapshot: list[PathPrecondition]
+    ) -> list[PathPrecondition]:
+        """Verify a proposal's assembly snapshot against the current state (P4).
+
+        Never recaptures: the snapshot describes the state the proposal
+        content was assembled (and reviewed) against, so any divergence means
+        the assembly is STALE and must be redone — recapturing current state
+        would bless stale content. Two checks run here, both under the
+        Knowledge Base + store mutation locks:
+
+        - drift: every recorded reviewed byte/absence must still hold;
+        - structure: the recorded (path, role) set must still describe
+          exactly the affected paths the proposal's own content resolves to,
+          so content edited after assembly cannot ride a foreign snapshot.
+        """
+        root = Path(self._kb.root)
+        drift = _precondition_drift(snapshot, root)
+        if drift:
+            details = "; ".join(drift)
+            raise ProposalPreconditionError(
+                f"proposal {proposal.id!r} was assembled against a Knowledge Base "
+                f"state that has since changed: {details}. Refusing to stage a "
+                "review whose base already drifted — re-assemble the proposal "
+                "against the current state, then review and publish it; the "
+                "current files are never guessed as the reviewed base"
+            )
+        expected_pairs = _expected_precondition_pairs(
             proposal.proposed_pages,
-            self._kb.root,
+            root,
             removed_titles=[removal.title for removal in proposal.removed_pages] or None,
         )
-        preconditions = [
-            PathPrecondition(
-                path=expectation.relative_path,
-                role=expectation.role,
-                kind=expectation.kind,
-                digest=expectation.digest,
+        mismatch = _precondition_set_mismatch(snapshot, expected_pairs)
+        if mismatch:
+            details = "; ".join(mismatch)
+            raise ProposalPreconditionError(
+                f"proposal {proposal.id!r} carries preconditions that do not "
+                f"describe its own affected paths: {details}. Refusing to stage "
+                "content that no longer matches its reviewed snapshot — "
+                "re-assemble the proposal against the current state, then "
+                "review and publish it"
             )
-            for expectation in expectations
-        ]
-        return msgspec.structs.replace(proposal, preconditions=preconditions)
+        return list(snapshot)
 
     def register_source(self, source_id: str, raw_bytes: bytes) -> SourceVersion:
         """Register bytes under an explicit, stable Knowledge Source identity.
@@ -595,7 +699,11 @@ class ProposalPipeline:
         with mutation_lock(store.root, registry.root):
             registry.bind_pending(transition, proposal.id)
             try:
-                store.save_proposal(proposal)
+                # Plan 02 / P4: the source-lifecycle proposal mutates no
+                # Knowledge Base path (its captured-nothing precondition set
+                # is already bound), so only the content identity is bound
+                # here — under the same locks that persist the record.
+                store.save_proposal(self._bind_reviewed_state(proposal))
             except Exception:
                 registry.cancel_transition(proposal.id)
                 raise
@@ -718,15 +826,16 @@ class ProposalPipeline:
         excerpts or Claim Lineage.
         """
         store = self._require_store()
-        # Plan 02 / P4 (B03/B04): assembly, reviewed-precondition capture, and
-        # persistence run under the Knowledge Base + store mutation locks, so
-        # the reviewed content and its captured base are one consistent
-        # snapshot and cooperating writers cannot interleave a publish.
+        # Plan 02 / P4 (B03/B04): assembly (which binds the reviewed snapshot),
+        # snapshot verification, and persistence run under the Knowledge Base +
+        # store mutation locks, so the reviewed content and its captured base
+        # are one consistent snapshot and cooperating writers cannot interleave
+        # a publish.
         with mutation_lock(self._kb.root, store.root):
             proposal = self._assemble_page_removal(
                 title, reason=reason, affected_claim_notes=affected_claim_notes or []
             )
-            store.save_proposal(self._with_captured_preconditions(proposal))
+            store.save_proposal(self._bind_reviewed_state(proposal))
             persisted = store.get(proposal.id)
             if persisted is None:  # pragma: no cover - just persisted under the store lock
                 raise ProposalPipelineError(f"proposal {proposal.id!r} disappeared after staging")
@@ -900,6 +1009,11 @@ class ProposalPipeline:
             control_file=control_file,
             removed_pages=[removal],
             body_link_repairs=body_link_repairs,
+            # Plan 02 / P4 (B03/B04): the assembly binds the reviewed
+            # snapshot (removed bytes, repair destinations, Control File
+            # state) so the persisted record and its base are ONE snapshot;
+            # the caller verifies it under the staging locks.
+            preconditions=self._assembly_preconditions(proposed_pages, [title]),
         )
 
     def propose_entity_merge(
@@ -929,15 +1043,16 @@ class ProposalPipeline:
         candidate gate and block publication.
         """
         store = self._require_store()
-        # Plan 02 / P4 (B03/B04): same lock + capture boundary as the removal
+        # Plan 02 / P4 (B03/B04): same lock + snapshot boundary as the removal
         # journey — the merge's reviewed pages, redirect/pin Control File
-        # state, and retired-page bytes are captured under the locks that
-        # persist them.
+        # state, and retired-page bytes are captured by the assembly, verified
+        # under the locks that persist them, and bound to the content
+        # identity.
         with mutation_lock(self._kb.root, store.root):
             proposal = self._assemble_entity_merge(
                 retired_entity_id, surviving_entity_id, reason=reason
             )
-            store.save_proposal(self._with_captured_preconditions(proposal))
+            store.save_proposal(self._bind_reviewed_state(proposal))
             persisted = store.get(proposal.id)
             if persisted is None:  # pragma: no cover - just persisted under the store lock
                 raise ProposalPipelineError(f"proposal {proposal.id!r} disappeared after staging")
@@ -1145,6 +1260,10 @@ class ProposalPipeline:
             control_file=control_file,
             removed_pages=[removal],
             entity_merges=[entity_merge],
+            # Plan 02 / P4 (B03/B04): same assembly-bound reviewed snapshot
+            # as the removal route (repaired/surviving revisions, retired
+            # page bytes, Control File state).
+            preconditions=self._assembly_preconditions(proposed_pages, [retired_title]),
         )
 
     def assemble(
@@ -1159,6 +1278,14 @@ class ProposalPipeline:
         blast-radius behavior from the ingest module so provenance, category/type
         routing, durability rationale, diff, and blast radius are identical to
         the web path.
+
+        Plan 02 / P4 (B03/B04): assembly runs outside the staging locks, so
+        the returned proposal carries the ASSEMBLY-TIME reviewed snapshot
+        (affected paths + Control File state) next to the reviewed content.
+        :meth:`stage` re-verifies that snapshot under the Knowledge Base +
+        store locks and refuses a drifted assembly — an overlapping change
+        landing between assemble and stage can never become the captured
+        base while the review still describes the older snapshot.
         """
         proposed_pages = _extract_page_records(distilled_markdown, filename, self._kb)
         existing_pages = _existing_page_markdown(self._kb)
@@ -1185,6 +1312,10 @@ class ProposalPipeline:
             validation_report=validation_report,
             blocked=not validation_report.is_valid,
             blast_radius=blast_radius,
+            # Plan 02 / P4 (B03/B04): the assembly-time reviewed snapshot
+            # rides on the unstaged proposal; the staging boundary verifies
+            # it under the locks instead of recapturing current state.
+            preconditions=self._assembly_preconditions(proposed_pages, None),
         )
 
     def stage(
@@ -1209,12 +1340,20 @@ class ProposalPipeline:
         too; only the pipeline's explicit rollback compensation may restore
         a reviewable proposal over terminal state).
 
-        Plan 02 / P4 (B03/B04): staging captures the proposal's reviewed
-        pre-mutation preconditions and persists them with it, holding the
-        Knowledge Base + store interprocess mutation locks (one consistent
-        global order — see :func:`lumio_wiki.mutation.mutation_lock`) across
-        capture and persistence so the reviewed base and the durable record
-        are one consistent snapshot of the Knowledge Base.
+        Plan 02 / P4 (B03/B04): staging binds the proposal's reviewed state
+        and persists it with it, holding the Knowledge Base + store
+        interprocess mutation locks (one consistent global order — see
+        :func:`lumio_wiki.mutation.mutation_lock`) across verification,
+        capture, and persistence so the reviewed base and the durable record
+        are one consistent snapshot of the Knowledge Base. A proposal that
+        carries an ASSEMBLY snapshot (every pipeline assemble route binds
+        one) is verified against the current state under these locks: an
+        overlapping page/control change that landed between assembly and
+        staging refuses with :class:`ProposalPreconditionError` — never a
+        silent recapture that would bless stale content. A proposal WITHOUT
+        a snapshot (graph exchange, external import, hand-assembled) gets a
+        freshly captured reviewed base at this boundary. Either way the
+        deterministic content identity is bound next to the preconditions.
         """
         if self._store is None:
             raise RuntimeError("ProposalPipeline.stage requires an IngestStore")
@@ -1224,7 +1363,7 @@ class ProposalPipeline:
                 raise ProposalPipelineError(
                     f"proposal {proposal.id!r} is already {durable.status} and cannot be re-staged"
                 )
-            reviewed = self._with_captured_preconditions(proposal)
+            reviewed = self._bind_reviewed_state(proposal)
             raw_path: Path | None = None
             if raw_bytes is not None and filename is not None:
                 raw_path = self._store.save_raw(proposal.id, raw_bytes, filename)
@@ -1309,12 +1448,28 @@ class ProposalPipeline:
 
         Runs under the Knowledge Base + store + registry mutation locks,
         immediately before candidate construction (Plan 02 / B03/B04). The
-        DURABLE proposal's private reviewed preconditions are compared against
-        the CURRENT filesystem/control state: any drift — and any mutating
-        proposal staged without reviewed preconditions — raises
-        :class:`ProposalPreconditionError` with restage guidance, preserving
-        newer on-disk content. Never a silent rebase, never a guess from the
-        current files.
+        DURABLE proposal's private reviewed state is checked against the
+        CURRENT filesystem/control state, in four fail-closed layers:
+
+        1. no reviewed preconditions at all — a mutating proposal staged
+           before preconditions were captured (or stripped by the store
+           after an altering save) is refused;
+        2. no reviewed content identity, or the identity recomputed from the
+           DURABLE record's mutation content differs from the stored one —
+           the reviewed content and its metadata were separated after review
+           (an altered proposal retaining its old claim), so unreviewed
+           content can never publish;
+        3. the affected-path set freshly resolved from the durable proposal
+           does not match the stored precondition records — changed
+           destinations, removals, or moves cannot retain records captured
+           for the original structure;
+        4. drift — a recorded reviewed byte vanished/changed, an
+           expected-absent destination is occupied, or the reviewed Control
+           File state changed.
+
+        Every failure raises :class:`ProposalPreconditionError` with restage
+        guidance, preserving newer on-disk content. Never a silent rebase,
+        never a guess from the current files.
         """
         mutates_knowledge_base = bool(
             proposal.proposed_pages or proposal.removed_pages or proposal.control_file is not None
@@ -1327,9 +1482,44 @@ class ProposalPipeline:
             raise ProposalPreconditionError(
                 f"proposal {proposal_id!r} carries no reviewed preconditions: it "
                 "was staged before reviewed bases were captured (Plan 02 / P4) "
-                "or by an older version. Inspect it, then discard and restage "
-                "it against the current Knowledge Base — the current files are "
+                "or its reviewed claim was stripped after an altering save. "
+                "Inspect it, then discard and restage it against the current "
+                "Knowledge Base — the current files are never guessed as the "
+                "reviewed base"
+            )
+        if not proposal.reviewed_identity:
+            raise ProposalPreconditionError(
+                f"proposal {proposal_id!r} carries no reviewed content identity: "
+                "its mutation content was never bound to its reviewed metadata "
+                "(staged before Plan 02 / P4's durable-tampering defense, or "
+                "altered afterwards). Inspect it, then discard and restage it "
+                "against the current Knowledge Base — the current files are "
                 "never guessed as the reviewed base"
+            )
+        identity = _recomputed_mutation_identity(proposal)
+        if identity != proposal.reviewed_identity:
+            raise ProposalPreconditionError(
+                f"proposal {proposal_id!r} no longer matches its reviewed content "
+                "identity: the durable mutation content (proposed pages, "
+                "removals, moves, body repairs, Control File) was altered after "
+                "review while its reviewed metadata was retained. Refusing to "
+                "publish unreviewed content: discard this proposal and restage "
+                "a fresh one against the current state, then review and "
+                "publish it"
+            )
+        expected_pairs = _expected_precondition_pairs(
+            proposal.proposed_pages,
+            Path(self._kb.root),
+            removed_titles=[removal.title for removal in proposal.removed_pages] or None,
+        )
+        mismatch = _precondition_set_mismatch(proposal.preconditions, expected_pairs)
+        if mismatch:
+            details = "; ".join(mismatch)
+            raise ProposalPreconditionError(
+                f"proposal {proposal_id!r} no longer matches its reviewed base: "
+                f"{details}. Refusing to silently rebase or overwrite newer "
+                "content: discard this proposal and restage a fresh one against "
+                "the current state, then review and publish it"
             )
         drift = _precondition_drift(proposal.preconditions, Path(self._kb.root))
         if drift:
@@ -1373,14 +1563,18 @@ class ProposalPipeline:
 
         Plan 02 / P4 (B03/B04): still under the same locks and BEFORE the
         candidate is constructed, the durable proposal's private reviewed
-        preconditions are compared against the current filesystem/control
-        state (:meth:`_reject_stale_base`): overlapping or altered proposal
-        content, changed Control File state, occupied expected-absent
-        destinations, and pre-precondition (legacy) proposals are rejected
-        with restage guidance — never silently rebased. The FULL current
-        candidate is then revalidated from the real root (never a stale
-        in-memory ``self._kb`` snapshot), so disjoint intervening changes that
-        introduce alias/entity/Claim conflicts are still blocked.
+        state is verified against the current filesystem/control state
+        (:meth:`_reject_stale_base`) in four fail-closed layers — reviewed
+        preconditions present, reviewed content identity present and equal
+        to the identity recomputed from the durable record (an altered
+        proposal retaining its old reviewed claim is refused), the
+        freshly-resolved affected-path set matching the stored records
+        (changed destinations/removals/moves cannot retain old records),
+        and no drift in the recorded reviewed bytes/absences/Control File
+        state. The FULL current candidate is then revalidated from the real
+        root (never a stale in-memory ``self._kb`` snapshot), so disjoint
+        intervening changes that introduce alias/entity/Claim conflicts are
+        still blocked.
         """
         if self._store is None:
             raise RuntimeError("ProposalPipeline.publish requires an IngestStore")
