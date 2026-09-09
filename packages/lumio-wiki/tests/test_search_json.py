@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from lumio_wiki.cli import main
@@ -145,6 +146,42 @@ def test_search_json_no_matches_still_emits_contract(kb_root: Path, capsys):
     assert data["candidates_seen"] == 0
     assert data["results_returned"] == 0
     assert data["results_dropped"] == 0
+
+
+def test_s3_search_json_retains_the_exact_resolved_version(
+    kb_root: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Machine actions are pinned to the Snapshot, not a later S3 pointer."""
+    import lumio_wiki as lw
+
+    kb, report = lw.load_knowledge_base(kb_root)
+    assert report.is_valid
+    active_version = "v1"
+    requested_versions: list[str | None] = []
+
+    def fake_location(_uri: str, *, version: str | None = None):
+        requested_versions.append(version)
+        return SimpleNamespace(
+            resolve=lambda: SimpleNamespace(
+                knowledge_base=kb,
+                published_version=version if version is not None else active_version,
+            )
+        )
+
+    monkeypatch.setattr("lumio_wiki.cli._resolve_object_store_location", fake_location)
+    uri = "s3://public-bucket/team-kb"
+    assert main(["search", uri, "Lumio", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["published_version"] == "v1"
+    assert payload["results"]
+    assert payload["results"][0]["published_version"] == "v1"
+    assert payload["results"][0]["open_command"].endswith("--published-version v1")
+    assert "X-Amz" not in json.dumps(payload)
+
+    active_version = "v2"
+    assert main(["search", uri, "Lumio", "--published-version", "v1", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["published_version"] == "v1"
+    assert requested_versions[-1] == "v1"
 
 
 def test_search_without_json_keeps_human_output(kb_root: Path, capsys):

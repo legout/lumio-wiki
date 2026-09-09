@@ -24,7 +24,7 @@ from lumio_wiki.embeddings import (
     Embedder,
     RetrievalMode,
 )
-from lumio_wiki.evidence import body_sections
+from lumio_wiki.evidence import body_sections, markdown_section_ranges
 from lumio_wiki.fingerprint_store import load_stored_fingerprint
 from lumio_wiki.graph_state import (
     GRAPH_ARTIFACT_FILENAME,
@@ -414,30 +414,6 @@ RESERVED_ARTIFACT_LABELS: dict[str, str] = {
 }
 
 
-def _section_line_range(lines: list[str], title: str, body_start_line: int) -> tuple[int, int]:
-    """Return the inclusive full-file range for one Markdown heading section."""
-    headings: list[tuple[int, int, str]] = []
-    heading_re = re.compile(r"^(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*(?:\r?\n)?$")
-    for index, line in enumerate(lines, start=1):
-        if index < body_start_line:
-            continue
-        match = heading_re.match(line)
-        if match:
-            headings.append((index, len(match.group(1)), match.group(2).strip()))
-    selected = [heading for heading in headings if heading[2] == title]
-    if not selected:
-        raise KnowledgeBaseError(f"section not found: {title}")
-    if len(selected) > 1:
-        raise KnowledgeBaseError(f"section is ambiguous: {title}")
-    start, level, _ = selected[0]
-    end = len(lines)
-    for next_start, next_level, _ in headings:
-        if next_start > start and next_level <= level:
-            end = next_start - 1
-            break
-    return start, end
-
-
 def _truncate_utf8(text: str, max_bytes: int) -> str:
     """Truncate text at a UTF-8 boundary without producing invalid text."""
     return text.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
@@ -538,7 +514,20 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
             start = line_start or 1
             end = line_end or len(canonical_lines)
             if section is not None:
-                start, end = _section_line_range(canonical_lines, section, page.body_start_line)
+                sections = markdown_section_ranges(
+                    canonical_lines[page.body_start_line - 1 :],
+                    line_offset=page.body_start_line - 1,
+                )
+                matches = [
+                    (section_start, section_end)
+                    for name, section_start, section_end in sections
+                    if name == section
+                ]
+                if not matches:
+                    raise KnowledgeBaseError(f"section not found: {section}")
+                if len(matches) > 1:
+                    raise KnowledgeBaseError(f"section is ambiguous: {section}")
+                start, end = matches[0]
             if start < 1 or end < start or end > len(canonical_lines):
                 raise ValueError("requested line range is outside the canonical page")
             content = "".join(canonical_lines[start - 1 : end])
@@ -574,6 +563,12 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
             total_lines=total_lines,
             truncated=truncated,
             omitted_lines=omitted_lines,
+            entity_id=page.id or None,
+            entity_types=list(page.entity_types),
+            claims=list(page.claims),
+            lifecycle=page.lifecycle,
+            visibility=page.visibility,
+            review_after=page.review_after,
         )
 
     def lookup_by_tag(self, tag: str) -> list[CompiledPage]:

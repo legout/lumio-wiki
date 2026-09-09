@@ -164,6 +164,13 @@ class KnowledgeBaseSnapshot(msgspec.Struct, frozen=True):
     path.
     """
 
+    published_version: str | None = None
+    """The exact immutable S3 Published Version resolved for this Snapshot.
+
+    Filesystem Snapshots intentionally leave this unset: local content has no
+    pointer/version indirection and copyable local actions remain version-free.
+    """
+
     # ------------------------------------------------------------------
     # Immutable Published Version identity and provenance.
     # ------------------------------------------------------------------

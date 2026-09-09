@@ -171,13 +171,34 @@ def reader_page_url(reader_base_url: str, page_title: str) -> str:
     return urljoin(base + "/", reader_page_path(page_title).lstrip("/"))
 
 
-def page_open_command(page_title: str, kb_location: str | None = None) -> str:
-    """The copyable CLI action that opens a page in its original KB."""
+def _published_version_flag(published_version: str | None) -> str:
+    """Render an optional immutable-Snapshot version flag safely."""
+    return f" --published-version {_shell_arg(published_version)}" if published_version else ""
+
+
+def page_open_command(
+    page_title: str,
+    kb_location: str | None = None,
+    published_version: str | None = None,
+) -> str:
+    """The copyable CLI action that opens a page in its original KB.
+
+    S3 reads resolve a moving pointer to one immutable Published Version. A
+    copied action therefore carries that resolved version explicitly; local
+    locations have no Published Version and retain the historical command.
+    """
     location = f"{_shell_double_quoted(kb_location)} " if kb_location else ""
-    return f"lumio-wiki page {location}{_shell_double_quoted(page_title)}"
+    return (
+        f"lumio-wiki page {location}{_shell_double_quoted(page_title)}"
+        f"{_published_version_flag(published_version)}"
+    )
 
 
-def source_inspect_command(source_id: str, kb_location: str | None = None) -> str:
+def source_inspect_command(
+    source_id: str,
+    kb_location: str | None = None,
+    published_version: str | None = None,
+) -> str:
     """The explicit private-Source action (ADR-0020).
 
     A private Source Artifact is opened through explicit, inspectable
@@ -185,7 +206,10 @@ def source_inspect_command(source_id: str, kb_location: str | None = None) -> st
     quoted only when it is not a safe bare shell word.
     """
     location = f"{_shell_double_quoted(kb_location)} " if kb_location else ""
-    return f"lumio-wiki source inspect {location}--source-id {_shell_arg(source_id)}"
+    return (
+        f"lumio-wiki source inspect {location}--source-id {_shell_arg(source_id)}"
+        f"{_published_version_flag(published_version)}"
+    )
 
 
 def page_open_actions(
@@ -193,6 +217,7 @@ def page_open_actions(
     *,
     kb_location: str | None = None,
     reader_base_url: str | None = None,
+    published_version: str | None = None,
 ) -> CitationOpenActions:
     """Derive the open actions for a Compiled Page (search/index surfaces)."""
     return citation_open_actions(
@@ -201,6 +226,7 @@ def page_open_actions(
         entity_id=page.id or None,
         kb_location=kb_location,
         reader_base_url=reader_base_url,
+        published_version=published_version,
     )
 
 
@@ -213,6 +239,7 @@ def citation_open_actions(
     source_url: str | None = None,
     kb_location: str | None = None,
     reader_base_url: str | None = None,
+    published_version: str | None = None,
 ) -> CitationOpenActions:
     """Derive the labelled open actions for one citation or page.
 
@@ -231,11 +258,16 @@ def citation_open_actions(
         page_path=page_path,
         entity_id=entity_id,
         kb_location=kb_location,
-        open_command=(page_open_command(page_title, kb_location) if page_title else ""),
+        published_version=published_version,
+        open_command=(
+            page_open_command(page_title, kb_location, published_version) if page_title else ""
+        ),
         reader_url=reader_url,
         source_id=source_id,
         source_url=_external_document_url(source_url),
-        source_command=(source_inspect_command(source_id, kb_location) if source_id else ""),
+        source_command=(
+            source_inspect_command(source_id, kb_location, published_version) if source_id else ""
+        ),
     )
 
 
@@ -244,6 +276,7 @@ def source_action_lines(
     source_id: str | None = None,
     source_url: str | None = None,
     kb_location: str | None = None,
+    published_version: str | None = None,
 ) -> list[str]:
     """Render ONLY the Source-provenance action lines for one Source.
 
@@ -255,7 +288,10 @@ def source_action_lines(
         page_path="",
         source_id=source_id,
         source_url=_external_document_url(source_url),
-        source_command=(source_inspect_command(source_id, kb_location) if source_id else ""),
+        source_command=(
+            source_inspect_command(source_id, kb_location, published_version) if source_id else ""
+        ),
+        published_version=published_version,
     )
     return render_open_actions(actions)
 

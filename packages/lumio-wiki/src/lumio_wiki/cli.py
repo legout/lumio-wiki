@@ -38,6 +38,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import msgspec
+
 import lumio_wiki
 from lumio_wiki import (
     RETIREMENT_CANDIDATE_TRIGGERS,
@@ -280,12 +282,17 @@ def _s3_config_from_env() -> tuple[dict[str, str], dict[str, object]]:
     return config, client_options
 
 
-def _resolve_object_store_location(uri: str) -> Any:
-    """Construct an S3 Knowledge Base Location from a URI + environment config."""
+def _resolve_object_store_location(uri: str, *, version: str | None = None) -> Any:
+    """Construct an S3 Location, optionally pinned to one Published Version."""
     from lumio_wiki.s3_location import S3Location
 
     config, client_options = _s3_config_from_env()
-    return S3Location.from_url(uri, config=config or None, client_options=client_options or None)
+    return S3Location.from_url(
+        uri,
+        config=config or None,
+        client_options=client_options or None,
+        version=version,
+    )
 
 
 def _build_publish_store(uri: str) -> tuple[Any, str]:
@@ -322,16 +329,36 @@ def _kb_location_label(value: str | Path, kb: KnowledgeBase) -> str:
     return text if _is_object_store_uri(text) else str(kb.root)
 
 
-def _open_read_kb(path: str | Path) -> KnowledgeBase:
-    """Open a Knowledge Base for read commands from a local path or S3 URI."""
+def _open_read_snapshot(
+    path: str | Path, *, published_version: str | None = None
+) -> tuple[KnowledgeBase, str | None]:
+    """Open a local KB or one immutable S3 Snapshot for a read command."""
     value = str(path)
     if _is_object_store_uri(value):
+        if published_version is not None:
+            try:
+                validate_published_version(published_version)
+            except ValueError as exc:
+                raise CliError(str(exc)) from None
         try:
-            return _resolve_object_store_location(value).resolve().knowledge_base
+            location = (
+                _resolve_object_store_location(value, version=published_version)
+                if published_version is not None
+                else _resolve_object_store_location(value)
+            )
+            snapshot = location.resolve()
         except KnowledgeBaseError as exc:
             raise CliError(f"could not resolve S3 Knowledge Base at {value}: {exc}") from exc
+        return snapshot.knowledge_base, snapshot.published_version
+    if published_version is not None:
+        raise CliError("--published-version is available only for an S3 Knowledge Base")
     kb, _report = _load_kb(path)
-    return kb
+    return kb, None
+
+
+def _open_read_kb(path: str | Path) -> KnowledgeBase:
+    """Open a Knowledge Base for read commands from a local path or S3 URI."""
+    return _open_read_snapshot(path)[0]
 
 
 def _validate_location(path: str | Path):
@@ -584,6 +611,7 @@ def _search_json(
     kind: str,
     note: str | None = None,
     kb_location: str | None = None,
+    published_version: str | None = None,
 ) -> int:
     """Render ``search`` output as one machine-readable JSON object.
 
@@ -608,13 +636,14 @@ def _search_json(
                 "matched_fields": list(result.matched_fields),
                 "snippet": result.snippet,
                 "kb_location": kb_location,
-                "open_command": page_open_command(page.title, kb_location),
+                "published_version": published_version,
+                "open_command": page_open_command(page.title, kb_location, published_version),
             }
         elif isinstance(result, RetrievalResult):
             cite = result.citation
             source_id = getattr(cite, "source", None)
             source_command = (
-                source_inspect_command(source_id, kb_location)
+                source_inspect_command(source_id, kb_location, published_version)
                 if isinstance(source_id, str) and source_id
                 else None
             )
@@ -629,7 +658,10 @@ def _search_json(
                 "line_start": getattr(cite, "line_start", None),
                 "line_end": getattr(cite, "line_end", None),
                 "kb_location": kb_location,
-                "open_command": page_open_command(cite.page_title, kb_location),
+                "published_version": published_version,
+                "open_command": page_open_command(
+                    cite.page_title, kb_location, published_version
+                ),
                 "source_command": source_command,
             }
         else:  # pragma: no cover - defensive; both kinds are handled above
@@ -639,6 +671,8 @@ def _search_json(
         "query": args.query,
         "kind": kind,
         "note": note,
+        "kb_location": kb_location,
+        "published_version": published_version,
         **_retrieval_accounting(results),
         "results": entries,
     }
@@ -650,6 +684,7 @@ def _print_page_search_results(
     results: list,
     reader_base_url: str | None = None,
     kb_location: str | None = None,
+    published_version: str | None = None,
 ) -> None:
     """Print page-oriented lexical search results (the ``search`` output contract)."""
     if not results:
@@ -679,6 +714,7 @@ def _print_page_search_results(
                 entity_id=page.id or None,
                 kb_location=kb_location,
                 reader_base_url=reader_base_url,
+                published_version=published_version,
             )
         ):
             print(line)
@@ -691,6 +727,7 @@ def _print_evidence_results(
     kb: KnowledgeBase | None = None,
     reader_base_url: str | None = None,
     kb_location: str | None = None,
+    published_version: str | None = None,
 ) -> None:
     """Print citation-ready Evidence retrieval results (semantic/hybrid contract).
 
@@ -736,6 +773,7 @@ def _print_evidence_results(
                 source_url=source_url,
                 kb_location=kb_location,
                 reader_base_url=reader_base_url,
+                published_version=published_version,
             )
         ):
             print(line)
@@ -1484,14 +1522,33 @@ def _resolve_embedder(model: str | None):
 def _cmd_search(args: argparse.Namespace) -> int:
     value = str(args.path)
     reader_base = _reader_base_url()
+    requested_version = getattr(args, "published_version", None)
     if _is_object_store_uri(value):
+        if requested_version is not None:
+            try:
+                validate_published_version(requested_version)
+            except ValueError as exc:
+                raise CliError(str(exc)) from None
         try:
             # Resolve the active S3 pointer exactly once and retain the
             # selected Published Version identity and fingerprint (issue #162).
-            snapshot = _resolve_object_store_location(value).resolve()
+            location = (
+                _resolve_object_store_location(value, version=requested_version)
+                if requested_version is not None
+                else _resolve_object_store_location(value)
+            )
+            snapshot = location.resolve()
         except KnowledgeBaseError as exc:
             raise CliError(f"could not resolve S3 Knowledge Base at {value}: {exc}") from exc
-        return _search_object_store(args, snapshot, reader_base_url=reader_base, kb_location=value)
+        return _search_object_store(
+            args,
+            snapshot,
+            reader_base_url=reader_base,
+            kb_location=value,
+            published_version=snapshot.published_version,
+        )
+    if requested_version is not None:
+        raise CliError("--published-version is available only for an S3 Knowledge Base")
 
     kb = _open_read_kb(args.path)
     mode = _resolve_search_mode(args)
@@ -1541,6 +1598,7 @@ def _search_object_store(
     *,
     reader_base_url: str | None = None,
     kb_location: str | None = None,
+    published_version: str | None = None,
 ) -> int:
     """Search an S3 Published Version: zero-index, or bound remote LanceDB (#162).
 
@@ -1558,9 +1616,18 @@ def _search_object_store(
     if mode == "lexical" and backend == "zero-index":
         results = snapshot.knowledge_base.search_pages(args.query, limit=args.limit)
         if getattr(args, "json", False):
-            return _search_json(args, results, kind="page", kb_location=kb_location)
+            return _search_json(
+                args,
+                results,
+                kind="page",
+                kb_location=kb_location,
+                published_version=published_version,
+            )
         _print_page_search_results(
-            results, reader_base_url=reader_base_url, kb_location=kb_location
+            results,
+            reader_base_url=reader_base_url,
+            kb_location=kb_location,
+            published_version=published_version,
         )
         return 0
 
@@ -1584,11 +1651,21 @@ def _search_object_store(
             module, location, snapshot, args.query, args.limit
         )
         if getattr(args, "json", False):
-            return _search_json(args, results, kind="page", note=note, kb_location=kb_location)
+            return _search_json(
+                args,
+                results,
+                kind="page",
+                note=note,
+                kb_location=kb_location,
+                published_version=published_version,
+            )
         if note:
             print(f"note: {note}")
         _print_page_search_results(
-            results, reader_base_url=reader_base_url, kb_location=kb_location
+            results,
+            reader_base_url=reader_base_url,
+            kb_location=kb_location,
+            published_version=published_version,
         )
         return 0
 
@@ -1612,7 +1689,14 @@ def _search_object_store(
         raise CliError(str(exc)) from exc
     note = _index_fallback_note(results) or adapter.last_fallback_detail
     if getattr(args, "json", False):
-        return _search_json(args, results, kind="evidence", note=note, kb_location=kb_location)
+        return _search_json(
+            args,
+            results,
+            kind="evidence",
+            note=note,
+            kb_location=kb_location,
+            published_version=published_version,
+        )
     if note:
         print(f"note: {note}")
     _print_evidence_results(
@@ -1620,12 +1704,16 @@ def _search_object_store(
         kb=snapshot.knowledge_base,
         reader_base_url=reader_base_url,
         kb_location=kb_location,
+        published_version=published_version,
     )
     return 0
 
 
 def _cmd_page(args: argparse.Namespace) -> int:
-    kb = _open_read_kb(args.path)
+    kb, published_version = _open_read_snapshot(
+        args.path,
+        published_version=getattr(args, "published_version", None),
+    )
     location = _kb_location_label(args.path, kb)
     has_selector = any(
         getattr(args, name, None) is not None
@@ -1645,6 +1733,16 @@ def _cmd_page(args: argparse.Namespace) -> int:
         except (KnowledgeBaseError, ValueError) as exc:
             raise CliError(str(exc), exit_code=1) from exc
         if getattr(args, "json", False):
+            page = next(iter(kb.lookup_by_title(result.title)), None)
+            source_commands = (
+                [
+                    source_inspect_command(source.id, location, published_version)
+                    for source in page.sources
+                    if source.id
+                ]
+                if page is not None
+                else []
+            )
             print(
                 json.dumps(
                     {
@@ -1658,7 +1756,18 @@ def _cmd_page(args: argparse.Namespace) -> int:
                         "total_lines": result.total_lines,
                         "truncated": result.truncated,
                         "omitted_lines": result.omitted_lines,
+                        "entity_id": result.entity_id,
+                        "entity_types": result.entity_types,
+                        "claims": msgspec.to_builtins(result.claims),
+                        "lifecycle": result.lifecycle,
+                        "visibility": result.visibility,
+                        "review_after": result.review_after,
                         "kb_location": location,
+                        "published_version": published_version,
+                        "open_command": page_open_command(
+                            result.title, location, published_version
+                        ),
+                        "source_commands": source_commands,
                     },
                     indent=2,
                 )
@@ -1715,7 +1824,12 @@ def _cmd_page(args: argparse.Namespace) -> int:
         # Labelled open actions retain the effective KB location so an action
         # copied from one project cannot read a same-titled page elsewhere.
         for line in render_open_actions(
-            page_open_actions(page, kb_location=location, reader_base_url=reader_base)
+            page_open_actions(
+                page,
+                kb_location=location,
+                reader_base_url=reader_base,
+                published_version=published_version,
+            )
         ):
             print(line)
         for source in page.sources:
@@ -1723,6 +1837,7 @@ def _cmd_page(args: argparse.Namespace) -> int:
                 source_id=source.id or None,
                 source_url=source.url,
                 kb_location=location,
+                published_version=published_version,
             ):
                 print(line)
         print()
@@ -4757,13 +4872,12 @@ def _cmd_source_resolve(args: argparse.Namespace) -> int:
         if artifact_store is not None
         else "granted (private registry view)"
     )
-    version_flag = (
-        f" --published-version {binding.published_version}"
-        if binding.published_version is not None
-        else ""
-    )
     kb_location = str(args.path) if _is_object_store_uri(str(args.path)) else str(kb.root)
-    next_action = source_inspect_command(binding.source_id, kb_location) + version_flag
+    next_action = source_inspect_command(
+        binding.source_id,
+        kb_location,
+        binding.published_version,
+    )
     if args.json:
         payload = {
             "outcome": OUTCOME_RESOLVED,
@@ -5139,6 +5253,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Derived LanceDB index dir for semantic/hybrid (default: <kb>/.lumio/lance).",
     )
     search_parser.add_argument(
+        "--published-version",
+        default=None,
+        metavar="VERSION",
+        help="Read this exact immutable S3 Published Version instead of current.json.",
+    )
+    search_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit one machine-readable JSON object (results + retrieval accounting) "
@@ -5156,6 +5276,12 @@ def build_parser() -> argparse.ArgumentParser:
     page_parser.add_argument("title", type=str, help="Canonical Page Title (or alias).")
     page_parser.add_argument(
         "--raw", action="store_true", help="Emit the captured canonical Markdown bytes."
+    )
+    page_parser.add_argument(
+        "--published-version",
+        default=None,
+        metavar="VERSION",
+        help="Read this exact immutable S3 Published Version instead of current.json.",
     )
     page_parser.add_argument(
         "--section", type=str, default=None, help="Read one exact Markdown heading section."

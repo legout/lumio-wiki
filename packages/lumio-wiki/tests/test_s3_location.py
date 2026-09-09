@@ -157,6 +157,13 @@ def test_resolve_returns_an_immutable_snapshot(fixture):
         snapshot.fingerprint = snapshot.fingerprint  # type: ignore[misc]
 
 
+def test_s3_snapshot_exposes_the_exact_resolved_published_version():
+    store = _store()
+    _publish_version(store, "kb", "v1", FIXTURES / "valid")
+    snapshot = S3Location(store, "kb").resolve()
+    assert snapshot.published_version == "v1"
+
+
 # ---------------------------------------------------------------------------
 # 3. Byte-for-byte equivalence with the verified filesystem Location.
 # ---------------------------------------------------------------------------

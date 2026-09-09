@@ -16,7 +16,9 @@ this file retains invalid-base and private-source separation checks.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from lumio_wiki.citation_actions import (
@@ -75,6 +77,54 @@ def test_page_labels_authored_source_url_and_private_source_action(
         "--source-id lumio-overview" in out
     )
     assert "signed" not in out.lower()
+
+
+def test_s3_page_actions_and_json_pin_the_resolved_version(
+    kb_root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page read resolves once; its actions must not follow a later pointer."""
+    import lumio_wiki as lw
+
+    kb, report = lw.load_knowledge_base(kb_root)
+    assert report.is_valid
+    requested_versions: list[str | None] = []
+    active_version = "v1"
+
+    def fake_location(_uri: str, *, version: str | None = None):
+        requested_versions.append(version)
+        return SimpleNamespace(
+            resolve=lambda: SimpleNamespace(
+                knowledge_base=kb,
+                published_version=version if version is not None else active_version,
+            )
+        )
+
+    monkeypatch.setattr("lumio_wiki.cli._resolve_object_store_location", fake_location)
+    uri = "s3://public-bucket/team-kb"
+
+    assert main(["page", uri, "Lumio Overview"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        'open:            lumio-wiki page "s3://public-bucket/team-kb" "Lumio Overview" '
+        "--published-version v1" in out
+    )
+    assert (
+        'source-artifact: lumio-wiki source inspect "s3://public-bucket/team-kb" '
+        "--source-id lumio-overview --published-version v1" in out
+    )
+    assert "X-Amz" not in out
+
+    assert main(["page", uri, "Lumio Overview", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["published_version"] == "v1"
+    assert payload["open_command"].endswith("--published-version v1")
+
+    # A later active pointer does not alter an already copied action: replay
+    # asks the S3 Location for the explicit resolved version.
+    active_version = "v2"
+    assert main(["page", uri, "Lumio Overview", "--published-version", "v1"]) == 0
+    capsys.readouterr()
+    assert requested_versions[-1] == "v1"
 
 
 # ---------------------------------------------------------------------------

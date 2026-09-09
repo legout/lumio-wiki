@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -64,6 +65,15 @@ Policy text.
 """,
         encoding="utf-8",
     )
+    kb, report = lw.load_knowledge_base(root)
+    assert report.is_valid, report
+    return kb
+
+
+def _categorized_knowledge_base(tmp_path: Path):
+    root = tmp_path / "categorized-kb"
+    fixtures = Path(__file__).parents[3] / "tests" / "fixtures"
+    shutil.copytree(fixtures / "categorized_kb", root)
     kb, report = lw.load_knowledge_base(root)
     assert report.is_valid, report
     return kb
@@ -753,7 +763,9 @@ def test_publish_refuses_legacy_source_lifecycle_record_without_reviewed_metadat
     proposal = pipeline.retire_source("policy")
     durable = store.get(proposal.id)
     assert durable is not None
-    assert durable.preconditions == []  # explicit captured-nothing base
+    assert [(row.path, row.role, row.kind) for row in durable.preconditions or []] == [
+        ("lumio.yaml", "control", "absent")
+    ]
     assert durable.reviewed_identity is not None
 
     proposal_path = store.proposals_dir / f"{proposal.id}.json"
@@ -838,7 +850,7 @@ def test_publish_refuses_source_lifecycle_record_carrying_precondition_records(
 
     with pytest.raises(lw.ProposalPreconditionError) as excinfo:
         pipeline.publish(proposal.id)
-    assert "no Knowledge Base path" in str(excinfo.value)
+    assert "no longer matches its reviewed base" in str(excinfo.value)
     assert "restage" in str(excinfo.value).lower()
 
     assert store.source_registry.get("policy").status == "active"
@@ -867,7 +879,8 @@ def test_public_save_cannot_rebind_reviewed_identity_for_altered_lifecycle_conte
     proposal = pipeline.retire_source("policy")
     durable = store.get(proposal.id)
     assert durable is not None and durable.source_change is not None
-    assert durable.preconditions == [] and durable.reviewed_identity is not None
+    assert durable.preconditions is not None and durable.reviewed_identity is not None
+    assert [(row.path, row.role) for row in durable.preconditions] == [("lumio.yaml", "control")]
     prior_registry = msgspec.json.encode(store.source_registry._state)
 
     tampered = msgspec.structs.replace(
@@ -879,7 +892,7 @@ def test_public_save_cannot_rebind_reviewed_identity_for_altered_lifecycle_conte
     forged = msgspec.structs.replace(
         tampered, reviewed_identity=_recomputed_mutation_identity(tampered)
     )
-    assert forged.preconditions == []  # old captured-nothing base retained
+    assert forged.preconditions is not None  # reviewed Control File base retained
     assert _is_self_consistent_restage(forged)  # the old bypass accepted this record
 
     store.save_proposal(forged)
@@ -2327,3 +2340,77 @@ def test_save_raw_performs_every_filesystem_mutation_inside_the_store_lock(tmp_p
     assert sorted(p.name for p in (tmp_path / "ingest").iterdir()) == ["raw"]
     assert sorted(p.name for p in raw_dir.iterdir()) == ["proposal-1"]
     assert sorted(p.name for p in (raw_dir / "proposal-1").iterdir()) == ["notes.md"]
+
+
+# ---------------------------------------------------------------------------
+# Source-lifecycle Control File bases (Plan 02 / P4 remediation).
+# ---------------------------------------------------------------------------
+
+
+def test_source_lifecycle_rejects_valid_control_file_drift(tmp_path: Path) -> None:
+    """Lifecycle impacts are reviewed against the control state they consumed."""
+    kb = _categorized_knowledge_base(tmp_path)
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("lumio-overview", b"source-v1")
+    proposal = pipeline.retire_source("lumio-overview")
+    durable = store.get(proposal.id)
+    assert durable is not None
+    assert [(row.path, row.role, row.kind) for row in durable.preconditions or []] == [
+        ("lumio.yaml", "control", "file")
+    ]
+
+    control_path = Path(kb.root) / "lumio.yaml"
+    control_path.write_text(
+        control_path.read_text(encoding="utf-8").replace(
+            "Core ideas, definitions, and mental models.",
+            "Changed but still valid control metadata.",
+        ),
+        encoding="utf-8",
+    )
+    _reloaded, report = lw.load_knowledge_base(kb.root)
+    assert report.is_valid
+
+    with pytest.raises(lw.ProposalPreconditionError, match="lumio.yaml changed since review"):
+        pipeline.publish(proposal.id)
+    assert store.source_registry.get("lumio-overview").status == "active"
+    assert store.get(proposal.id).status == "staged"  # type: ignore[union-attr]
+
+
+def test_legacy_lifecycle_control_absence_allows_disjoint_page_changes(tmp_path: Path) -> None:
+    """Legacy flat mode binds Control File absence without serializing all pages."""
+    kb = _knowledge_base(tmp_path, ["policy"])
+    store = IngestStore(tmp_path / "ingest")
+    pipeline = ProposalPipeline(kb, store)
+    pipeline.register_source("policy", b"source-v1")
+    proposal = pipeline.retire_source("policy")
+    durable = store.get(proposal.id)
+    assert durable is not None
+    assert [(row.path, row.role, row.kind) for row in durable.preconditions or []] == [
+        ("lumio.yaml", "control", "absent")
+    ]
+
+    # A valid, disjoint page is not a lifecycle proposal base and remains
+    # publishable. Creating a Control File would instead trip the bound
+    # expected-absence precondition.
+    (Path(kb.root) / "unrelated.md").write_text(
+        "---\n"
+        'title: "Unrelated"\n'
+        "aliases: []\n"
+        "tags:\n"
+        "  - unrelated\n"
+        'summary: "Unrelated page."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "sources: []\n"
+        "synthetic: true\n"
+        "---\n\n"
+        "# Unrelated\n\n"
+        "Disjoint content.\n",
+        encoding="utf-8",
+    )
+    _reloaded, report = lw.load_knowledge_base(kb.root)
+    assert report.is_valid
+
+    assert pipeline.publish(proposal.id).status == "published"
+    assert store.source_registry.get("policy").status == "retired"

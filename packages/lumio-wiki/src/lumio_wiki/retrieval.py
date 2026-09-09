@@ -54,6 +54,7 @@ class RetrievalAdapter(Protocol):
         embedder: Embedder | None = None,
         score_threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
         eligible_pages: Sequence[CompiledPage] | None = None,
+        expected_fingerprint: SourceFingerprint | None = None,
     ) -> list[RetrievalResult]: ...
 
 
@@ -93,8 +94,9 @@ class ZeroIndexRetrieval:
         embedder: Embedder | None = None,
         score_threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
         eligible_pages: Sequence[CompiledPage] | None = None,
+        expected_fingerprint: SourceFingerprint | None = None,
     ) -> list[RetrievalResult]:
-        del index_dir, embedder, score_threshold
+        del index_dir, embedder, score_threshold, expected_fingerprint
         if mode != "lexical":
             raise EmbeddingError(
                 f"{mode} retrieval requires the LanceDB retrieval adapter; "

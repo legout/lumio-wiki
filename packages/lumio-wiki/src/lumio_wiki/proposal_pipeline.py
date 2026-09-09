@@ -534,7 +534,11 @@ class ProposalPipeline:
             proposal.proposed_pages or proposal.removed_pages or proposal.control_file is not None
         )
         if not proposal.preconditions:
-            if mutates_knowledge_base:
+            if mutates_knowledge_base or proposal.source_change is not None:
+                # A lifecycle transition changes private registry state, but
+                # its reviewed impacts consume the Control File's ontology and
+                # mode. Bind that one shared input without serializing every
+                # page, so valid disjoint page changes remain publishable.
                 expectations = _capture_mutation_preconditions(
                     proposal.proposed_pages,
                     self._kb.root,
@@ -542,9 +546,6 @@ class ProposalPipeline:
                 )
                 preconditions = _as_path_preconditions(expectations)
             else:
-                # A source-lifecycle proposal mutates no Knowledge Base path:
-                # its captured-nothing precondition set stays deliberately
-                # empty (distinct from ``None``, which means "never captured").
                 preconditions: list[PathPrecondition] = []
         else:
             preconditions = self._verify_assembly_snapshot(proposal, list(proposal.preconditions))
@@ -840,12 +841,12 @@ class ProposalPipeline:
             validation_report=report,
             blocked=not report.is_valid,
             source_change=change,
-            # Plan 02 / P4: a source-lifecycle proposal mutates no Knowledge
-            # Base path (the registry transition is private state), so its
-            # captured precondition set is deliberately empty — distinct from
-            # ``None``, which marks a proposal staged before preconditions
-            # were captured and is refused at publish.
-            preconditions=[],
+            # Lifecycle impacts consume the durable Control File/mode, so bind
+            # its current file bytes (or its reviewed absence in legacy-flat
+            # mode). Page paths remain deliberately disjoint from this base.
+            preconditions=_as_path_preconditions(
+                _capture_mutation_preconditions([], self._kb.root)
+            ),
         )
 
     def _bind_and_persist(
@@ -885,12 +886,13 @@ class ProposalPipeline:
         with mutation_lock(store.root, registry.root):
             registry.bind_pending(transition, proposal.id)
             try:
-                # Plan 02 / P4: the source-lifecycle proposal mutates no
-                # Knowledge Base path (its captured-nothing precondition set
-                # is already bound), so only the content identity is bound
-                # here — under the same locks that persist the record. The
-                # authorized staging seam is the only writer of freshly
-                # bound reviewed metadata; an ordinary save would strip it.
+                # Plan 02 / P4: the source-lifecycle proposal has already
+                # bound its one consumed Knowledge Base input (the Control
+                # File, or legacy-flat absence), so this only verifies that
+                # reviewed base and binds content identity under the same
+                # locks that persist the record. The authorized staging seam
+                # is the only writer of freshly bound reviewed metadata; an
+                # ordinary save would strip it.
                 self._save_reviewed_proposal(self._bind_reviewed_state(proposal))
             except Exception:
                 registry.cancel_transition(proposal.id)
@@ -1693,7 +1695,7 @@ class ProposalPipeline:
         1. no captured reviewed preconditions at all (``None`` — a proposal
            staged before preconditions were captured, or stripped by the
            store after an altering save) is refused; source-lifecycle
-           proposals carry an explicit EMPTY captured set instead;
+           proposals carry the reviewed Control File state instead;
         2. no reviewed content identity, or the identity recomputed from the
            DURABLE record's mutation content differs from the stored one —
            the reviewed content and its metadata were separated after review
@@ -1703,13 +1705,12 @@ class ProposalPipeline:
            for Knowledge Base mutations the affected-path set freshly
            resolved from the durable record (changed destinations, removals,
            or moves cannot retain records captured for the original
-           structure), for source-lifecycle proposals exactly the EMPTY set
-           (a mutating-nothing record carrying Knowledge Base precondition
-           rows is altered after review);
+           structure), for source-lifecycle proposals exactly the Control
+           File record (a foreign page record is altered after review);
         4. drift — a recorded reviewed byte vanished/changed, an
            expected-absent destination is occupied, or the reviewed Control
-           File state changed (Knowledge Base mutations only: a
-           source-lifecycle proposal has no filesystem base to drift).
+           File state changed (including a source-lifecycle proposal's sole
+           Control File base).
 
         Every failure raises :class:`ProposalPreconditionError` with restage
         guidance, preserving newer on-disk content. Never a silent rebase,
@@ -1748,18 +1749,35 @@ class ProposalPipeline:
                 "state, then review and publish it"
             )
         if not mutates_knowledge_base:
-            # A source-lifecycle proposal mutates only private registry state:
-            # its reviewed base is exactly the EMPTY captured-nothing set
-            # bound at staging. Any recorded Knowledge Base precondition row
-            # means the durable record was altered after review.
-            if proposal.preconditions:
+            if proposal.source_change is None:
+                if proposal.preconditions:
+                    raise ProposalPreconditionError(
+                        f"proposal {proposal_id!r} carries reviewed Knowledge Base "
+                        "precondition records but its durable content mutates no "
+                        "Knowledge Base path: the durable record was altered after "
+                        "review while its reviewed metadata was retained. Refusing "
+                        "to publish: discard this proposal and restage a fresh "
+                        "one against the current state, then review and publish it"
+                    )
+                return
+            expected_pairs = _expected_precondition_pairs([], Path(self._kb.root))
+            mismatch = _precondition_set_mismatch(proposal.preconditions, expected_pairs)
+            if mismatch:
+                details = "; ".join(mismatch)
                 raise ProposalPreconditionError(
-                    f"proposal {proposal_id!r} carries reviewed Knowledge Base "
-                    "precondition records but its durable content mutates no "
-                    "Knowledge Base path: the durable record was altered after "
-                    "review while its reviewed metadata was retained. Refusing "
-                    "to publish: discard this proposal and restage a fresh "
-                    "one against the current state, then review and publish it"
+                    f"proposal {proposal_id!r} no longer matches its reviewed base: "
+                    f"{details}. Refusing to silently rebase or overwrite newer "
+                    "content: discard this proposal and restage a fresh one against "
+                    "the current state, then review and publish it"
+                )
+            drift = _precondition_drift(proposal.preconditions, Path(self._kb.root))
+            if drift:
+                details = "; ".join(drift)
+                raise ProposalPreconditionError(
+                    f"proposal {proposal_id!r} no longer matches its reviewed base: "
+                    f"{details}. Refusing to silently rebase or overwrite newer "
+                    "content: discard this proposal and restage a fresh one against "
+                    "the current state, then review and publish it"
                 )
             return
         expected_pairs = _expected_precondition_pairs(

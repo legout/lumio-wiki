@@ -522,10 +522,12 @@ class IngestProposal(msgspec.Struct, frozen=True):
     # proposal staged before reviewed preconditions existed (or assembled by
     # hand without staging): publication refuses such proposals with restage
     # guidance — the current files are never guessed as the reviewed base.
-    # Source-lifecycle proposals mutate no Knowledge Base path and carry an
-    # empty (captured-nothing) list. Serialized compatibility is preserved:
-    # older proposal records decode with ``preconditions=None`` and remain
-    # inspectable, but they must be re-staged before they can publish.
+    # Source-lifecycle proposals bind the Control File bytes (or its reviewed
+    # absence in legacy-flat mode) because their impacts consume its mode and
+    # ontology, while deliberately omitting disjoint page paths. Serialized
+    # compatibility is preserved: older proposal records decode with
+    # ``preconditions=None`` and remain inspectable, but they must be
+    # re-staged before they can publish.
     preconditions: list[PathPrecondition] | None = None
     # Plan 02 / P4 review (durable-tampering defense): the deterministic
     # private content identity of the reviewed mutation — one SHA-256 over a

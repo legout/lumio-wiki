@@ -2687,6 +2687,10 @@ def test_source_resolve_published_version_resolves_manifest_binding(
     assert "source_id:       policy" in out
     assert "bound_to:        published version v2026 (Source Binding Manifest)" in out
     assert "availability:    retained (digest and size verified)" in out
+    assert (
+        f'next:            lumio-wiki source inspect "{source_kb.resolve()}" '
+        "--source-id policy --published-version v2026" in out
+    )
 
 
 def test_source_inspect_unknown_id_error_names_close_id_and_command(
@@ -2746,3 +2750,114 @@ def test_source_fetch_unavailable_artifact_error_explains_retention_step(
     assert "without artifact retention" in err
     assert "managed ingest" in err
     assert not out_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Bounded page reads: identity/Claim metadata and shared fence-aware sections.
+# ---------------------------------------------------------------------------
+
+
+def test_page_json_bounded_read_retains_claim_and_review_metadata(
+    graph_kb: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Bounds apply only to content; edit-safe page metadata remains whole."""
+    overview = graph_kb / "concepts" / "overview.md"
+    overview.write_text(
+        overview.read_text(encoding="utf-8").replace(
+            'visibility: "public"\n',
+            'visibility: "public"\nreview_after: "2030-01-01"\n',
+        ),
+        encoding="utf-8",
+    )
+    kb, report = lw.load_knowledge_base(graph_kb)
+    assert report.is_valid
+
+    api_result = kb.read_page("Lumio Overview", section="Overview", max_lines=1)
+    assert api_result.entity_id == "entity:lumio-overview"
+    assert api_result.review_after == "2030-01-01"
+    assert api_result.claims[0].id == "claim:lumio-overview-uses-architecture"
+    assert api_result.claims[0].evidence[0].section == "Overview"
+    # Raw remains a lossless view of captured canonical bytes, not a
+    # reconstruction from the metadata copied into PageRead.
+    assert kb.read_page("Lumio Overview", raw=True).content == overview.read_text(encoding="utf-8")
+
+    assert (
+        main(
+            [
+                "page",
+                str(graph_kb),
+                "Lumio Overview",
+                "--section",
+                "Overview",
+                "--max-lines",
+                "1",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["entity_id"] == "entity:lumio-overview"
+    assert payload["entity_types"] == ["concept"]
+    assert payload["lifecycle"] == "approved"
+    assert payload["visibility"] == "public"
+    assert payload["review_after"] == "2030-01-01"
+    claim = payload["claims"][0]
+    assert set(claim) >= {
+        "id",
+        "predicate",
+        "status",
+        "object",
+        "value",
+        "value_type",
+        "confidence",
+        "origin",
+        "valid_from",
+        "valid_to",
+        "evidence",
+    }
+    assert claim["id"] == "claim:lumio-overview-uses-architecture"
+    assert claim["evidence"] == [
+        {"section": "Overview", "line_start": None, "line_end": None}
+    ]
+    assert payload["truncated"] is True
+
+
+def test_fence_aware_sections_align_page_reads_validation_and_zero_index(
+    graph_kb: Path,
+) -> None:
+    """Fence content is neither a selectable heading nor retrieval Evidence."""
+    overview = graph_kb / "concepts" / "overview.md"
+    head, _body = overview.read_text(encoding="utf-8").split("---\n\n", 1)
+    overview.write_text(
+        head
+        + "---\n\n"
+        + "# Lumio Overview\n\n"
+        + "## Overview\n\n"
+        + "Visible overview text.\n\n"
+        + "```markdown\n"
+        + "## Fenced Heading\n"
+        # A closing fence permits only trailing whitespace. This is code,
+        # so the following heading remains inside the same fence too.
+        + "``` explanatory text\n"
+        + "## Still Fenced\n"
+        + "``` \t\n\n"
+        + "## Actual\n\n"
+        + "A verifiable unique retrieval phrase.\n",
+        encoding="utf-8",
+    )
+    kb, report = lw.load_knowledge_base(graph_kb)
+    assert report.is_valid
+
+    actual = kb.read_page("Lumio Overview", section="Actual")
+    assert actual.content.startswith("## Actual")
+    with pytest.raises(lw.KnowledgeBaseError, match="section not found"):
+        kb.read_page("Lumio Overview", section="Still Fenced")
+
+    results = kb.retrieve("verifiable unique retrieval phrase", limit=5)
+    assert results
+    assert all(
+        result.citation.section_title not in {"Fenced Heading", "Still Fenced"}
+        for result in results
+    )
+    assert any(result.citation.section_title == "Actual" for result in results)

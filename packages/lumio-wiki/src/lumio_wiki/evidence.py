@@ -10,6 +10,7 @@ results without the optional ``lancedb`` / ``pyarrow`` dependencies.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 from lumio_wiki.records import (
     Citation,
@@ -19,33 +20,59 @@ from lumio_wiki.records import (
     RetrievalTrace,
 )
 
+_ATX_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*(?:\r?\n)?$")
+_FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})(?:[^\r\n]*)?(?:\r?\n)?$")
+
+
+def markdown_section_ranges(
+    lines: Sequence[str], *, line_offset: int = 0
+) -> list[tuple[str, int, int]]:
+    """Return fence-aware ``(title, inclusive_start, inclusive_end)`` ranges.
+
+    This is the one Markdown section parser shared by page reads, Claim
+    Evidence validation, and zero-index Evidence extraction. ATX headings in
+    fenced code are never sections. An opening fence may have info text; its
+    matching closing fence must contain only the same fence character (at
+    least the opening length) and trailing whitespace, so ````` explanation``
+    remains code instead of closing the block.
+    """
+    headings: list[tuple[int, int, str]] = []
+    open_fence: str | None = None
+    for index, line in enumerate(lines):
+        if open_fence is not None:
+            fence_char = re.escape(open_fence[0])
+            close_re = re.compile(
+                rf"^[ \t]{{0,3}}{fence_char}{{{len(open_fence)},}}[ \t]*(?:\r?\n)?$"
+            )
+            if close_re.fullmatch(line):
+                open_fence = None
+            continue
+        opening = _FENCE_OPEN_RE.fullmatch(line)
+        if opening is not None:
+            open_fence = opening.group("fence")
+            continue
+        heading = _ATX_HEADING_RE.fullmatch(line)
+        if heading is not None:
+            headings.append((index, len(heading.group(1)), heading.group(2).strip()))
+
+    ranges: list[tuple[str, int, int]] = []
+    for position, (start_index, level, title) in enumerate(headings):
+        end_index = len(lines) - 1
+        for next_index, next_level, _next_title in headings[position + 1 :]:
+            if next_level <= level:
+                end_index = next_index - 1
+                break
+        ranges.append((title, line_offset + start_index + 1, line_offset + end_index + 1))
+    return ranges
+
 
 def body_sections(body: str, body_start_line: int) -> list[tuple[str | None, int, int, str]]:
-    """Return (title, file_line_start, file_line_end, text) for each ATX section."""
+    """Return fence-aware ``(title, file_line_start, file_line_end, text)`` sections."""
     lines = body.splitlines()
     sections: list[tuple[str | None, int, int, str]] = []
-    n = len(lines)
-    i = 0
-    while i < n:
-        line = lines[i]
-        match = re.match(r"^(#{1,3})\s+(.+)$", line)
-        if not match:
-            i += 1
-            continue
-        level = len(match.group(1))
-        title = match.group(2).strip()
-        j = i + 1
-        while j < n:
-            next_match = re.match(r"^(#{1,3})\s+", lines[j])
-            if next_match and len(next_match.group(1)) <= level:
-                break
-            j += 1
-        section_lines = lines[i:j]
-        text = "\n".join(section_lines).strip()
-        file_line_start = body_start_line + i
-        file_line_end = body_start_line + j - 1
-        sections.append((title, file_line_start, file_line_end, text))
-        i = j
+    for title, start, end in markdown_section_ranges(lines, line_offset=body_start_line - 1):
+        section_lines = lines[start - body_start_line : end - body_start_line + 1]
+        sections.append((title, start, end, "\n".join(section_lines).strip()))
     return sections
 
 

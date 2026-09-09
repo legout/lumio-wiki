@@ -530,6 +530,7 @@ class S3Location:
             fingerprint=actual_fp,
             location=self,
             remote_derived_index=self._remote_derived_index_descriptor(version, actual_fp),
+            published_version=version,
         )
 
     def _remote_derived_index_descriptor(self, version: str, fingerprint: Any) -> Any | None:

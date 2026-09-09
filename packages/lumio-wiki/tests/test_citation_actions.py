@@ -141,6 +141,25 @@ def test_source_inspect_command_quotes_unsafe_ids() -> None:
     assert command == 'lumio-wiki source inspect --source-id "x; rm -rf /"'
 
 
+def test_s3_open_commands_pin_the_resolved_published_version() -> None:
+    """Copyable S3 actions must not follow a later ``current.json`` pointer."""
+    location = "s3://public-bucket/team-kb"
+    assert (
+        page_open_command("Lumio Overview", location, "v2026-08-21")
+        == 'lumio-wiki page "s3://public-bucket/team-kb" "Lumio Overview" '
+        "--published-version v2026-08-21"
+    )
+    assert (
+        source_inspect_command("lumio-overview", location, "v2026-08-21")
+        == 'lumio-wiki source inspect "s3://public-bucket/team-kb" '
+        "--source-id lumio-overview --published-version v2026-08-21"
+    )
+    # Local actions deliberately retain their historical, version-free form.
+    assert page_open_command("Lumio Overview", "/tmp/kb") == (
+        'lumio-wiki page "/tmp/kb" "Lumio Overview"'
+    )
+
+
 # ---------------------------------------------------------------------------
 # CitationOpenActions derivation
 # ---------------------------------------------------------------------------
@@ -201,6 +220,19 @@ def test_citation_open_actions_never_invent_source_fields() -> None:
     assert actions.source_id is None
     assert actions.source_url is None
     assert actions.source_command == ""
+
+
+def test_citation_open_actions_carry_the_resolved_s3_version() -> None:
+    actions = citation_open_actions(
+        page_title="Lumio Overview",
+        page_path="overview.md",
+        source_id="lumio-overview",
+        kb_location="s3://public-bucket/team-kb",
+        published_version="v1",
+    )
+    assert actions.published_version == "v1"
+    assert actions.open_command.endswith("--published-version v1")
+    assert actions.source_command.endswith("--published-version v1")
 
 
 def test_citation_open_actions_with_invalid_base_url_raise_for_actionability() -> None:

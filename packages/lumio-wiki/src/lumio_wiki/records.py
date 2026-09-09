@@ -252,7 +252,12 @@ class ExtractedReference(msgspec.Struct, frozen=True):
 
 
 class PageRead(msgspec.Struct, frozen=True):
-    """A bounded, location-aware read of one canonical page."""
+    """A bounded, location-aware read of one canonical page.
+
+    Bounds limit only ``content``. Identity, reviewed Claims (including their
+    Evidence anchors), and page-review metadata remain complete so an agent
+    can safely prepare an edit without reconstructing omitted frontmatter.
+    """
 
     title: str
     path: str
@@ -264,6 +269,12 @@ class PageRead(msgspec.Struct, frozen=True):
     total_lines: int = 0
     truncated: bool = False
     omitted_lines: int = 0
+    entity_id: str | None = None
+    entity_types: list[str] = msgspec.field(default_factory=list)
+    claims: list[Claim] = msgspec.field(default_factory=list)
+    lifecycle: str | None = None
+    visibility: str | None = None
+    review_after: str | None = None
 
 
 class CompiledPage(msgspec.Struct, frozen=True):
@@ -419,6 +430,9 @@ class CitationOpenActions(msgspec.Struct, frozen=True):
     source_url: str | None = None
     source_command: str = ""
     kb_location: str | None = None
+    # The immutable Published Version selected for an S3 Snapshot. Local
+    # actions leave it absent and remain version-free.
+    published_version: str | None = None
 
 
 class Citation(msgspec.Struct, frozen=True):
