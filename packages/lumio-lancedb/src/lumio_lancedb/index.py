@@ -24,22 +24,6 @@ from pathlib import Path
 from typing import Any, cast
 
 import msgspec
-
-# ``lancedb`` / ``pyarrow`` are required to actually build or search a derived
-# index, but importing this module is kept safe when they are absent so the
-# broader ``lumio_lancedb`` package and its smoke tests can be imported in
-# environments where the dependency failed to initialize. The build/search call
-# sites below resolve to ``None`` only when the optional dependency is
-# unavailable; a real build/search then raises an actionable error.
-pa: Any
-FTS: Any
-try:  # pragma: no cover - exercised indirectly via build/search tests
-    import pyarrow as pa
-    from lancedb.index import FTS
-except ImportError:  # pragma: no cover - optional dependency unavailable
-    pa = None
-    FTS = None
-
 from lumio_wiki import evidence, page_search
 from lumio_wiki.embeddings import (
     DEFAULT_SEMANTIC_THRESHOLD,
@@ -76,6 +60,21 @@ from lumio_lancedb.location import (
     IndexLocation,
     as_location,
 )
+
+# ``lancedb`` / ``pyarrow`` are required to actually build or search a derived
+# index, but importing this module is kept safe when they are absent so the
+# broader ``lumio_lancedb`` package and its smoke tests can be imported in
+# environments where the dependency failed to initialize. The build/search call
+# sites below resolve to ``None`` only when the optional dependency is
+# unavailable; a real build/search then raises an actionable error.
+pa: Any
+FTS: Any
+try:  # pragma: no cover - exercised indirectly via build/search tests
+    import pyarrow as pa
+    from lancedb.index import FTS
+except ImportError:  # pragma: no cover - optional dependency unavailable
+    pa = None
+    FTS = None
 
 TABLE_NAME = "evidence"
 PAGE_TABLE_NAME = "pages"

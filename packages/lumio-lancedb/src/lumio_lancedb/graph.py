@@ -46,6 +46,12 @@ from lumio_wiki.records import (
     SourceFingerprint,
 )
 
+from lumio_lancedb.index import _load_fingerprint, _save_fingerprint
+from lumio_lancedb.location import IndexLocation, as_location
+
+pa: Any
+FTS: Any
+LabelList: Any
 try:  # pragma: no cover - exercised indirectly via build/search tests
     import pyarrow as pa
     from lancedb.index import FTS, LabelList
@@ -54,14 +60,11 @@ except ImportError:  # pragma: no cover - optional dependency unavailable
     FTS = None
     LabelList = None
 
-from lumio_lancedb.index import _load_fingerprint, _save_fingerprint
-from lumio_lancedb.location import IndexLocation, as_location
-
 ENTITY_TABLE_NAME = "entities"
 GRAPH_EDGE_TABLE_NAME = "graph_edges"
 
 
-def _entity_schema() -> pa.Schema:
+def _entity_schema() -> Any:
     """Arrow schema for the ``entities`` table (issue #171 scope).
 
     ``redirect_to`` is empty for page-owning Entities and carries the
@@ -85,7 +88,7 @@ def _entity_schema() -> pa.Schema:
     )
 
 
-def _graph_edge_schema() -> pa.Schema:
+def _graph_edge_schema() -> Any:
     """Arrow schema for the ``graph_edges`` table (issue #171 scope).
 
     One row per Claim (any published lifecycle; ``status`` keeps disputed and
