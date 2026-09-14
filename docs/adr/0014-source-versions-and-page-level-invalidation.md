@@ -98,9 +98,8 @@ review and publication behavior is otherwise unchanged.
 Version, Source Retirement, and Page Removal; the Claim, Claim Lineage, and
 Lineage Precision terms are removed with the deferred design.
 
-Tests must prove: stable identity across Source Version replacement; immutable
-version hashes; explicit retirement and reactivation; candidate-only behavior
-for missing files and storage failures; page-level impact classification for
-single-source and multi-source pages; explicit Page Removal with Relationship
-repair; privacy and export exclusion of the registry; and that Readers remain
-bound to the last active Published Version throughout.
+Lean assurance must cover the distinct identity, immutability, lifecycle,
+missing-source, impact, Page Removal, privacy/export, and last-active-version
+failure modes at stable public seams. Related cases may share one journey and
+validation unit; this decision does not require one test per clause or a
+single-source × multi-source × command matrix.

@@ -23,10 +23,11 @@ truth.
    (glossary-only). The README defers depth via links rather than duplicating
    these.
 2. **`docs/kb-format.md` is the canonical human-readable Compiled Page
-   frontmatter reference**, mirrored from `src/lumio/core/records.py` (record
-   types) and `src/lumio/core/knowledge_base.py` (validation rules). **When the
-   two disagree, the code is correct** and the doc must be updated. It is kept
-   out of `CONTEXT.md`, which is a glossary, not a spec.
+   frontmatter contract**, enforced by the record types and validation code.
+   A disagreement is a blocking source/implementation defect: reconcile the
+   approved contract and code rather than letting either silently override the
+   other. The contract stays out of `CONTEXT.md`, which is a glossary, not a
+   specification.
 
 ## Considered Options
 
@@ -45,6 +46,6 @@ Each concern has one owner: reality → README, vision → PRDs, decisions → A
 language → `CONTEXT.md`, schema → `docs/kb-format.md`. The README stays
 scannable and honest.
 
-The cost is a mirroring discipline: `docs/kb-format.md` must be updated whenever
-records.py or the validator changes. That discipline is owned by this ADR;
-#13 tracked its introduction and was closed in favor of this record.
+The cost is a reconciliation discipline: schema changes update the approved
+contract and enforcing code together. That discipline is owned by this ADR; #13
+tracked its introduction and was closed in favor of this record.

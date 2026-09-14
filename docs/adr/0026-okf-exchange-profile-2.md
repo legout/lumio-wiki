@@ -3,7 +3,9 @@ status: accepted
 amends: ADR-0007
 ---
 
-# ADR-0015: OKF Exchange Profile 2 for OKF v0.2
+# ADR-0026: OKF Exchange Profile 2 for OKF v0.2
+
+_Renumbered from the duplicate ADR-0015; the earlier Portable Maintainer Workflows decision retains ADR-0015 by commit chronology._
 
 ## Context
 

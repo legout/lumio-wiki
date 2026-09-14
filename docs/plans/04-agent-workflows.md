@@ -1,18 +1,24 @@
 # 04 — Safe, usable agent workflows
 
-**Implemented.** Goal: repair actual safety/command defects before adding
-bounded machine-facing capabilities. Requirements:
-[B13–B18, B21, I01/I02/I04, C01/C04](README.md#finding-to-task-map),
-[host-as-Distiller and optional packaging](../adr/0010-uv-workspace-and-progressive-packaging.md),
+**Implemented.** Goal: satisfy
+[PRD-0006 AC3](../prd/0006-library-stabilization.md#ac3-safe-agent-workflows).
+Evidence: [B13–B18, B21, I01/I02/I04, C01/C04](../research/library-stabilization-audit.md#finding-registry).
+Architecture: [host-as-Distiller and optional packaging](../adr/0010-uv-workspace-and-progressive-packaging.md),
 [packaged contract](../adr/0017-portable-agent-skill-distribution-and-project-bootstrap.md),
-[layered converters](../adr/0018-layered-document-conversion-anydoc.md),
+[layered converters](../adr/0018-layered-document-conversion-anydoc.md), and
 [v2 ontology](../adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md).
 Python/uv and existing CLI/SDK seams, no new mandatory provider or agent runtime.
+
+Planning-contract retrofit: implementation approval is evidenced by commits
+`12b4e9a` and `032d8e0`; capture checkpoint found no new vocabulary beyond the
+linked sources and no additional ADR; Contract version 1, installed provenance
+`unknown`. A1/A3 remain as historical bundles rather than being rewritten into
+new slices after integration.
 
 A1/A2/A4 and A3's concrete ingestion repair are safety/correctness work. Complete
 those before A5/A6 capabilities. A7 first fixes executable command guidance,
 then uses A5/A6's approved interface. Coordinate all `cli.py` edits serially;
-[global checks](README.md#global-verification-for-future-implementation) apply.
+the recorded task evidence captures the checks that actually ran.
 
 ## A1
 
@@ -203,7 +209,9 @@ then uses A5/A6's approved interface. Coordinate all `cli.py` edits serially;
   **Consumes → produces:** captured page bytes plus optional raw/JSON and
   section/line bounds → exact content/metadata with truthful coordinates and
   truncation; existing validation/capture/mutation outcomes → stable JSON status,
-  proposal/error identity and exit behavior. Prerequisites: A1–A5, R1/R5.
+  proposal/error identity and exit behavior. Prerequisites: A1–A5. R1/R5 are
+later hardening work, not prerequisites for the bounded read behavior already
+integrated.
   Reuse current JSON conventions; no parallel runtime or generic response
   framework. Keep default human output unchanged. Unbounded raw mode must be
   lossless canonical Markdown (not reconstructed selected fields); bounded

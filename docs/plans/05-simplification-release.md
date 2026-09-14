@@ -1,20 +1,36 @@
 # 05 — Simplification and coordinated release
 
-**Proposed; unexecuted.** Goal: remove obsolete production behavior and duplicate
-ownership without removing supported capabilities or blindly breaking external
-consumers. Requirements: [B19–B21, C01–C04 and owner API decision](README.md#finding-to-task-map),
-[ADR-0022](../adr/0022-retire-activity-log-artifact.md),
+**Proposed; no integrated completion is recorded and implementation is not approved by this revision.** Goal: satisfy
+[PRD-0006 AC4](../prd/0006-library-stabilization.md#ac4-simplification-and-coordinated-release)
+without removing supported capabilities or blindly breaking external consumers.
+Evidence: [B19–B21 and C01–C04](../research/library-stabilization-audit.md#finding-registry).
+Architecture: [ADR-0022](../adr/0022-retire-activity-log-artifact.md),
 [ADR-0025](../adr/0025-repository-split.md),
-[Core PRD small seam](../prd/0002-core-sdk.md),
+[Core PRD small seam](../prd/0002-core-sdk.md), and
 [progressive graph](../adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md).
 Python/uv, two public wheels; no mandatory dependencies or new generic engine.
 
-Sequence: inventory real consumers in S2 before S1/S2 exported removals; finish
-publication/snapshot/agent correctness first; migrate callers → verify → delete
-old paths → search stale references in each cleanup. S3 consumes R1 and the
-agreed traversal semantics. **S4 is separately approved release work**, not an
-automatic final step. [Global checks](README.md#global-verification-for-future-implementation)
-apply at every task boundary.
+Approval reference: none; the current owner request authorizes this framework
+alignment only. Capture checkpoint: no new product vocabulary or ADR; PRD-0006
+owns behavior and non-goals. External consumer inventory and migration evidence
+remain unresolved, so S1/S2 removals and S4 are blocked before dispatch. Contract
+version 1; local project skill provenance `unknown`.
+
+Sequence: accept real consumer inventory before S1/S2 exported removals; finish
+publication/snapshot/agent correctness first; expand the chosen seam, migrate
+callers in coherent batches, verify, then contract old paths. S3 consumes R1 and
+approved traversal semantics. S4 remains separately approved release work.
+
+## Validation units
+
+| Unit | Tasks | Risk / obligation | Distinct failure protected |
+| --- | --- | --- | --- |
+| SV1 | S1–S3 | high / `existing-check` | retired writes survive, a real consumer breaks, or traversal authorization/topology changes |
+| SV2 | S4 | high / `existing-check` | built wheels, optional capabilities, or an adopted consumer fail at the release boundary |
+
+SV1 uses existing public journeys and receives immediate review at each consumed
+interface boundary plus one candidate review. SV2 reuses release and consumer
+checks; release notes do not create a second documentation-only validation unit.
 
 ## S1
 
@@ -24,7 +40,7 @@ apply at every task boundary.
   `packages/lumio-wiki/src/lumio_wiki/records.py`,
   `packages/lumio-wiki/src/lumio_wiki/__init__.py`,
   `packages/lumio-wiki/src/lumio_wiki/s3_publish.py`,
-  `CONTEXT.md`, `README.md`, `docs/kb-format.md`;
+  `README.md`;
   `tests/test_kb_control.py`,
   `packages/lumio-wiki/tests/test_entity_merge.py`,
   `packages/lumio-wiki/tests/test_page_removal.py`,
@@ -38,9 +54,10 @@ apply at every task boundary.
   versions; keep loader recognition, canonical fingerprint exclusion and blocking
   unmarked/malformed `log.md` collisions. Ensure new publication assembly does
   not copy a legacy log into new versions. Hot Index and Navigation Index stay
-  separate useful features. Update terminology only alongside this runtime change.
-  **Obligation:** `existing-check`; current producer tests are intentionally
-  retained by plan 01 and change only now. Update
+  separate useful features. `CONTEXT.md` already reflects ADR-0022; do not
+  reintroduce Activity Log as current vocabulary.
+  **Validation unit:** SV1. Current producer tests are intentionally retained by
+  Plan 01 and change only now. Update
   `test_entity_merge_publishes_one_atomic_candidate` and
   `test_publish_removes_page_regenerates_artifacts_and_logs_activity` to assert
   successful mutation/navigation with no generated/appended log, removing only
@@ -49,7 +66,7 @@ apply at every task boundary.
   **Verify:**
 
   ```sh
-  uv run python -m pytest -q tests/test_kb_control.py packages/lumio-wiki/tests/test_entity_merge.py packages/lumio-wiki/tests/test_page_removal.py packages/lumio-wiki/tests/test_s3_publish.py
+  uv run pytest -q tests/test_kb_control.py packages/lumio-wiki/tests/test_entity_merge.py packages/lumio-wiki/tests/test_page_removal.py packages/lumio-wiki/tests/test_s3_publish.py
   rg -n 'append_activity_log_entry|make_activity_log_entry|_format_activity_log_line' packages tests eval scripts
   ```
 
@@ -60,7 +77,7 @@ apply at every task boundary.
 
 ## S2
 
-- [ ] **Inventory consumers; migrate and narrow duplicated seams (B20/B21/C02/C04).**
+- [ ] **Consume the approved inventory; migrate and narrow duplicated seams (B20/B21/C02/C04).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/__init__.py`,
   `packages/lumio-wiki/src/lumio_wiki/location.py`,
   `packages/lumio-wiki/src/lumio_wiki/knowledge_base.py`,
@@ -75,15 +92,14 @@ apply at every task boundary.
   `docs/packaging.md`, `docs/usage.md`, `README.md`;
   `tests/test_core_sdk_index.py`, `tests/test_graph_traversal.py`,
   `packages/lumio-wiki/tests/test_location_snapshot.py`.
-  **Consumes → produces:** actual in-repo and external consumer import/call
-  inventory → a documented primary workflow surface, named secondary module
-  owners and a migration ledger with verified consumer revisions/checks.
-  Prerequisites: inventory starts first; actual removals follow P1–P5/R1–R5/A3–A6
-  interface stabilization. Record private `legout/lumio` and any other confirmed
-  consumers supplied by the owner, not hypothetical compatibility users. Private
-  app paths/revisions must come from its owner: this public checkout was not
-  audited. Without that evidence, exported deletion/release is blocked, not
-  silently assumed safe. No private repo writes are authorized by this plan.
+  **Consumes → produces:** an approved in-repo and external consumer import/call
+  inventory → a documented primary workflow surface, named secondary owners,
+  and a migration ledger with verified consumer revisions/checks.
+  Prerequisites: the inventory exists as accepted evidence before dispatch;
+  actual removals follow P1–P5/R1–R5/A3–A6 interface stabilization. Include
+  private `legout/lumio` and any other confirmed consumers supplied by their
+  owners, not hypothetical compatibility users. Without that evidence, exported
+  deletion and release remain blocked. No private repo writes are authorized.
   Review root parser aliases (`parse_frontmatter`, `as_sources`), low-level
   constants/display helpers, `DocumentSourceProcessor`, `cosine_similarity`,
   `is_semantic_index_stale`, snapshot/SDK duplicate traversal, `load_graph_state`
@@ -94,14 +110,15 @@ apply at every task boundary.
   stale proposal cache; A3 owns ingestion/composition deduplication; do not redo
   them. Any temporary compatibility bridge names its actual consumer and ends
   when that recorded revision migrates, within the coordinated breaking release.
-  **Obligation:** `existing-check`; use load/search/cited retrieval, ingest,
-  remote adapter and installed journeys, not resurrected export inventories.
-  **Verify inventory, migration and focused behavior:**
+  **Validation unit:** SV1. Use load/search/cited retrieval, ingest, remote
+  adapter, and installed journeys; do not resurrect exhaustive export
+  inventories.
+  **Verify migration and focused behavior:**
 
   ```sh
   rg -n 'from lumio_wiki|import lumio_wiki|from lumio_lancedb|import lumio_lancedb' packages tests eval scripts examples
   rg -n 'parse_frontmatter|as_sources|graph_path|load_graph_state|DocumentSourceProcessor|cosine_similarity|is_semantic_index_stale|load_lancedb_adapter' packages tests eval scripts examples
-  uv run python -m pytest -q tests/test_core_sdk_index.py tests/test_graph_traversal.py packages/lumio-wiki/tests/test_location_snapshot.py packages/lumio-wiki/tests/test_ingest_journey_isolation.py packages/lumio-wiki/tests/test_cli_remote_lance.py packages/lumio-lancedb/tests/test_remote_index_binding.py
+  uv run pytest -q tests/test_core_sdk_index.py tests/test_graph_traversal.py packages/lumio-wiki/tests/test_location_snapshot.py packages/lumio-wiki/tests/test_ingest_journey_isolation.py packages/lumio-wiki/tests/test_cli_remote_lance.py packages/lumio-lancedb/tests/test_remote_index_binding.py
   ```
 
   **Done:** migration ledger names each removed interface's actual replacement
@@ -136,7 +153,7 @@ apply at every task boundary.
   Measure extraction/startup/memory/traversal before claiming speed improvements;
   the audit established duplication, not a measured scale regression. No generic
   GraphStore, new graph database or universal engine.
-  **Obligation:** `existing-check`; retain
+  **Validation unit:** SV1. Retain
   `test_legacy_graph_path_still_works`,
   `test_rebuilt_graph_reproduces_public_traversal_results`, graph eligibility
   journeys and ontology parity; migrate legacy caller tests only with the agreed
@@ -144,7 +161,7 @@ apply at every task boundary.
   **Verify:**
 
   ```sh
-  uv run python -m pytest -q tests/test_graph_traversal.py packages/lumio-wiki/tests/test_graph_state.py packages/lumio-wiki/tests/test_graph_retrieval.py packages/lumio-lancedb/tests/test_ontology_parity.py
+  uv run pytest -q tests/test_graph_traversal.py packages/lumio-wiki/tests/test_graph_state.py packages/lumio-wiki/tests/test_graph_retrieval.py packages/lumio-lancedb/tests/test_ontology_parity.py
   rg -n 'def graph_path|def shortest_path|_KnowledgeIndex\(pages\)' packages/lumio-wiki/src/lumio_wiki
   ```
 
@@ -173,15 +190,16 @@ apply at every task boundary.
   vocabulary/scope in docs while leaving private UI/runtime governance with the
   application. Document old-proposal restaging, snapshot freshness behavior,
   API removals, optional integration and ordinary-failure/crash limits.
-  **Obligation:** `existing-check` for installed wheels/consumer adoption;
-  `no-new-test` for release notes. Full retained suite must pass with four workers,
-  and independent `[documents]`, `[llm]`, `[all]`, base and S3/adapter tests remain.
+  **Validation unit:** SV2. Reuse installed-wheel and consumer-adoption checks;
+  add no test for release notes. The retained suite passes once with four workers,
+  and independent `[documents]`, `[llm]`, `[all]`, base, and S3/adapter checks
+  remain release evidence.
   Run from an approved candidate checkout; these commands use disposable venvs:
 
   ```sh
   set -eu
   uv lock --check
-  uv run python -m pytest -q -n 4
+  uv run pytest -q -n 4
   uv run python -m ruff check packages tests eval scripts
   git diff --check
   tmp=$(mktemp -d)
@@ -201,7 +219,7 @@ apply at every task boundary.
   documented in CI, also require non-skipped results from:
 
   ```sh
-  uv run python -m pytest -q tests/test_onboarding_journey.py packages/lumio-wiki/tests/test_s3_agent_journey_minio.py packages/lumio-wiki/tests/test_cli_remote_lance_minio.py packages/lumio-wiki/tests/test_artifact_store_minio.py packages/lumio-lancedb/tests/test_publication_minio.py packages/lumio-lancedb/tests/test_remote_lancedb_minio.py
+  uv run pytest -q tests/test_onboarding_journey.py packages/lumio-wiki/tests/test_s3_agent_journey_minio.py packages/lumio-wiki/tests/test_cli_remote_lance_minio.py packages/lumio-wiki/tests/test_artifact_store_minio.py packages/lumio-lancedb/tests/test_publication_minio.py packages/lumio-lancedb/tests/test_remote_lancedb_minio.py
   ```
 
   **Done:** built artifact versions, independent installs, optional extras, live

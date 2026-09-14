@@ -10,7 +10,7 @@ domain model. The Markdown body is preserved unchanged in the canonical source;
 export may append ordinary links for typed Relationships so OKF-only consumers
 can see the edge. OKF ``resource`` and legacy ``timestamp`` are omitted rather
 than invented, and Lumio-owned semantics travel in a versioned ``lumio``
-extension. See ADR-0007, ADR-0015, and ``docs/research/okf-comparison.md``.
+extension. See ADR-0007, ADR-0026, and ``docs/research/okf-comparison.md``.
 
 Authorization boundary: the export serializers receive an **already-authorized**
 page sequence from the Core SDK authorization layer (for the public MVP scope,

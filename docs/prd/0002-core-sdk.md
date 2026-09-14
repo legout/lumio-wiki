@@ -1,6 +1,6 @@
 # PRD-0002: Lumio Core SDK
 
-_Status: approved. Originates from the 2026-07-04 Core SDK TDD plan, the architecture contracts, and the module-boundaries doc. Absorbs both: their durable content lives in the sections below; their file-path/type-signature detail is intentionally omitted (it goes stale) and is decided at implementation time. Stack decisions in ADR-0001 and ADR-0002; ubiquitous language in `CONTEXT.md`._
+_Status: approved behavior. Historical approval predates planning-contract v1; the exact approval reference and capture checkpoint are not recorded, so new execution requires an approved revision or bounded change. This PRD governs the deep loading/validation/retrieval seam. ADR-0010 later placed ingestion and publication in the broader `lumio-wiki` distribution; those capabilities do not expand this Core SDK seam. Stack decisions live in ADR-0001 and ADR-0002; vocabulary lives in `CONTEXT.md`._
 
 ## Problem Statement
 
@@ -24,7 +24,7 @@ A deep Core SDK module: a small public seam hiding a large body of behavior. Cal
 
 ## Implementation Decisions
 
-These are the durable, seam-level decisions. Specific public symbol names and the internal file split are decided at implementation time (TDD, one vertical slice at a time) and are deliberately not fixed here.
+These are the durable, seam-level decisions. Specific public symbol names and the internal file split are decided during implementation and are deliberately not fixed here.
 
 - **Deep module, small seam.** Callers learn a small interface and get a large amount of behavior. The internal split — parsing, validation, exact lookup, graph traversal, lexical retrieval, freshness — is private to the implementation, not part of the interface. _Depth is a property of the interface, not the implementation: the SDK can be internally composed of small, swappable parts that simply are not part of the public seam._
 - **The interface is the test surface.** Tests cross the same seam callers do. Any test that has to reach past the public interface is a signal the module is the wrong shape.
@@ -36,14 +36,13 @@ These are the durable, seam-level decisions. Specific public symbol names and th
 - **Citation and Retrieval Trace are first-class** in every Retrieval Result — page identity, relative path, optional source reference, optional line range, and a structured explanation of the retrieval stages.
 - **Freshness** is decided by a deterministic digest over source Markdown paths and bytes; a stale index is rebuilt from source.
 
-## Testing Decisions
+## Acceptance and lean assurance
 
-- **Test only at the public seam.** Tests must not inspect private index files or depend on internal storage layout. They assert public Evidence fields returned by retrieval.
-- **Valid fixture** — pages with full frontmatter (canonical title, aliases, tags, summary, lifecycle, visibility, sources, relationships).
-- **Invalid fixtures** — one per error class: broken frontmatter, missing required field, broken relationship target, duplicate alias. Each proves the report names the file and the field.
-- **Retrieval** returns at least one cited result for a factual query against the valid fixture; a known-missing fact returns no result rather than a fabricated one.
-- **Freshness** — a source change flips the index to stale; a rebuild from source restores it.
-- **No model provider, network, or app framework** is in scope for this module's tests.
+- Validate through the public seam and assert public Evidence, diagnostics, trace, and freshness behavior; private index layout is not a contract.
+- One representative valid fixture and the smallest invalid cases needed for distinct diagnostic classes are sufficient. Do not create one fixture or test per field when one public report journey proves aggregation.
+- A factual query returns cited Evidence; a known-missing fact returns no result. A source change marks derived state stale and rebuild restores it from Markdown.
+- No model provider, network, or app framework participates in this seam's required checks.
+- Related implementation tasks may share one validation unit. Add a new focused test only when existing public-seam coverage cannot expose the named failure.
 
 ## Out of Scope
 
@@ -53,9 +52,9 @@ These are the durable, seam-level decisions. Specific public symbol names and th
 - App-framework or frontend-interactivity behavior.
 - Metadata ORM tables and migrations.
 - Git/shared-storage publishing.
-- Raw-source ingestion or distillation.
+- Raw-source ingestion or distillation within this Core SDK seam. ADR-0010 assigns those capabilities to the broader `lumio-wiki` distribution.
 - Structured dataset query execution (Connector and Dataset are future seams only).
 
 ## Further Notes
 
-The Core SDK is the first implementation workstream after this PRD. It should be broken into independently-grabbable issues via `/to-issues`, each a vertical slice that cuts through load → validate → index → retrieve with its own test. The forbidden-dependency list above is the contract that keeps the SDK reusable; the public seam is the contract that keeps it deep.
+Implementation work uses the smallest coherent vertical slices through load → validate → index → retrieve. Use a plan only when dependencies or cross-session coordination need one, and create GitHub Issues only when tracker coordination is useful. Several related slices may share one validation unit; a new test is required only when a named reachable failure lacks meaningful existing coverage. The forbidden-dependency list keeps the SDK reusable; the public seam keeps it deep.

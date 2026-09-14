@@ -8,7 +8,7 @@ status: accepted
 
 OKF v0.2 introduced `stale_after` — an absolute instant after which a concept
 is stale, chosen over a relative TTL so that staleness is a plain date
-comparison any deterministic consumer can make. ADR-0015 adopted OKF v0.2 as an
+comparison any deterministic consumer can make. ADR-0026 adopted OKF v0.2 as an
 exchange profile but deliberately kept freshness out of the canonical model,
 noting that "future canonical support for freshness [...] should be designed
 from Lumio requirements, not inherited automatically from OKF."

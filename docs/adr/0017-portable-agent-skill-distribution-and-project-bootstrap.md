@@ -129,10 +129,12 @@ because `SKILL.md` exists. Partial copies remain impossible.
 
 ### Prevent protocol drift
 
-The command/workflow facts repeated across `SKILL.md`, the detailed protocol,
-generated `AGENTS.md`, CLI help, and usage documentation are either rendered
-from one structured source or protected by parity tests at the installed-wheel
-surface. In particular, all surfaces distinguish:
+Operational command/workflow facts repeated across `SKILL.md`, the detailed
+protocol, generated `AGENTS.md`, CLI help, and usage documentation come from one
+structured source where practical. Otherwise, one focused installed-wheel
+journey protects each distinct executable or safety-critical contract; wording
+and exhaustive surface parity are not contracts. In particular, the maintained
+surfaces distinguish:
 
 - `setup` from lower-level `init`;
 - authored Markdown links/Extracted References from reviewed typed

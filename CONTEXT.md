@@ -121,11 +121,8 @@ Knowledge Base, public exports, retrieval, and canonical fingerprints.
 _Avoid_: attachment, published source, evidence file.
 
 **Source Artifact Store**:
-The configurable private store (object storage or a local directory) that
-retains Source Artifacts addressed by `(source_id, content_hash)`. Separate
-from the Knowledge Base Location; a separate production bucket and KMS key
-are recommended. Signing a short-lived GET URL for one exact artifact is an
-optional adapter capability.
+The private store that retains Source Artifacts by Source identity and content
+hash. It is separate from the Knowledge Base Location.
 _Avoid_: attachment bucket, evidence store.
 
 **Source Binding Manifest**:
@@ -206,16 +203,14 @@ _Avoid_: folder, section, classification (too generic).
 A regenerated, Maintainer-pinned navigation surface (`hot.md`) listing exactly the Compiled Pages whose Canonical Titles the Control File pins. Curated only; citation/access-frequency ranking is deferred.
 _Avoid_: favorites, popular pages, recommendations.
 
-**Activity Log**:
-An append-only portable record (`log.md`) of successful published Knowledge Base state transitions. One grep-friendly entry per publish, appended only after the KB state succeeds. Excludes Reader queries, failed/discarded proposals, unpublished uploads, and private audit events. Distinct from the SQLite audit log and OKF's preview-only exchange history.
-_Avoid_: changelog, audit log (the audit log is private), history file.
-
 **Legacy Flat Mode**:
 The mode a Knowledge Base with no Control File loads in: existing root-level Compiled Pages remain valid with a non-blocking migration warning, and only Navigation Indexes are published until a reviewed migration establishes the Control File.
 _Avoid_: old mode, unmanaged mode.
 
 **Reserved Artifact**:
-A marked, reserved derived Markdown file the Core SDK recognizes by basename and `lumio` marker (Navigation Index `index.md`, Hot Index `hot.md`, Activity Log `log.md`). Valid marked artifacts are excluded from Compiled Page loading, retrieval, and fingerprinting; an unmarked or malformed collision is a blocking error.
+A marked Navigation Index (`index.md`) or Hot Index (`hot.md`) that is excluded
+from Compiled Page loading, retrieval, and fingerprinting. Historical marked
+`log.md` files are recognized only for compatibility.
 _Avoid_: generated file, cache file.
 
 **Lint**:
@@ -265,17 +260,9 @@ Base. It is distinct from both a raw Knowledge Source used by ingest and a
 published Compiled Page.
 
 **Reading Room**:
-The unified Reader surface for browsing, searching, and reading published
-Compiled Pages, presented three ways from one shared document-rendering module:
-a persistent chat-side evidence column opened from a Citation (it keeps the
-chat thread available while promoting source text, cited line ranges, and
-page- or passage-grounded follow-up questions), a focus-managed responsive
-sheet over chat when the content area cannot fit two readable columns, and a
-standalone chat-free destination for browse, deterministic lexical search, and
-full-width reading. Selecting a Citation, asking another question, and the
-column's URL/history state are all explicit Reader actions.
-_Avoid_: document viewer, article view, citation popup, Library (the retired
-Reader browse/reading concept; stable `/kb` routes remain for compatibility).
+The Reader surface for browsing, searching, and reading published Compiled
+Pages, either beside a conversation or as a standalone destination.
+_Avoid_: document viewer, article view, citation popup, Library.
 
 **Constellation**:
 A contextual lens seeded from an answer, Citation, Compiled Page, or

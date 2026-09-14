@@ -1,18 +1,38 @@
 # 03 — Captured snapshots and useful retrieval
 
-**Proposed; unexecuted.** Goal: every derived result identifies the bytes it
-actually used, and passage retrieval spends its budget on useful Evidence.
-Requirements: [B08–B12, I03, C03](README.md#finding-to-task-map),
-[Core PRD](../prd/0002-core-sdk.md),
-[S3 snapshots](../adr/0013-s3-native-knowledge-base-locations.md),
+**Proposed; no integrated completion is recorded and implementation is not approved by this revision.** Goal: satisfy
+[PRD-0006 AC2](../prd/0006-library-stabilization.md#ac2-captured-snapshots-and-retrieval).
+Evidence: [B08–B12, I03, C03](../research/library-stabilization-audit.md#finding-registry).
+Architecture: [Core PRD](../prd/0002-core-sdk.md),
+[S3 snapshots](../adr/0013-s3-native-knowledge-base-locations.md), and
 [ontology/graph](../adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md).
-Use Python/uv, existing source abstraction, MessagePack, optional LanceDB and
-in-memory obstore tests. No new storage framework or mandatory embedder.
+Use Python/uv, the existing source abstraction, MessagePack, optional LanceDB,
+and in-memory obstore tests. No new storage framework or mandatory embedder.
+
+Approval reference: none; the current owner request authorizes this framework
+alignment only. Capture checkpoint: no new product vocabulary or ADR; behavior
+and non-goals are captured in PRD-0006; no unresolved design decision blocks
+review of the plan, but execution still needs explicit approval. Contract version
+1; local project skill provenance `unknown`.
 
 R1 is the common identity prerequisite; R2/R3 consume it, R4 consumes historical
 R3-compatible snapshots, R5 shares parser coordinates with P1, and R6 measures
-R1/R2/R5 behavior. Integrate shared files serially. [Global validation](README.md#global-verification-for-future-implementation)
-always follows the exact focused commands below.
+R1/R2/R5 behavior. Integrate shared files serially.
+
+## Validation units
+
+| Unit | Tasks | Risk / obligation | Distinct failure protected |
+| --- | --- | --- | --- |
+| RV1 | R1 | high / `new-test` | old bytes are blessed with a new digest |
+| RV2 | R2 | normal / `new-test` | lexical rebuild serves vectors for changed or deleted Evidence |
+| RV3 | R3, R4 | high / `new-test` | S3 content and private bindings come from different candidates, or incomplete historical bindings pass required rollback |
+| RV4 | R5 | normal / `new-test` | a nested matching passage is skipped or displaced by duplicate whole-page Evidence |
+| RV5 | R6 | normal / `new-test` | hard negatives or passage/lifecycle measurements are omitted or misreported |
+
+RV1 receives immediate review before R2/R3 consume its identity contract. RV3
+receives immediate review after R4; all units then receive one candidate review.
+Existing adapter, corruption, CAS, and eligibility journeys are checks, not
+reasons to duplicate each new regression.
 
 ## R1
 
@@ -35,14 +55,13 @@ always follows the exact focused commands below.
   when advertising current-source builds: explicitly reload or reject the stale
   view, never stamp old pages with a new disk digest. Old snapshot reads may
   remain valid immutable views without claiming they reflect current disk.
-  **Obligation:** `new-test`; add `test_loaded_view_cannot_stamp_old_pages_fresh`
-  to `test_zero_index_retrieval.py`, extending it through graph materialization
-  and graph-triggered rebuild. Keep `test_kb_zero_index_build_index_roundtrip_freshness`
-  and snapshot/graph corruption journeys.
+  **Validation unit:** RV1. Add only
+  `test_loaded_view_cannot_stamp_old_pages_fresh`; keep the existing freshness,
+  snapshot, and corruption journeys as checks.
   **Red → minimal green → verify:**
 
   ```sh
-  uv run python -m pytest -q tests/test_zero_index_retrieval.py packages/lumio-wiki/tests/test_location_snapshot.py packages/lumio-wiki/tests/test_graph_state.py
+  uv run pytest -q tests/test_zero_index_retrieval.py packages/lumio-wiki/tests/test_location_snapshot.py packages/lumio-wiki/tests/test_graph_state.py
   ```
 
   **Done:** an intervening disk edit never yields old Evidence/graph stamped
@@ -64,15 +83,15 @@ always follows the exact focused commands below.
   succeed; failed semantic builds cannot bless partially new/old tables.
   Preserve model/dimension validation, remote immutability and no private-source
   data in tables. Use the existing location seam for local/remote metadata.
-  **Obligation:** `new-test`; add
-  `test_lexical_rebuild_invalidates_obsolete_semantic_evidence` and
-  `test_failed_semantic_rebuild_does_not_stamp_index_fresh`; the first walks
-  semantic build → edit/delete → reload → lexical build → semantic/hybrid query
-  with the same deterministic embedder. This proves lifecycle, not model quality.
+  **Validation unit:** RV2. Add only
+  `test_lexical_rebuild_invalidates_obsolete_semantic_evidence`, walking semantic
+  build → edit/delete → lexical rebuild → semantic/hybrid query with the same
+  deterministic embedder. Existing failed-build completion checks cover the
+  freshness marker; this proves lifecycle, not model quality.
   **Red → minimal green → verify:**
 
   ```sh
-  uv run python -m pytest -q packages/lumio-lancedb/tests/test_remote_index_location.py packages/lumio-lancedb/tests/test_remote_index_binding.py packages/lumio-lancedb/tests/test_graph_tables.py
+  uv run pytest -q packages/lumio-lancedb/tests/test_remote_index_location.py packages/lumio-lancedb/tests/test_remote_index_binding.py packages/lumio-lancedb/tests/test_graph_tables.py
   ```
 
   **Done:** no stale vectors/model metadata are accepted under a newer lexical
@@ -100,16 +119,15 @@ always follows the exact focused commands below.
   and binding coverage, then activate once. Optional retention may omit
   unregistered sources; required retention cannot. A local edit during build may
   affect a later publish, never this candidate's identity.
-  **Obligation:** `new-test`; add
-  `test_s3_publish_uses_one_captured_candidate` (edit at the old fingerprint/read
-  window) and `test_activation_bindings_use_captured_pages` (edit during builder
-  callback), with actual MemoryStore and binding hook, no live KB/network.
-  Preserve `test_activation_cas_uses_the_originally_observed_pointer` and
-  `test_publication_writes_private_binding_manifest_before_activation`.
+  **Validation unit:** RV3. Add only
+  `test_s3_publish_uses_one_captured_candidate`, injecting one edit window and
+  asserting canonical bytes, digest, graph/index metadata, and private bindings
+  all identify that candidate. Existing CAS and binding-order journeys remain
+  checks; no live KB or network is needed.
   **Red → minimal green → verify:**
 
   ```sh
-  uv run python -m pytest -q packages/lumio-wiki/tests/test_s3_publish.py packages/lumio-wiki/tests/test_artifact_store.py packages/lumio-wiki/tests/test_cli_s3.py
+  uv run pytest -q packages/lumio-wiki/tests/test_s3_publish.py packages/lumio-wiki/tests/test_artifact_store.py packages/lumio-wiki/tests/test_cli_s3.py
   ```
 
   **Done:** activated versions always resolve, private page/source sets equal
@@ -134,15 +152,15 @@ always follows the exact focused commands below.
   valid only for an actually empty required set. Never substitute current
   registry versions for missing historical bindings. Required policy fails
   closed for incomplete history; explicitly optional policy stays optional.
-  **Obligation:** `new-test`; add
-  `test_required_rollback_rejects_partial_historical_binding_manifest` alongside
-  `test_verify_rollback_coverage_gates_historical_activation`. If the alleged
-  hole cannot be reproduced, record contrary evidence and review this task
-  rather than implementing a speculative fix.
+  **Validation unit:** RV3. Add
+  `test_required_rollback_rejects_partial_historical_binding_manifest`; reuse the
+  existing historical-activation journey. If the alleged hole cannot be
+  reproduced, record contrary evidence and review this task rather than
+  implementing a speculative fix.
   **Red → minimal green → verify:**
 
   ```sh
-  uv run python -m pytest -q packages/lumio-wiki/tests/test_artifact_store.py packages/lumio-wiki/tests/test_source_inspection.py packages/lumio-wiki/tests/test_cli_s3.py
+  uv run pytest -q packages/lumio-wiki/tests/test_artifact_store.py packages/lumio-wiki/tests/test_source_inspection.py packages/lumio-wiki/tests/test_cli_s3.py
   ```
 
   **Done:** required rollback certifies the target snapshot's complete required
@@ -166,14 +184,16 @@ always follows the exact focused commands below.
   prefer the specific matching passage before applying the result limit. Handle
   long unheaded content with a query-relevant snippet, without inventing citation
   coordinates or changing raw source privacy. No generic chunking framework.
-  **Obligation:** `new-test`; add `test_nested_section_retrieval_cites_specific_passage`
-  at the zero-index seam and `test_lancedb_nested_passage_preserves_citation`
-  at the adapter seam. Use the audit's late `Limits` fact after a long introduction;
-  assert exact range/text, matching snippet and nonduplicated limited results.
+  **Validation unit:** RV4. Add only
+  `test_nested_section_retrieval_cites_specific_passage` at the shared public
+  retrieval seam. Use the audit's late `Limits` fact after a long introduction
+  and assert exact range/text, matching snippet, and nonduplicated limited
+  results. Run the existing LanceDB retrieval contract as a check rather than
+  cloning the same regression at the adapter layer.
   **Red → minimal green → verify:**
 
   ```sh
-  uv run python -m pytest -q tests/test_zero_index_retrieval.py packages/lumio-lancedb/tests/test_remote_index_location.py packages/lumio-wiki/tests/test_entity_claims.py
+  uv run pytest -q tests/test_zero_index_retrieval.py packages/lumio-lancedb/tests/test_remote_index_location.py packages/lumio-wiki/tests/test_entity_claims.py
   ```
 
   **Done:** both adapters return the specific nested passage within budget;
@@ -199,15 +219,13 @@ always follows the exact focused commands below.
   or significant-term ranking change is a **hypothesis**, only retained if
   measured recall/negative behavior improves without violating the essential
   gates. Do not claim a fixed-hash synonym embedder proves real semantic ranking.
-  **Obligation:** `new-test`; add
-  `test_hard_negative_and_passage_metrics_are_disclosed`; preserve
-  `test_ac3_graph_expansion_measurably_lifts_recall`,
-  `test_lancedb_stages_available_and_measured`, and
-  `test_lancedb_semantic_catches_synonym_paraphrase` as wiring checks.
+  **Validation unit:** RV5. Add only
+  `test_hard_negative_and_passage_metrics_are_disclosed`; retain the existing
+  graph/LanceDB tests as wiring checks.
   **Red → minimal green → verify:**
 
   ```sh
-  uv run python -m pytest -q eval/test_retrieval_eval_gate.py packages/lumio-wiki/tests/test_retrieval_eval.py eval/test_ontology_eval_gate.py
+  uv run pytest -q eval/test_retrieval_eval_gate.py packages/lumio-wiki/tests/test_retrieval_eval.py eval/test_ontology_eval_gate.py
   ```
 
   **Done:** results disclose corpus, available/skipped stages, model identity and

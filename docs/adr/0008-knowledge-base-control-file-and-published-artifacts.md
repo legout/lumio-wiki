@@ -4,6 +4,8 @@ status: accepted
 
 # ADR-0008: Knowledge Base Control File and Portable Published Artifacts
 
+_Amended by ADR-0022: the Activity Log production contract is retired; Control File, Navigation Index, Hot Index, and legacy marked-`log.md` recognition decisions remain._
+
 ## Context
 
 Lumio's Knowledge Base is a portable, compiled Markdown tree. ADR-0007

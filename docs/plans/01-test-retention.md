@@ -1,10 +1,15 @@
 # 01 — Implemented test retention and reduction
 
-**Implemented bounded reduction only; no production fixes.** Requirements:
-[owner essential-journey policy](README.md#owner-decisions-and-authority) and the
-two complete final essential-journey reports (core/workflows), identified in
-[the evidence registry](README.md#owner-decisions-and-authority). Earlier
-opposite golden-versus-semantic selections were not combined with these maps.
+**Implemented bounded reduction only; no production fixes.** Behavioral source:
+[PRD-0006 constraints](../prd/0006-library-stabilization.md#behavioral-constraints).
+Evidence: the two complete final essential-journey reports (core/workflows)
+identified in the [audit provenance](../research/library-stabilization-audit.md#provenance).
+Earlier opposite golden-versus-semantic selections were not combined with these maps.
+
+Planning-contract retrofit: historical approval and exact scope are recorded by
+the pinned base and evidence below; capture checkpoint found no new vocabulary or
+architecture decision; Contract version 1, installed provenance `unknown`. This
+completed record is not a current execution template.
 
 ## T1 — Applied reduction and validation
 
@@ -22,8 +27,9 @@ opposite golden-versus-semantic selections were not combined with these maps.
 - [x] **Document the reduction and unexecuted plans.** Files: `docs/plans/README.md`
   and plans 01–05. Input → output: approved decisions/current audit/code → linked
   task map. **Obligation:** `no-new-test`; source paths, local links, task anchors,
-  finding coverage and absence of unresolved placeholders checked. This is not
-  authorization to implement plans 02–05 or a claim their defects are fixed.
+  finding coverage and absence of unresolved placeholders checked. This lane
+  did not authorize Plans 02–05; Plans 02/04 were approved and implemented later,
+  while Plans 03/05 remain proposed.
 
 | Measurement | Exact result |
 | --- | ---: |

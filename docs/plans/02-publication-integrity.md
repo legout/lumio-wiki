@@ -1,18 +1,24 @@
 # 02 — Publication and validation integrity
 
-**P1–P5 implemented.** Goal: prevent silent canonical data loss and stale
-publication while preserving proposal-first local maintenance.
-Sources/requirements: [owner decisions and B01–B07](README.md#finding-to-task-map),
-[PRD aggregation](../prd/0002-core-sdk.md),
+**P1–P5 implemented.** Goal: satisfy
+[PRD-0006 AC1](../prd/0006-library-stabilization.md#ac1-publication-integrity)
+while preserving proposal-first local maintenance. Evidence: [B01–B07](../research/library-stabilization-audit.md#finding-registry).
+Architecture: [Core PRD](../prd/0002-core-sdk.md),
 [ontology](../adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md),
-[source lifecycle](../adr/0014-source-versions-and-page-level-invalidation.md).
+and [source lifecycle](../adr/0014-source-versions-and-page-level-invalidation.md).
 Python/uv, filesystem Markdown and current msgspec records; no new mandatory
 storage/locking dependency. All commands below run from the repository root.
+
+Planning-contract retrofit: implementation approvals are evidenced by the
+integration commits recorded per task; capture checkpoint found no new vocabulary
+and no additional ADR beyond the linked constraints; Contract version 1,
+installed provenance `unknown`. This completed record preserves historical test
+commands and is not a current execution template.
 
 One sequential owner: P1/P2 → P3 → P4 → P5. The same owner covers ordinary
 publish, moves/compound revisions, repair, Page Removal, Entity Merge, Control
 File changes, source registration/retirement/reactivation and discard. There is
-no alternate CLI mutation implementation. Global checks: [README](README.md#global-verification-for-future-implementation).
+no alternate CLI mutation implementation. Candidate checks follow the [shared lean validation policy](README.md#lean-validation-policy).
 
 ## P1
 

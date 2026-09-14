@@ -25,7 +25,7 @@ OKF v0.2 keeps the v0.1 bundle structure, reserved `index.md` / `log.md`, requir
 - **Additive:** the `Attested Computation` concept with `runtime`, `parameters`, `computation`, `executor`, and `attester`.
 - The reference implementation now matches the specification: only `type` is always required. The v0.1 implementation/spec mismatch documented below is resolved upstream.
 
-Lumio's response is **OKF Exchange Profile 2** (ADR-0015), pinned to OKF v0.2 at upstream commit `3fcbb9f828c2f23d109c855ee403c3a4c81f3a96`. Profile 1 remains pinned and unchanged. Profile 2 maps standard `sources` and derived `status`, recognizes trust/freshness/computation fields with explicit diagnostics, and still refuses to treat foreign trust metadata as Lumio Maintainer approval or to execute computation contracts.
+Lumio's response is **OKF Exchange Profile 2** (ADR-0026), pinned to OKF v0.2 at upstream commit `3fcbb9f828c2f23d109c855ee403c3a4c81f3a96`. Profile 1 remains pinned and unchanged. Profile 2 maps standard `sources` and derived `status`, recognizes trust/freshness/computation fields with explicit diagnostics, and still refuses to treat foreign trust metadata as Lumio Maintainer approval or to execute computation contracts.
 
 ## What OKF contributes
 

@@ -1,6 +1,8 @@
-# Parallel Issue Implementation Analysis
+# Archived parallel issue implementation analysis
 
-This is a dependency-aware planning snapshot for implementing Lumio issues with parallel subagents. Refresh it against GitHub before dispatching work because issue blockers, assignments, and working-tree state can change.
+_Date: 2026-07-15. Historical evidence only. These issues and private-application paths predate ADR-0025 and the current planning contract; do not dispatch from this snapshot._
+
+This was a dependency-aware planning snapshot for the former combined repository. Current work must be re-derived from approved behavioral sources, live tracker state, stable interfaces, and non-conflicting ownership.
 
 ## Safest immediate batch
 
@@ -14,7 +16,7 @@ The strongest current parallel batch is:
 - **#67 — OKF Profile 1: Export a public Knowledge Base through the existing client seam**
   - Primarily a new OKF exchange module plus export endpoint wiring.
 
-# 66 and #67 are sibling issues under #63 and are the safest pair to run concurrently. #52 can run alongside them in its own worktree, with normal integration care around `app.py`.
+Issues #66 and #67 were sibling issues under #63 and were considered the safest pair to run concurrently. Issue #52 could run alongside them in its own worktree, with normal integration care around `app.py`.
 
 ## Follow-on parallel groups
 
@@ -50,6 +52,6 @@ After **#78** merges, **#79** and **#80** are dependency siblings; **#81** follo
 - **#32, #41, #49, #63, and #76** are umbrella/specification issues rather than ideal leaf implementation assignments.
 - **#73, #74, and #75** still require triage.
 
-## Dispatch recommendation
+## Historical dispatch recommendation
 
-Use one `implementer` per leaf issue in a persistent issue worktree, then use an `integrator` to rebase/merge and run full verification. Re-check GitHub blockers and assignees immediately before dispatch.
+The original recommendation used one implementer per leaf issue and an integration pass. It is retained only as evidence; ADR-0027 and `AGENTS.md` now govern dispatch, validation units, review, and candidate assembly.

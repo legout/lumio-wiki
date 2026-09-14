@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0027
 ---
 
 # ADR-0003: mattpocock/skills as the Sole Agent-Skill Backbone
@@ -22,3 +22,5 @@ Adopt mattpocock/skills as Lumio's sole agent-skill backbone. Plans and specs no
 One orchestration model (interview-driven, issue-tracker-backed). `CONTEXT.md` is consumed by every mattpocock skill, so domain language stays consistent across `tdd`, `diagnosing-bugs`, `to-prd`, and `improve-codebase-architecture`. ADRs follow mattpocock's minimal format. `/to-prd`, `/to-issues`, `/triage`, and `/wayfinder` are usable now that the GitHub tracker is configured.
 
 Trade-off: superpowers' strengths — `executing-plans`, `subagent-driven-development`, `dispatching-parallel-agents`, `verification-before-completion`, `systematic-debugging` — are no longer available. If Lumio later wants doc-in-repo plan execution or parallel sub-agent dispatch, this decision should be revisited.
+
+ADR-0027 records that revisit and supersedes this workflow decision. This document remains the historical rationale for the former issue-only model.

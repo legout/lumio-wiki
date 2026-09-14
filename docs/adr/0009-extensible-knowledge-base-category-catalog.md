@@ -4,6 +4,8 @@ status: accepted
 
 # ADR-0009: Extensible Knowledge Base Category Catalog
 
+_Activity Log references are historical and superseded by ADR-0022; the category-catalog decision remains._
+
 ## Context
 
 ADR-0008 established the Knowledge Base Control File (`lumio.yaml`) and seeded a

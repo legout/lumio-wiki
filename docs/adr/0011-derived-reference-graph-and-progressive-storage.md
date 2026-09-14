@@ -132,7 +132,8 @@ materialization to the zero-index capability, and keep LanceDB limited to its
 retrieval adapter role.
 
 The cost is a stricter distinction between topology used to discover Evidence
-and semantic claims safe to present as Relationships. Tests must prove
-deterministic rebuilds, stale-cache rejection, path and alias resolution,
-authorization-before-traversal, bounded expansion, exception diagnostics, and
-identical citation contracts with and without LanceDB.
+and semantic claims safe to present as Relationships. Lean assurance must cover
+deterministic rebuilds, stale-cache rejection, authorization-before-traversal,
+bounded expansion, actionable exceptions, and the shared citation contract at
+the smallest stable seams. One journey may cover related path/alias behavior;
+checks are not duplicated per adapter without a distinct failure mode.

@@ -4,6 +4,8 @@ status: accepted
 
 # ADR-0010: uv Workspace and Progressive Lumio Packaging
 
+_Activity Log ownership references are historical and superseded by ADR-0022; packaging and dependency decisions remain._
+
 ## Context
 
 ADR-0001 chose a Python-first modular monolith, one Docker-first deployable

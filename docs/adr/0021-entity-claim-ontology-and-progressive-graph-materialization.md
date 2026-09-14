@@ -173,8 +173,11 @@ first only when meaningful entities repeatedly fail to justify pages. Revisit
 storage only when measured startup, memory, traversal, concurrent mutation, or
 server-side authorization requirements exceed the current design.
 
-Tests must prove deterministic IDs and rebuilds, ontology validation, evidence
-anchor validation, entity merge and redirect behavior, Claim lifecycle
-filtering, canonical-versus-discovery scope, authorization-before-expansion,
-MessagePack/LanceDB parity, stale artifact rejection, local/S3 publication
-atomicity, and identical citation contracts with and without `lumio-lancedb`.
+Publication prevents partial success for handled local failures and uses CAS for
+remote activation. Crash atomicity and instant visibility to concurrent readers
+are not promised without stronger infrastructure.
+
+Assurance covers the distinct material contracts above at the smallest stable
+public seams. One journey may establish several related invariants, and existing
+checks are reused; this ADR does not require a separate test matrix per clause or
+adapter.

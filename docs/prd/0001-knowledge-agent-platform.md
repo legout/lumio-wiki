@@ -1,6 +1,6 @@
 # PRD-0001: Lumio Knowledge Agent Platform
 
-_Status: approved. Originates from the 2026-07-03 design spec and the 2026-07-04 stack-agnostic MVP plan. Stack decisions live in ADR-0001 and ADR-0002; ubiquitous language in `CONTEXT.md`._
+_Status: approved platform behavior. Historical approval predates planning-contract v1; the exact approval reference and capture checkpoint are not recorded, so new execution requires an approved revision or bounded change. ADR-0025 moved the foundation and private application into separate repositories without changing this platform-level target. Stack decisions live in ADR-0001 and ADR-0002; vocabulary lives in `CONTEXT.md`._
 
 ## Problem Statement
 
@@ -46,14 +46,13 @@ A single-tenant, deployable modular monolith that serves a compiled Markdown kno
 - **Future Connector seam.** Retrieval results already allow non-Markdown Evidence, so a future Connector can expose tables, databases, or data lakes without changing the agent or client contracts. Structured query execution is explicitly post-MVP (the DuckDB seam in ADR-0001).
 - **Semantic search is post-MVP.** Provider boundaries are defined now so a native hybrid/vector layer can be added without changing agent or client contracts.
 
-## Testing Decisions
+## Acceptance and lean assurance
 
-- **Test only at pre-agreed seams.** Each module is tested through its public interface, never its internals. The Core SDK's public seam is the same surface every client uses.
-- **Agent evals use a fake model provider**, never a live LLM call. Evals cover factual lookup, procedure/how-to, relationship/path, synthesis/comparison, unknown ("not covered"), and prompt-injection attempts in source text.
-- **Storage tests** cover Git-only, shared-storage-only, hybrid, failed pull/publish handling, and stale-index detection after sync.
-- **Write-workflow tests** cover proposal-first staging, direct-write publish, validation-blocks-publish, raw-source exclusion from exports, and role restrictions.
-- **Role tests** prove Reader, Maintainer, and Owner can each do only their capabilities.
-- **Prior art:** none — greenfield. Tests establish the baseline.
+- Validate behavior through the public seams clients use; do not make internal layout a contract.
+- Agent evaluation uses a fake provider, never a live model call in the required suite. It covers supported lookup, path/synthesis, cite-or-refuse, and source prompt-injection behavior with the smallest representative corpus.
+- Representative journeys cover each supported storage mode and the distinct failure boundaries: failed synchronization/publication, stale indexes, proposal-first versus explicitly enabled direct write, raw-source exclusion, and role enforcement.
+- One journey may satisfy several stories. Add separate checks only for distinct reachable security, privacy, data-loss, or authorization failures; do not create combinatorial role × storage × client matrices by default.
+- ADR-0025 assigns foundation checks to this public repository and application/auth/UI checks to the private application repository.
 
 ## Out of Scope
 

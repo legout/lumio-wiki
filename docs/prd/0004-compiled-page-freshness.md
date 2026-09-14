@@ -1,6 +1,6 @@
 # PRD-0004: Compiled Page Freshness
 
-_Status: approved for implementation. Governing decision: ADR-0023. Originates from the 2026-08-24 implementation review._
+_Status: approved behavior. Governing decision: ADR-0023. Historical approval originates from the 2026-08-24 implementation review, but its exact reference, revision, and capture checkpoint were not recorded; new execution requires an approved bounded change or reconciled revision._
 
 ## Problem Statement
 
@@ -27,12 +27,9 @@ One optional frontmatter field, `review_after` (ISO 8601 date). A page is due fo
 - Changing `review_after` on a published page is an ordinary reviewed page change.
 - CONTEXT.md gains the `review_after` vocabulary entry.
 
-## Testing Decisions
+## Acceptance and lean assurance
 
-- Schema tests: valid/absent/malformed `review_after`.
-- Boundary tests: due exactly at the date; absent field never due.
-- `lint`/`dream`/`status` gold tests with a fixture KB containing due and fresh pages.
-- OKF Profile 2 round-trip tests: `review_after` ↔ `stale_after`, plus import diagnostic.
+One validation unit may cover schema, date-boundary, representative maintenance output, and OKF exchange. It must distinguish valid/absent/malformed `review_after`, prove the exact due-date boundary stays advisory, and preserve `review_after` ↔ `stale_after` with an import diagnostic. Reuse one due/fresh fixture and existing command journeys; byte-identical gold output or one new test per command is not required.
 
 ## Out of Scope
 

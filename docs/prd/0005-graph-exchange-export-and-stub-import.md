@@ -1,6 +1,6 @@
 # PRD-0005: Graph Exchange Export and Stub Import
 
-_Status: approved for implementation. Governing decision: ADR-0024. Originates from the 2026-08-24 implementation review and the obsidian-wiki wiki-export/wiki-import skill survey._
+_Status: approved behavior. Governing decision: ADR-0024. Historical approval originates from the 2026-08-24 implementation review and skill survey, but its exact reference, revision, and capture checkpoint were not recorded; new execution requires an approved bounded change or reconciled revision._
 
 ## Problem Statement
 
@@ -33,12 +33,12 @@ Agent skills gain no implementation role; the shipped SKILL.md documents when to
 - import-graph validates input shape, maps category by directory convention, and reports unresolvable-node links as proposal diagnostics (broken links tolerated, disclosed).
 - Cypher/Postgres/HTML exports are explicitly deferred until a real consumer appears.
 
-## Testing Decisions
+## Acceptance and lean assurance
 
-- Gold-file tests for both export formats over `eval/fixture_kb` (node/edge counts, typed-vs-untyped edge marking, visibility exclusion).
-- Round-trip test: export-graph → import-graph → proposal validates cleanly.
-- Import tests: foreign wiki-export graph.json, malformed input, broken-link diagnostics.
-- Security test: `restricted` page titles/summaries absent from every export artifact.
+- One semantic export check covers both formats: valid node/edge shape, typed-versus-extracted edge marking, deterministic output, and absence of unauthorized titles or summaries. Byte-identical gold files are not required.
+- One round-trip journey covers export → import → reviewable proposal validation.
+- Add separate malformed/foreign-input checks only for distinct parser or disclosure failures not exercised by the round trip; broken links must remain diagnostic rather than direct-write behavior.
+- Visibility is one security validation unit across every emitted artifact, not a duplicate assertion in a format matrix.
 
 ## Out of Scope
 

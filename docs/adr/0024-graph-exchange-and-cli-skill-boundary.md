@@ -18,7 +18,7 @@ OKF bundle as full pages, with `merge`/`skip`/`overwrite` modes that
 direct-write into the vault.
 
 Lumio already exceeds these skills on the OKF axis: Exchange Profiles 1 and 2
-(ADR-0007, ADR-0015) provide pinned, diagnostic-carrying OKF import/export with
+(ADR-0007, ADR-0026) provide pinned, diagnostic-carrying OKF import/export with
 visibility filtering and proposal-first imports. What Lumio lacks is the
 **general graph interop** axis: there is no standard-format export of the
 Knowledge Graph / Discovery Graph for external tools (Gephi, yEd, Cytoscape,
@@ -92,9 +92,10 @@ skill layer as usage guidance only.**
 
 ## Consequences
 
-- Two new CLI commands and two new Core SDK public functions, each with
-  gold-file tests; no new dependencies (node_link JSON and GraphML are
-  writable with stdlib + msgspec).
+- Two new CLI commands and two new Core SDK public functions with focused
+  semantic contract checks; byte-identical gold files are not required. No new
+  dependencies are added (node_link JSON and GraphML are writable with stdlib +
+  msgspec).
 - `data/skill/SKILL.md` gains an Exchange section; the skill version bumps.
 - graph.json becomes a third documented exchange surface alongside OKF
   Profile 1/2, with its own stability note (node fields are additive-only).

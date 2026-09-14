@@ -12,12 +12,11 @@ skill has a durable contract: its inputs, the public SDK operations it calls,
 its role gate (Maintainer/Owner only), its no-direct-write policy, and (for
 `lint`) its canonical-vs-Discovery graph-scope disclosure.
 
-ADR-0003 adopted mattpocock/skills as Lumio's sole agent-skill backbone and
-established that the only standing repo documentation mattpocock skills
-consume is `CONTEXT.md` (ubiquitous language) and `docs/adr/` (decisions).
-"Plans and specs no longer live as repo docs." The question for #91 is whether
-the skill *contracts themselves* (the Markdown a coding agent consumes) live
-in the repository or are kept external.
+ADR-0003 originally made mattpocock/skills Lumio's sole agent-skill backbone
+and excluded standing plans and specifications. ADR-0027 later superseded that
+workflow decision with the repository planning contract. The question for #91
+remains narrower: whether the product's skill *contracts themselves* (the
+Markdown a coding agent consumes) live in the repository or are kept external.
 
 The precedent is the `lumio-wiki` CLI skill: its `SKILL.md` and `PROTOCOL.md`
 ship as versioned wheel data under `src/lumio_wiki/data/` (issue #98,
@@ -37,10 +36,10 @@ and resolved at runtime by `lumio.skills.resolve_skill_markdown_path`.
 
 ## Rationale
 
-- **Skills are durable contracts, not orchestration artifacts.** ADR-0003's
-  "no plan/spec docs in repo" rule targets transient orchestration output
-  (plans, specs executed once). A skill contract is a stable interface that
-  must travel with the code it documents and be versioned with it.
+- **Skills are durable product contracts, not execution maps.** Under ADR-0027,
+  specifications own behavior and plans own decomposition; a shipped skill is
+  instead a stable interface that must travel with the code it documents and
+  be versioned with it.
 - **Deterministic location.** A coding agent (or the Lumio runtime) must
   resolve a skill's contract without cloning the repo. In-repo package data
   is locatable via `importlib.resources` from the built wheel, exactly as the

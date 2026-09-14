@@ -42,7 +42,7 @@ The standalone, model-free LLM Wiki toolkit. Owns the canonical contracts:
   (Entities, Claims, Predicates), Evidence, citations, Retrieval Results,
   Retrieval Traces, validation records.
 - Knowledge Base loading, Control File handling, validation, fingerprinting,
-  Navigation Indexes, Hot Index, Activity Log, OKF interchange.
+  Navigation Indexes, Hot Index, and OKF interchange. Activity Log production is transitional pending ADR-0022's Plan 05 cleanup; legacy marked-log recognition remains.
 - Deterministic metadata/body search, accepted-Claim graph traversal,
   shortest paths, deterministic entity resolution, and the always-available
   zero-index retrieval implementation.
