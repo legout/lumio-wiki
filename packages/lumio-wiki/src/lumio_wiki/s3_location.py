@@ -393,9 +393,9 @@ class S3Location:
         """Build an :class:`S3Location` from an ``s3://`` (or compatible) URL.
 
         The store is built from the URL's scheme + authority (the bucket), and
-        the URL path becomes the Knowledge Base root prefix. Credentials,
-        region, and endpoint are supplied via ``config`` (``aws_*`` keys such as
-        ``aws_region``, ``aws_endpoint``, ``aws_access_key_id``) and
+        the URL path becomes the Knowledge Base root prefix. Region, endpoint,
+        and credentials are supplied via ``config`` using
+        obstore's documented AWS configuration keys, and
         ``client_options`` (e.g. ``{"allow_http": True}`` for a MinIO HTTP
         endpoint). Pass ``prefix`` to override the URL-derived Knowledge Base
         root when it lives elsewhere under the bucket.
@@ -406,15 +406,25 @@ class S3Location:
         parsed = urlparse(url)
         if not parsed.scheme:
             raise KnowledgeBaseError(f"not an object-store URL: {url!r}")
-        # Build the store rooted at the container (scheme://authority) so the
-        # URL path is the Knowledge Base root, not baked into the store prefix.
-        authority_url = f"{parsed.scheme}://{parsed.netloc}"
+        # Build the store rooted at the container, not at the Knowledge Base
+        # prefix. Credentials, query, and fragment belong outside a Location
+        # URI; the generic error never echoes their values.
+        if (
+            parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise KnowledgeBaseError(
+                "object-store URLs must not include credentials, a query, or a fragment"
+            )
+        container_uri = parsed._replace(path="", params="", query="", fragment="").geturl()
         store = obstore.store.from_url(
-            authority_url, config=config, client_options=client_options, **kwargs
+            container_uri, config=config, client_options=client_options, **kwargs
         )
         url_path = parsed.path.lstrip("/")
         chosen_prefix = prefix if prefix is not None else url_path
-        return cls(store, chosen_prefix, version=version, store_uri=authority_url)
+        return cls(store, chosen_prefix, version=version, store_uri=container_uri)
 
     # -- read internals -----------------------------------------------------
 
@@ -530,8 +540,8 @@ class S3Location:
             validation_report=report,
             fingerprint=actual_fp,
             location=self,
-            remote_derived_index=self._remote_derived_index_descriptor(version, actual_fp),
             published_version=version,
+            remote_derived_index=self._remote_derived_index_descriptor(version, actual_fp),
         )
 
     def _remote_derived_index_descriptor(self, version: str, fingerprint: Any) -> Any | None:
