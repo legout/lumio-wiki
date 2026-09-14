@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
+from lumio_wiki.page_search import _search_tokens
 from lumio_wiki.records import (
     Citation,
     CompiledPage,
@@ -22,6 +23,7 @@ from lumio_wiki.records import (
 
 _ATX_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*(?:\r?\n)?$")
 _FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})(?:[^\r\n]*)?(?:\r?\n)?$")
+_MAX_SNIPPET_CHARS = 300
 
 
 def markdown_section_ranges(
@@ -115,14 +117,116 @@ def section_evidences(page: CompiledPage) -> list[Evidence]:
 
 
 def page_evidences(page: CompiledPage) -> list[tuple[Evidence, str | None]]:
-    """Return (Evidence, source_id) pairs for a page body and its sections."""
+    """Return focused page/section Evidence without a duplicate whole-page hit."""
     source = page.sources[0].id if page.sources else None
+    sections = section_evidences(page)
+    if not sections:
+        page_ev = page_evidence(page)
+        if page_ev is None:
+            return []
+        return [(page_ev, source)]
+
+    first_line = sections[0].line_start
+    if first_line is None:  # pragma: no cover - section evidence always has coordinates
+        raise AssertionError("section evidence is missing line coordinates")
+    first_heading = first_line - page.body_start_line
+    preamble = "\n".join(page.body.splitlines()[:first_heading]).strip()
     pairs: list[tuple[Evidence, str | None]] = []
-    page_ev = page_evidence(page)
-    if page_ev is not None:
-        pairs.append((page_ev, source))
-    pairs.extend((ev, source) for ev in section_evidences(page))
+    if preamble:
+        start = page.body_start_line
+        pairs.append(
+            (
+                Evidence(
+                    id=f"{page.path}#L{start}-{start + first_heading - 1}",
+                    source_type="compiled_markdown",
+                    page_path=page.path,
+                    page_title=page.title,
+                    section_title=None,
+                    line_start=start,
+                    line_end=start + first_heading - 1,
+                    text=preamble,
+                ),
+                source,
+            )
+        )
+    pairs.extend((evidence, source) for evidence in sections)
     return pairs
+
+
+def _snippet(text: str, query: str | None) -> str:
+    """Return a bounded snippet centered on a matching query term when possible."""
+    if len(text) <= _MAX_SNIPPET_CHARS:
+        return text
+    if query:
+        folded = text.casefold()
+        positions = [
+            folded.find(token.casefold())
+            for token in _search_tokens(query)
+            if folded.find(token.casefold()) >= 0
+        ]
+        if positions:
+            start = max(0, min(positions) - 90)
+            end = min(len(text), start + _MAX_SNIPPET_CHARS)
+            if end - start < _MAX_SNIPPET_CHARS:
+                start = max(0, end - _MAX_SNIPPET_CHARS)
+            return ("..." if start else "") + text[start:end] + ("..." if end < len(text) else "")
+    return text[:_MAX_SNIPPET_CHARS] + "..."
+
+
+def deduplicate_results(
+    results: list[RetrievalResult],
+    *,
+    limit: int,
+    candidates_seen: int | None = None,
+    query: str | None = None,
+) -> list[RetrievalResult]:
+    """Prefer the narrowest matching Evidence span before applying ``limit``."""
+    selected: list[RetrievalResult] = []
+    selected_by_page: dict[str, list[int]] = {}
+    for result in results:
+        replaced = False
+        for index in selected_by_page.get(result.evidence.page_path, []):
+            prior = selected[index]
+            if prior.evidence.page_path != result.evidence.page_path:
+                continue
+            prior_start = prior.evidence.line_start or 0
+            prior_end = prior.evidence.line_end or prior_start
+            current_start = result.evidence.line_start or 0
+            current_end = result.evidence.line_end or current_start
+            if prior_start <= current_start and current_end <= prior_end:
+                selected[index] = result
+                replaced = True
+                break
+            if current_start <= prior_start and prior_end <= current_end:
+                replaced = True
+                break
+        if not replaced:
+            selected_by_page.setdefault(result.evidence.page_path, []).append(len(selected))
+            selected.append(result)
+    selected = selected[: max(limit, 0)]
+    if not selected:
+        return []
+    first = selected[0].trace
+    trace = RetrievalTrace(
+        stages=list(first.stages),
+        candidates_seen=candidates_seen if candidates_seen is not None else len(results),
+        results_returned=len(selected),
+        results_dropped=max(
+            (candidates_seen if candidates_seen is not None else len(results)) - len(selected),
+            0,
+        ),
+    )
+    return [
+        RetrievalResult(
+            evidence=result.evidence,
+            citation=result.citation,
+            snippet=_snippet(result.evidence.text, query) if query is not None else result.snippet,
+            score=result.score,
+            reason=result.reason,
+            trace=trace,
+        )
+        for result in selected
+    ]
 
 
 def retrieval_result_from_evidence(
@@ -132,6 +236,7 @@ def retrieval_result_from_evidence(
     score: float,
     reason: str,
     trace: RetrievalTrace,
+    query: str | None = None,
 ) -> RetrievalResult:
     """Build a citation-ready RetrievalResult from an Evidence plus its source.
 
@@ -139,9 +244,7 @@ def retrieval_result_from_evidence(
     The citation carries the evidence's section title when present so a result
     can point back to a stable section even without a line range.
     """
-    snippet = evidence.text
-    if len(snippet) > 300:
-        snippet = snippet[:300] + "..."
+    snippet = _snippet(evidence.text, query)
     return RetrievalResult(
         evidence=evidence,
         citation=Citation(

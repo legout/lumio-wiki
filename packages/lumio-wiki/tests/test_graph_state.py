@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import msgpack
 import pytest
@@ -45,6 +46,11 @@ from lumio_wiki.records import (
     Relationship,
     Source,
 )
+
+
+def _packb(value: Any, *, use_bin_type: bool = True) -> bytes:
+    return cast(bytes, msgpack.packb(value, use_bin_type=use_bin_type))
+
 
 # ---------------------------------------------------------------------------
 # Page + Knowledge Base builders.
@@ -166,26 +172,23 @@ def test_artifact_contains_incoming_and_outgoing_adjacency(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_load_rejects_stale_fingerprint(tmp_path):
+def test_record_only_graph_ignores_unrelated_root_files(tmp_path):
     root = tmp_path / "kb"
     root.mkdir()
     kb = _linked_kb(root)
     index_dir = tmp_path / "idx"
     kb.materialize_graph(index_dir)
 
-    # Mutate canonical source so the fingerprint changes.
+    # A caller-owned record set must not adopt the identity of unrelated disk
+    # files under its convenience root.
     (root / "delta.md").write_text("# Delta\n", encoding="utf-8")
-    stale_kb = _linked_kb(root)  # same pages, but root fingerprint changed
+    same_records = _linked_kb(root)
 
-    state = stale_kb.load_or_derive_graph(index_dir)
+    state = same_records.load_or_derive_graph(index_dir)
 
-    # Stale artifact ignored: the returned state is a fresh in-memory derivation
-    # carrying the NEW fingerprint, not the persisted one.
-    assert state.fingerprint_digest == fingerprint_sources(root).digest
-    assert (
-        state.fingerprint_digest
-        != deserialize_graph((index_dir / GRAPH_ARTIFACT_FILENAME).read_bytes()).fingerprint_digest
-    )
+    persisted = deserialize_graph((index_dir / GRAPH_ARTIFACT_FILENAME).read_bytes())
+    assert persisted is not None
+    assert state.fingerprint_digest == persisted.fingerprint_digest
 
 
 def test_load_rejects_wrong_extractor_version(tmp_path):
@@ -199,7 +202,7 @@ def test_load_rejects_wrong_extractor_version(tmp_path):
     artifact = index_dir / GRAPH_ARTIFACT_FILENAME
     payload = msgpack.unpackb(artifact.read_bytes(), raw=False, strict_map_key=False)
     payload["extractor_version"] = "999"
-    artifact.write_bytes(msgpack.packb(payload, use_bin_type=True))
+    artifact.write_bytes(_packb(payload, use_bin_type=True))
 
     state = kb.load_or_derive_graph(index_dir)
     # Mismatched extractor version -> ignored, fresh derivation takes over.
@@ -222,7 +225,7 @@ def test_deserialize_rejects_wrong_graph_version(tmp_path):
         "incoming": {},
         "edge_count": 0,
     }
-    data = msgpack.packb(payload, use_bin_type=True)
+    data = _packb(payload, use_bin_type=True)
 
     assert deserialize_graph(data) is None
     assert serialize_graph(index, fingerprint, EXTRACTOR_VERSION) is not None
@@ -267,10 +270,10 @@ def test_corrupt_artifact_ignored_and_rebuilt(tmp_path):
 
 def test_partial_artifact_missing_keys_ignored(tmp_path):
     # A payload missing required keys is "partial" and must be ignored.
-    partial = msgpack.packb({"version": GRAPH_ARTIFACT_VERSION}, use_bin_type=True)
+    partial = _packb({"version": GRAPH_ARTIFACT_VERSION}, use_bin_type=True)
     assert deserialize_graph(partial) is None
 
-    missing_adjacency = msgpack.packb(
+    missing_adjacency = _packb(
         {
             "version": GRAPH_ARTIFACT_VERSION,
             "fingerprint_digest": "abc",
@@ -282,7 +285,7 @@ def test_partial_artifact_missing_keys_ignored(tmp_path):
 
 
 def test_partial_artifact_malformed_adjacency_ignored():
-    bad_edges = msgpack.packb(
+    bad_edges = _packb(
         {
             "version": GRAPH_ARTIFACT_VERSION,
             "fingerprint_digest": "abc",
@@ -298,7 +301,7 @@ def test_partial_artifact_malformed_adjacency_ignored():
 
 def test_inconsistent_edge_count_rejected():
     # Decodes cleanly but edge_count disagrees with the adjacency -> corrupt.
-    bad = msgpack.packb(
+    bad = _packb(
         {
             "version": GRAPH_ARTIFACT_VERSION,
             "fingerprint_digest": "abc",
@@ -314,7 +317,7 @@ def test_inconsistent_edge_count_rejected():
 
 def test_inconsistent_incoming_not_reverse_of_outgoing_rejected():
     # incoming does not mirror outgoing -> partially written / corrupt.
-    bad = msgpack.packb(
+    bad = _packb(
         {
             "version": GRAPH_ARTIFACT_VERSION,
             "fingerprint_digest": "abc",
@@ -380,25 +383,25 @@ def _v2_payload(outgoing_edge: list[object]) -> dict[str, object]:
 def test_unknown_edge_origin_rejected():
     # A corrupt artifact whose edges decode type-wise but carry an origin
     # outside GRAPH_EDGE_ORIGINS must not become live graph state (#170).
-    bad = msgpack.packb(_v2_payload(_v2_edge(origin="banana")), use_bin_type=True)
+    bad = _packb(_v2_payload(_v2_edge(origin="banana")), use_bin_type=True)
     assert deserialize_graph(bad) is None
 
 
 def test_unknown_edge_scope_rejected():
-    bad = msgpack.packb(_v2_payload(_v2_edge(scope="banana")), use_bin_type=True)
+    bad = _packb(_v2_payload(_v2_edge(scope="banana")), use_bin_type=True)
     assert deserialize_graph(bad) is None
 
 
 def test_claim_edge_with_discovery_scope_rejected():
     # An accepted-Claim edge belongs to the canonical scope; a mismatched
     # scope/origin pair is corrupt data.
-    bad = msgpack.packb(_v2_payload(_v2_edge(scope="discovery")), use_bin_type=True)
+    bad = _packb(_v2_payload(_v2_edge(scope="discovery")), use_bin_type=True)
     assert deserialize_graph(bad) is None
 
 
 def test_extracted_edge_with_canonical_scope_rejected():
     # An Extracted Reference exists only in discovery scope.
-    bad = msgpack.packb(
+    bad = _packb(
         _v2_payload(
             _v2_edge(
                 predicate="",
@@ -417,13 +420,13 @@ def test_extracted_edge_with_canonical_scope_rejected():
 
 
 def test_claim_edge_without_claim_identity_rejected():
-    bad = msgpack.packb(_v2_payload(_v2_edge(claim_id="", predicate="")), use_bin_type=True)
+    bad = _packb(_v2_payload(_v2_edge(claim_id="", predicate="")), use_bin_type=True)
     assert deserialize_graph(bad) is None
 
 
 def test_extracted_edge_with_claim_identity_rejected():
     # An Extracted Reference never carries a Claim ID (never promoted).
-    bad = msgpack.packb(
+    bad = _packb(
         _v2_payload(
             _v2_edge(
                 predicate="uses",
@@ -444,7 +447,7 @@ def test_extracted_edge_with_claim_identity_rejected():
 def test_extracted_edge_without_provenance_rejected():
     # An Extracted Reference must carry source path, extractor version, and a
     # 1-based bounded line range (here: empty path and inverted range).
-    bad = msgpack.packb(
+    bad = _packb(
         _v2_payload(
             _v2_edge(
                 predicate="",
@@ -464,7 +467,7 @@ def test_extracted_edge_without_provenance_rejected():
 
 def test_stray_incoming_entry_rejected():
     # outgoing is empty but incoming has a stray entry -> inconsistent.
-    bad = msgpack.packb(
+    bad = _packb(
         {
             "version": GRAPH_ARTIFACT_VERSION,
             "fingerprint_digest": "abc",
@@ -479,8 +482,8 @@ def test_stray_incoming_entry_rejected():
 
 
 def test_non_dict_payload_ignored():
-    assert deserialize_graph(msgpack.packb([1, 2, 3], use_bin_type=True)) is None
-    assert deserialize_graph(msgpack.packb("a string", use_bin_type=True)) is None
+    assert deserialize_graph(_packb([1, 2, 3], use_bin_type=True)) is None
+    assert deserialize_graph(_packb("a string", use_bin_type=True)) is None
 
 
 def test_incompatible_version_artifact_ignored_on_load(tmp_path):
@@ -490,7 +493,7 @@ def test_incompatible_version_artifact_ignored_on_load(tmp_path):
     index_dir = tmp_path / "idx"
     index_dir.mkdir()
     (index_dir / GRAPH_ARTIFACT_FILENAME).write_bytes(
-        msgpack.packb(
+        _packb(
             {
                 "version": GRAPH_ARTIFACT_VERSION + 7,
                 "fingerprint_digest": fingerprint_sources(root).digest,
@@ -804,7 +807,7 @@ def test_graph_health_when_fresh_and_materialized(tmp_path):
     assert report.startup_ms >= 0
     assert report.traversal_latency_ms is not None
     assert report.traversal_latency_ms >= 0
-    assert report.fingerprint_digest == fingerprint_sources(root).digest
+    assert report.fingerprint_digest == kb.load_or_derive_graph(index_dir).fingerprint_digest
 
 
 def test_graph_health_when_no_artifact(tmp_path):
@@ -820,7 +823,7 @@ def test_graph_health_when_no_artifact(tmp_path):
     assert report.materialized_size_bytes is None
     # Edge count is still derivable in memory.
     assert report.edge_count == 3
-    assert report.fingerprint_digest == fingerprint_sources(root).digest
+    assert report.fingerprint_digest == kb.load_or_derive_graph(index_dir).fingerprint_digest
 
 
 def test_graph_health_when_stale(tmp_path):
@@ -830,10 +833,10 @@ def test_graph_health_when_stale(tmp_path):
     index_dir = tmp_path / "idx"
     kb.materialize_graph(index_dir)
 
-    # Change canonical content -> artifact fingerprint no longer matches.
-    (root / "delta.md").write_text("# Delta\n", encoding="utf-8")
+    # Change the caller-owned records -> artifact fingerprint no longer matches.
+    stale_kb = KnowledgeBase(root=root, pages=[*kb.pages, _page("Delta")])
 
-    report = kb.graph_health(index_dir)
+    report = stale_kb.graph_health(index_dir)
     assert report.graph_fresh is False
     assert report.materialized is True  # file is still there
     assert report.materialized_size_bytes is not None

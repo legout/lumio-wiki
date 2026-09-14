@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import msgspec
 import pytest
@@ -21,6 +22,7 @@ from lumio_wiki.artifact_store import (
     LocalDirectoryArtifactStore,
     RetentionRequiredError,
     SigningUnavailable,
+    SourceBindingEntry,
     SourceBindingManifest,
     activation_binding_hook,
     affected_published_versions,
@@ -29,6 +31,7 @@ from lumio_wiki.artifact_store import (
     delete_artifact_with_disclosure,
     retain_artifact,
     sweep_orphaned_uploads,
+    verify_rollback_coverage,
     write_binding_manifest,
 )
 from lumio_wiki.ingest import IngestStore, ManagedIngestError
@@ -43,7 +46,9 @@ from lumio_wiki.source_registry import (
 obstore = pytest.importorskip("obstore", reason="obstore required for publication coverage")
 
 from lumio_wiki.s3_location import CURRENT_POINTER_OBJECT  # noqa: E402
-from lumio_wiki.s3_publish import publish_s3_version  # noqa: E402
+from lumio_wiki.s3_publish import (  # noqa: E402
+    publish_s3_version,
+)
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures" / "valid"
@@ -427,9 +432,7 @@ def _public_keys(store) -> list[str]:
 def test_publication_writes_private_binding_manifest_before_activation(tmp_path):
     kb, registry, artifact_store = _published_kb_with_source(tmp_path, retain=True)
     store = obstore.store.MemoryStore()
-    hook = activation_binding_hook(
-        artifact_store=artifact_store, registry=registry, source_root=kb.root, required=False
-    )
+    hook = activation_binding_hook(artifact_store=artifact_store, registry=registry, required=False)
     manifest = _publish(store, kb, version="v1", hook=hook)
 
     # The private manifest binds the Published Version and the exact version.
@@ -459,9 +462,7 @@ def test_required_retention_blocks_activation_until_artifact_exists(tmp_path):
     assert registry.get("annual-report").versions[-1].artifact_available is False
 
     store = obstore.store.MemoryStore()
-    hook = activation_binding_hook(
-        artifact_store=artifact_store, registry=registry, source_root=kb.root, required=True
-    )
+    hook = activation_binding_hook(artifact_store=artifact_store, registry=registry, required=True)
     with pytest.raises(RetentionRequiredError, match="annual-report"):
         _publish(store, kb, version="v1", hook=hook)
     # Pointer was NOT advanced: activation blocked before publication.
@@ -486,9 +487,7 @@ def test_required_retention_blocks_activation_until_artifact_exists(tmp_path):
 def test_required_retention_ignores_synthetic_pages(tmp_path):
     kb, registry, artifact_store = _published_kb_with_source(tmp_path, retain=False, synthetic=True)
     store = obstore.store.MemoryStore()
-    hook = activation_binding_hook(
-        artifact_store=artifact_store, registry=registry, source_root=kb.root, required=True
-    )
+    hook = activation_binding_hook(artifact_store=artifact_store, registry=registry, required=True)
     _publish(store, kb, version="v1", hook=hook)  # synthetic page: no artifact needed
     binding = msgspec.json.decode(
         artifact_store.get_binding_manifest("v1"), type=SourceBindingManifest
@@ -511,9 +510,7 @@ def test_disabled_retention_preserves_hash_only_publication(tmp_path):
 def test_historical_manifest_survives_new_source_version(tmp_path):
     kb, registry, artifact_store = _published_kb_with_source(tmp_path, retain=True)
     store = obstore.store.MemoryStore()
-    hook = activation_binding_hook(
-        artifact_store=artifact_store, registry=registry, source_root=kb.root, required=True
-    )
+    hook = activation_binding_hook(artifact_store=artifact_store, registry=registry, required=True)
     _publish(store, kb, version="v1", hook=hook)
     v1_binding = msgspec.json.decode(
         artifact_store.get_binding_manifest("v1"), type=SourceBindingManifest
@@ -723,7 +720,6 @@ def test_required_retention_blocks_unregistered_source_references(tmp_path):
     hook = activation_binding_hook(
         artifact_store=artifact_store,
         registry=registry,
-        source_root=kb.root,
         required=True,
     )
     with pytest.raises(RetentionRequiredError, match="unregistered source"):
@@ -782,6 +778,90 @@ def test_verify_rollback_coverage_gates_historical_activation(tmp_path):
         verify_rollback_coverage(artifact_store, "v1", required=True)
 
 
+def test_required_rollback_rejects_partial_historical_binding_manifest(
+    tmp_path, monkeypatch, capsys
+):
+    """R4 (B11): under optional retention the binding hook legitimately omits
+    public-only source identities, so a Published Version citing an
+    unregistered source leaves a genuinely PARTIAL historical manifest — not a
+    missing one. Required rollback must fail closed against that real hole,
+    checked through the real publication hook and CLI rollback seam."""
+    from lumio_wiki import cli
+    from lumio_wiki.artifact_store import LocalDirectoryArtifactStore
+
+    kb_root = tmp_path / "kb"
+    shutil.copytree(FIXTURES, kb_root)
+    store_root = tmp_path / "src-store"
+    monkeypatch.chdir(tmp_path)
+    # Optional retention at publish time: the hook omits unregistered sources.
+    monkeypatch.setenv("LUMIO_SOURCE_STORE", str(store_root))
+    monkeypatch.delenv("LUMIO_ARTIFACT_RETENTION", raising=False)
+
+    import lumio_wiki as lw
+
+    kb, report = lw.load_knowledge_base(kb_root)
+    assert report.is_valid, report
+    artifact_store = LocalDirectoryArtifactStore(store_root)
+    ingest = IngestStore(tmp_path / "ingest")
+    registry = ingest.source_registry
+    for page in kb.pages:
+        for source in page.sources:
+            if not source.id:
+                continue
+            fixture_bytes = f"fixture artifact for {source.id}".encode()
+            registry.register_or_reuse(source.id, fixture_bytes, filename=None, content_type=None)
+            retain_artifact(
+                artifact_store,
+                registry,
+                source_id=source.id,
+                raw_bytes=fixture_bytes,
+                content_type="text/plain",
+                filename=f"{source.id}.txt",
+            )
+    # Non-synthetic page citing one registered source AND one never privately
+    # registered: publication is legitimate here, retention is optional.
+    authored = _authored_page("architecture-doc").replace(
+        '  - id: "architecture-doc"\n    title: "architecture-doc source"\n',
+        '  - id: "architecture-doc"\n'
+        '    title: "architecture-doc source"\n'
+        '  - id: "ghost-reference"\n'
+        '    title: "Never registered"\n',
+    )
+    assert "ghost-reference" in authored
+    (kb_root / "artifact-page.md").write_text(authored, encoding="utf-8")
+
+    memory_store = obstore.store.MemoryStore()
+    publish_s3_version(
+        memory_store,
+        "kb",
+        source_root=kb_root,
+        version="v1",
+        before_activation=activation_binding_hook(
+            artifact_store=artifact_store,
+            registry=registry,
+            required=False,
+        ),
+    )
+    # The historical manifest is legitimately partial: it binds the registered
+    # pair but has no entry for the unregistered citation.
+    manifest = msgspec.json.decode(
+        artifact_store.get_binding_manifest("v1"), type=SourceBindingManifest
+    )
+    bound = {(entry.page_title, entry.source_id) for entry in manifest.entries}
+    assert ("Artifact Page", "architecture-doc") in bound
+    assert ("Artifact Page", "ghost-reference") not in bound
+
+    # Required rollback through the real CLI seam: the immutable target's own
+    # page set demands the missing pair, so the partial manifest cannot pass.
+    monkeypatch.setenv("LUMIO_ARTIFACT_RETENTION", "required")
+    monkeypatch.setattr(cli, "_build_publish_store", lambda uri: (memory_store, "kb"))
+    rc = cli.main(["rollback-s3", "s3://bucket/kb", "--version", "v1"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "rollback blocked" in err
+    assert "Artifact Page:ghost-reference (missing historical binding)" in err
+
+
 def test_rollback_cli_blocked_after_artifact_deletion(tmp_path, monkeypatch, capsys):
     """The rollback CLI is an activation: under required retention it refuses
     to reactivate a version whose bound artifact was explicitly deleted."""
@@ -827,7 +907,6 @@ def test_rollback_cli_blocked_after_artifact_deletion(tmp_path, monkeypatch, cap
         before_activation=activation_binding_hook(
             artifact_store=artifact_store,
             registry=registry,
-            source_root=kb_root,
             required=True,
         ),
     )
@@ -905,6 +984,69 @@ def _env_value_text(project: Path, key: str) -> str | None:
     return None
 
 
+def test_activation_hook_keeps_an_empty_candidate_binding_empty():
+    source = SimpleNamespace(
+        source_id="bound",
+        versions=[
+            SimpleNamespace(
+                content_hash=artifact_content_hash(b"bound"),
+                content_type="text/plain",
+                filename="bound.txt",
+                size=5,
+            )
+        ],
+    )
+    registry = SimpleNamespace(list=lambda: [source])
+    store = InMemoryArtifactStore()
+    hook = activation_binding_hook(artifact_store=store, registry=registry, required=False)
+    hook.capture_candidate([SimpleNamespace(title="Bound", sources=[SimpleNamespace(id="bound")])])  # type: ignore[attr-defined]
+    hook(
+        SimpleNamespace(
+            version="v-empty",
+            fingerprint="f" * 64,
+            pages=[SimpleNamespace(title="Empty", sources=[])],
+            binding_entries=[],
+        )
+    )
+    manifest = msgspec.json.decode(
+        store.get_binding_manifest("v-empty"), type=SourceBindingManifest
+    )
+    assert manifest.entries == []
+
+
+def test_rollback_redacts_invalid_historical_source_ids():
+    store = InMemoryArtifactStore()
+    secret_id = "sk-" + "live-example-secret"
+    store.put_binding_manifest(
+        "v1",
+        msgspec.json.encode(
+            SourceBindingManifest(
+                published_version="v1",
+                fingerprint="f" * 64,
+                created_at="now",
+                entries=[
+                    SourceBindingEntry(
+                        page_title="Secret Page",
+                        source_id=secret_id,
+                        content_hash="0" * 64,
+                    )
+                ],
+            )
+        ),
+    )
+    with pytest.raises(RetentionRequiredError) as excinfo:
+        verify_rollback_coverage(store, "v1", required=True)
+    assert secret_id not in str(excinfo.value)
+    assert "<invalid source id>" in str(excinfo.value)
+
+
+def test_rollback_rejects_corrupt_binding_manifest():
+    store = InMemoryArtifactStore()
+    store.put_binding_manifest("v1", b"{")
+    with pytest.raises(RetentionRequiredError, match="manifest.*corrupt"):
+        verify_rollback_coverage(store, "v1", required=True)
+
+
 def test_required_retention_never_echoes_secret_bearing_source_ids(tmp_path):
     """An invalid source id (e.g. a pasted credential declared on a page) is
     reported with a generic label under required retention — never echoed
@@ -931,7 +1073,6 @@ def test_required_retention_never_echoes_secret_bearing_source_ids(tmp_path):
     hook = activation_binding_hook(
         artifact_store=artifact_store,
         registry=registry,
-        source_root=kb.root,
         required=True,
     )
     with pytest.raises(RetentionRequiredError) as excinfo:

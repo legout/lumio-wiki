@@ -217,7 +217,6 @@ def test_minio_publication_binds_artifacts_outside_public_prefix(tmp_path, prefi
     hook = activation_binding_hook(
         artifact_store=artifacts,
         registry=ingest.source_registry,
-        source_root=root,
         required=True,
     )
     manifest = publish_s3_version(

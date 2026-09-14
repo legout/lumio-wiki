@@ -31,7 +31,7 @@ from lumio_lancedb import (
 )
 from lumio_lancedb.index import _load_fingerprint, _save_fingerprint
 from lumio_lancedb.location import as_location
-from lumio_wiki.embeddings import EmbeddingError
+from lumio_wiki.embeddings import EmbeddingError, EmbeddingNotBuiltError
 from lumio_wiki.records import (
     CompiledPage,
     EmbeddingModelInfo,
@@ -88,6 +88,7 @@ class _FakeEmbedder:
             out.append(vec[: self._info.dimension])
         return out
 
+
 def _fingerprint() -> SourceFingerprint:
     return SourceFingerprint(digest="0" * 64)
 
@@ -134,9 +135,81 @@ def test_page_search_uses_bm25_scores_from_typed_location(tmp_path):
     assert results
     assert results[0].score == pytest.approx(scores[results[0].page.path], abs=1e-4)
     assert [result.page.path for result in results] == [
-        path
-        for path, _score in sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+        path for path, _score in sorted(scores.items(), key=lambda item: (-item[1], item[0]))
     ]
+
+
+def test_lexical_rebuild_invalidates_obsolete_semantic_evidence(tmp_path):
+    index_dir = tmp_path / "idx"
+    embedder = _FakeEmbedder()
+    adapter = LanceDBRetrievalAdapter()
+    first = _pages()
+    adapter.build_index(first, index_dir, embedder=embedder, fingerprint=_fingerprint())
+    assert has_semantic_index(index_dir)
+
+    changed = [first[0]]
+    newer = SourceFingerprint(digest="1" * 64)
+    adapter.build_index(changed, index_dir, fingerprint=newer)
+    assert not has_semantic_index(index_dir)
+    with pytest.raises(EmbeddingNotBuiltError):
+        adapter.retrieve(
+            changed, "LanceDB", index_dir=index_dir, mode="semantic", embedder=embedder
+        )
+    lexical = adapter.retrieve(changed, "LanceDB", index_dir=index_dir, mode="lexical")
+    assert lexical and all(result.evidence.page_path == "overview.md" for result in lexical)
+
+
+def test_failed_semantic_rebuild_does_not_stamp_index_fresh(tmp_path):
+    index_dir = tmp_path / "idx"
+    adapter = LanceDBRetrievalAdapter()
+    good = _FakeEmbedder()
+    adapter.build_index(_pages(), index_dir, embedder=good, fingerprint=_fingerprint())
+
+    class BadEmbedder(_FakeEmbedder):
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0] for _ in texts]
+
+    with pytest.raises(EmbeddingError):
+        adapter.build_index(
+            _pages(),
+            index_dir,
+            embedder=BadEmbedder(),
+            fingerprint=SourceFingerprint(digest="2" * 64),
+        )
+    assert not has_semantic_index(index_dir)
+    assert _load_fingerprint(LocalIndexLocation(index_dir)) is None
+
+
+def test_failed_lexical_rebuild_invalidates_previous_state(tmp_path, monkeypatch):
+    import lumio_lancedb.index as index_module
+
+    index_dir = tmp_path / "idx"
+    adapter = LanceDBRetrievalAdapter()
+    adapter.build_index(_pages(), index_dir, embedder=_FakeEmbedder(), fingerprint=_fingerprint())
+    monkeypatch.setattr(
+        index_module,
+        "build_lexical_index",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("lexical failed")),
+    )
+    with pytest.raises(RuntimeError, match="lexical failed"):
+        adapter.build_index(_pages(), index_dir, fingerprint=SourceFingerprint(digest="3" * 64))
+    assert _load_fingerprint(LocalIndexLocation(index_dir)) is None
+    assert not has_semantic_index(index_dir)
+
+
+def test_lancedb_pages_until_span_dedup_fills_limit(tmp_path):
+    def nested_page(number: int) -> CompiledPage:
+        body = ""
+        for level in range(1, 7):
+            body += "#" * level + f" Level {level}\nneedle\n"
+        return CompiledPage(path=f"page-{number}.md", title=f"Page {number}", body=body)
+
+    pages = [nested_page(number) for number in range(1, 4)]
+    index_dir = tmp_path / "idx"
+    adapter = LanceDBRetrievalAdapter()
+    adapter.build_index(pages, index_dir)
+    results = adapter.retrieve(pages, "needle", index_dir=index_dir, limit=3)
+    assert {result.citation.page_title for result in results} == {"Page 1", "Page 2", "Page 3"}
 
 
 def test_local_semantic_and_hybrid_through_location(tmp_path):

@@ -51,7 +51,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import msgspec
 
@@ -62,10 +62,10 @@ from lumio_wiki.graph_state import (
 )
 from lumio_wiki.knowledge_base import (
     KnowledgeBaseError,
+    _capture_source,
     _FilesystemKbSource,
     _load_and_validate,
     canonical_content,
-    fingerprint_sources,
 )
 from lumio_wiki.records import EXTRACTOR_VERSION, EmbeddingModelInfo, SourceFingerprint
 from lumio_wiki.s3_location import (
@@ -191,6 +191,12 @@ class PreparedVersion(msgspec.Struct, frozen=True):
     manifest: S3Manifest
     """The manifest written for the version (activation is next)."""
 
+    pages: list[Any] = msgspec.field(default_factory=list)
+    """The exact page records used by every derived builder."""
+
+    binding_entries: list[Any] = msgspec.field(default_factory=list)
+    """Source bindings captured before any costly builder work, when requested."""
+
 
 class CleanupCandidate(msgspec.Struct, frozen=True):
     """An inactive, incomplete version prefix reported for cleanup.
@@ -286,16 +292,27 @@ def publish_s3_version(
     #    builds never mutate an existing immutable version.
     _require_absent_version_prefix(obstore, store, clean_prefix, version)
 
-    # 3. Prepare: validate canonical content + compute the version identity.
-    kb, report = _load_and_validate(_FilesystemKbSource(root.resolve()))
+    # 3. Prepare: capture canonical bytes once, then validate/hash that same
+    # immutable candidate. Later builders and hooks must not reread ``root``.
+    source, fingerprint = _capture_source(_FilesystemKbSource(root.resolve()))
+    kb, report = _load_and_validate(source, fingerprint=fingerprint)
     if not report.is_valid:
         blocking = sum(1 for issue in report.issues if issue.severity == "error")
         raise KnowledgeBaseError(
             f"cannot publish {version!r}: canonical Knowledge Base content at "
             f"{root!s} has {blocking} blocking validation error(s)"
         )
-    fingerprint = fingerprint_sources(root)
-    content = canonical_content(_FilesystemKbSource(root.resolve()))
+    content = canonical_content(source)
+
+    # Let the optional private-binding composition capture registry identities
+    # before the expensive index builder runs. Other hooks simply ignore this
+    # optional protocol.
+    binding_entries: list[Any] = []
+    if before_activation is not None:
+        capture_candidate = getattr(before_activation, "capture_candidate", None)
+        if callable(capture_candidate):
+            captured = cast(list[Any], capture_candidate(list(kb.pages)))
+            binding_entries = list(captured)
 
     # Serialize and validate the derived Discovery Graph state (in memory,
     # no managed local bytes — ADR-0013).
@@ -348,6 +365,8 @@ def publish_s3_version(
                 version=version,
                 fingerprint=fingerprint.digest,
                 manifest=manifest,
+                pages=list(kb.pages),
+                binding_entries=binding_entries,
             )
         )
 

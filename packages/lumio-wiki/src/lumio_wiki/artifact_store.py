@@ -20,8 +20,9 @@ caller's (deployment) concern.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import msgspec
 
@@ -52,7 +53,6 @@ class ArtifactUnavailable(ArtifactStoreError):
 
 class ArtifactCorruption(ArtifactStoreError):
     """Stored bytes failed digest or size verification (#165)."""
-    """A Source Artifact Store operation failed (never reports success)."""
 
 
 class SigningUnavailable(ArtifactStoreError):
@@ -93,31 +93,39 @@ class SourceArtifactStore(Protocol):
         filename: str | None,
     ) -> None:
         """Create-only upload of one artifact, verified after write."""
+        raise NotImplementedError
 
     def get_artifact(self, *, source_id: str, content_hash: str) -> bytes:
         """Fetch one artifact, verifying size and digest before returning."""
+        raise NotImplementedError
 
     def artifact_exists(self, *, source_id: str, content_hash: str) -> bool:
         """Report whether one exact artifact is present (digest-verified)."""
+        raise NotImplementedError
 
     def delete_artifact(self, *, source_id: str, content_hash: str) -> bool:
         """Explicitly delete one exact artifact; returns whether it existed."""
+        raise NotImplementedError
 
     def supports_signing(self) -> bool:
         """Whether :meth:`signed_get_url` can issue exact-object URLs here."""
+        raise NotImplementedError
 
     def signed_get_url(self, *, source_id: str, content_hash: str, expires_in: timedelta) -> str:
         """Short-lived signed GET URL for ONE exact artifact (or raise)."""
+        raise NotImplementedError
 
     def put_binding_manifest(self, version: str, manifest: bytes) -> None:
         """Store the private Source Binding Manifest for a Published Version."""
+        raise NotImplementedError
 
     def get_binding_manifest(self, version: str) -> bytes:
         """Fetch the private binding manifest bytes for one version."""
+        raise NotImplementedError
 
     def list_binding_versions(self) -> list[str]:
         """List Published Versions that have a stored binding manifest."""
-        ...
+        raise NotImplementedError
 
 
 class InMemoryArtifactStore:
@@ -158,11 +166,11 @@ class InMemoryArtifactStore:
     def artifact_exists(self, *, source_id: str, content_hash: str) -> bool:
         try:
             self.get_artifact(source_id=source_id, content_hash=content_hash)
-        except ArtifactAccessDenied:
+        except ArtifactStoreError as exc:
             # Denial is unknown-presence, not absence (#165): fail closed so
             # gates and inspection never misreport denied reads as missing.
-            raise
-        except ArtifactStoreError:
+            if isinstance(exc, ArtifactAccessDenied):
+                raise
             return False
         return True
 
@@ -277,11 +285,11 @@ class LocalDirectoryArtifactStore:
     def artifact_exists(self, *, source_id: str, content_hash: str) -> bool:
         try:
             self.get_artifact(source_id=source_id, content_hash=content_hash)
-        except ArtifactAccessDenied:
+        except ArtifactStoreError as exc:
             # Denial is unknown-presence, not absence (#165): fail closed so
             # gates and inspection never misreport denied reads as missing.
-            raise
-        except ArtifactStoreError:
+            if isinstance(exc, ArtifactAccessDenied):
+                raise
             return False
         return True
 
@@ -368,6 +376,8 @@ class S3ArtifactStore:
     ) -> None:
         if artifact_content_hash(raw_bytes) != content_hash:
             raise ArtifactStoreError("artifact bytes do not hash to the declared content hash")
+        from contextlib import suppress
+
         from obstore.exceptions import AlreadyExistsError  # type: ignore[import-not-found]
 
         key = self._key("artifacts", source_id, content_hash)
@@ -384,14 +394,10 @@ class S3ArtifactStore:
             "content_type": content_type or "application/octet-stream",
             "content_disposition": f'attachment; filename="{safe_name}"',
         }
-        try:
-            self._obstore.put(
-                self._store, key, raw_bytes, mode="create", attributes=attributes
-            )
-        except AlreadyExistsError:
-            # Create-only for a fresh identity; an identical retry must
-            # verify what is already there, never overwrite it.
-            pass
+        # Create-only for a fresh identity; an identical retry verifies the
+        # existing bytes below and never overwrites them.
+        with suppress(AlreadyExistsError):
+            self._obstore.put(self._store, key, raw_bytes, mode="create", attributes=attributes)
         if not self.artifact_exists(source_id=source_id, content_hash=content_hash):
             raise ArtifactStoreError("stored artifact failed digest verification")
 
@@ -408,8 +414,7 @@ class S3ArtifactStore:
             raise ArtifactUnavailable("artifact not retained") from None
         except (PermissionDeniedError, UnauthenticatedError) as exc:
             raise ArtifactAccessDenied(
-                "access denied: credentials cannot read the private Source "
-                "Artifact Store"
+                "access denied: credentials cannot read the private Source Artifact Store"
             ) from exc
         if artifact_content_hash(raw) != content_hash:
             raise ArtifactCorruption("stored artifact failed digest verification")
@@ -418,11 +423,11 @@ class S3ArtifactStore:
     def artifact_exists(self, *, source_id: str, content_hash: str) -> bool:
         try:
             self.get_artifact(source_id=source_id, content_hash=content_hash)
-        except ArtifactAccessDenied:
+        except ArtifactStoreError as exc:
             # Denial is unknown-presence, not absence (#165): fail closed so
             # gates and inspection never misreport denied reads as missing.
-            raise
-        except ArtifactStoreError:
+            if isinstance(exc, ArtifactAccessDenied):
+                raise
             return False
         return True
 
@@ -481,8 +486,7 @@ class S3ArtifactStore:
             ) from None
         except (PermissionDeniedError, UnauthenticatedError) as exc:
             raise ArtifactAccessDenied(
-                "access denied: credentials cannot read the private Source "
-                "Artifact Store"
+                "access denied: credentials cannot read the private Source Artifact Store"
             ) from exc
         return raw
 
@@ -561,35 +565,24 @@ class SourceBindingManifest(msgspec.Struct, frozen=True):
     entries: list[SourceBindingEntry] = msgspec.field(default_factory=list)
 
 
-def build_binding_manifest(
-    *,
-    published_version: str,
-    fingerprint: str,
-    registry: Any,
-    pages: list[Any],
-    now: str,
-) -> SourceBindingManifest:
-    """Build the manifest for the pages being published (#164, ADR-0020).
+def capture_binding_entries(registry: Any, pages: list[Any]) -> list[SourceBindingEntry]:
+    """Capture registry Source Version identities for one page candidate."""
+    from lumio_wiki.source_registry import SourceRegistryError, _validate_source_id
 
-    Every non-synthetic page's declared ``sources[].id`` is resolved through
-    the private registry to that source's CURRENT version hash. Synthetic
-    pages may omit provenance (ADR-0014) and are recorded with
-    ``synthetic_page=True`` only when they declare a source id anyway.
-    ``pages`` are loaded Compiled Page records (``title``/``sources``/
-    ``synthetic`` attributes). A declared source id the registry does not
-    know is public provenance only — the manifest binds privately registered
-    identities exclusively.
-    """
-    from lumio_wiki.source_registry import SourceRegistryError
-
+    source_records = {source.source_id: source for source in registry.list()}
     entries: list[SourceBindingEntry] = []
     for page in pages:
         for source in page.sources:
             if not source.id:
                 continue
             try:
-                source_record = registry.get(source.id)
+                _validate_source_id(source.id)
             except SourceRegistryError:
+                # Optional retention intentionally omits public-only source
+                # identities; required retention checks the missing pair.
+                continue
+            source_record = source_records.get(source.id)
+            if source_record is None:
                 continue
             current = source_record.versions[-1]
             entries.append(
@@ -603,6 +596,34 @@ def build_binding_manifest(
                     synthetic_page=bool(getattr(page, "synthetic", False)),
                 )
             )
+    return entries
+
+
+def build_binding_manifest(
+    *,
+    published_version: str,
+    fingerprint: str,
+    registry: Any,
+    pages: list[Any],
+    now: str,
+    captured_entries: list[SourceBindingEntry] | None = None,
+) -> SourceBindingManifest:
+    """Build the manifest for the pages being published (#164, ADR-0020).
+
+    Every non-synthetic page's declared ``sources[].id`` is resolved through
+    the private registry to that source's CURRENT version hash. Synthetic
+    pages may omit provenance (ADR-0014) and are recorded with
+    ``synthetic_page=True`` only when they declare a source id anyway.
+    ``pages`` are loaded Compiled Page records (``title``/``sources``/
+    ``synthetic`` attributes). A declared source id the registry does not
+    know is public provenance only — the manifest binds privately registered
+    identities exclusively.
+    """
+    entries = (
+        list(captured_entries)
+        if captured_entries is not None
+        else capture_binding_entries(registry, pages)
+    )
     return SourceBindingManifest(
         published_version=published_version,
         fingerprint=fingerprint,
@@ -618,10 +639,23 @@ def write_binding_manifest(store: SourceArtifactStore, manifest: SourceBindingMa
     return raw
 
 
+def required_source_pairs(pages: Sequence[Any]) -> set[tuple[str, str]]:
+    """Every non-synthetic page/source identity that required retention must bind."""
+    return {
+        (page.title, source.id)
+        for page in pages
+        if not bool(getattr(page, "synthetic", False))
+        for source in page.sources
+        if source.id
+    }
+
+
 def required_coverage_missing(
     store: SourceArtifactStore,
     registry: Any,
     pages: list[Any],
+    *,
+    captured_entries: list[SourceBindingEntry] | None = None,
 ) -> list[str]:
     """Unmet artifact requirements under REQUIRED retention (#164, ADR-0020).
 
@@ -634,6 +668,31 @@ def required_coverage_missing(
     re-verified live for every referenced identity.
     """
     from lumio_wiki.source_registry import SourceRegistryError, _validate_source_id
+
+    if captured_entries is not None:
+        required_pairs = required_source_pairs(pages)
+        bound_pairs = {
+            (entry.page_title, entry.source_id)
+            for entry in captured_entries
+            if not entry.synthetic_page
+        }
+        missing: list[str] = []
+        for title, source_id in sorted(required_pairs - bound_pairs):
+            try:
+                _validate_source_id(source_id)
+            except SourceRegistryError:
+                missing.append(f"{title}:<invalid source id> (unregistered source)")
+            else:
+                missing.append(f"{title}:{source_id} (unregistered source)")
+        missing.extend(
+            f"{entry.page_title}:{entry.source_id}"
+            for entry in captured_entries
+            if not entry.synthetic_page
+            and not store.artifact_exists(
+                source_id=entry.source_id, content_hash=entry.content_hash
+            )
+        )
+        return sorted(set(missing))
 
     missing: list[str] = []
     seen: set[tuple[str, str]] = set()
@@ -720,38 +779,51 @@ def activation_binding_hook(
     *,
     artifact_store: SourceArtifactStore,
     registry: Any,
-    source_root: str | Path,
     required: bool,
+    source_root: str | Path | None = None,
 ):
     """Build the ``before_activation`` hook for S3 publication (#164).
 
     The returned closure builds the private Source Binding Manifest from the
-    Knowledge Base root the publisher is publishing (``source_root`` — the
-    same root passed to ``publish_s3_version``), checks artifact coverage
-    when retention is REQUIRED (blocking activation by raising
+    publisher's captured pages and source-version bindings. ``source_root``
+    remains accepted for backward compatibility but is never read, so it cannot
+    replace the captured candidate. The hook checks artifact coverage when
+    retention is REQUIRED (blocking activation by raising
     :class:`RetentionRequiredError`; disabled retention preserves today's
     hash-only behavior and never blocks), stores the manifest in the private
     Source Artifact Store, and only then lets activation proceed. No source
     bytes or binding state ever enter the public manifest.
     """
 
-    def hook(prepared: Any) -> None:
-        from lumio_wiki.knowledge_base import load_knowledge_base
+    captured_entries: list[SourceBindingEntry] | None = None
 
-        kb, report = load_knowledge_base(source_root)
-        if not report.is_valid:
-            raise ArtifactStoreError(
-                "cannot bind sources: the local Knowledge Base no longer validates"
-            )
+    def capture_candidate(pages: list[Any]) -> list[SourceBindingEntry]:
+        nonlocal captured_entries
+        captured_entries = capture_binding_entries(registry, pages)
+        return list(captured_entries)
+
+    def hook(prepared: Any) -> None:
+        # ``publish_s3_version`` passes the already captured page records;
+        # reloading a filesystem root here could bind a later edit.
+        pages = list(getattr(prepared, "pages", ()))
+        if hasattr(prepared, "binding_entries"):
+            entries = cast(list[SourceBindingEntry], list(prepared.binding_entries))
+        elif captured_entries is not None:
+            entries = list(captured_entries)
+        else:
+            entries = capture_binding_entries(registry, pages)
         manifest = build_binding_manifest(
             published_version=prepared.version,
             fingerprint=prepared.fingerprint,
             registry=registry,
-            pages=list(kb.pages),
+            pages=pages,
             now=_utc_now_iso(),
+            captured_entries=entries,
         )
         if required:
-            missing = required_coverage_missing(artifact_store, registry, list(kb.pages))
+            missing = required_coverage_missing(
+                artifact_store, registry, pages, captured_entries=entries
+            )
             if missing:
                 raise RetentionRequiredError(
                     "artifact retention is required but these referenced sources "
@@ -759,6 +831,7 @@ def activation_binding_hook(
                 )
         write_binding_manifest(artifact_store, manifest)
 
+    hook.capture_candidate = capture_candidate  # type: ignore[attr-defined]
     return hook
 
 
@@ -769,7 +842,12 @@ def _utc_now_iso() -> str:
 
 
 def verify_rollback_coverage(
-    artifact_store: SourceArtifactStore, version: str, *, required: bool
+    artifact_store: SourceArtifactStore,
+    version: str,
+    *,
+    required: bool,
+    required_pairs: set[tuple[str, str]] | None = None,
+    expected_fingerprint: str | None = None,
 ) -> None:
     """Gate ROLLBACK activation under required retention (#164, ADR-0020).
 
@@ -789,15 +867,56 @@ def verify_rollback_coverage(
             f"artifact retention is required but Published Version {version!r} "
             "has no private Source Binding Manifest to verify coverage"
         ) from exc
-    manifest = msgspec.json.decode(raw, type=SourceBindingManifest)
-    missing = [
-        f"{entry.page_title}:{entry.source_id}"
+    try:
+        manifest = msgspec.json.decode(raw, type=SourceBindingManifest)
+    except msgspec.DecodeError as exc:
+        raise RetentionRequiredError(
+            f"artifact retention manifest for {version!r} is corrupt"
+        ) from exc
+    if manifest.published_version != version:
+        raise RetentionRequiredError(
+            f"artifact retention manifest for {version!r} identifies "
+            f"Published Version {manifest.published_version!r}"
+        )
+    if expected_fingerprint is not None and manifest.fingerprint != expected_fingerprint:
+        raise RetentionRequiredError(
+            f"artifact retention manifest for {version!r} has fingerprint "
+            "different from the historical Published Version"
+        )
+
+    from lumio_wiki.source_registry import SourceRegistryError, _validate_source_id
+
+    def safe_source_id(source_id: str) -> str:
+        try:
+            _validate_source_id(source_id)
+        except SourceRegistryError:
+            return "<invalid source id>"
+        return source_id
+
+    entries = {
+        (entry.page_title, entry.source_id): entry
         for entry in manifest.entries
         if not entry.synthetic_page
-        and not artifact_store.artifact_exists(
-            source_id=entry.source_id, content_hash=entry.content_hash
-        )
+    }
+    missing = [
+        f"{page_title}:{safe_source_id(source_id)} (missing historical binding)"
+        for page_title, source_id in sorted(required_pairs or set())
+        if (page_title, source_id) not in entries
     ]
+    for entry in entries.values():
+        source_id = safe_source_id(entry.source_id)
+        if source_id == "<invalid source id>":
+            missing.append(f"{entry.page_title}:{source_id}")
+            continue
+        try:
+            raw_bytes = artifact_store.get_artifact(
+                source_id=entry.source_id, content_hash=entry.content_hash
+            )
+        except ArtifactStoreError:
+            missing.append(f"{entry.page_title}:{source_id}")
+            continue
+        if entry.size is not None and len(raw_bytes) != entry.size:
+            missing.append(f"{entry.page_title}:{source_id} (size mismatch)")
     if missing:
         raise RetentionRequiredError(
             "artifact retention is required but these sources bound by "

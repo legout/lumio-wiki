@@ -18,9 +18,10 @@ search work uniformly:
 
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, overload, runtime_checkable
 
 from lumio_wiki.fingerprint_store import FINGERPRINT_FILE
 
@@ -80,6 +81,10 @@ class IndexLocation(Protocol):
         """Write a metadata sidecar beside the index."""
         ...
 
+    def delete_sidecar(self, name: str) -> None:
+        """Delete a metadata sidecar when present."""
+        ...
+
 
 class LocalIndexLocation:
     """A LanceDB index on the local filesystem (the original behavior)."""
@@ -111,6 +116,9 @@ class LocalIndexLocation:
     def write_sidecar(self, name: str, data: bytes) -> None:
         self.path.mkdir(parents=True, exist_ok=True)
         (self.path / name).write_bytes(data)
+
+    def delete_sidecar(self, name: str) -> None:
+        (self.path / name).unlink(missing_ok=True)
 
 
 class RemoteIndexLocation:
@@ -195,6 +203,21 @@ class RemoteIndexLocation:
 
         obstore.put(store, self._sidecar_key(name), data)
 
+    def delete_sidecar(self, name: str) -> None:
+        store = self._require_store()
+        import obstore  # behind the '[s3]' extra
+
+        with suppress(FileNotFoundError):
+            obstore.delete(store, self._sidecar_key(name))
+
+
+@overload
+def as_location(value: None) -> None: ...
+
+
+@overload
+def as_location(value: str | Path | IndexLocation) -> IndexLocation: ...
+
 
 def as_location(value: str | Path | IndexLocation | None) -> IndexLocation | None:
     """Normalize a raw path/URI or ``IndexLocation`` into an ``IndexLocation``.
@@ -210,6 +233,4 @@ def as_location(value: str | Path | IndexLocation | None) -> IndexLocation | Non
         return value
     if isinstance(value, (str, Path)):
         return LocalIndexLocation(value)
-    raise TypeError(
-        f"expected a Path/str or IndexLocation, got {type(value).__name__}"
-    )
+    raise TypeError(f"expected a Path/str or IndexLocation, got {type(value).__name__}")

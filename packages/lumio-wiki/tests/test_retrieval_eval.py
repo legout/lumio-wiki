@@ -153,7 +153,7 @@ class TestGoldSet:
         assert first.has_graph_seeds
         assert not gs.queries[1].has_graph_seeds
 
-    def test_load_drops_rows_with_empty_relevant(self, tmp_path):
+    def test_load_preserves_explicit_negative_rows(self, tmp_path):
         yaml = (
             "queries:\n"
             '  - query: "ok"\n'
@@ -165,13 +165,85 @@ class TestGoldSet:
         path = tmp_path / "g.yaml"
         path.write_text(yaml, encoding="utf-8")
         gs = ev.load_gold_set(path)
-        assert gs.size == 1
+        assert gs.size == 2
         assert gs.queries[0].query == "ok"
+        assert gs.queries[1].relevant == frozenset()
 
     def test_defaults_ks_when_omitted(self, tmp_path):
         path = tmp_path / "g.yaml"
         path.write_text("queries:\n  - query: q\n    relevant:\n      - R\n", encoding="utf-8")
         assert ev.load_gold_set(path).ks == ev.DEFAULT_KS
+
+
+def test_hard_negative_and_passage_metrics_are_disclosed():
+    kb = KnowledgeBase(
+        root=Path("."),
+        pages=[
+            _page(
+                "Passage",
+                "# Intro\ncommon context\n## Deep\nneedle evidence\n",
+            )
+        ],
+    )
+    gold = ev.GoldSet(
+        name="metrics",
+        queries=(
+            ev.GoldQuery(
+                "needle",
+                frozenset({"Passage"}),
+                passages=("Passage#Deep",),
+            ),
+            ev.GoldQuery("unrelated common", frozenset()),
+        ),
+    )
+    report = ev.evaluate(kb, gold, stages=[ev.ZeroIndexLexicalStage()], ks=(1,))
+    stage = report.stage("zero-index-lexical")
+    assert stage is not None
+    assert stage.negative_n == 1
+    assert stage.negative_success_rate == 0.0
+    assert stage.citation_coverage == 1.0
+    assert stage.passage_recall == 1.0
+    payload = report.to_dict()
+    assert payload["corpus_pages"] == 1
+    assert payload["disclosures"]
+    assert payload["stages"][0]["negative_success_rate"] == 0.0
+    # Negative semantics are disclosed as candidate abstention, explicitly
+    # NOT answer/refusal correctness (Plan 03 review).
+    assert any(
+        "candidate abstention" in d and "not answer or refusal correctness" in d
+        for d in payload["disclosures"]
+    )
+    # The negative row failed abstention: the stage retrieved a candidate for
+    # a query with an empty relevance set (abstention, not answer correctness).
+    assert report.queries[1].per_stage["zero-index-lexical"].negative_success is False
+    outcome = report.queries[0].per_stage["zero-index-lexical"]
+    assert outcome.passage_hits == 1
+
+
+def test_title_only_stage_discloses_evidence_metrics_as_unavailable():
+    class TitleOnlyStage:
+        name = "titles"
+        description = "title-only test stage"
+
+        def available(self):
+            return True
+
+        def applicable(self, query):
+            return True
+
+        def run(self, kb, query, *, k):
+            return ["Passage"]
+
+    kb = KnowledgeBase(root=Path("."), pages=[_page("Passage", "needle")])
+    gold = ev.GoldSet(
+        name="titles-only",
+        queries=(ev.GoldQuery("needle", frozenset({"Passage"}), passages=("Passage",)),),
+    )
+    report = ev.evaluate(kb, gold, stages=[TitleOnlyStage()], ks=(1,))
+    stage = report.stage("titles")
+    assert stage is not None
+    assert stage.citation_coverage is None
+    assert stage.passage_recall is None
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +296,7 @@ class TestStages:
         names = [s.name for s in stages]
         assert names == ["zero-index-lexical", "graph-expansion"]
 
-    def test_default_stages_adds_lancedb_when_index_dir_and_available(self):
+    def test_default_stages_adds_lancedb_when_index_dir_and_available(self, tmp_path):
         if not ev.lancedb_available():
             pytest.skip("lumio-lancedb not installed")
         adapter = ev.load_lancedb_adapter()
@@ -232,6 +304,24 @@ class TestStages:
         stages = ev.default_stages(lancedb_index_dir=Path("/tmp/x"), lancedb_adapter=adapter)
         names = [s.name for s in stages]
         assert names == ["zero-index-lexical", "graph-expansion", "lancedb-bm25"]
+        # With BM25 running but no embedder, the default report still
+        # discloses semantic/hybrid as unavailable rows instead of silently
+        # dropping them (Plan 03 review).
+        kb = KnowledgeBase(root=Path("."), pages=[_page("Alpha", "alpha needle")])
+        report = ev.evaluate(
+            kb,
+            ev.GoldSet(name="g", queries=(ev.GoldQuery("alpha", frozenset({"Alpha"})),)),
+            lancedb_index_dir=tmp_path / "lance",
+            lancedb_adapter=adapter,
+        )
+        bm25 = report.stage("lancedb-bm25")
+        assert bm25 is not None and bm25.available
+        for name in ("lancedb-semantic", "lancedb-hybrid"):
+            row = report.stage(name)
+            assert row is not None
+            assert not row.available
+            assert row.n == 0
+            assert row.skipped_reason == "no embedder supplied"
 
     def test_default_stages_adds_semantic_hybrid_with_embedder(self):
         if not ev.lancedb_available():
@@ -258,3 +348,21 @@ class TestStages:
         stages = ev.default_stages(lancedb_index_dir=Path("/tmp/x"), lancedb_adapter=None)
         names = [s.name for s in stages]
         assert names == ["zero-index-lexical", "graph-expansion"]
+        # The default report must disclose the omitted LanceDB stages as
+        # unavailable rows with a truthful dependency reason, not silently
+        # drop them (Plan 03 review).
+        kb = KnowledgeBase(root=Path("."), pages=[_page("Alpha", "alpha needle")])
+        report = ev.evaluate(
+            kb,
+            ev.GoldSet(name="g", queries=(ev.GoldQuery("alpha", frozenset({"Alpha"})),)),
+        )
+        for name in ("lancedb-bm25", "lancedb-semantic", "lancedb-hybrid"):
+            row = report.stage(name)
+            assert row is not None
+            assert not row.available
+            assert row.n == 0
+            if not ev.lancedb_available():
+                assert row.skipped_reason == "lumio-lancedb not installed"
+            else:
+                assert row.skipped_reason == "LanceDB retrieval adapter not injected"
+        assert "skipped:" in report.to_table()

@@ -35,14 +35,20 @@ def test_rebuilding_restores_freshness():
 
         kb, _ = load_knowledge_base(source)
         kb = build_lancedb_kb(kb, index_dir)
-        assert is_fresh(kb.stored_fingerprint(), fingerprint_sources(source))
+        stored = kb.stored_fingerprint()
+        assert stored is not None
+        assert is_fresh(stored, fingerprint_sources(source))
 
         overview = source / "overview.md"
         overview.write_text(overview.read_text() + "\n")
-        assert not is_fresh(kb.stored_fingerprint(), fingerprint_sources(source))
+        stored = kb.stored_fingerprint()
+        assert stored is not None
+        assert not is_fresh(stored, fingerprint_sources(source))
 
         kb = build_lancedb_kb(kb, index_dir)
-        assert is_fresh(kb.stored_fingerprint(), fingerprint_sources(source))
+        stored = kb.stored_fingerprint()
+        assert stored is not None
+        assert is_fresh(stored, fingerprint_sources(source))
 
 
 def test_rebuilding_from_source_reproduces_index():

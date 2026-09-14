@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
@@ -13,9 +12,13 @@ from lumio_wiki.embeddings import (
     EmbeddingError,
     RetrievalMode,
 )
-from lumio_wiki.evidence import page_evidences, retrieval_result_from_evidence
+from lumio_wiki.evidence import (
+    deduplicate_results,
+    page_evidences,
+    retrieval_result_from_evidence,
+)
 from lumio_wiki.fingerprint_store import save_stored_fingerprint
-from lumio_wiki.page_search import normalize_search_query
+from lumio_wiki.page_search import _TOKEN_RE, normalize_search_query
 from lumio_wiki.records import (
     CompiledPage,
     Evidence,
@@ -24,8 +27,6 @@ from lumio_wiki.records import (
     SourceFingerprint,
     TraceStage,
 )
-
-_TOKEN_RE = re.compile(r"[^\W_]+(?:['’\-][^\W_]+)*", re.UNICODE)
 
 
 class RetrievalAdapter(Protocol):
@@ -122,7 +123,7 @@ class ZeroIndexRetrieval:
                     matching = [t for t in tokens if t and t in folded]
                 if not matching:
                     continue
-                score = float(len(matching))
+                score = len(matching) * 1.0
                 title_folded = evidence.page_title.casefold()
                 if any(t in title_folded for t in matching):
                     score += 2.0
@@ -132,17 +133,15 @@ class ZeroIndexRetrieval:
         # the whole pass: candidates the ranking inspected, results kept by
         # the ``limit`` cut, and the difference dropped. Every result carries
         # the same trace, so the counts are identical and truthful on each.
+        scored.sort(key=lambda item: (-item[0], item[1]))
         trace = RetrievalTrace(
             stages=[
                 TraceStage("search", "zero-index lexical match over Compiled Pages"),
                 TraceStage("rank", "deterministic field-aware Evidence ranking"),
             ],
             candidates_seen=len(scored),
-            results_returned=min(len(scored), max(limit, 0)),
-            results_dropped=max(len(scored) - limit, 0),
         )
-        scored.sort(key=lambda item: (-item[0], item[1]))
-        return [
+        results = [
             retrieval_result_from_evidence(
                 evidence,
                 source=source,
@@ -150,5 +149,6 @@ class ZeroIndexRetrieval:
                 reason="zero-index lexical match",
                 trace=trace,
             )
-            for score, _id, evidence, source in scored[:limit]
+            for score, _id, evidence, source in scored
         ]
+        return deduplicate_results(results, limit=limit, candidates_seen=len(scored), query=query)

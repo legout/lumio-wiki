@@ -10,6 +10,8 @@ queries:
   - query: "ingestion pipeline"
     relevant:
       - "Ingestion Pipeline"
+    passages:
+      - "Ingestion Pipeline#Ingestion Pipeline"
     note: "lexical: single obvious hub term"
   - query: "ingestion pipeline overview"
     relevant:
@@ -350,3 +352,6 @@ queries:
     seeds:
       - "Access Control"
     note: "semantic probe: 'authorization' ~ 'access control' (synonym)"
+  - query: "pipeline security"
+    relevant: []
+    note: "hard negative: common corpus terms, but no answer is expected"

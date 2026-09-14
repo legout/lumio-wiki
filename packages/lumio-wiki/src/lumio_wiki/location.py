@@ -39,7 +39,6 @@ from lumio_wiki.knowledge_base import (
     ExtractionDiagnostic,
     KnowledgeBase,
     KnowledgeBaseError,
-    fingerprint_sources,
     load_knowledge_base,
 )
 from lumio_wiki.records import (
@@ -163,7 +162,6 @@ class KnowledgeBaseSnapshot(msgspec.Struct, frozen=True):
     container URI); retrieval then stays on the always-available zero-index
     path.
     """
-
     published_version: str | None = None
     """The exact immutable S3 Published Version resolved for this Snapshot.
 
@@ -282,9 +280,7 @@ class KnowledgeBaseSnapshot(msgspec.Struct, frozen=True):
     # Discovery Graph traversal (ADR-0011).
     # ------------------------------------------------------------------
 
-    def related_from(
-        self, title: str, relationship_type: str | None = None
-    ) -> list[Relationship]:
+    def related_from(self, title: str, relationship_type: str | None = None) -> list[Relationship]:
         return self.knowledge_base.related_from(title, relationship_type)
 
     def graph_path(self, source_title: str, target_title: str) -> list[str] | None:
@@ -374,10 +370,12 @@ class FilesystemLocation:
         if not root.is_dir():
             raise KnowledgeBaseError(f"path is not a directory: {root}")
         kb, report = load_knowledge_base(root)
+        if kb.source_fingerprint is None:  # pragma: no cover - loaded KBs capture identity
+            raise KnowledgeBaseError("loaded Knowledge Base has no captured source identity")
         return KnowledgeBaseSnapshot(
             knowledge_base=kb,
             validation_report=report,
-            fingerprint=fingerprint_sources(root),
+            fingerprint=kb.source_fingerprint,
             location=self,
         )
 

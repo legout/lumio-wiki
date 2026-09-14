@@ -20,6 +20,11 @@ from typing import TYPE_CHECKING
 import msgpack
 import msgspec
 import pytest
+from lumio_wiki.artifact_store import (
+    InMemoryArtifactStore,
+    SourceBindingManifest,
+    activation_binding_hook,
+)
 from lumio_wiki.graph_state import GRAPH_ARTIFACT_FILENAME, deserialize_graph
 from lumio_wiki.knowledge_base import (
     EXTRACTOR_VERSION,
@@ -48,6 +53,7 @@ from lumio_wiki.s3_publish import (
     publish_s3_version,
     rollback_s3_version,
 )
+from lumio_wiki.source_registry import SourceRegistry
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from obstore.store import ObjectStore
@@ -95,6 +101,61 @@ def _canonical(root: Path) -> dict[str, bytes]:
 # ---------------------------------------------------------------------------
 # 1. Immutable publication writes a complete version prefix + manifest.
 # ---------------------------------------------------------------------------
+
+
+def test_s3_publish_uses_one_captured_candidate(tmp_path):
+    root = tmp_path / "kb"
+    import shutil
+
+    shutil.copytree(VALID, root)
+    captured_digest = fingerprint_sources(root).digest
+    registry = SourceRegistry(tmp_path / "registry")
+    registry.register_or_reuse(
+        "lumio-overview", b"captured source", filename="source.txt", content_type="text/plain"
+    )
+    artifact_store = InMemoryArtifactStore()
+    hook = activation_binding_hook(artifact_store=artifact_store, registry=registry, required=False)
+
+    def builder(*, fingerprint, **_kwargs):
+        page = root / "overview.md"
+        page.write_text(
+            page.read_text(encoding="utf-8").replace('id: "lumio-overview"', 'id: "later-source"')
+            + "\nlater edit\n",
+            encoding="utf-8",
+        )
+        registry.register_or_reuse(
+            "later-source", b"later source", filename="later.txt", content_type="text/plain"
+        )
+        return RemoteIndexCompletion(fingerprint=fingerprint.digest)
+
+    store = _store()
+    manifest = publish_s3_version(
+        store,
+        "kb",
+        source_root=root,
+        version="v1",
+        index_builder=builder,
+        before_activation=hook,
+    )
+    published = bytes(obstore.get(store, "kb/v1/overview.md").bytes())
+    graph = deserialize_graph(
+        bytes(obstore.get(store, f"kb/v1/{DERIVED_DIR}/{GRAPH_ARTIFACT_FILENAME}").bytes())
+    )
+    completion = msgspec.json.decode(
+        bytes(obstore.get(store, f"kb/v1/{LANCE_DERIVED_DIR}/{LANCE_COMPLETION_OBJECT}").bytes()),
+        type=RemoteIndexCompletion,
+    )
+    binding = msgspec.json.decode(
+        artifact_store.get_binding_manifest("v1"), type=SourceBindingManifest
+    )
+
+    assert b"later edit" not in published
+    assert b"lumio-overview" in published
+    assert manifest.fingerprint == captured_digest != fingerprint_sources(root).digest
+    assert graph is not None and graph.fingerprint_digest == captured_digest
+    assert completion.fingerprint == captured_digest
+    assert binding.fingerprint == captured_digest
+    assert {entry.source_id for entry in binding.entries} == {"lumio-overview"}
 
 
 @pytest.mark.parametrize("root", [VALID, CATEGORIZED], ids=lambda p: p.name)

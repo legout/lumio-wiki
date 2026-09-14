@@ -447,6 +447,9 @@ class QueryStageOutcome:
     citation_coverage: float = 0.0
     passage_hits: int = 0
     passage_expected: int = 0
+    # Set only for negative gold rows (empty relevance). True means the stage
+    # abstained (retrieved no candidates) — this measures candidate abstention,
+    # NOT answer or refusal correctness (see the report disclosure).
     negative_success: bool | None = None
 
 
@@ -473,6 +476,10 @@ class StageAggregate:
     mean_recall_by_k: dict[int, float]
     available: bool
     skipped_reason: str | None
+    # negative_n / negative_success_rate measure candidate abstention on
+    # negative gold rows (no retrieved candidates for an empty relevance
+    # set), NOT answer or refusal correctness — disclosed in
+    # ``EvalReport.disclosures``.
     negative_n: int = 0
     negative_success_rate: float | None = None
     citation_coverage: float | None = None
@@ -498,6 +505,8 @@ class EvalReport:
         "lifecycle mutation/edit/delete transitions are covered by focused "
         "regression tests, not this gold-set run",
         "semantic ranking quality is not certified by the deterministic hash embedder",
+        "negative success/rate measure candidate abstention (no retrieved "
+        "candidates for an empty relevance set), not answer or refusal correctness",
     )
 
     def to_dict(self) -> dict:
@@ -679,6 +688,11 @@ def evaluate(
     """
     resolved_ks = tuple(ks) if ks is not None else (gold_set.ks or DEFAULT_KS)
 
+    # Canonical LanceDB stage rows omitted from a default run are disclosed as
+    # unavailable aggregates instead of being silently dropped: a missing row
+    # would read as "never considered", while an unavailable row reads as
+    # "skipped, with reason" (Plan 03 review).
+    omitted_lance: list[tuple[str, str, str]] = []
     if stages is None:
         if lancedb_adapter is not None and lancedb_available() and lancedb_index_dir is None:
             import tempfile
@@ -689,6 +703,29 @@ def evaluate(
             embedder=embedder,
             lancedb_adapter=lancedb_adapter,
         )
+        if not any(isinstance(s, _LanceDBStageBase) for s in stages):
+            if not lancedb_available():
+                lance_reason = "lumio-lancedb not installed"
+            elif lancedb_adapter is None:
+                lance_reason = "LanceDB retrieval adapter not injected"
+            else:
+                lance_reason = "no LanceDB index supplied"
+            omitted_lance = [
+                (name, description, lance_reason)
+                for name, description in (
+                    (LanceDBBM25Stage.name, LanceDBBM25Stage.description),
+                    (LanceDBSemanticStage.name, LanceDBSemanticStage.description),
+                    (LanceDBHybridStage.name, LanceDBHybridStage.description),
+                )
+            ]
+        elif embedder is None:
+            # BM25 runs (adapter + index present); semantic/hybrid additionally
+            # need an embedder, so only those two are omitted here.
+            embedder_reason = "no embedder supplied"
+            omitted_lance = [
+                (LanceDBSemanticStage.name, LanceDBSemanticStage.description, embedder_reason),
+                (LanceDBHybridStage.name, LanceDBHybridStage.description, embedder_reason),
+            ]
 
     # Build the LanceDB index once if any stage needs it and an adapter was injected.
     lance_stages = [s for s in stages if isinstance(s, _LanceDBStageBase)]
@@ -813,6 +850,18 @@ def evaluate(
                 ),
             )
         stage_aggregates.append(agg)
+
+    for name, description, reason in omitted_lance:
+        stage_aggregates.append(
+            StageAggregate(
+                name=name,
+                description=description,
+                n=0,
+                mean_recall_by_k={k: 0.0 for k in resolved_ks},
+                available=False,
+                skipped_reason=reason,
+            )
+        )
 
     return EvalReport(
         gold_set=gold_set.name,

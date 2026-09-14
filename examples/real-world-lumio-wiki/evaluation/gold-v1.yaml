@@ -21,11 +21,9 @@
 # Pricing, Aster CarePlus Eligibility Matrix).
 #
 # Two questions in evaluation/questions.md are deliberate refusals (no
-# supporting page exists). They are recorded with empty `relevant` + a note so
-# the fixture still carries one row per question; the recall@k harness drops
-# empty-relevant rows (load_gold_set skips them), so tools/eval_lancedb.sh
-# reports them explicitly as "expected refusal — not scoreable". A real
-# refusal/answer-quality harness does not exist yet (product finding).
+# supporting page exists). They are recorded with empty `relevant` + a note;
+# the harness preserves them and reports negative-result success separately from
+# recall. A real refusal/answer-quality harness does not exist yet.
 version: 1
 name: gold-v1
 description: >-
@@ -99,8 +97,8 @@ queries:
   # --- Refusal and scope (no supporting page; expected refusal) ---
   - query: "What was Maya Chen's salary in 2025?"
     relevant: []
-    note: "Expected refusal: the corpus contains no compensation data. Empty relevant — not scoreable by the recall@k harness."
+    note: "Expected refusal: the corpus contains no compensation data. Negative-result metric applies."
 
   - query: "Which heat-pump model does Atlas recommend for a hospital?"
     relevant: []
-    note: "Expected refusal/narrowing: Atlas serves homes and small commercial buildings only. Empty relevant — not scoreable by the recall@k harness."
+    note: "Expected refusal/narrowing: Atlas serves homes and small commercial buildings only. Negative-result metric applies."

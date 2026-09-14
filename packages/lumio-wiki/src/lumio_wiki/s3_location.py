@@ -49,7 +49,6 @@ from lumio_wiki.graph_state import (
 )
 from lumio_wiki.knowledge_base import (
     KnowledgeBaseError,
-    _fingerprint_sources,
     _InMemoryKbSource,
     _load_and_validate,
 )
@@ -517,7 +516,9 @@ class S3Location:
 
         # Validate the Published Version fingerprint recorded in the manifest
         # against the content we just materialized: a mismatch is corruption.
-        actual_fp = _fingerprint_sources(source)
+        actual_fp = kb.source_fingerprint
+        if actual_fp is None:  # pragma: no cover - captured sources always set it
+            raise KnowledgeBaseError("S3 Snapshot has no captured source identity")
         if actual_fp.digest != manifest.fingerprint:
             raise KnowledgeBaseError(
                 f"S3 corruption: Published Version fingerprint {actual_fp.digest!r} "

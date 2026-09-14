@@ -19,7 +19,9 @@ Trace (ADR-0013).
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
+from typing import Any, cast
 
 import msgspec
 
@@ -29,6 +31,8 @@ import msgspec
 # environments where the dependency failed to initialize. The build/search call
 # sites below resolve to ``None`` only when the optional dependency is
 # unavailable; a real build/search then raises an actionable error.
+pa: Any
+FTS: Any
 try:  # pragma: no cover - exercised indirectly via build/search tests
     import pyarrow as pa
     from lancedb.index import FTS
@@ -112,6 +116,19 @@ def _load_model(index: IndexLocation) -> EmbeddingModelInfo | None:
     return msgspec.json.decode(data, type=EmbeddingModelInfo)
 
 
+def _invalidate_semantic_state(index: IndexLocation) -> None:
+    """Remove vectors and model identity before a new lexical lifecycle."""
+    db = index.connect()
+    if VECTOR_TABLE_NAME in db.list_tables().tables:
+        db.drop_table(VECTOR_TABLE_NAME)
+    index.delete_sidecar(EMBEDDING_MODEL_FILE)
+
+
+def _invalidate_fingerprint(index: IndexLocation) -> None:
+    """Ensure a failed multi-table build cannot advertise freshness."""
+    index.delete_sidecar(FINGERPRINT_FILE)
+
+
 def _zero_index_fallback(
     pages,
     query: str,
@@ -122,6 +139,7 @@ def _zero_index_fallback(
     exc: BaseException | None = None,
     missing: bool = False,
     fallback_callback: Callable[[str], None] | None = None,
+    safe_detail: str | None = None,
 ) -> list[RetrievalResult]:
     """Fall back to always-available zero-index retrieval and record it.
 
@@ -135,8 +153,12 @@ def _zero_index_fallback(
         f"LanceDB index {reason} at {index.describe}; "
         f"fell back to zero-index retrieval over the same snapshot"
     )
-    if exc is not None:
-        detail += f" ({type(exc).__name__}: {exc})"
+    if safe_detail is not None:
+        detail += f" ({safe_detail})"
+    elif exc is not None:
+        # Backend exceptions may contain endpoint URLs or credentials; traces
+        # disclose the failure class without exposing transport details.
+        detail += f" ({type(exc).__name__})"
     if fallback_callback is not None:
         fallback_callback(detail)
     results = ZeroIndexRetrieval().retrieve(
@@ -177,7 +199,11 @@ def _indexed_page_scores(index: IndexLocation, query: str) -> dict[str, float] |
         .limit(row_count)
         .to_list()
     )
-    return {row["page_path"]: float(row["_score"]) for row in rows}
+    return {
+        row["page_path"]: score * 1.0
+        for row in rows
+        if isinstance((score := row["_score"]), (int, float))
+    }
 
 
 def search_pages(
@@ -240,7 +266,7 @@ def _row_from_evidence(evidence_obj: Evidence, source: str | None) -> dict:
     }
 
 
-def _schema() -> pa.Schema:
+def _schema() -> Any:
     return pa.schema(
         [
             pa.field("evidence_id", pa.string()),
@@ -256,7 +282,7 @@ def _schema() -> pa.Schema:
     )
 
 
-def _vector_schema(dimension: int) -> pa.Schema:
+def _vector_schema(dimension: int) -> Any:
     """Schema for the citation-ready vector index: Evidence fields plus a vector."""
     return pa.schema(
         [
@@ -272,6 +298,20 @@ def _vector_schema(dimension: int) -> pa.Schema:
             pa.field("vector", pa.list_(pa.float32(), dimension)),
         ]
     )
+
+
+def _deduplicate_results(
+    results: list[RetrievalResult],
+    *,
+    limit: int,
+    candidates_seen: int | None = None,
+    query: str | None = None,
+) -> list[RetrievalResult]:
+    """Use passage deduplication when the installed core provides it."""
+    deduplicate = getattr(evidence, "deduplicate_results", None)
+    if deduplicate is None:
+        return results[:limit]
+    return deduplicate(results, limit=limit, candidates_seen=candidates_seen, query=query)
 
 
 def _retrieval_result_from_row(
@@ -301,7 +341,7 @@ def _retrieval_result_from_row(
     )
 
 
-def _page_schema() -> pa.Schema:
+def _page_schema() -> Any:
     return pa.schema(
         [
             pa.field("page_path", pa.string()),
@@ -321,9 +361,7 @@ def _page_search_row(page: CompiledPage) -> dict[str, str]:
     }
 
 
-def build_lexical_index(
-    pages: list[CompiledPage], index_dir: str | Path | IndexLocation
-) -> None:
+def build_lexical_index(pages: list[CompiledPage], index_dir: str | Path | IndexLocation) -> None:
     """Build fresh Evidence and page-oriented full-text indexes."""
     index = as_location(index_dir)
     index.prepare()
@@ -356,9 +394,7 @@ def _eligible_page_predicate(paths: set[str]) -> str:
     doubling so page paths cannot break out of the string literal. The caller
     short-circuits an empty eligible set to ``[]`` before reaching here.
     """
-    quoted = ",".join(
-        "'" + path.replace("'", "''") + "'" for path in sorted(paths)
-    )
+    quoted = ",".join("'" + path.replace("'", "''") + "'" for path in sorted(paths))
     return f"page_path IN ({quoted})"
 
 
@@ -387,6 +423,8 @@ def search_lexical_index(
     Pages is ranked (issue #112): LanceDB applies the filter as a prefilter so
     ``limit`` binds over eligible-only Evidence. ``None`` means every page.
     """
+    if limit <= 0:
+        return []
     index = as_location(index_dir)
     if not index.has_index():
         return []
@@ -398,13 +436,6 @@ def search_lexical_index(
         return []
 
     table = db.open_table(TABLE_NAME)
-    trace = RetrievalTrace(
-        stages=[
-            TraceStage("search", "LanceDB BM25 full-text search"),
-            TraceStage("rank", "ranked by BM25 score"),
-        ]
-    )
-
     search = table.search(query, query_type="fts").select(
         [
             "evidence_id",
@@ -420,29 +451,42 @@ def search_lexical_index(
         ]
     )
     search = _apply_eligible_filter(search, eligible_paths)
-    rows = search.limit(limit).to_list()
+    fetch = max(limit * 4, limit)
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        batch = search.limit(fetch).offset(offset).to_list()
+        rows.extend(batch)
+        trace = RetrievalTrace(stages=[TraceStage("search", "LanceDB BM25 full-text search")])
+        probe = [
+            _retrieval_result_from_row(
+                row, score=row["_score"], reason="BM25 lexical match", trace=trace
+            )
+            for row in rows
+        ]
+        if len(_deduplicate_results(probe, limit=limit)) >= limit or len(batch) < fetch:
+            break
+        offset += len(batch)
 
-    # Deterministic accounting: the index holds one candidate per Evidence
-    # unit; ``candidates_seen`` is that total when eligibility was unrestricted
-    # (the prefilter applies inside the query) and ``results_dropped`` counts
-    # the candidates the ``limit`` cut.
-    candidates_seen = max(table.count_rows(), len(rows))
+    candidates_seen = len(rows)
     trace = RetrievalTrace(
         stages=[
             TraceStage("search", "LanceDB BM25 full-text search"),
             TraceStage("rank", "ranked by BM25 score"),
         ],
         candidates_seen=candidates_seen,
-        results_returned=len(rows),
-        results_dropped=max(candidates_seen - len(rows), 0),
     )
 
-    return [
+    results = [
         _retrieval_result_from_row(
-            row, score=row["_score"], reason="BM25 lexical match", trace=trace
+            row,
+            score=row["_score"],
+            reason="BM25 lexical match",
+            trace=trace,
         )
         for row in rows
     ]
+    return _deduplicate_results(results, limit=limit, candidates_seen=candidates_seen, query=query)
 
 
 def _validate_embedding_vectors(
@@ -450,9 +494,7 @@ def _validate_embedding_vectors(
 ) -> None:
     """Validate an embedder response: count and per-vector dimension."""
     if len(vectors) != expected_count:
-        raise EmbeddingError(
-            f"embedder returned {len(vectors)} vectors for {expected_count} texts"
-        )
+        raise EmbeddingError(f"embedder returned {len(vectors)} vectors for {expected_count} texts")
     for i, vec in enumerate(vectors):
         if len(vec) != dimension:
             raise EmbeddingDimensionMismatch(
@@ -539,6 +581,8 @@ def search_semantic_index(
     ``eligible_paths`` is provided only Evidence from those Compiled Pages is
     ranked (issue #112); ``None`` means every page.
     """
+    if limit <= 0:
+        return []
     index = as_location(index_dir)
     if eligible_paths is not None and not eligible_paths:
         return []
@@ -558,21 +602,34 @@ def search_semantic_index(
     fetch = min(total, max(limit * 4, limit))
     search = table.search(query).metric("cosine").select(_SEMANTIC_SELECT)
     search = _apply_eligible_filter(search, eligible_paths)
-    rows = search.limit(fetch).to_list()
-
-    below_threshold = 0
+    rows: list[dict] = []
     scored: list[tuple[float, dict]] = []
-    for row in rows:
-        similarity = 1.0 - float(row["_distance"])
-        if similarity < score_threshold:
-            below_threshold += 1
-            continue
-        scored.append((similarity, row))
-    # Deterministic re-rank: similarity desc, then evidence_id asc for stable ties.
-    scored.sort(key=lambda item: (-item[0], item[1]["evidence_id"]))
-    kept_pre_limit = len(scored)
-    scored = scored[:limit]
-
+    offset = 0
+    while True:
+        batch = search.limit(fetch).offset(offset).to_list()
+        rows.extend(batch)
+        for row in batch:
+            distance = row["_distance"]
+            if not isinstance(distance, (int, float)):
+                continue
+            similarity = 1.0 - distance
+            if similarity < score_threshold:
+                continue
+            scored.append((similarity, row))
+        # Deterministic re-rank: similarity desc, then evidence_id asc for stable ties.
+        scored.sort(key=lambda item: (-item[0], item[1]["evidence_id"]))
+        trace = RetrievalTrace(
+            stages=[TraceStage("semantic-search", "LanceDB cosine vector search")]
+        )
+        probe = [
+            _retrieval_result_from_row(
+                row, score=similarity, reason="cosine semantic similarity", trace=trace
+            )
+            for similarity, row in scored
+        ]
+        if len(_deduplicate_results(probe, limit=limit)) >= limit or len(batch) < fetch:
+            break
+        offset += len(batch)
     trace = RetrievalTrace(
         stages=[
             TraceStage(
@@ -590,15 +647,17 @@ def search_semantic_index(
         # Deterministic accounting: the vector candidates inspected, results
         # returned, and candidates dropped (below threshold or past ``limit``).
         candidates_seen=len(rows),
-        results_returned=len(scored),
-        results_dropped=below_threshold + max(kept_pre_limit - limit, 0),
     )
-    return [
+    results = [
         _retrieval_result_from_row(
-            row, score=similarity, reason="cosine semantic similarity", trace=trace
+            row,
+            score=similarity,
+            reason="cosine semantic similarity",
+            trace=trace,
         )
         for similarity, row in scored
     ]
+    return _deduplicate_results(results, limit=limit, candidates_seen=len(rows))
 
 
 def search_hybrid_index(
@@ -647,8 +706,8 @@ def search_hybrid_index(
         results_returned=min(len(fused), max(limit, 0)),
         results_dropped=max(len(fused) - limit, 0),
     )
-    ordered = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
-    return [
+    ordered = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
+    results = [
         RetrievalResult(
             evidence=by_id[eid].evidence,
             citation=by_id[eid].citation,
@@ -659,6 +718,7 @@ def search_hybrid_index(
         )
         for eid, score in ordered
     ]
+    return _deduplicate_results(results, limit=limit, candidates_seen=len(fused), query=query)
 
 
 class LanceDBRetrievalAdapter:
@@ -724,11 +784,26 @@ class LanceDBRetrievalAdapter:
         fingerprint=None,
     ) -> None:
         index = as_location(index_dir)
-        build_lexical_index(list(pages), index)
-        if fingerprint is not None:
-            _save_fingerprint(index, fingerprint)
-        if embedder is not None:
-            build_semantic_index(list(pages), index, embedder)
+        index.prepare()
+        # Invalidate before any overwrite. A lexical-build failure must never
+        # leave an old fingerprint or semantic sidecar blessing partial tables.
+        _invalidate_fingerprint(index)
+        _invalidate_semantic_state(index)
+        try:
+            build_lexical_index(list(pages), index)
+            if embedder is not None:
+                build_semantic_index(list(pages), index, embedder)
+            if fingerprint is not None:
+                _save_fingerprint(index, fingerprint)
+            self._expected_fingerprint = fingerprint
+        except Exception:
+            # Preserve the failed build's original error; freshness was
+            # invalidated before mutation, so this best-effort cleanup cannot
+            # make a partial index appear healthy.
+            with suppress(Exception):
+                _invalidate_semantic_state(index)
+            _invalidate_fingerprint(index)
+            raise
 
     def retrieve(
         self,
@@ -749,9 +824,7 @@ class LanceDBRetrievalAdapter:
         # Evidence to them via a LanceDB prefilter so ``limit`` binds over
         # eligible-only Evidence. The adapter consumes only page identities: it
         # never imports graph code or owns traversal.
-        eligible_paths = (
-            None if eligible_pages is None else {page.path for page in eligible_pages}
-        )
+        eligible_paths = None if eligible_pages is None else {page.path for page in eligible_pages}
         # A caller-supplied index_dir always wins (explicit per-call location);
         # otherwise fall back to a location bound at construction (e.g. a remote
         # S3 index for an S3 Snapshot, ADR-0013/#124). When neither is set,
@@ -761,9 +834,7 @@ class LanceDBRetrievalAdapter:
             return []
         index = as_location(effective_index)
         effective_fingerprint = (
-            expected_fingerprint
-            if expected_fingerprint is not None
-            else self._expected_fingerprint
+            expected_fingerprint if expected_fingerprint is not None else self._expected_fingerprint
         )
         # Validate logic up front so configuration/programming errors raise
         # clearly instead of being masked by the availability fallback below.
@@ -796,31 +867,42 @@ class LanceDBRetrievalAdapter:
             # so a stale remote index (built from a different Published Version)
             # is never silently served (ADR-0013, #122 AC3).
             stored_fp = _load_fingerprint(index)
-            if stored_fp is not None and effective_fingerprint is not None:
-                if stored_fp.digest != effective_fingerprint.digest:
-                    return _zero_index_fallback(
-                        pages, query, limit, eligible_pages, index,
-                        exc=ValueError(
-                            f"remote LanceDB fingerprint mismatch: "
-                            f"{stored_fp.digest[:12]}… != {effective_fingerprint.digest[:12]}…"
-                        ),
-                        fallback_callback=self._record_fallback,
-                    )
-            if mode == "lexical":
-                return search_lexical_index(
-                    index, query, limit, eligible_paths=eligible_paths
+            if effective_fingerprint is not None and (
+                stored_fp is None or stored_fp.digest != effective_fingerprint.digest
+            ):
+                detail = (
+                    "LanceDB index has no fingerprint"
+                    if stored_fp is None
+                    else "LanceDB fingerprint mismatch"
                 )
+                return _zero_index_fallback(
+                    pages,
+                    query,
+                    limit,
+                    eligible_pages,
+                    index,
+                    safe_detail=detail,
+                    fallback_callback=self._record_fallback,
+                )
+            if mode == "lexical":
+                return search_lexical_index(index, query, limit, eligible_paths=eligible_paths)
+            active_embedder: Embedder
+            if embedder is None:  # defensive narrowing after mode validation
+                raise EmbeddingError(
+                    f"{mode} retrieval requires an embedder; pass embedder= to retrieve()"
+                )
+            active_embedder = cast(Embedder, embedder)
             stored_model = _load_model(index)
             if stored_model is None:
                 raise EmbeddingNotBuiltError(
                     "no semantic index built; call build_index(..., embedder=...) first"
                 )
-            if stored_model != embedder.model_info:
+            if stored_model != active_embedder.model_info:
                 raise EmbeddingError(
                     "semantic index was built with a different embedding model; "
                     "rebuild the index with build_index(..., embedder=...)"
                 )
-            query_vector = embedder.embed([query])[0]
+            query_vector = active_embedder.embed([query])[0]
             if mode == "semantic":
                 return search_semantic_index(
                     index,
@@ -868,6 +950,16 @@ def build_lancedb_index(kb, index_dir, *, embedder: Embedder | None = None):
     (``entities`` / ``graph_edges``, issue #171) beside the Evidence tables,
     fingerprint-bound to the same Knowledge Base snapshot.
     """
+    # A convenience build is explicitly a current-source operation. Reload a
+    # captured view that drifted, while direct ``KnowledgeBase.build_index``
+    # remains strict for callers that need immutable-view guarantees.
+    captured = getattr(kb, "source_fingerprint", None)
+    if captured is not None and fingerprint_sources(kb.root).digest != captured.digest:
+        from lumio_wiki import load_knowledge_base
+
+        kb, report = load_knowledge_base(kb.root)
+        if not report.is_valid:
+            raise ValueError("cannot rebuild LanceDB index from an invalid Knowledge Base")
     result = kb.build_index(
         index_dir,
         embedder=embedder,
@@ -875,5 +967,7 @@ def build_lancedb_index(kb, index_dir, *, embedder: Embedder | None = None):
     )
     from lumio_lancedb.graph import build_graph_tables
 
-    build_graph_tables(result, index_dir, fingerprint_sources(kb.root))
+    if result.source_fingerprint is None:
+        raise ValueError("cannot build LanceDB graph tables without a captured source identity")
+    build_graph_tables(result, index_dir, result.source_fingerprint)
     return result
