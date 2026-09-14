@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-import sys
 from typing import Any
 
 from lumio_wiki.retrieval import RetrievalAdapter
@@ -23,14 +22,7 @@ def lancedb_available() -> bool:
     """Return whether all modules required by ``lumio-lancedb`` are installed.
 
     ``find_spec`` performs discovery without importing the optional package.
-    The legacy evaluation alias is honored when a caller has explicitly
-    monkeypatched it; normal CLI use never imports that module.
     """
-    legacy = sys.modules.get("lumio_wiki.retrieval_eval")
-    if legacy is not None:
-        override = legacy.__dict__.get("lancedb_available")
-        if override is not None and getattr(override, "__module__", None) != __name__:
-            return bool(override())
     return all(
         importlib.util.find_spec(name) is not None
         for name in ("lumio_lancedb", "lancedb", "pyarrow")

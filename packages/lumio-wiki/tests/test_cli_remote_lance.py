@@ -25,7 +25,6 @@ from lumio_wiki.location import FilesystemLocation, KnowledgeBaseSnapshot, Remot
 from lumio_wiki.records import (
     CompiledPage,
     EmbeddingModelInfo,
-    Relationship,
 )
 
 ROOT = Path(__file__).parents[3]
@@ -140,7 +139,6 @@ def _pages() -> list[CompiledPage]:
             path="overview.md",
             title="Overview",
             body="Lumio uses LanceDB for derived evidence retrieval.\n",
-            relationships=[Relationship(target="tech.md", type="depends-on")],
         ),
         CompiledPage(
             path="tech.md",
@@ -190,7 +188,7 @@ def test_retrieval_backend_rejects_unknown_value(monkeypatch):
 def test_lancedb_backend_without_adapter_is_actionable(monkeypatch, capsys):
     _route_s3(monkeypatch, _snapshot_with_descriptor(_fixture_snapshot()))
     monkeypatch.setenv("LUMIO_RETRIEVAL_BACKEND", "lancedb")
-    monkeypatch.setattr("lumio_wiki.retrieval_eval.lancedb_available", lambda: False)
+    monkeypatch.setattr("lumio_wiki.composition.lancedb_available", lambda: False)
     rc = cli.main(["search", "s3://bucket/kb", "architecture"])
     assert rc == 2
     assert "lumio-lancedb" in capsys.readouterr().err
@@ -207,7 +205,7 @@ def test_semantic_mode_over_s3_requires_lancedb_backend(monkeypatch, capsys):
 def test_index_dir_conflicts_with_s3_location(monkeypatch, capsys):
     _route_s3(monkeypatch, _snapshot_with_descriptor(_fixture_snapshot()))
     monkeypatch.setenv("LUMIO_RETRIEVAL_BACKEND", "lancedb")
-    monkeypatch.setattr("lumio_wiki.retrieval_eval.lancedb_available", lambda: True)
+    monkeypatch.setattr("lumio_wiki.composition.lancedb_available", lambda: True)
     rc = cli.main(["search", "s3://bucket/kb", "architecture", "--index-dir", "/tmp/lance"])
     assert rc == 2
     assert "--index-dir" in capsys.readouterr().err
@@ -492,9 +490,7 @@ def test_semantic_empty_fallback_still_discloses_missing_index(monkeypatch, caps
     monkeypatch.setattr(cli, "_bind_remote_lancedb", lambda s: (lumio_lancedb, location))
     monkeypatch.setattr(cli, "_resolve_embedder", lambda model=None: _FakeEmbedder())
 
-    rc = cli.main(
-        ["search", "s3://bucket/kb", "no-such-evidence", "--mode", "semantic"]
-    )
+    rc = cli.main(["search", "s3://bucket/kb", "no-such-evidence", "--mode", "semantic"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "note:" in out and "missing" in out and "zero-index" in out

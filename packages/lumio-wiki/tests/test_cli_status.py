@@ -94,8 +94,15 @@ def _snapshot_with_descriptor(snapshot, *, version="v1"):
 class _StubLanceLocation:
     """Stand-in for a lumio_lancedb IndexLocation with scripted behavior."""
 
-    def __init__(self, *, has_index=True, describe="s3://bucket/kb/v1/derived/lance",
-                 fingerprint=None, tables=("evidence", "pages"), error=None):
+    def __init__(
+        self,
+        *,
+        has_index=True,
+        describe="s3://bucket/kb/v1/derived/lance",
+        fingerprint=None,
+        tables=("evidence", "pages"),
+        error=None,
+    ):
         self._has_index = has_index
         self._describe = describe
         self._fingerprint = fingerprint
@@ -193,17 +200,15 @@ def test_status_retention_and_store_kind_without_secrets(tmp_path, monkeypatch):
 
 def test_status_lancedb_requested_but_not_installed(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text(
-        "\n".join(
-            [f"LUMIO_KB_PATH={FIXTURES / 'valid'}", "LUMIO_RETRIEVAL_BACKEND=lancedb"]
-        )
+        "\n".join([f"LUMIO_KB_PATH={FIXTURES / 'valid'}", "LUMIO_RETRIEVAL_BACKEND=lancedb"])
         + "\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
 
-    from lumio_wiki import retrieval_eval
+    from lumio_wiki import composition
 
-    monkeypatch.setattr(retrieval_eval, "lancedb_available", lambda: False)
+    monkeypatch.setattr(composition, "lancedb_available", lambda: False)
     status = cli._collect_status()
     assert status["lancedb_requested"] is True
     assert status["lancedb_available"] is False
@@ -213,17 +218,15 @@ def test_status_lancedb_requested_but_not_installed(tmp_path, monkeypatch):
 
 def test_status_local_lancedb_index_not_built_yet(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text(
-        "\n".join(
-            [f"LUMIO_KB_PATH={FIXTURES / 'valid'}", "LUMIO_RETRIEVAL_BACKEND=lancedb"]
-        )
+        "\n".join([f"LUMIO_KB_PATH={FIXTURES / 'valid'}", "LUMIO_RETRIEVAL_BACKEND=lancedb"])
         + "\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
 
-    from lumio_wiki import retrieval_eval
+    from lumio_wiki import composition
 
-    monkeypatch.setattr(retrieval_eval, "lancedb_available", lambda: True)
+    monkeypatch.setattr(composition, "lancedb_available", lambda: True)
     status = cli._collect_status()
     assert status["lancedb_healthy"] is None
     assert "no local derived index yet" in status["lancedb_fallback"]
@@ -268,9 +271,7 @@ def test_status_reader_lance_stale_fingerprint_mismatch(monkeypatch, tmp_path):
 
 def test_status_reader_lance_unavailable_degrades_truthfully(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    _reader_with_backend(
-        monkeypatch, _StubLanceLocation(error=RuntimeError("connection reset"))
-    )
+    _reader_with_backend(monkeypatch, _StubLanceLocation(error=RuntimeError("connection reset")))
     status = cli._collect_status()
     assert status["lancedb_healthy"] is False
     assert "unavailable" in status["lancedb_fallback"]
@@ -307,9 +308,7 @@ def test_status_output_never_contains_credentials(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_setup_summary_degrades_when_location_not_yet_resolvable(
-    monkeypatch, tmp_path, capsys
-):
+def test_setup_summary_degrades_when_location_not_yet_resolvable(monkeypatch, tmp_path, capsys):
     def _unreachable(uri):
         raise cli.CliError("could not resolve S3 Knowledge Base")
 

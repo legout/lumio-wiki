@@ -81,9 +81,7 @@ def kb_root(tmp_path: Path) -> Path:
         _page("Architecture", aliases=("Arch",)), encoding="utf-8"
     )
     # A second page sharing the "Lumio" alias makes alias resolution ambiguous.
-    (root / "platform.md").write_text(
-        _page("Lumio Platform", aliases=("Lumio",)), encoding="utf-8"
-    )
+    (root / "platform.md").write_text(_page("Lumio Platform", aliases=("Lumio",)), encoding="utf-8")
     return root
 
 
@@ -167,18 +165,10 @@ def test_resolve_entity_priority_id_then_title_then_alias(tmp_path: Path):
 
 
 def test_graph_retrieval_never_mutates_kb_files(kb_root: Path, kb: KnowledgeBase):
-    before = {
-        path.name: path.read_bytes()
-        for path in sorted(kb_root.rglob("*"))
-        if path.is_file()
-    }
+    before = {path.name: path.read_bytes() for path in sorted(kb_root.rglob("*")) if path.is_file()}
     kb.retrieve("Lumio body text", graph_seed_titles=["Lumio Overview"])
     kb.resolve_entity("Architecture")
-    after = {
-        path.name: path.read_bytes()
-        for path in sorted(kb_root.rglob("*"))
-        if path.is_file()
-    }
+    after = {path.name: path.read_bytes() for path in sorted(kb_root.rglob("*")) if path.is_file()}
     assert before == after
 
 
@@ -207,9 +197,7 @@ def test_entity_command_ambiguity_lists_candidates(
     assert "entity:lumio-platform" in out
 
 
-def test_entity_command_unresolved_returns_1(
-    kb_root: Path, capsys: pytest.CaptureFixture[str]
-):
+def test_entity_command_unresolved_returns_1(kb_root: Path, capsys: pytest.CaptureFixture[str]):
     rc = main(["entity", str(kb_root), "No Such Entity"])
     assert rc == 1
     err = capsys.readouterr().err
@@ -220,9 +208,9 @@ def test_entity_command_candidates_need_lancedb(
     kb_root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ):
     """AC4: FTS/vector resolution is unavailable TRUTHFULLY without the adapter."""
-    import lumio_wiki.retrieval_eval as retrieval_eval
+    import lumio_wiki.composition as composition
 
-    monkeypatch.setattr(retrieval_eval, "lancedb_available", lambda: False)
+    monkeypatch.setattr(composition, "lancedb_available", lambda: False)
     rc = main(["entity", str(kb_root), "Lumio", "--candidates"])
     assert rc != 0
     captured = capsys.readouterr()
