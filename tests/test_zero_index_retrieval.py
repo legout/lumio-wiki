@@ -85,6 +85,25 @@ def test_fenced_code_headings_are_not_retrievable_sections():
     assert result.citation.section_title == "Real"
 
 
+def test_page_read_result_retains_identity_claims_and_review_metadata(tmp_path):
+    """The SDK ``PageRead`` seam carries Entity/Claim/Evidence and review
+    metadata in every bounded read (A6 remediation); raw ``content`` stays
+    byte-lossless canonical Markdown."""
+    kb, _report = load_knowledge_base(FIXTURES / "categorized_kb")
+    bounded = kb.read_page("Lumio Overview", max_lines=1)
+    assert bounded.truncated is True
+    assert bounded.entity_id == "entity:lumio-overview"
+    assert bounded.lifecycle == "approved"
+    assert bounded.visibility == "public"
+    assert bounded.review_after is None
+    assert [(c.id, c.predicate, c.status, c.object) for c in bounded.claims] == [
+        ("claim:lumio-overview-uses-acme", "uses", "accepted", "entity:acme-corp")
+    ]
+    assert bounded.claims[0].evidence[0].section == "Lumio Overview"
+    raw = kb.read_page("Lumio Overview", raw=True)
+    assert raw.content == (FIXTURES / "categorized_kb" / "concepts" / "overview.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_bounded_page_reads_share_the_fence_aware_section_parser(tmp_path):

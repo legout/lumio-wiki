@@ -269,6 +269,9 @@ class PageRead(msgspec.Struct, frozen=True):
     total_lines: int = 0
     truncated: bool = False
     omitted_lines: int = 0
+    # Bounded reads retain the identity, Claim/Evidence, and review metadata a
+    # safe edit needs (A6 remediation): truncation bounds the CONTENT, never
+    # the page's canonical identity.
     entity_id: str | None = None
     entity_types: list[str] = msgspec.field(default_factory=list)
     claims: list[Claim] = msgspec.field(default_factory=list)

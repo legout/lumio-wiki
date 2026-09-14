@@ -563,6 +563,9 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
             total_lines=total_lines,
             truncated=truncated,
             omitted_lines=omitted_lines,
+            # Identity, Claim/Evidence, and review metadata survive every
+            # bound: an agent editing from a bounded read never has to guess
+            # the page's Entity ID, owned Claims, or review state (A6).
             entity_id=page.id or None,
             entity_types=list(page.entity_types),
             claims=list(page.claims),

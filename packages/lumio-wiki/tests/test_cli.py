@@ -111,9 +111,9 @@ def test_search_semantic_guard_when_lancedb_unavailable(
 ):
     """--mode semantic degrades to an install-hint CliError (exit 2) instead of
     an opaque ImportError when lumio-lancedb is absent (ADR-0010)."""
-    from lumio_wiki import retrieval_eval
+    from lumio_wiki import composition
 
-    monkeypatch.setattr(retrieval_eval, "lancedb_available", lambda: False)
+    monkeypatch.setattr(composition, "lancedb_available", lambda: False)
     rc = main(["search", str(kb_root), "warranty", "--mode", "semantic"])
     assert rc == 2
     assert "lumio-lancedb" in capsys.readouterr().err
@@ -126,9 +126,9 @@ def test_search_semantic_needs_embedder_hint(
     reports the embedder install hint (exit 2) rather than a bare ImportError."""
     import importlib.util
 
-    from lumio_wiki import retrieval_eval
+    from lumio_wiki import composition
 
-    monkeypatch.setattr(retrieval_eval, "lancedb_available", lambda: True)
+    monkeypatch.setattr(composition, "lancedb_available", lambda: True)
     # Force the local sentence-transformers path to look absent and clear the
     # provider env so neither embedder source resolves.
     real_find_spec = importlib.util.find_spec
@@ -342,6 +342,153 @@ def test_eval_semantic_model_missing_extra_guidance(
 def test_page_unknown_title_returns_1(kb_root: Path):
     rc = main(["page", str(kb_root), "Nonexistent Page"])
     assert rc == 1
+
+
+_FENCED_PAGE = textwrap.dedent(
+    """\
+    ---
+    title: "Fenced"
+    aliases: []
+    tags:
+      - "fenced"
+    summary: "Fence-aware section selection."
+    lifecycle: "draft"
+    visibility: "public"
+    sources:
+      - id: "fenced"
+        title: "Fenced test source"
+    synthetic: false
+    ---
+
+    # Actual
+
+    Intro before the example fence.
+
+    ```markdown
+    ```python
+    ## Fake
+    needle in an example fence
+    ```
+
+    ## Real
+
+    needle in published content
+    """
+)
+
+
+def test_page_section_read_ignores_headings_inside_fenced_code_blocks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """``page --section`` uses the ONE fence-aware section parser shared with
+    Evidence extraction: an ATX heading inside a fenced code block is
+    published example content, never a selectable section boundary."""
+    root = tmp_path / "kb"
+    shutil.copytree(FIXTURES / "valid", root)
+    (root / "fenced.md").write_text(_FENCED_PAGE, encoding="utf-8")
+
+    # The fenced fake heading is not a section: selecting it is an error.
+    assert main(["page", str(root), "Fenced", "--section", "Fake"]) == 1
+    assert "section not found" in capsys.readouterr().err
+
+    # The real published section is still selectable, fence untouched.
+    assert main(["page", str(root), "Fenced", "--section", "Real"]) == 0
+    out = capsys.readouterr().out
+    assert "needle in published content" in out
+    # The fenced example stays inside the enclosing # Actual section (the
+    # top-level section spans to the end of the page): sections split at
+    # REAL headings only.
+    assert main(["page", str(root), "Fenced", "--section", "Actual"]) == 0
+    actual = capsys.readouterr().out
+    assert "## Fake" in actual
+    assert "needle in an example fence" in actual
+
+
+_CATEGORIZED_FIXTURE = FIXTURES / "categorized_kb"
+
+
+def test_page_bounded_read_retains_entity_claims_and_review_metadata(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """A bounded ``page --json`` read retains the identity, Claim/Evidence, and
+    review metadata a safe edit needs (A6 remediation): truncation bounds the
+    CONTENT, never the page's canonical identity."""
+    root = tmp_path / "kb"
+    shutil.copytree(_CATEGORIZED_FIXTURE, root)
+    page_path = root / "concepts" / "overview.md"
+    page_path.write_text(
+        page_path.read_text(encoding="utf-8").replace(
+            "    status: accepted\n",
+            "    status: accepted\n"
+            "    confidence: 0.85\n"
+            "    origin: migrated\n"
+            '    valid_from: "2025-01-01"\n'
+            '    valid_to: "2025-12-31"\n',
+        ),
+        encoding="utf-8",
+    )
+    canonical = page_path.read_text(encoding="utf-8")
+
+    rc = main(["page", str(root), "Lumio Overview", "--max-lines", "1", "--json"])
+    assert rc == 0
+    result = json.loads(capsys.readouterr().out)
+
+    # Bounded content semantics are unchanged...
+    assert result["truncated"] is True
+    assert result["omitted_lines"] > 0
+    assert result["content"] == canonical.splitlines(keepends=True)[0]
+    # ...but the page's identity, Claims/Evidence, and review metadata survive.
+    assert result["entity_id"] == "entity:lumio-overview"
+    assert result["lifecycle"] == "approved"
+    assert result["visibility"] == "public"
+    assert result["review_after"] is None
+    assert result["claims"] == [
+        {
+            "id": "claim:lumio-overview-uses-acme",
+            "predicate": "uses",
+            "status": "accepted",
+            "object": "entity:acme-corp",
+            "value": None,
+            "value_type": None,
+            "confidence": 0.85,
+            "origin": "migrated",
+            "valid_from": "2025-01-01",
+            "valid_to": "2025-12-31",
+            "evidence": [{"section": "Lumio Overview", "line_start": None, "line_end": None}],
+        }
+    ]
+
+
+def test_page_raw_read_stays_lossless_and_also_carries_identity(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """Raw mode remains byte-lossless canonical Markdown; the additive identity
+    fields never replace or reconstruct the content (A6 remediation)."""
+    root = tmp_path / "kb"
+    shutil.copytree(_CATEGORIZED_FIXTURE, root)
+    canonical = (root / "concepts" / "overview.md").read_text(encoding="utf-8")
+
+    rc = main(["page", str(root), "Lumio Overview", "--raw", "--json"])
+    assert rc == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["raw"] is True
+    assert result["truncated"] is False
+    assert result["content"] == canonical
+    assert result["entity_id"] == "entity:lumio-overview"
+    assert len(result["claims"]) == 1
+
+
+def test_page_json_for_a_legacy_page_reports_absent_identity_metadata(
+    kb_root: Path, capsys: pytest.CaptureFixture[str]
+):
+    # Legacy Flat Mode pages have no Entity ID and may have no Claims: the
+    # keys stay present with truthful empty values (stable machine contract).
+    assert main(["page", str(kb_root), "Lumio Overview", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["entity_id"] is None
+    assert result["claims"] == []
+    assert result["lifecycle"] == "approved"
+    assert result["published_version"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -2817,9 +2964,7 @@ def test_page_json_bounded_read_retains_claim_and_review_metadata(
         "evidence",
     }
     assert claim["id"] == "claim:lumio-overview-uses-architecture"
-    assert claim["evidence"] == [
-        {"section": "Overview", "line_start": None, "line_end": None}
-    ]
+    assert claim["evidence"] == [{"section": "Overview", "line_start": None, "line_end": None}]
     assert payload["truncated"] is True
 
 
