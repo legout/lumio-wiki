@@ -295,6 +295,39 @@ def _resolve_object_store_location(uri: str, *, version: str | None = None) -> A
     )
 
 
+def _resolve_s3_snapshot(value: str, *, version: str | None = None) -> Any:
+    """Resolve an S3 URI to one immutable Snapshot for read/status commands.
+
+    Shared read trust boundary (ADR-0013 hardening): Knowledge Base errors
+    are wrapped once here and the echoed location is userinfo-redacted, so
+    no wrapper can repeat URI credentials in an error or output.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        # No ``version`` keyword when unset: resolver stubs and callers key on
+        # the two call shapes (pointer read vs. pinned read).
+        location = (
+            _resolve_object_store_location(value, version=version)
+            if version is not None
+            else _resolve_object_store_location(value)
+        )
+        snapshot = location.resolve()
+    except KnowledgeBaseError as exc:
+        parsed = urlparse(value)
+        if (
+            parsed.username is None
+            and parsed.password is None
+            and not parsed.query
+            and not parsed.fragment
+        ):
+            label = value
+        else:
+            label = f"{parsed.scheme}://{parsed.netloc.rpartition('@')[2]}{parsed.path}"
+        raise CliError(f"could not resolve S3 Knowledge Base at {label}: {exc}") from exc
+    return snapshot
+
+
 def _build_publish_store(uri: str) -> tuple[Any, str]:
     """Build an ``(obstore ObjectStore, prefix)`` from a destination URI + env.
 
@@ -309,6 +342,7 @@ def _build_publish_store(uri: str) -> tuple[Any, str]:
     parsed = urlparse(uri)
     if not parsed.scheme:
         raise CliError(f"not an object-store destination URI: {uri!r}")
+    _reject_unsafe_uri(uri)
     config, client_options = _s3_config_from_env()
     authority_url = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
     try:
@@ -340,15 +374,7 @@ def _open_read_snapshot(
                 validate_published_version(published_version)
             except ValueError as exc:
                 raise CliError(str(exc)) from None
-        try:
-            location = (
-                _resolve_object_store_location(value, version=published_version)
-                if published_version is not None
-                else _resolve_object_store_location(value)
-            )
-            snapshot = location.resolve()
-        except KnowledgeBaseError as exc:
-            raise CliError(f"could not resolve S3 Knowledge Base at {value}: {exc}") from exc
+        snapshot = _resolve_s3_snapshot(value, version=published_version)
         return snapshot.knowledge_base, snapshot.published_version
     if published_version is not None:
         raise CliError("--published-version is available only for an S3 Knowledge Base")
@@ -365,11 +391,7 @@ def _validate_location(path: str | Path):
     """Validate a local path or resolve+validate an S3 URI into a report."""
     value = str(path)
     if _is_object_store_uri(value):
-        try:
-            snapshot = _resolve_object_store_location(value).resolve()
-        except KnowledgeBaseError as exc:
-            raise CliError(f"could not resolve S3 Knowledge Base at {value}: {exc}") from exc
-        return snapshot.validation_report
+        return _resolve_s3_snapshot(value).validation_report
     return validate(path)
 
 
@@ -799,8 +821,33 @@ def _format_graph_trace(*, scope: str, direction: str, outcome_fields: list[str]
 # ---------------------------------------------------------------------------
 
 
+def _reject_unsafe_uri(value: str) -> None:
+    """Refuse userinfo, query, or fragment in object-store URIs (ADR-0013).
+
+    Credentials belong in configuration (``aws_*`` keys / environment), never
+    in a Location URI. The error is generic so it never repeats their values.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(value)
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise CliError(
+            "object-store URIs must not include credentials, a query, or a "
+            "fragment; supply credentials via configuration or the environment "
+            "instead"
+        )
+
+
 def _validate_object_store_uri(flag: str, value: str) -> None:
     """Reject non-object-store URIs for the setup location flags (issue #161)."""
+    # Unsafe-URI check first: userinfo/query/fragment must be refused with a
+    # generic message, never echoed back via the {value!r} path below.
+    _reject_unsafe_uri(value)
     if not _is_object_store_uri(value):
         raise CliError(
             f"{flag} requires an object-store URI (e.g. s3://bucket/path), got {value!r}"
@@ -1035,6 +1082,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 f"--source-store must be an object-store URI (s3://...) or a "
                 f"local directory path; {scheme!r} is not a supported scheme"
             )
+        if "://" in source_store:
+            _reject_unsafe_uri(source_store)
     if artifact_retention == "required" and source_store is None:
         raise CliError(
             "--artifact-retention required needs --source-store: required "
@@ -1529,17 +1578,9 @@ def _cmd_search(args: argparse.Namespace) -> int:
                 validate_published_version(requested_version)
             except ValueError as exc:
                 raise CliError(str(exc)) from None
-        try:
-            # Resolve the active S3 pointer exactly once and retain the
-            # selected Published Version identity and fingerprint (issue #162).
-            location = (
-                _resolve_object_store_location(value, version=requested_version)
-                if requested_version is not None
-                else _resolve_object_store_location(value)
-            )
-            snapshot = location.resolve()
-        except KnowledgeBaseError as exc:
-            raise CliError(f"could not resolve S3 Knowledge Base at {value}: {exc}") from exc
+        # Resolve the active S3 pointer exactly once and retain the
+        # selected Published Version identity and fingerprint (issue #162).
+        snapshot = _resolve_s3_snapshot(value, version=requested_version)
         return _search_object_store(
             args,
             snapshot,
@@ -3486,11 +3527,8 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
     fingerprint_obj = None
     kb_root: Path | None = None
     if is_s3:
-        try:
-            kb_location = _resolve_object_store_location(location)
-            snapshot = kb_location.resolve()
-        except KnowledgeBaseError as exc:
-            raise CliError(f"could not resolve S3 Knowledge Base at {location}: {exc}") from exc
+        snapshot = _resolve_s3_snapshot(location)
+        kb_location = snapshot.location
         descriptor = snapshot.remote_derived_index
         status["published_version"] = descriptor.version if descriptor else None
         fingerprint_obj = snapshot.fingerprint

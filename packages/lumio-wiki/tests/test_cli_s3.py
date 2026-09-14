@@ -47,6 +47,53 @@ def test_s3_config_from_env_reads_lumio_and_aws_vars(monkeypatch):
     assert client_options == {"allow_http": True}
 
 
+@pytest.mark.parametrize(
+    "uri, secret",
+    [
+        ("s3://user:secret@bucket/kb", "user:secret"),
+        ("s3://bucket/kb?token=secret", "token=secret"),
+        ("s3://bucket/kb#peek", "#peek"),
+    ],
+)
+def test_build_publish_store_rejects_uri_credentials(uri, secret):
+    """The shared writer/store seam refuses unsafe URI metadata without echoing."""
+    with pytest.raises(cli.CliError, match="must not include credentials") as excinfo:
+        cli._build_publish_store(uri)
+    assert secret not in str(excinfo.value)
+
+
+def test_build_publish_store_accepts_credential_free_uri():
+    pytest.importorskip("obstore")
+    store, prefix = cli._build_publish_store("s3://bucket/kb")
+    assert prefix == "kb"
+
+
+@pytest.mark.parametrize(
+    "argv, secret",
+    [
+        (["validate", "s3://user:secret@bucket/kb"], "user:secret"),
+        (["status", "s3://user:secret@bucket/kb"], "user:secret"),
+        (["validate", "s3://bucket/kb?token=secret"], "token=secret"),
+        (["status", "s3://bucket/kb#peek"], "#peek"),
+    ],
+)
+def test_read_and_status_paths_never_echo_uri_credentials(
+    argv, secret, tmp_path, monkeypatch, capsys
+):
+    """Read/status wrappers must not repeat userinfo/query/fragment after refusal."""
+    monkeypatch.chdir(tmp_path)
+    for var in list(os.environ):
+        if var.startswith(("LUMIO_", "AWS_")):
+            monkeypatch.delenv(var, raising=False)
+    rc = cli.main(argv)
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "must not include credentials" in captured.err
+    assert secret not in captured.err + captured.out
+    # The location is echoed but redacted: scheme, host, and path only.
+    assert "s3://bucket/kb" in captured.err
+
+
 def test_is_object_store_uri_rejects_non_store_schemes():
     assert not cli._is_object_store_uri("https://example.com/path")
     assert not cli._is_object_store_uri("file:///local/path")

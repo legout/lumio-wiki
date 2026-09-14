@@ -390,9 +390,56 @@ def test_setup_rejects_non_object_store_uris(flag, tmp_path, monkeypatch, capsys
     assert flag in capsys.readouterr().err
 
 
-def test_setup_accepts_local_path_source_store_but_rejects_schemes(
-    tmp_path, monkeypatch, capsys
+@pytest.mark.parametrize("flag", ["--from", "--publish-to"])
+@pytest.mark.parametrize(
+    "bad_uri, secret",
+    [
+        ("s3://user:secret@bucket/kb", "user:secret"),
+        ("s3://bucket/kb?token=secret", "token=secret"),
+        ("s3://bucket/kb#peek", "#peek"),
+    ],
+)
+def test_setup_rejects_credential_uri_without_env_or_echo(
+    flag, bad_uri, secret, tmp_path, monkeypatch, capsys
 ):
+    """Unsafe URI metadata is refused before .env or guidance is written."""
+    monkeypatch.chdir(tmp_path)
+    _clean_env(monkeypatch)
+    argv = ["setup", "kb"] if flag != "--from" else ["setup"]
+    rc = cli.main([*argv, flag, bad_uri])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "must not include credentials" in captured.err
+    assert secret not in captured.err + captured.out
+    assert bad_uri not in captured.err + captured.out
+    assert "s3://" not in captured.err + captured.out
+    assert not (tmp_path / ".env").exists()
+
+
+@pytest.mark.parametrize(
+    "bad_uri, secret",
+    [
+        ("s3://user:secret@bucket/src", "user:secret"),
+        ("s3://bucket/src?token=secret", "token=secret"),
+        ("s3://bucket/src#peek", "#peek"),
+    ],
+)
+def test_setup_rejects_credential_source_store_without_env_or_echo(
+    bad_uri, secret, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    _clean_env(monkeypatch)
+    rc = cli.main(["setup", "kb", "--source-store", bad_uri])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "must not include credentials" in captured.err
+    assert secret not in captured.err + captured.out
+    assert bad_uri not in captured.err + captured.out
+    assert "s3://" not in captured.err + captured.out
+    assert not (tmp_path / ".env").exists()
+
+
+def test_setup_accepts_local_path_source_store_but_rejects_schemes(tmp_path, monkeypatch, capsys):
     """#164: --source-store is a URI OR a local directory (CONTEXT.md); only
     an unsupported scheme is refused."""
     monkeypatch.chdir(tmp_path)

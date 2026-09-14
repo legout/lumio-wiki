@@ -98,6 +98,19 @@ def _canonical(root: Path) -> dict[str, bytes]:
     return canonical_content(_FilesystemKbSource(root.resolve()))
 
 
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "s3://user:password@bucket/kb",
+        "s3://bucket/kb?token=secret",
+        "s3://bucket/kb#fragment",
+    ],
+)
+def test_s3_location_from_url_rejects_uri_credentials(uri):
+    with pytest.raises(KnowledgeBaseError, match="must not include credentials"):
+        S3Location.from_url(uri)
+
+
 # ---------------------------------------------------------------------------
 # 1. Immutable publication writes a complete version prefix + manifest.
 # ---------------------------------------------------------------------------
