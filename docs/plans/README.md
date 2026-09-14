@@ -2,15 +2,15 @@
 
 ## Status and authority
 
-Plan 01, Plan 02 (P1–P5), and Plan 04 (A1–A7) are implemented. Plans 03 and 05 are proposed and require separate approval. The P2 integration is recorded in `e555374`; no proposed production change is authorized here.
+Plan 01, Plan 02 (P1–P5), Plan 03 (R1–R6), and Plan 04 (A1–A7) are implemented. Plan 05 is proposed and requires separate approval. The Plan 03 integration is recorded in `42fdc03`; no remaining proposed production change is authorized here.
 
 - **Behavioral source:** [PRD-0006](../prd/0006-library-stabilization.md), behavior approved from owner decisions captured at audit revision `9712f6fd51ac4381a6ca4fc513e2546355fba0d0`.
 - **Evidence:** [Library stabilization audit](../research/library-stabilization-audit.md). Findings select work to inspect; they do not define behavior or prove a current defect without reproduction.
 - **Architecture:** the ADRs linked by each plan. Proposed ADR-0019 and ADR-0020 are evidence only until accepted.
-- **Execution authority:** completed integrations had separate approval. This documentation alignment authorizes no new implementation, candidate assembly, integration, push, or release.
+- **Execution authority:** completed integrations had separate approval. This completion record authorizes no further implementation, candidate assembly, push, or release.
 - **Planning contract:** Contract version 1; local project skill provenance `unknown`.
 
-Capture checkpoint for this plan set: no new product vocabulary; ADR-0027 records the workflow decision; PRD-0006 owns the relocated behavior and non-goals; Plan 03 remains unapproved, and Plan 05 remains blocked on real external-consumer evidence before public API removal. Material source changes require reconciliation and approval before affected work proceeds.
+Capture checkpoint for this plan set: no new product vocabulary; ADR-0027 records the workflow decision; PRD-0006 owns the relocated behavior and non-goals; Plan 03 is integrated, and Plan 05 remains blocked on real external-consumer evidence before public API removal. Material source changes require reconciliation and approval before affected work proceeds.
 
 ## Plan map
 
@@ -18,7 +18,7 @@ Capture checkpoint for this plan set: no new product vocabulary; ADR-0027 record
 | --- | --- | --- | --- |
 | [01 — Test retention](01-test-retention.md) | Implemented | PRD-0006 constraints | Preserve essential journeys while deleting approved redundant coverage |
 | [02 — Publication integrity](02-publication-integrity.md) | Implemented | [AC1](../prd/0006-library-stabilization.md#ac1-publication-integrity) | Prevent silent canonical loss and stale mutation |
-| [03 — Snapshot/retrieval](03-snapshot-retrieval.md) | Proposed | [AC2](../prd/0006-library-stabilization.md#ac2-captured-snapshots-and-retrieval) | Bind derivatives to captured bytes and improve passage retrieval |
+| [03 — Snapshot/retrieval](03-snapshot-retrieval.md) | Implemented | [AC2](../prd/0006-library-stabilization.md#ac2-captured-snapshots-and-retrieval) | Bind derivatives to captured bytes and improve passage retrieval |
 | [04 — Agent workflows](04-agent-workflows.md) | Implemented | [AC3](../prd/0006-library-stabilization.md#ac3-safe-agent-workflows) | Repair safety and machine-facing workflow defects |
 | [05 — Simplification/release](05-simplification-release.md) | Proposed / partly blocked | [AC4](../prd/0006-library-stabilization.md#ac4-simplification-and-coordinated-release) | Remove obsolete ownership only after consumer evidence; release separately |
 
@@ -26,7 +26,7 @@ Completed plans are evidence records, not templates for future assurance. Their 
 
 ## Order and ownership
 
-After approval, integrate R1 → R2/R3 → R4/R5 → R6. Consumer inventory precedes S1/S2 public removals; R1 precedes S3; all accepted fixes precede separately approved S4 release work. Shared `knowledge_base.py`, `ingest.py`, `proposal_pipeline.py`, `cli.py`, `__init__.py`, and fixtures require serial integration even when independent work is developed separately. Use one writer per worktree; no automatic merge or release.
+Plan 03 integrated R1 → R2/R3 → R4/R5 → R6. Consumer inventory precedes S1/S2 public removals; all accepted fixes precede separately approved S4 release work. Shared `knowledge_base.py`, `ingest.py`, `proposal_pipeline.py`, `cli.py`, `__init__.py`, and fixtures require serial integration even when independent work is developed separately. Use one writer per worktree; no automatic merge or release.
 
 Plan 04's A6 shipped against the existing snapshot and Evidence seams. R1/R5 are later hardening work, not prerequisites for the already integrated bounded-read behavior.
 

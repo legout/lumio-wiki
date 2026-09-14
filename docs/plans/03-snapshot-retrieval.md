@@ -1,6 +1,6 @@
 # 03 — Captured snapshots and useful retrieval
 
-**Proposed; no integrated completion is recorded and implementation is not approved by this revision.** Goal: satisfy
+**Implemented in `42fdc03`.** Goal: satisfy
 [PRD-0006 AC2](../prd/0006-library-stabilization.md#ac2-captured-snapshots-and-retrieval).
 Evidence: [B08–B12, I03, C03](../research/library-stabilization-audit.md#finding-registry).
 Architecture: [Core PRD](../prd/0002-core-sdk.md),
@@ -9,11 +9,17 @@ Architecture: [Core PRD](../prd/0002-core-sdk.md),
 Use Python/uv, the existing source abstraction, MessagePack, optional LanceDB,
 and in-memory obstore tests. No new storage framework or mandatory embedder.
 
-Approval reference: none; the current owner request authorizes this framework
-alignment only. Capture checkpoint: no new product vocabulary or ADR; behavior
-and non-goals are captured in PRD-0006; no unresolved design decision blocks
-review of the plan, but execution still needs explicit approval. Contract version
-1; local project skill provenance `unknown`.
+Approval reference: the owner approved minimal Plan 03 completion in the
+2026-09-14 orchestration session. Capture checkpoint: no new product vocabulary
+or ADR; behavior and non-goals are captured in PRD-0006. Contract version 1;
+local project skill provenance `unknown`.
+
+Completion evidence: required focused suites and the 152-test candidate selection
+passed; independent candidate review returned `VERDICT=pass`. The preserved
+combined worktree passed `uv run pytest -q -n 4` with 1,637 passed and 9 skipped.
+An isolated staged replay reproduced one pre-existing `HEAD` failure in the
+packaged-skill upgrade check; the same clean baseline failed and the owner chose
+the scope-clean Plan 03 checkpoint rather than absorbing the unrelated skill edit.
 
 R1 is the common identity prerequisite; R2/R3 consume it, R4 consumes historical
 R3-compatible snapshots, R5 shares parser coordinates with P1, and R6 measures
@@ -36,7 +42,7 @@ reasons to duplicate each new regression.
 
 ## R1
 
-- [ ] **Capture once; bind pages/index/graph to the captured digest (B08).**
+- [x] **Capture once; bind pages/index/graph to the captured digest (B08).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/knowledge_base.py`,
   `packages/lumio-wiki/src/lumio_wiki/location.py`,
   `packages/lumio-wiki/src/lumio_wiki/graph_state.py`;
@@ -69,7 +75,7 @@ reasons to duplicate each new regression.
 
 ## R2
 
-- [ ] **Invalidate semantic state on lexical-only rebuild (B09).**
+- [x] **Invalidate semantic state on lexical-only rebuild (B09).**
   **Files:** `packages/lumio-lancedb/src/lumio_lancedb/index.py`,
   `packages/lumio-lancedb/src/lumio_lancedb/location.py`;
   `packages/lumio-lancedb/tests/test_remote_index_location.py`.
@@ -99,7 +105,7 @@ reasons to duplicate each new regression.
 
 ## R3
 
-- [ ] **Publish S3 content and private bindings from one candidate (B10).**
+- [x] **Publish S3 content and private bindings from one candidate (B10).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/s3_publish.py`,
   `packages/lumio-wiki/src/lumio_wiki/artifact_store.py`,
   `packages/lumio-wiki/src/lumio_wiki/cli.py`,
@@ -135,7 +141,7 @@ reasons to duplicate each new regression.
 
 ## R4
 
-- [ ] **Confirm partial historical binding holes, then fail closed (B11).**
+- [x] **Confirm partial historical binding holes, then fail closed (B11).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/artifact_store.py`,
   `packages/lumio-wiki/src/lumio_wiki/s3_publish.py`,
   `packages/lumio-wiki/src/lumio_wiki/cli.py`;
@@ -168,7 +174,7 @@ reasons to duplicate each new regression.
 
 ## R5
 
-- [ ] **Emit nested passages without duplicate whole-page budget use (B12).**
+- [x] **Emit nested passages without duplicate whole-page budget use (B12).**
   **Files:** `packages/lumio-wiki/src/lumio_wiki/evidence.py`,
   `packages/lumio-wiki/src/lumio_wiki/retrieval.py`,
   `packages/lumio-wiki/src/lumio_wiki/knowledge_base.py`,
@@ -201,7 +207,7 @@ reasons to duplicate each new regression.
 
 ## R6
 
-- [ ] **Measure negatives, passages and mutation/index lifecycle (I03).**
+- [x] **Measure negatives, passages and mutation/index lifecycle (I03).**
   **Files:** `eval/gold_set.yaml`,
   `examples/real-world-lumio-wiki/evaluation/gold-v1.yaml`,
   `eval/test_retrieval_eval_gate.py`,
