@@ -89,48 +89,8 @@ the Lumio repository for the full glossary.
 ## Commands
 
 The CLI is the portable public operating surface. `<kb>` is the Knowledge Base
-root directory in every command below.
-
-| Command | What it does |
-|---|---|
-| `lumio-wiki setup <path> \| --from <s3-uri> [--publish-to <s3-uri>] [--retrieval zero-index\|lancedb] [--source-store <s3-uri>] [--skill-scope user\|project\|--agent <name>]` | Canonical first run: create/detect the KB (or bind a read-only S3 Location) and write project `.env` plus `AGENTS.md`; S3 configuration keys are recorded in `.env`; skill installation remains explicit. |
-| `lumio-wiki init <path>` | Lower-level KB-only operation: create a categorized root with a seeded Control File. |
-| `lumio-wiki validate <kb>` | Load and validate every page, Control File, link, and reserved artifact. Exit 1 on errors. |
-| `lumio-wiki hot <kb>` | Render the Maintainer-pinned Hot Index (ladder 0). Curated entry pages. |
-| `lumio-wiki index <kb> [dir]` | Render the generated Navigation Index (ladder 1). Root catalog, or a directory's shallow index. |
-| `lumio-wiki search <kb> <query> [--limit N] [--mode lexical\|semantic\|hybrid] [--model M] [--index-dir D] [--json]` | Retrieve citation-ready Evidence. Default `--mode lexical` is deterministic zero-index (no index/model). `--mode semantic\|hybrid` add embedding-based retrieval; need `lumio-lancedb` + an embedder (`lumio-lancedb[embeddings]` or `LUMIO_PROVIDER_*`). `--json` emits one machine-readable object with retrieval accounting (`candidates_seen` / `results_returned` / `results_dropped`) — for other tools/scripts, not for your own reading. |
-| `lumio-wiki page [<kb>] <title> [--raw|--json] [--section <heading>] [--line-start N] [--line-end N] [--max-lines N] [--max-bytes N]` | Read canonical Markdown losslessly or a bounded section/line/byte view. JSON reports identity, coordinates, and truthful truncation metadata. |
-| `lumio-wiki related <kb> <title> [--relationship-type T] [--depth N] [--max-edges N] [--max-results N] [--scope canonical\|discovery] [--direction outgoing\|incoming\|both] [--trace]` | Bounded graph traversal of related Canonical Page Titles. |
-| `lumio-wiki paths <kb> <source> <target> [--scope canonical\|discovery] [--direction ...] [--max-depth N] [--max-edges N] [--trace]` | Shortest directed path between two titles, hop-bounded. |
-| `lumio-wiki ingest <kb> <file> [--content-type T]` | Read a text/Markdown file, distill it (you are the Distiller), stage a reviewable Ingest Proposal. No private Source identity is established. |
-| `lumio-wiki ingest <kb> <source> --compiled-page <page.md> --source-id <id>` | Managed host-Distiller ingest (issue #149): bind the ORIGINAL raw source to your authored Compiled Page under one stable identity; registers the source, stages the authored page as one proposal. No `[documents]` extra required. |
-| `lumio-wiki proposal list <kb>` | List staged proposals. |
-| `lumio-wiki proposal inspect <kb> <id> [--json]` | Print proposal metadata, blast radius, diff (or full JSON). |
-| `lumio-wiki proposal validate <kb> <id> [--json]` | Print the proposal's validation report. Exit 1 on errors. |
-| `lumio-wiki publish <kb> <id> [--json]` | Apply a proposal's pages to the KB root, regenerate reserved artifacts, mark it terminal. |
-| `lumio-wiki discard <kb> <id> [--json]` | Mark a reviewable proposal as discarded (terminal). |
-| `lumio-wiki publish-s3 <kb> [dest] --version <v> [--expected-pointer-version <v>] [--retrieval zero-index\|lancedb]` | Publish an immutable S3 Published Version (canonical content + Discovery Graph; `lancedb` also builds + health-checks a remote LanceDB index under the version's `derived/lance/` BEFORE the pointer advances). Destination defaults to `LUMIO_PUBLISH_TO` from `.env`. The `--expected-pointer-version` CAS guard refuses a stale advance. |
-| `lumio-wiki rollback-s3 <dest> --version <v> [--expected-pointer-version <v>]` | CAS-activate a prior complete version; never rebuilds it, stale rollback fails closed. |
-| `lumio-wiki cleanup-s3 <dest>` | Report inactive incomplete version prefixes (interrupted builds); deletes nothing. |
-| `lumio-wiki diff-s3 <dest> --from <v> --to <v> [--json]` | Read-only delta between two immutable Published Versions: added/removed/changed Compiled Pages (paths, titles) and Source identities, plus lifecycle/visibility transitions when recorded. `--json` emits one machine-readable object. Writes nothing. |
-| `lumio-wiki health <kb> [--rebuild]` | Page counts, validation status, Discovery Graph health + fingerprint. `--rebuild` materializes a fresh graph artifact (actionable recovery); a bad/missing artifact never blocks zero-index operation. |
-| `lumio-wiki lint <kb>` | Read-only cross-page QA report: validation, graph health, canonical/discovery structural diagnostics, scope disclosure, and Source Coverage (registered Sources no page declares — advisory counts plus a bounded sample). Exit 1 when invalid (ADR-0015). |
-| `lumio-wiki cross-link <kb> [--limit N] [--stage]` | Missing-link candidates ranked by Discovery Graph impact. `--stage` stages one reviewable repair proposal per top candidate; never direct-writes. |
-| `lumio-wiki source <register\|list\|retire\|reactivate> [<kb>] --source-id <id>` | Manage private Knowledge Source lifecycle state (ADR-0014). Explicit `retire`/`reactivate` stage ordinary reviewable proposals; `list` reports identities/status without disclosing raw bytes. |
-| `lumio-wiki source resolve <kb> "<query>" [--published-version <v>] [--json]` | Resolve a Source ID, Entity ID, Canonical Page Title, alias, or page path to ONE registered Knowledge Source when unambiguous (identity + availability; exit 1 with bounded candidates on ambiguity, bounded close ids or the exact discovery command on unknown). Never a signed URL — that is `source link` only. |
-| `lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]` | Secret-free metadata for the ONE exact Source Version bound to the id: safe filename, media type, size, digest abbreviation, publication binding, verified availability, authorization outcome (ADR-0020). Local worktrees resolve the registry's current version; S3 KBs / `--published-version` resolve the private Source Binding Manifest — never a silent fallback to the latest version. Raw Source Artifacts are optional (retention is disabled by default) and private; inspection is authorized provenance review, not Evidence and not claim-level lineage. |
-| `lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>` | Byte-exact original Source Artifact to an explicit destination, digest and size re-verified (ADR-0020). A directory destination receives the safe filename. Content is not rendered or converted here. |
-| `lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]` | Explicit short-lived signed GET URL for ONE exact artifact when the store supports signing (S3 adapter). 5 min default, 1 h max; the URL is a bearer secret — never persist or log it. Prefer verified `fetch` (signed URLs can leak through conversation history). |
-| `lumio-wiki dream <kb> [--limit N] [--stage] [--semantic] [--impact T] [--impact-scope S]` | Deterministic Dream Cycle reflection (health, structure, ranked link candidates, due pages, Source Drift, Source Coverage) plus optional semantic review; `--semantic` requires the `[llm]` extra and remains proposal-first. `duplicate_candidates` lists read-only possible-duplicate Entity pairs; `synthesis_candidates` lists read-only page pairs whose accepted Claims may justify a synthetic page; `--impact <title-or-entity>` adds the bounded transitive-impact report for one page. All are advisory only. |
-| `lumio-wiki export-graph <kb> [--scope public\|all] [--out-dir D]` | Structure-only graph exchange (ADR-0024): writes `graph.json` (NetworkX node_link) + `graph.graphml` over the authorized page set into `--out-dir` (default `./lumio-graph-export`). Nodes carry identity/title/category/tags/summary only — never bodies or Sources. Default `--scope public` is the enforced portable boundary (internal/restricted never enter the artifacts); `all` is the explicit privileged scope. |
-| `lumio-wiki import-graph <kb> <graph.json>` | Load a graph.json (Lumio or wiki-export lineage) and stage stub Compiled Pages — frontmatter skeletons plus link structure, no bodies — as ONE reviewable Ingest Proposal. No merge/skip/overwrite modes; review replaces them. |
-| `lumio-wiki doctor` | Version, detected optional extras, and packaged skill location. |
-| `lumio-wiki skill path` | Absolute path of the packaged `SKILL.md` inside the installed wheel. |
-| `lumio-wiki skill protocol` | Absolute path of the packaged `PROTOCOL.md`. |
-| `lumio-wiki skill install --scope user\|project` | Explicitly install the canonical bundle into shared cross-client scope. User is preferred; project requires a trusted repository. |
-| `lumio-wiki skill install --agent <name>` | Explicit compatibility fallback for `pi`, `hermes`, `codex`, or `claude-code`. |
-| `lumio-wiki skill status [--scope user\|project\|--agent <name>]` | Read-only missing/current/stale/corrupt drift report. Defaults to shared user scope. |
-| `lumio-wiki skill update [--scope user\|project\|--agent <name>]` | Atomically refresh an installed copy from the current wheel. |
+root directory. Use `lumio-wiki --help` or `lumio-wiki <command> --help` for
+exact grammar; [PROTOCOL.md](PROTOCOL.md) covers the complete contract.
 
 ## Workflow: the retrieval ladder
 
@@ -177,10 +137,10 @@ what a link is:
 - `source-url:` — the authored external `sources[].url`, when the page
   declares one. Distinct from a Compiled Page link.
 - `source-artifact:` — the EXPLICIT private-Source action
-  (`lumio-wiki source inspect <kb> --source-id <id>`). A private Source Artifact
-  is never opened through an implicitly generated signed/public URL
-  (ADR-0020); request `source fetch`/`source link` explicitly when the user
-  authorizes it.
+  (`lumio-wiki source inspect <kb> --source-id <id>`). Source Artifacts are
+  optional, private provenance review, not Evidence or claim-level lineage;
+  never open one through an implicitly generated signed/public URL (ADR-0020).
+  Request `source fetch`/`source link` explicitly when the user authorizes it.
 
 Use these labels verbatim when telling the user how to open a cited page.
 
