@@ -19,6 +19,8 @@ Safety rules under test (issue #177, ADR-0020):
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 from lumio_wiki.citation_actions import (
     READER_PAGE_PATH_TEMPLATE,
@@ -161,6 +163,66 @@ def test_s3_open_commands_pin_the_resolved_published_version() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Published Version pinning in copyable commands (A4 remediation)
+# ---------------------------------------------------------------------------
+
+
+def test_page_open_command_pins_the_published_version() -> None:
+    """A copyable page action can pin the exact resolved Published Version."""
+    assert (
+        page_open_command("Lumio Overview", "s3://bucket/kb", published_version="v2")
+        == 'lumio-wiki page "s3://bucket/kb" "Lumio Overview" --published-version v2'
+    )
+    # No version: unchanged historical contract.
+    assert page_open_command("T") == 'lumio-wiki page "T"'
+
+
+def test_source_inspect_command_pins_the_published_version() -> None:
+    assert (
+        source_inspect_command("annual-report", "s3://bucket/kb", published_version="v7")
+        == 'lumio-wiki source inspect "s3://bucket/kb" --source-id annual-report '
+        "--published-version v7"
+    )
+    assert source_inspect_command("s") == "lumio-wiki source inspect --source-id s"
+
+
+@pytest.mark.parametrize("hostile", ["v1; rm -rf /", "v1 $(reboot)", 'v1"x', "a b"])
+def test_published_version_arguments_are_shell_safe(hostile: str) -> None:
+    """A hostile version label can never alter the printed command."""
+    expected = (
+        ["lumio-wiki", "page", "s3://bucket/kb", "T", "--published-version", hostile],
+        [
+            "lumio-wiki",
+            "source",
+            "inspect",
+            "s3://bucket/kb",
+            "--source-id",
+            "s",
+            "--published-version",
+            hostile,
+        ],
+    )
+    commands = (
+        page_open_command("T", "s3://bucket/kb", published_version=hostile),
+        source_inspect_command("s", "s3://bucket/kb", published_version=hostile),
+    )
+
+    def shell_argv(command: str) -> list[str]:
+        # Parse with the shell's own rules but never execute the generated
+        # command: ``set --`` only assigns its parsed words to positional args.
+        parsed = subprocess.run(
+            ["/bin/sh", "-c", f"set -- {command}; printf '%s\\0' \"$@\""],
+            check=True,
+            capture_output=True,
+        )
+        return parsed.stdout.decode().split("\0")[:-1]
+
+    # Safe quoting preserves the raw value as exactly one argv item rather
+    # than trying to hide it from the copyable command text.
+    assert tuple(shell_argv(command) for command in commands) == expected
+
+
+# ---------------------------------------------------------------------------
 # CitationOpenActions derivation
 # ---------------------------------------------------------------------------
 
@@ -170,8 +232,9 @@ def _page(**overrides: object) -> CompiledPage:
         "path": "overview.md",
         "title": "Lumio Overview",
         "id": "entity:lumio-overview",
-        "sources": [Source(id="lumio-overview", title="Lumio landing page",
-                           url="https://example.com/lumio")],
+        "sources": [
+            Source(id="lumio-overview", title="Lumio landing page", url="https://example.com/lumio")
+        ],
         "body": "Body.",
     }
     fields.update(overrides)
@@ -265,9 +328,7 @@ def test_render_open_actions_emit_labelled_stable_lines() -> None:
     assert lines[2].startswith("source-url:      ")
     assert lines[2].endswith("https://example.com/lumio")
     assert lines[3].startswith("source-artifact: ")
-    assert (
-        "lumio-wiki source inspect --source-id lumio-overview" in lines[3]
-    )
+    assert "lumio-wiki source inspect --source-id lumio-overview" in lines[3]
 
 
 def test_render_open_actions_skip_absent_actions() -> None:

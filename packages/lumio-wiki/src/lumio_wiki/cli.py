@@ -613,14 +613,16 @@ def _search_json(
     kb_location: str | None = None,
     published_version: str | None = None,
 ) -> int:
-    """Render ``search`` output as one machine-readable JSON object.
+    """Render ``search`` output as one machine-readable object.
 
     Both result kinds (page-oriented lexical, citation-ready Evidence) render
     from the SAME objects the human view receives — no second query, no second
     shape — plus the deterministic retrieval accounting carried in the results.
     ``note`` carries any degraded-service disclosure (e.g. the remote-index
     zero-index fallback, ADR-0019) so ``--json`` consumers see what the human
-    ``note:`` line prints; ``None`` on the healthy path.
+    ``note:`` line prints; ``None`` on the healthy path. ``published_version``
+    pins every copyable command and the payload itself to the exact resolved
+    Published Version of an S3 Knowledge Base (A4 remediation).
     """
     from lumio_wiki.records import PageSearchResult, RetrievalResult
 
@@ -659,9 +661,7 @@ def _search_json(
                 "line_end": getattr(cite, "line_end", None),
                 "kb_location": kb_location,
                 "published_version": published_version,
-                "open_command": page_open_command(
-                    cite.page_title, kb_location, published_version
-                ),
+                "open_command": page_open_command(cite.page_title, kb_location, published_version),
                 "source_command": source_command,
             }
         else:  # pragma: no cover - defensive; both kinds are handled above

@@ -203,7 +203,9 @@ def source_inspect_command(
 
     A private Source Artifact is opened through explicit, inspectable
     commands — never an implicitly emitted signed or public URL. The id is
-    quoted only when it is not a safe bare shell word.
+    quoted only when it is not a safe bare shell word. ``published_version``
+    pins the action to the exact Published Version whose Source Binding
+    Manifest binds the Source (A4 remediation).
     """
     location = f"{_shell_double_quoted(kb_location)} " if kb_location else ""
     return (
@@ -250,7 +252,10 @@ def citation_open_actions(
     misconfiguration is actionable rather than silently degrading to no
     links. An authored ``source_url`` that is an object-store URI is
     dropped: object keys are never presented as user-facing document
-    URLs (issue #177 AC).
+    URLs (issue #177 AC). ``published_version`` pins every executable
+    command to the exact resolved Published Version of an object-store
+    Knowledge Base (A4 remediation) — never a local path, never a private
+    URL.
     """
     reader_url = reader_page_url(reader_base_url, page_title) if reader_base_url else None
     return CitationOpenActions(
