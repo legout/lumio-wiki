@@ -1855,9 +1855,7 @@ def _parse_okf_page(
     # explicit mapped diagnostic (never silently trusted) only in Profile 2.
     review_after = None
     if parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2:
-        review_after = _okf_stale_after_to_review_after(
-            rel, data.get("stale_after"), diagnostics
-        )
+        review_after = _okf_stale_after_to_review_after(rel, data.get("stale_after"), diagnostics)
         _diagnose_profile2_standard_fields(rel, data, body, diagnostics)
 
     # Broken internal body links are warnings and never Relationships (issue #70).
