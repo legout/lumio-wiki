@@ -3,18 +3,22 @@
 **Proposed; no integrated completion is recorded and implementation is not approved by this revision.** Goal: satisfy
 [PRD-0006 AC4](../prd/0006-library-stabilization.md#ac4-simplification-and-coordinated-release)
 without removing supported capabilities or blindly breaking external consumers.
-Evidence: [B19–B21 and C01–C04](../research/library-stabilization-audit.md#finding-registry).
+Evidence: [B19–B21 and C01–C04](../research/library-stabilization-audit.md#finding-registry)
+and the [public/private consumer API inventory](../research/plan-05-consumer-api-inventory.md).
 Architecture: [ADR-0022](../adr/0022-retire-activity-log-artifact.md),
 [ADR-0025](../adr/0025-repository-split.md),
 [Core PRD small seam](../prd/0002-core-sdk.md), and
 [progressive graph](../adr/0021-entity-claim-ontology-and-progressive-graph-materialization.md).
 Python/uv, two public wheels; no mandatory dependencies or new generic engine.
 
-Approval reference: none; the current owner request authorizes this framework
-alignment only. Capture checkpoint: no new product vocabulary or ADR; PRD-0006
-owns behavior and non-goals. External consumer inventory and migration evidence
-remain unresolved, so S1/S2 removals and S4 are blocked before dispatch. Contract
-version 1; local project skill provenance `unknown`.
+Approval reference: the 2026-09-15 owner selection “Fix plan + inventory”
+authorizes only the stale-validation reconciliation and read-only consumer
+inventory, not S1–S4 implementation, removal, private-repository mutation, or
+release. Capture checkpoint: no new product vocabulary or ADR; PRD-0006 owns
+behavior and non-goals. The first public/private consumer inventory is captured
+as research evidence but awaits owner acceptance, and migration evidence remains
+unresolved, so S1/S2 removals and S4 are blocked before dispatch. Contract version
+1; local project skill provenance `unknown`.
 
 Sequence: accept real consumer inventory before S1/S2 exported removals; finish
 publication/snapshot/agent correctness first; expand the chosen seam, migrate
@@ -94,7 +98,9 @@ checks; release notes do not create a second documentation-only validation unit.
   `packages/lumio-wiki/tests/test_location_snapshot.py`.
   **Consumes → produces:** an approved in-repo and external consumer import/call
   inventory → a documented primary workflow surface, named secondary owners,
-  and a migration ledger with verified consumer revisions/checks.
+  and a migration ledger with verified consumer revisions/checks. The current
+  [inventory evidence](../research/plan-05-consumer-api-inventory.md) is a
+  candidate input pending owner acceptance.
   Prerequisites: the inventory exists as accepted evidence before dispatch;
   actual removals follow P1–P5/R1–R5/A3–A6 interface stabilization. Include
   private `legout/lumio` and any other confirmed consumers supplied by their
@@ -215,15 +221,26 @@ checks; release notes do not create a second documentation-only validation unit.
   "$tmp/adapter-env/bin/python" packages/lumio-lancedb/tests/test_lancedb_adapter.py
   ```
 
-  With an explicitly provisioned disposable MinIO and the test environment
-  documented in CI, also require non-skipped results from:
+  With the pinned disposable SeaweedFS `weed mini` service documented in CI,
+  export the live-suite credential aliases and require the onboarding journey
+  and all seven provider-neutral modules to execute against the real endpoint:
 
   ```sh
-  uv run pytest -q tests/test_onboarding_journey.py packages/lumio-wiki/tests/test_s3_agent_journey_minio.py packages/lumio-wiki/tests/test_cli_remote_lance_minio.py packages/lumio-wiki/tests/test_artifact_store_minio.py packages/lumio-lancedb/tests/test_publication_minio.py packages/lumio-lancedb/tests/test_remote_lancedb_minio.py
+  export LUMIO_S3_ENDPOINT="${LUMIO_S3_ENDPOINT:-http://localhost:8333}"
+  export LUMIO_S3_ALLOW_HTTP="${LUMIO_S3_ALLOW_HTTP:-1}"
+  export LUMIO_S3_REGION="${LUMIO_S3_REGION:-us-east-1}"
+  export LUMIO_S3_TEST_BUCKET="${LUMIO_S3_TEST_BUCKET:-lumio-release}"
+  export LUMIO_S3_ACCESS_KEY_ID="${LUMIO_S3_ACCESS_KEY_ID:-${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID}}"
+  export LUMIO_S3_SECRET_ACCESS_KEY="${LUMIO_S3_SECRET_ACCESS_KEY:-${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY}}"
+  uv run pytest -q tests/test_onboarding_journey.py packages/lumio-wiki/tests/test_s3_agent_journey_s3_compat.py packages/lumio-wiki/tests/test_cli_remote_lance_s3_compat.py packages/lumio-wiki/tests/test_artifact_store_s3_compat.py packages/lumio-wiki/tests/test_s3_compat.py packages/lumio-wiki/tests/test_s3_publish_s3_compat.py packages/lumio-lancedb/tests/test_publication_s3_compat.py packages/lumio-lancedb/tests/test_remote_lancedb_s3_compat.py
   ```
+
+  Each module must run rather than skip for a missing endpoint. The optional
+  cross-role policy matrix may skip only when separately provisioned role
+  credentials are unavailable, and that residual must be recorded.
 
   **Done:** built artifact versions, independent installs, optional extras, live
   disposable remote journeys and actual consumer commands/revisions are recorded;
   owner separately approves tag/publication/adoption. A passing workspace run or
-  skipped MinIO is not release certification. No push/tag/PyPI action is authorized
-  by this document or by the current test-deletion lane.
+  skipped S3-compatible module is not release certification. No push/tag/PyPI
+  action is authorized by this document or by the current test-deletion lane.
