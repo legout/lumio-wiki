@@ -15,10 +15,11 @@ Approval reference: the 2026-09-15 owner selection “Fix plan + inventory”
 authorizes only the stale-validation reconciliation and read-only consumer
 inventory, not S1–S4 implementation, removal, private-repository mutation, or
 release. Capture checkpoint: no new product vocabulary or ADR; PRD-0006 owns
-behavior and non-goals. The first public/private consumer inventory is captured
-as research evidence but awaits owner acceptance, and migration evidence remains
-unresolved, so S1/S2 removals and S4 are blocked before dispatch. Contract version
-1; local project skill provenance `unknown`.
+behavior and non-goals. The owner accepted the first public/private consumer
+inventory as the Plan 05 evidence baseline on 2026-09-15; this acceptance does
+not authorize implementation, removal, private-repository mutation, or release.
+Migration evidence remains unresolved, so S1/S2 removals and S4 are blocked
+before dispatch. Contract version 1; local project skill provenance `unknown`.
 
 Sequence: accept real consumer inventory before S1/S2 exported removals; finish
 publication/snapshot/agent correctness first; expand the chosen seam, migrate
@@ -98,9 +99,10 @@ checks; release notes do not create a second documentation-only validation unit.
   `packages/lumio-wiki/tests/test_location_snapshot.py`.
   **Consumes → produces:** an approved in-repo and external consumer import/call
   inventory → a documented primary workflow surface, named secondary owners,
-  and a migration ledger with verified consumer revisions/checks. The current
-  [inventory evidence](../research/plan-05-consumer-api-inventory.md) is a
-  candidate input pending owner acceptance.
+  and a migration ledger with verified consumer revisions/checks. The owner
+  accepted the current
+  [inventory evidence](../research/plan-05-consumer-api-inventory.md) as the
+  evidence baseline on 2026-09-15; migration and removal remain separately gated.
   Prerequisites: the inventory exists as accepted evidence before dispatch;
   actual removals follow P1–P5/R1–R5/A3–A6 interface stabilization. Include
   private `legout/lumio` and any other confirmed consumers supplied by their

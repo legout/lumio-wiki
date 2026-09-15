@@ -1,6 +1,6 @@
 # Plan 05 consumer API inventory
 
-_Date: 2026-09-15. Research evidence only; not implementation or release approval._
+_Date: 2026-09-15. Accepted by the owner as Plan 05’s consumer baseline on 2026-09-15. Research evidence only; not implementation, private-repository mutation, API-removal, or release approval._
 
 ## Scope, revisions, and limitations
 
@@ -120,7 +120,7 @@ Traversal currently has two algorithms (`graph_path` legacy and bounded `shortes
 
 ## Removal gates / blockers
 
-1. Record owner acceptance of this inventory and explicit implementation/release approval; current Plan 05 grants neither.
+1. Inventory acceptance is recorded. Explicit implementation, private-repository mutation, API-removal, and release approvals remain absent; current Plan 05 grants none of them.
 2. Obtain migration commits and passing commands from the private-app owner. The active private Activity Log and `DocumentSourceProcessor`/parser/cosine callers are hard blockers.
 3. Inventory any additional owner-confirmed consumers. Static absence in these two repos is not external proof.
 4. Resolve semantics before replacing `graph_path`; never weaken visibility-before-expansion, empty-seed non-broadening, cycle safety, depth/edge budgets, or fingerprint identity.
