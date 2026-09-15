@@ -396,8 +396,8 @@ class S3Location:
         the URL path becomes the Knowledge Base root prefix. Region, endpoint,
         and credentials are supplied via ``config`` using
         obstore's documented AWS configuration keys, and
-        ``client_options`` (e.g. ``{"allow_http": True}`` for a MinIO HTTP
-        endpoint). Pass ``prefix`` to override the URL-derived Knowledge Base
+        ``client_options`` (e.g. ``{"allow_http": True}`` for a local
+        S3-compatible HTTP endpoint). Pass ``prefix`` to override the URL-derived Knowledge Base
         root when it lives elsewhere under the bucket.
         """
         from urllib.parse import urlparse

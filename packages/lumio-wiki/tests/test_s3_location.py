@@ -8,8 +8,8 @@ filesystem Location over zero-index retrieval and Discovery Graph traversal.
 
 The suite uses obstore's in-memory ``MemoryStore`` (an S3-compatible
 ``ObjectStore``) so it is fully deterministic and runs in every CI/local run
-with no infrastructure. A separate MinIO integration module covers a real
-S3-compatible endpoint and skips gracefully when none is configured.
+with no infrastructure. A separate S3-compatible integration module covers a
+real endpoint and skips gracefully when none is configured.
 """
 
 from __future__ import annotations
@@ -77,9 +77,11 @@ def _publish_version(
     fingerprint.
     """
     content = content_override if content_override is not None else _canonical_content(root)
-    fp_digest = fingerprint_override if fingerprint_override is not None else fingerprint_sources(
-        root
-    ).digest
+    fp_digest = (
+        fingerprint_override
+        if fingerprint_override is not None
+        else fingerprint_sources(root).digest
+    )
     manifest = build_published_manifest(version, fp_digest, content)
     for rel, raw in content.items():
         obstore.put(store, f"{prefix}/{version}/{rel}", raw)
@@ -242,9 +244,7 @@ def test_s3_graph_traversal_matches_filesystem(fixture):
     )
     assert s3_snapshot.shortest_path(
         "Lumio Overview", "Technology Stack", candidate_titles=titles
-    ) == fs_snapshot.shortest_path(
-        "Lumio Overview", "Technology Stack", candidate_titles=titles
-    )
+    ) == fs_snapshot.shortest_path("Lumio Overview", "Technology Stack", candidate_titles=titles)
 
 
 # ---------------------------------------------------------------------------
@@ -339,9 +339,7 @@ def test_resolve_rejects_a_tampered_content_digest():
 def test_resolve_rejects_a_wrong_published_version_fingerprint():
     """Content digests are valid, but the manifest's KB fingerprint is wrong."""
     store = _store()
-    _publish_version(
-        store, "kb", "v1", FIXTURES / "valid", fingerprint_override="0" * 64
-    )
+    _publish_version(store, "kb", "v1", FIXTURES / "valid", fingerprint_override="0" * 64)
     with pytest.raises(Exception, match="fingerprint"):
         S3Location(store, "kb").resolve()
 
@@ -375,9 +373,7 @@ def test_resolve_rejects_a_manifest_path_that_escapes_the_version_prefix():
         escaping = S3Manifest(
             version=manifest.version,
             fingerprint=manifest.fingerprint,
-            files=[
-                S3ManifestFile(path=bad_path, size=first.size, digest=first.digest)
-            ],
+            files=[S3ManifestFile(path=bad_path, size=first.size, digest=first.digest)],
         )
         obstore.put(store, "kb/v1/manifest.json", msgspec.json.encode(escaping))
         with pytest.raises(KnowledgeBaseError, match="relative|prefix|separator"):
@@ -389,6 +385,7 @@ def test_resolve_rejects_a_malformed_pointer():
     obstore.put(store, "kb/current.json", b"not json at all")
     with pytest.raises(Exception, match="not valid JSON|malformed"):
         S3Location(store, "kb").resolve()
+
 
 def test_resolve_rejects_a_malformed_manifest():
     store = _store()

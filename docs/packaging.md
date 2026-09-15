@@ -307,9 +307,9 @@ publication. One pipeline, no rebuilds:
    - `verify-testpypi-wiki` — the isolation/packaged-skill/local-library
      smoke (`scripts/verify_lumio_wiki_wheel.py`) plus
      `lumio-wiki skill path`/`doctor` against the published wheel.
-   - `verify-testpypi-minio` — the canonical onboarding journey
-     (`examples/onboarding-journey/smoke-journey.sh`) against a real
-     MinIO: local Maintainer journey, S3 publication with and without
+   - `verify-testpypi-s3-compat` — the canonical onboarding journey
+     (`examples/onboarding-journey/smoke-journey.sh`) against SeaweedFS
+     `weed mini`: local Maintainer journey, S3 publication with and without
      LanceDB, remote LanceDB reader, zero-index fallback.
    - `verify-testpypi-app` — the assembled `lumio` application installs
      with its full closure, imports all members, and exposes its entry

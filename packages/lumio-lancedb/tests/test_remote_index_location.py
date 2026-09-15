@@ -3,8 +3,8 @@
 Covers the typed ``IndexLocation`` seam, remote metadata sidecars over an
 in-memory object store, fingerprint/embedding-model identity, and the truthful
 zero-index fallback when a remote index is missing — all without a live S3
-endpoint. The companion ``test_remote_lancedb_minio.py`` exercises a real
-remote build/search against MinIO and skips when no endpoint is configured.
+endpoint. The companion ``test_remote_lancedb_s3_compat.py`` exercises a real
+remote build/search against an S3-compatible service and skips when no endpoint is configured.
 
 This module never tests LanceDB internals: it proves the *contract* (build,
 search, fallback, identity validation) over a local filesystem and an obstore

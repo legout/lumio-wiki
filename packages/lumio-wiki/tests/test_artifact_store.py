@@ -4,8 +4,8 @@ Deterministic coverage for the Source Artifact Store seam, the managed-ingest
 upload+binding saga, the private Source Binding Manifest, required-retention
 activation gating, and privacy (no artifact bytes or keys in public Published
 Versions, fingerprints, or manifests). The S3 adapter's signing and
-cross-role-credential behavior is covered by the MinIO suite
-(``test_artifact_store_minio.py``).
+access-denied behavior is covered by the S3-compatible suite
+(``test_artifact_store_s3_compat.py``).
 """
 
 from __future__ import annotations

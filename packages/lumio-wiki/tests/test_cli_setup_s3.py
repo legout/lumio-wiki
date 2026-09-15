@@ -6,7 +6,7 @@ optional-distribution guidance, the private source-store privacy guard, and
 the ``publish-s3`` destination default. Fresh-process certification uses the
 same subprocess harness as ``test_cli.py``; successful S3 *reads* are proven
 in-process through the CLI's resolution seam (the live object-store contract
-lives in ``test_s3_location.py`` / MinIO integration).
+lives in ``test_s3_location.py`` / S3-compatible integration).
 """
 
 from __future__ import annotations
@@ -223,7 +223,7 @@ def test_fresh_process_reader_setup_then_pathless_read_reaches_s3(tmp_path):
     The read fails against an unreachable local endpoint (connection refused),
     which proves the fresh process loaded LUMIO_KB_PATH=s3://... from .env and
     routed the command through the S3 branch — the resolution contract itself
-    is covered by the stubbed and MinIO suites.
+    is covered by the stubbed and S3-compatible suites.
     """
     project = tmp_path / "reader-project"
     project.mkdir()

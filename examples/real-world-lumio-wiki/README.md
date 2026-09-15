@@ -522,8 +522,8 @@ deployed rather than the issue's literal endpoint names:
 
 The complete `lumio-wiki` + `lumio-lancedb` S3 journey — from an empty
 project to fresh-harness retrieval and source inspection — is certified by
-`packages/lumio-wiki/tests/test_s3_agent_journey_minio.py` (runs against a
-real MinIO boundary when `LUMIO_S3_ENDPOINT` is set; every CLI phase is a
+`packages/lumio-wiki/tests/test_s3_agent_journey_s3_compat.py` (runs against a
+real S3-compatible boundary when `LUMIO_S3_ENDPOINT` is set; every CLI phase is a
 fresh subprocess, so nothing relies on in-process state). The documented
 command sequence:
 

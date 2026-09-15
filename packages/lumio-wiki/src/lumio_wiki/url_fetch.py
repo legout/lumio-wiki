@@ -89,7 +89,7 @@ class UrlFetchPolicy:
     """Bounds and escape hatches for :func:`fetch_url`.
 
     ``allow_http`` and ``allow_private_destinations`` exist for explicit
-    intranet deployments (MinIO-style local endpoints); both default OFF so
+    intranet deployments (local S3-compatible endpoints); both default OFF so
     the public command fails closed against SSRF.
     """
 

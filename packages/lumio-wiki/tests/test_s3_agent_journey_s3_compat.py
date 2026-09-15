@@ -1,8 +1,8 @@
-"""End-to-end MinIO certification of the S3 coding-agent journey (issue #166).
+"""End-to-end S3-compatible certification of the S3 coding-agent journey (issue #166).
 
 Certifies the COMPLETE ``lumio-wiki`` + ``lumio-lancedb`` journey from an
 empty project to fresh-harness retrieval and source inspection — every CLI
-phase runs as a FRESH SUBPROCESS against a real MinIO boundary, so nothing
+phase runs as a FRESH SUBPROCESS against a real S3-compatible boundary, so nothing
 relies on in-process state (issue #166 AC1/AC4):
 
 1. Maintainer ``setup`` with a local worktree, S3 publication, remote
@@ -25,14 +25,14 @@ relies on in-process state (issue #166 AC1/AC4):
 8. Publication conflict, rollback, orphan (interrupted-build) reporting, and
    the zero-index fallback all behave (journey step 11).
 
-Signed-link EXPIRY and full cross-role credential denial (KB Reader / source
-writer / source inspector) are certified in ``test_artifact_store_minio.py``
-and are not duplicated here. The install shape of the journey (only
+Signed-link expiry and unauthorized-credential denial are certified in
+``test_artifact_store_s3_compat.py`` and are not duplicated here. The install
+shape of the journey (only
 ``lumio-wiki``, ``lumio-lancedb``, their extras, and the Agent Skill — never
 the full ``lumio`` app) is certified in ``test_wheel_isolation.py``.
 
 Skips the whole module unless ``LUMIO_S3_ENDPOINT`` is configured, mirroring
-the other MinIO suites. Embeddings stay deterministic: the published remote
+the other S3-compatible suites. Embeddings stay deterministic: the published remote
 index is the lexical BM25 build (no embedder, no provider).
 """
 
@@ -49,12 +49,12 @@ from pathlib import Path
 
 import pytest
 
-obstore = pytest.importorskip("obstore", reason="obstore required for MinIO integration")
+obstore = pytest.importorskip("obstore", reason="obstore required for S3-compatible integration")
 pytest.importorskip("lumio_lancedb", reason="lumio-lancedb required for the S3 journey")
 
 if not _os.environ.get("LUMIO_S3_ENDPOINT"):  # pragma: no cover
     pytest.skip(
-        "LUMIO_S3_ENDPOINT not set; skipping S3 coding-agent journey MinIO tests",
+        "LUMIO_S3_ENDPOINT not set; skipping S3 coding-agent journey S3-compatible tests",
         allow_module_level=True,
     )
 
@@ -89,7 +89,7 @@ def _root_store():
 
 
 def _hermetic_child_env() -> dict[str, str]:
-    """Hermetic child env: keep the MinIO ``LUMIO_S3_*`` deployment settings
+    """Hermetic child env: keep the S3-compatible ``LUMIO_S3_*`` deployment settings
     the journey needs, but strip every other inherited ``LUMIO_*`` config
     var — another suite's conftest (e.g. tests/conftest.py setting
     ``LUMIO_KB_PATH`` to a fixture KB) must not redirect this journey.
@@ -110,7 +110,7 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     """Run the ``lumio-wiki`` CLI as a FRESH subprocess (issue #166 AC4).
 
-    The ambient environment carries the MinIO ``LUMIO_S3_*`` deployment
+    The ambient environment carries the S3-compatible ``LUMIO_S3_*`` deployment
     settings; project configuration (KB path, publication destination,
     retrieval backend, source store) must come from the project ``.env``
     that ``setup`` wrote — exactly what a restarted harness session sees.
@@ -179,20 +179,29 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     # --- Journey step 2: Maintainer setup (local worktree, S3 publication,
     # remote LanceDB, private Source Artifact Store, project skill choice).
     out = _run(
-        "setup", "./knowledge-base",
-        "--publish-to", destination,
-        "--retrieval", "lancedb",
-        "--source-store", source_store_uri,
-        "--artifact-retention", "required",
-        "--skill-scope", "project",
+        "setup",
+        "./knowledge-base",
+        "--publish-to",
+        destination,
+        "--retrieval",
+        "lancedb",
+        "--source-store",
+        source_store_uri,
+        "--artifact-retention",
+        "required",
+        "--skill-scope",
+        "project",
         cwd=maintainer,
     ).stdout
     assert f"LUMIO_PUBLISH_TO={destination}" in out
     assert "LUMIO_SOURCE_STORE" in out
     env_text = (maintainer / ".env").read_text()
     for key in (
-        "LUMIO_KB_PATH=", "LUMIO_PUBLISH_TO=", "LUMIO_RETRIEVAL_BACKEND=lancedb",
-        "LUMIO_SOURCE_STORE=", "LUMIO_ARTIFACT_RETENTION=required",
+        "LUMIO_KB_PATH=",
+        "LUMIO_PUBLISH_TO=",
+        "LUMIO_RETRIEVAL_BACKEND=lancedb",
+        "LUMIO_SOURCE_STORE=",
+        "LUMIO_ARTIFACT_RETENTION=required",
     ):
         assert key in env_text, f".env missing {key}"
     # Setup never writes credentials (standard AWS resolution stays authoritative).
@@ -233,16 +242,15 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     # --- Journey step 4: managed ingest of a mixed-format raw source — one
     # text file and one binary — with proposal review and private retention.
     handbook_md = staging / "handbook.md"
-    handbook_md.write_text(
-        "# Field Handbook\n\nRotate the sensors quarterly.\n", encoding="utf-8"
-    )
+    handbook_md.write_text("# Field Handbook\n\nRotate the sensors quarterly.\n", encoding="utf-8")
     report_pdf = staging / "field-report.pdf"
     report_v1_bytes = b"%PDF-1.4 journey source artifact bytes v1"
     report_pdf.write_bytes(report_v1_bytes)
     handbook_page = staging / "handbook-page.md"
     handbook_page.write_text(
         _authored_page(
-            "Field Handbook Notes", "handbook-src",
+            "Field Handbook Notes",
+            "handbook-src",
             "The original handbook instructs: rotate the sensors quarterly.",
         ),
         encoding="utf-8",
@@ -258,9 +266,13 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
         (report_pdf, report_page, "report-src"),
     ):
         out = _run(
-            "ingest", "knowledge-base", str(source_file),
-            "--compiled-page", str(page_file),
-            "--source-id", source_id,
+            "ingest",
+            "knowledge-base",
+            str(source_file),
+            "--compiled-page",
+            str(page_file),
+            "--source-id",
+            source_id,
             cwd=maintainer,
         ).stdout
         assert f"source_id:      {source_id}" in out
@@ -268,30 +280,32 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     listed = _run("proposal", "list", "knowledge-base", cwd=maintainer).stdout
     for proposal_id in proposal_ids:
         assert proposal_id in listed
-        out = _run(
-            "proposal", "inspect", "knowledge-base", proposal_id, cwd=maintainer
-        ).stdout
+        out = _run("proposal", "inspect", "knowledge-base", proposal_id, cwd=maintainer).stdout
         assert proposal_id in out and "source_id" in out
-        assert "Knowledge base is valid" in _run(
-            "proposal", "validate", "knowledge-base", proposal_id, cwd=maintainer
-        ).stdout
+        assert (
+            "Knowledge base is valid"
+            in _run("proposal", "validate", "knowledge-base", proposal_id, cwd=maintainer).stdout
+        )
         _run("publish", "knowledge-base", proposal_id, cwd=maintainer)
 
     # --- Journey step 5: publish one complete immutable S3 version (with the
     # remote LanceDB build) and activate it.
-    out = _run(
-        "publish-s3", "--version", "v1", "--retrieval", "lancedb", cwd=maintainer
-    ).stdout
+    out = _run("publish-s3", "--version", "v1", "--retrieval", "lancedb", cwd=maintainer).stdout
     assert "Published v1" in out
     assert "lance:       built and health-checked under derived/lance/" in out
 
     # --- Journey step 6: a separate read-only coding-agent project against
     # the S3 Location.
     out = _run(
-        "setup", "--from", destination,
-        "--retrieval", "lancedb",
-        "--source-store", source_store_uri,
-        "--skill-scope", "project",
+        "setup",
+        "--from",
+        destination,
+        "--retrieval",
+        "lancedb",
+        "--source-store",
+        source_store_uri,
+        "--skill-scope",
+        "project",
         cwd=reader,
     ).stdout
     assert f"LUMIO_KB_PATH={destination}" in out
@@ -322,20 +336,19 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     assert "bound_to:        published version v1 (Source Binding Manifest)" in out
     assert "authorization:   granted" in out
     fetched_text = reader / "handbook-original.md"
-    _run("source", "fetch", "--source-id", "handbook-src",
-         "--output", str(fetched_text), cwd=reader)
+    _run(
+        "source", "fetch", "--source-id", "handbook-src", "--output", str(fetched_text), cwd=reader
+    )
     assert "Rotate the sensors quarterly" in fetched_text.read_text(encoding="utf-8")
     fetched_pdf = reader / "field-report.pdf"
-    _run("source", "fetch", "--source-id", "report-src",
-         "--output", str(fetched_pdf), cwd=reader)
+    _run("source", "fetch", "--source-id", "report-src", "--output", str(fetched_pdf), cwd=reader)
     assert fetched_pdf.read_bytes() == report_v1_bytes
 
     # --- Journey step 9: a five-minute signed download link for the same
-    # exact artifact (expiry + cross-role denial are certified in
-    # test_artifact_store_minio.py; here: the link serves the exact bytes and
+    # exact artifact (expiry + unauthorized denial are certified in
+    # test_artifact_store_s3_compat.py; here: the link serves the exact bytes and
     # authorizes exactly one object).
-    out = _run("source", "link", "--source-id", "report-src",
-               "--expires", "5m", cwd=reader).stdout
+    out = _run("source", "link", "--source-id", "report-src", "--expires", "5m", cwd=reader).stdout
     url = out.splitlines()[0]
     assert url.startswith("http")
     assert "bearer secret" in out
@@ -359,7 +372,8 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     revised_page = staging / "report-page-v2.md"
     revised_page.write_text(
         _authored_page(
-            "Field Report Digest", "report-src",
+            "Field Report Digest",
+            "report-src",
             "Digest of the REPLACEMENT field report.",
         ),
         encoding="utf-8",
@@ -369,31 +383,49 @@ def test_s3_coding_agent_journey(tmp_path, _root_store):
     ).stdout
     _run("publish", "knowledge-base", _staged_proposal_id(out), cwd=maintainer)
     out = _run(
-        "source", "reactivate", "knowledge-base",
-        "--source-id", "report-src", "--file", str(report_pdf),
+        "source",
+        "reactivate",
+        "knowledge-base",
+        "--source-id",
+        "report-src",
+        "--file",
+        str(report_pdf),
         cwd=maintainer,
     ).stdout
     _run("publish", "knowledge-base", _staged_proposal_id(out), cwd=maintainer)
     out = _run(
-        "ingest", "knowledge-base", str(report_pdf),
-        "--compiled-page", str(revised_page),
-        "--source-id", "report-src",
+        "ingest",
+        "knowledge-base",
+        str(report_pdf),
+        "--compiled-page",
+        str(revised_page),
+        "--source-id",
+        "report-src",
         cwd=maintainer,
     ).stdout
     replacement_id = _staged_proposal_id(out)
     _run("publish", "knowledge-base", replacement_id, cwd=maintainer)
     _run("publish-s3", "--version", "v2", "--retrieval", "lancedb", cwd=maintainer)
     # The active Published Version (v2) serves the replacement bytes...
-    _run("source", "fetch", "--source-id", "report-src",
-         "--output", str(fetched_pdf), cwd=reader)
+    _run("source", "fetch", "--source-id", "report-src", "--output", str(fetched_pdf), cwd=reader)
     assert fetched_pdf.read_bytes() == report_v2_bytes
     # ...and the historical v1 binding still fetches the historical bytes.
     historical = reader / "field-report-v1.pdf"
-    _run("source", "fetch", "--source-id", "report-src",
-         "--published-version", "v1", "--output", str(historical), cwd=reader)
+    _run(
+        "source",
+        "fetch",
+        "--source-id",
+        "report-src",
+        "--published-version",
+        "v1",
+        "--output",
+        str(historical),
+        cwd=reader,
+    )
     assert historical.read_bytes() == report_v1_bytes
-    out = _run("source", "inspect", "--source-id", "report-src",
-               "--published-version", "v1", cwd=reader).stdout
+    out = _run(
+        "source", "inspect", "--source-id", "report-src", "--published-version", "v1", cwd=reader
+    ).stdout
     assert "bound_to:        published version v1 (Source Binding Manifest)" in out
 
     # --- Journey step 11 legs: conflict, rollback, orphan reporting, and the

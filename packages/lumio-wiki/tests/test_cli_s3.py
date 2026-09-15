@@ -2,7 +2,7 @@
 
 Retains URI/configuration validation and in-memory publication, conflict,
 rollback, and cleanup journeys. Live reader operation is covered by the
-optional MinIO integration suites.
+optional S3-compatible integration suites.
 """
 
 from __future__ import annotations
@@ -35,14 +35,14 @@ def test_s3_config_from_env_reads_lumio_and_aws_vars(monkeypatch):
         if var.startswith(("LUMIO_S3_", "AWS_")):
             monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("LUMIO_S3_REGION", "eu-west-1")
-    monkeypatch.setenv("LUMIO_S3_ENDPOINT", "http://localhost:9000")
-    monkeypatch.setenv("LUMIO_S3_ACCESS_KEY_ID", "minio")
-    monkeypatch.setenv("LUMIO_S3_SECRET_ACCESS_KEY", "minio123")
+    monkeypatch.setenv("LUMIO_S3_ENDPOINT", "http://localhost:8333")
+    monkeypatch.setenv("LUMIO_S3_ACCESS_KEY_ID", "local-access")
+    monkeypatch.setenv("LUMIO_S3_SECRET_ACCESS_KEY", "local-secret")
     config, client_options = cli._s3_config_from_env()
     assert config["aws_region"] == "eu-west-1"
-    assert config["aws_endpoint"] == "http://localhost:9000"
-    assert config["aws_access_key_id"] == "minio"
-    assert config["aws_secret_access_key"] == "minio123"
+    assert config["aws_endpoint"] == "http://localhost:8333"
+    assert config["aws_access_key_id"] == "local-access"
+    assert config["aws_secret_access_key"] == "local-secret"
     # An HTTP endpoint opts in to allow_http on the client.
     assert client_options == {"allow_http": True}
 

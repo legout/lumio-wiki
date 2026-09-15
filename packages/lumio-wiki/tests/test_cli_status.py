@@ -8,7 +8,7 @@ degradation with recovery guidance, Source Artifact retention without
 credentials or object keys, and the shared post-``setup`` summary.
 
 Stub-based orchestration tests run everywhere (no S3 / LanceDB required); the
-live reader journey is covered by the MinIO suite.
+live reader journey is covered by the S3-compatible suite.
 """
 
 from __future__ import annotations

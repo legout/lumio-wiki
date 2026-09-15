@@ -1,14 +1,14 @@
-"""MinIO integration coverage for complete S3 publication (issue #163).
+"""S3-compatible integration coverage for complete S3 publication (issue #163).
 
 Proves the *conditional activation* contract against a real S3-compatible
 endpoint: compare-and-swap activation against the originally observed pointer,
 explicit CAS rollback, and report-only cleanup candidates. The remote LanceDB
-publication journey is covered by the ``lumio-lancedb`` MinIO suite; every
+publication journey is covered by the ``lumio-lancedb`` S3-compatible suite; every
 state transition is covered deterministically by the in-memory suite
 (``test_s3_publish.py``).
 
 Skips the whole module unless ``LUMIO_S3_ENDPOINT`` is configured, mirroring
-the other MinIO suites.
+the other S3-compatible suites.
 """
 
 from __future__ import annotations
@@ -37,12 +37,12 @@ FIXTURES = ROOT / "tests" / "fixtures"
 VALID = FIXTURES / "valid"
 CATEGORIZED = FIXTURES / "categorized_kb"
 
-obstore = pytest.importorskip("obstore", reason="obstore required for MinIO integration")
+obstore = pytest.importorskip("obstore", reason="obstore required for S3-compatible integration")
 
-# Skip the whole module unless a MinIO/S3-compatible endpoint is configured.
+# Skip the whole module unless an S3-compatible endpoint is configured.
 if not _os.environ.get("LUMIO_S3_ENDPOINT"):  # pragma: no cover
     pytest.skip(
-        "LUMIO_S3_ENDPOINT not set; skipping S3 publish MinIO tests",
+        "LUMIO_S3_ENDPOINT not set; skipping S3 publish S3-compatible tests",
         allow_module_level=True,
     )
 
@@ -65,9 +65,7 @@ def _new_store():
     """A fresh store client (independent session, like a separate publisher)."""
     config, client_options = _s3_config()
     bucket = _os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-wiki-it")
-    return obstore.store.from_url(
-        f"s3://{bucket}", config=config, client_options=client_options
-    )
+    return obstore.store.from_url(f"s3://{bucket}", config=config, client_options=client_options)
 
 
 @pytest.fixture()
@@ -103,7 +101,7 @@ def _list(store, prefix: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_minio_two_publishers_conditional_activation_fails_closed(kb_prefix):
+def test_s3_compat_two_publishers_conditional_activation_fails_closed(kb_prefix):
     """A publisher that observed v1 fails closed when another publisher
     advanced the pointer in between — against a real S3-compatible backend
     with real conditional puts and ETags."""
@@ -139,8 +137,8 @@ def test_minio_two_publishers_conditional_activation_fails_closed(kb_prefix):
     assert snapshot.fingerprint == fingerprint_sources(CATEGORIZED)
 
 
-def test_minio_sequential_publications_and_rollback(kb_prefix):
-    """Publish two versions then CAS-rollback to the first against MinIO."""
+def test_s3_compat_sequential_publications_and_rollback(kb_prefix):
+    """Publish two versions then CAS-rollback to the first against S3-compatible."""
     store, prefix = kb_prefix
     publish_s3_version(store, prefix, source_root=VALID, version="v1")
     v1_objects = _list(store, f"{prefix}/v1/")
@@ -159,7 +157,7 @@ def test_minio_sequential_publications_and_rollback(kb_prefix):
     assert snapshot.fingerprint.digest == manifest.fingerprint
 
 
-def test_minio_stale_rollback_fails_closed(kb_prefix):
+def test_s3_compat_stale_rollback_fails_closed(kb_prefix):
     store, prefix = kb_prefix
     publish_s3_version(store, prefix, source_root=VALID, version="v1")
     publish_s3_version(
@@ -170,7 +168,7 @@ def test_minio_stale_rollback_fails_closed(kb_prefix):
     assert _pointer(store, prefix) == "v2"
 
 
-def test_minio_cleanup_candidates_are_reported_not_deleted(kb_prefix):
+def test_s3_compat_cleanup_candidates_are_reported_not_deleted(kb_prefix):
     store, prefix = kb_prefix
     publish_s3_version(store, prefix, source_root=VALID, version="v1")
     # Simulate an interrupted build: residue without a manifest.
@@ -183,7 +181,7 @@ def test_minio_cleanup_candidates_are_reported_not_deleted(kb_prefix):
     assert f"{prefix}/v1/{MANIFEST_OBJECT}" in _list(store, prefix)
 
 
-def test_minio_reused_version_prefix_is_rejected(kb_prefix):
+def test_s3_compat_reused_version_prefix_is_rejected(kb_prefix):
     """A retried build never mutates an existing immutable version."""
     store, prefix = kb_prefix
     publish_s3_version(store, prefix, source_root=VALID, version="v1")
