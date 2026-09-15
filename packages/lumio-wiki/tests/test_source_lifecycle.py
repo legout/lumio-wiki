@@ -186,6 +186,7 @@ def test_retiring_final_support_stages_without_changing_active_source(tmp_path) 
     proposal = pipeline.retire_source("policy")
 
     assert proposal.status == "staged"
+    assert proposal.source_change is not None
     assert proposal.source_change.action == "retire"
     assert proposal.source_change.impacts == [SourceChangeImpact("Policy", "sole-source-lost")]
     assert store.source_registry.get("policy").status == "active"
@@ -200,6 +201,7 @@ def test_retiring_one_of_two_supports_is_informational(tmp_path) -> None:
 
     proposal = pipeline.retire_source("primary")
 
+    assert proposal.source_change is not None
     assert proposal.source_change.impacts == [SourceChangeImpact("Policy", "still-supported")]
 
 
@@ -274,6 +276,7 @@ def test_confirming_candidate_stages_retirement_and_records_decision(tmp_path) -
 
     proposal = pipeline.confirm_retirement_candidate(candidate.id)
 
+    assert proposal.source_change is not None
     assert proposal.source_change.action == "retire"
     assert store.source_registry.get_candidate(candidate.id).status == "confirmed"
     assert store.source_registry.get("policy").status == "active"
@@ -340,6 +343,7 @@ def test_reactivation_appends_new_version_and_activates_only_after_publish(tmp_p
     reactivation = pipeline.reactivate_source("policy", b"policy-v2")
 
     retired = store.source_registry.get("policy")
+    assert reactivation.source_change is not None
     assert reactivation.source_change.action == "reactivate"
     assert reactivation.proposed_pages == []
     assert retired.status == "retired"
@@ -376,6 +380,7 @@ def test_reactivation_impact_counts_the_reactivated_source_as_support(tmp_path) 
 
     reactivation = pipeline.reactivate_source("policy", b"policy-v2")
 
+    assert reactivation.source_change is not None
     statuses = {impact.status for impact in reactivation.source_change.impacts}
     assert statuses == {"still-supported"}
     assert statuses <= {"still-supported", "sole-source-lost"}
@@ -393,6 +398,7 @@ def test_reactivation_impact_with_independent_support_is_still_supported(tmp_pat
 
     reactivation = pipeline.reactivate_source("policy", b"policy-v2")
 
+    assert reactivation.source_change is not None
     statuses = {impact.status for impact in reactivation.source_change.impacts}
     assert statuses == {"still-supported"}
     assert statuses <= {"still-supported", "sole-source-lost"}
@@ -409,6 +415,7 @@ def test_retirement_impact_remains_action_aware_for_a_sole_source(tmp_path) -> N
 
     retirement = pipeline.retire_source("policy")
 
+    assert retirement.source_change is not None
     statuses = {impact.status for impact in retirement.source_change.impacts}
     assert statuses == {"sole-source-lost"}
 
