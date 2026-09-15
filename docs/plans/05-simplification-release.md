@@ -54,9 +54,11 @@ checks; release notes do not create a second documentation-only validation unit.
   `packages/lumio-wiki/tests/test_page_removal.py`,
   `packages/lumio-wiki/tests/test_s3_publish.py`.
   **Cross-repository consumer lane:** `legout/lumio` file
-  `packages/lumio/src/lumio/app.py` and its publish, page-removal,
-  proposal-pipeline, and private-audit tests. This plan records the dependency;
-  it does not authorize private-repository mutation.
+  `packages/lumio/src/lumio/app.py`; direct producer-API consumers in
+  `tests/test_compound_ingest.py` and `tests/test_external_import_publish.py`;
+  and the publish, page-removal, proposal-pipeline, OKF-journey, and private-audit
+  tests. This plan records the dependency; it does not authorize
+  private-repository mutation.
   **Consumes → produces:** successful reviewed mutations and recognized legacy
   artifacts → navigation-only new publications, no new/append Activity Log writes.
   Prerequisites: P5 and S2's accepted producer-API inventory, plus a separately
@@ -85,7 +87,7 @@ checks; release notes do not create a second documentation-only validation unit.
   uv run pytest -q tests/test_kb_control.py packages/lumio-wiki/tests/test_entity_merge.py packages/lumio-wiki/tests/test_page_removal.py packages/lumio-wiki/tests/test_s3_publish.py
   rg -n 'append_activity_log_entry|make_activity_log_entry|_format_activity_log_line' packages tests eval scripts
   # From the separately approved private-app migration revision:
-  (cd /home/volker/coding/lumio && uv run pytest -q tests/test_publish.py tests/test_page_removal.py tests/test_proposal_pipeline.py tests/test_audit_log.py)
+  (cd /home/volker/coding/lumio && uv run pytest -q tests/test_publish.py tests/test_page_removal.py tests/test_proposal_pipeline.py tests/test_compound_ingest.py tests/test_external_import_publish.py tests/test_okf_complete_journey.py tests/test_audit_log.py)
   (cd /home/volker/coding/lumio && rg -n 'append_activity_log_entry|make_activity_log_entry|_format_activity_log_line' packages/lumio/src tests)
   ```
 
