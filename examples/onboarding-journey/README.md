@@ -22,26 +22,25 @@ Local steps only (no object store needed):
 ./smoke-journey.sh
 ```
 
-Full journey including MinIO/S3 publication (same environment variables the
-CLI and the MinIO test suites read — the values below are the **labelled
-local-test defaults** of a throwaway MinIO, never production credentials):
+Full journey including S3-compatible publication (same environment variables
+the CLI and S3-compatible test suites read). Start SeaweedFS `weed mini` with
+the bucket and **labelled local-test credentials** shown in the canonical
+quickstart, then run:
 
 ```bash
-export LUMIO_S3_ENDPOINT=http://localhost:9000
-export AWS_ACCESS_KEY_ID=minioadmin         # local test credential
-export AWS_SECRET_ACCESS_KEY=minioadmin     # local test credential
+export LUMIO_S3_ENDPOINT=http://localhost:8333
+export AWS_ACCESS_KEY_ID=admin              # local test credential
+export AWS_SECRET_ACCESS_KEY=secret         # local test credential
 export AWS_REGION=us-east-1
 ./smoke-journey.sh
 ```
 
 The bucket (`lumio-quickstart` by default, override with
-`LUMIO_S3_TEST_BUCKET`) is created when `mc` is on PATH (the one-time operator
-step documented in the quickstart). Without `mc`, the script verifies the
-endpoint is reachable and the bucket usable through `obstore` (the same client
-the CLI uses); a missing bucket then fails at `publish-s3` with an actionable
-error — create it with `mc mb` or `aws s3api create-bucket` first. Each run
-publishes under a unique `helpdesk-kb/run-…` prefix because Published
-Versions are immutable and cannot be overwritten.
+`LUMIO_S3_TEST_BUCKET`) is created at `weed mini` startup with
+`S3_BUCKET=lumio-quickstart`. The script verifies the bucket through `obstore`
+(the same client the CLI uses) and directs failures back to that startup
+configuration. Each run publishes under a unique `helpdesk-kb/run-…` prefix
+because Published Versions are immutable and cannot be overwritten.
 
 When `lumio-wiki` is not on `PATH` (for example from a Lumio checkout), point
 the script at it:
@@ -57,7 +56,7 @@ LUMIO_WIKI_BIN="uv --project /path/to/lumio run lumio-wiki" ./smoke-journey.sh
   review and publish, retrieval with citation open actions, canonical graph
   traversal, and truthful Source Artifact unavailability (retention is
   disabled by default and the CLI says so).
-- Against MinIO: immutable publication (`publish-s3`) with zero-index and
+- Against an S3-compatible endpoint: immutable publication (`publish-s3`) with zero-index and
   LanceDB artifacts, read-only Reader setup (`setup --from`), pathless reads,
   the disclosed zero-index fallback when a LanceDB index is not published,
   health after publishing one, and the truthful embedder requirement for

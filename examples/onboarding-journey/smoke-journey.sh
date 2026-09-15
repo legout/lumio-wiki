@@ -4,7 +4,7 @@
 # Executes EXACTLY the commands documented in docs/quickstart.md, in order:
 # local Maintainer setup -> ontology starter -> seed pages -> managed ingest ->
 # proposal review -> publish -> retrieval/citation/traversal -> Source Artifact
-# inspection -> (when MinIO is configured) S3 publication with and without
+# inspection -> (when an S3-compatible endpoint is configured) publication with and without
 # LanceDB -> read-only Reader project -> expected zero-index fallback.
 #
 # Any command failing or printing an unexpected outcome fails the script, so
@@ -16,14 +16,14 @@
 # Environment:
 #   LUMIO_WIKI_BIN   lumio-wiki invocation (default: "lumio-wiki";
 #                     e.g. "uv --project /path/to/lumio run lumio-wiki")
-#   LUMIO_PYTHON     python with obstore for bucket creation fallback
+#   LUMIO_PYTHON     python with obstore for the bucket usability check
 #                     (default: python3)
 #
-# MinIO part runs only when ALL of these are set (same variables the CLI and
-# the MinIO test suites read):
+# S3-compatible part runs only when ALL of these are set (same variables the
+# CLI and S3-compatible test suites read):
 #   LUMIO_S3_ENDPOINT, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 # Optional: LUMIO_S3_REGION (default us-east-1), LUMIO_S3_TEST_BUCKET
-#           (default lumio-quickstart), MC_BIN (default mc).
+#           (default lumio-quickstart).
 
 set -euo pipefail
 
@@ -56,7 +56,7 @@ step "1. Maintainer setup"
 if [ "$S3_READY" = 1 ]; then
   $LW setup ./kb --publish-to "s3://$BUCKET/$PREFIX"
 else
-  echo "(no MinIO endpoint configured — plain local setup, S3 steps skipped)"
+  echo "(no S3-compatible endpoint configured — plain local setup, S3 steps skipped)"
   $LW setup ./kb
 fi
 
@@ -186,26 +186,26 @@ $LW ingest ./kb "$HERE/sources/support-runbook.md" \
 
 step "5. Proposal review: list -> inspect -> validate -> publish"
 PID=$($LW proposal list ./kb | awk '/staged/{print $1}')
-$LW proposal inspect ./kb "$PID" | tee /dev/stderr | grep -Eq 'affected_pages: +Password Reset Runbook'
+$LW proposal inspect ./kb "$PID" | tee /dev/stderr | grep -E 'affected_pages: +Password Reset Runbook' >/dev/null
 $LW proposal validate ./kb "$PID"
 $LW publish ./kb "$PID"
 
 step "6. Retrieval, citation open actions, graph traversal"
-$LW search "password reset" --limit 2 | tee /dev/stderr | grep -q '^open:'
-$LW page "Password Reset Runbook" | tee /dev/stderr | grep -q '^source-artifact:'
-$LW related "Aurora Helpdesk" --scope canonical --trace | tee /dev/stderr | grep -q 'Starlight DB'
+$LW search "password reset" --limit 2 | tee /dev/stderr | grep -E '^open:' >/dev/null
+$LW page "Password Reset Runbook" | tee /dev/stderr | grep -E '^source-artifact:' >/dev/null
+$LW related "Aurora Helpdesk" --scope canonical --trace | tee /dev/stderr | grep -E 'Starlight DB' >/dev/null
 $LW paths "Aurora Helpdesk" "Starlight DB" --scope canonical --trace \
-  | tee /dev/stderr | grep -q 'found=true'
+  | tee /dev/stderr | grep -E 'found=true' >/dev/null
 
 step "7. Source Artifact inspection: truthful unavailability (no store configured)"
 $LW source inspect ./kb --source-id support-runbook-2026 \
-  | tee /dev/stderr | grep -q 'not retained'
+  | tee /dev/stderr | grep -E 'not retained' >/dev/null
 expect_fail "local source fetch without a Source Artifact Store" \
   $LW source fetch ./kb --source-id support-runbook-2026 --output /tmp/should-not-exist.md
 
 if [ "$S3_READY" != 1 ]; then
   echo
-  echo "PASS: local onboarding journey complete (S3/MinIO steps skipped —"
+  echo "PASS: local onboarding journey complete (S3-compatible steps skipped —"
   echo "set LUMIO_S3_ENDPOINT + AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY to run them)."
   exit 0
 fi
@@ -215,16 +215,8 @@ export LUMIO_S3_ALLOW_HTTP=${LUMIO_S3_ALLOW_HTTP:-}
 case "$LUMIO_S3_ENDPOINT" in
   http://*) export LUMIO_S3_ALLOW_HTTP=1 ;;
 esac
-# Bucket creation is a one-time operator step documented in the quickstart
-# (mc mb / aws s3api create-bucket). With no mc on PATH, verify the endpoint
-# is reachable through the same client the CLI uses; a missing bucket then
-# fails loudly at publish-s3 below with an actionable error.
-if command -v "${MC_BIN:-mc}" >/dev/null 2>&1; then
-  "${MC_BIN:-mc}" alias set local "$LUMIO_S3_ENDPOINT" \
-    "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" >/dev/null
-  "${MC_BIN:-mc}" mb --ignore-existing "local/$BUCKET" >/dev/null
-else
-  ${LUMIO_PYTHON:-python3} - "$BUCKET" <<'PYEOF'
+# Verify the startup-created bucket through the same client the CLI uses.
+${LUMIO_PYTHON:-python3} - "$BUCKET" <<'PYEOF'
 import os
 import sys
 
@@ -243,17 +235,16 @@ try:
     list(obstore.list(store, prefix="journey-reachability-check/"))
 except Exception as exc:
     sys.exit(f"FAIL: cannot use bucket s3://{sys.argv[1]} at {endpoint}: {exc}; "
-             "create it with 'mc mb local/<bucket>' (see docs/quickstart.md Part 1)")
+             f"start or configure 'weed mini' with S3_BUCKET={sys.argv[1]}")
 PYEOF
-fi
 $LW publish-s3 --version v1
 
 step "9. Reader: read-only project against the S3 Location"
 READER=$(mktemp -d)
 ( cd "$READER"
   $LW setup --from "s3://$BUCKET/$PREFIX"
-  $LW search "password reset" --limit 2 | tee /dev/stderr | grep -q '^open:'
-  $LW related "Aurora Helpdesk" --scope canonical | tee /dev/stderr | grep -q 'Starlight DB'
+  $LW search "password reset" --limit 2 | tee /dev/stderr | grep -E '^open:' >/dev/null
+  $LW related "Aurora Helpdesk" --scope canonical | tee /dev/stderr | grep -E 'Starlight DB' >/dev/null
   expect_fail "reader source inspect without a Source Artifact Store" \
     $LW source inspect --source-id support-runbook-2026
 )
@@ -262,18 +253,18 @@ step "10. Expected zero-index fallback (lancedb requested, index not published y
 READER_LANCE=$(mktemp -d)
 ( cd "$READER_LANCE"
   $LW setup --from "s3://$BUCKET/$PREFIX" --retrieval lancedb \
-    | tee /dev/stderr | grep -q 'zero-index page search over the same Published Version'
-  $LW search "password reset" --limit 1 | tee /dev/stderr | grep -q '^open:'
+    | tee /dev/stderr | grep -E 'zero-index page search over the same Published Version' >/dev/null
+  $LW search "password reset" --limit 1 | tee /dev/stderr | grep -E '^open:' >/dev/null
 )
 
 step "11. Publish v2 WITH remote LanceDB (CAS guard), reader becomes healthy"
 $LW publish-s3 --version v2 --expected-pointer-version v1 --retrieval lancedb
 ( cd "$READER_LANCE"
   $LW setup --from "s3://$BUCKET/$PREFIX" --retrieval lancedb \
-    | tee /dev/stderr | grep -Eq 'lancedb_healthy: +true'
+    | tee /dev/stderr | grep -E 'lancedb_healthy: +true' >/dev/null
   # Retrieval MODE stays separate from the backend: lexical works everywhere;
   # semantic/hybrid truthfully demand an embedder (none configured here).
-  $LW search "password reset" --mode lexical --limit 1 | tee /dev/stderr | grep -q '^open:'
+  $LW search "password reset" --mode lexical --limit 1 | tee /dev/stderr | grep -E '^open:' >/dev/null
   expect_fail "hybrid mode without an embedder" \
     $LW search "password reset" --mode hybrid
 )

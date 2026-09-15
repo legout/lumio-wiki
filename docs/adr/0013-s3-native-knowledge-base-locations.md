@@ -49,7 +49,7 @@ of this decision.
 
 The current `Path`-only loading, fingerprint, graph, and LanceDB index APIs
 must gain typed local-or-remote locations while preserving filesystem behavior.
-Tests require an in-memory object-store contract plus MinIO integration coverage
-for `obstore`, direct CLI reads, remote LanceDB, publication conflicts, corrupt
-manifests, and no managed disk cache. Existing local and zero-index deployments
-remain supported.
+Tests require an in-memory object-store contract plus S3-compatible integration
+coverage for `obstore`, direct CLI reads, remote LanceDB, publication conflicts,
+corrupt manifests, and no managed disk cache. SeaweedFS `weed mini` is the current
+CI implementation. Existing local and zero-index deployments remain supported.

@@ -10,8 +10,8 @@ zero-index retrieval over the same Snapshot with a disclosed note
 (issue #162, ADR-0013/0019).
 
 Stub-based orchestration tests run everywhere (no LanceDB required); the
-real-adapter section proves BM25/binding behavior with LanceDB installed; a
-MinIO module covers the live endpoint journey.
+real-adapter section proves BM25/binding behavior with LanceDB installed; an
+S3-compatible module covers the live endpoint journey.
 """
 
 from __future__ import annotations
@@ -350,9 +350,9 @@ lumio_lancedb = pytest.importorskip(
 def test_bind_remote_lancedb_builds_remote_index_location(monkeypatch):
     snapshot = _snapshot_with_descriptor(_fixture_snapshot())
     monkeypatch.setenv("LUMIO_S3_REGION", "us-east-1")
-    monkeypatch.setenv("LUMIO_S3_ENDPOINT", "http://localhost:9000")
-    monkeypatch.setenv("LUMIO_S3_ACCESS_KEY_ID", "minio")
-    monkeypatch.setenv("LUMIO_S3_SECRET_ACCESS_KEY", "minio123")
+    monkeypatch.setenv("LUMIO_S3_ENDPOINT", "http://localhost:8333")
+    monkeypatch.setenv("LUMIO_S3_ACCESS_KEY_ID", "local-access")
+    monkeypatch.setenv("LUMIO_S3_SECRET_ACCESS_KEY", "local-secret")
 
     module, location = cli._bind_remote_lancedb(snapshot)
 
@@ -364,10 +364,10 @@ def test_bind_remote_lancedb_builds_remote_index_location(monkeypatch):
     # storage options (issue #162: one configuration source, no secrets in
     # portable content).
     assert location.storage_options["region"] == "us-east-1"
-    assert location.storage_options["endpoint"] == "http://localhost:9000"
+    assert location.storage_options["endpoint"] == "http://localhost:8333"
     assert location.storage_options["allow_http"] == "true"
-    assert location.storage_options["access_key_id"] == "minio"
-    assert location.storage_options["secret_access_key"] == "minio123"
+    assert location.storage_options["access_key_id"] == "local-access"
+    assert location.storage_options["secret_access_key"] == "local-secret"
 
 
 def test_bind_remote_lancedb_requires_descriptor(monkeypatch, capsys):

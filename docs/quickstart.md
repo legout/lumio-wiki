@@ -2,9 +2,9 @@
 
 This is the **one canonical onboarding journey** (issue #180): a single linear
 path from prerequisites to a grounded, citation-backed agent answer. It runs
-against a local [MinIO](https://min.io) so every S3 step is real, and closes
-with the AWS/S3 production variant. You do not need to read any ADR, the
-repository tests, or the rest of the docs to finish it.
+against local SeaweedFS `weed mini` so every S3 step is real, and closes with
+the AWS/S3 production variant. You do not need to read any ADR, the repository
+tests, or the rest of the docs to finish it.
 
 Time: ~20 minutes. You end with a Maintainer project that publishes immutable
 Knowledge Base versions to object storage, and a read-only Reader project that
@@ -12,7 +12,7 @@ answers questions from them with citations.
 
 > The journey is scriptable: [`examples/onboarding-journey/smoke-journey.sh`](../examples/onboarding-journey/smoke-journey.sh)
 > executes exactly the commands below and fails on drift. CI runs it against
-> MinIO on every push.
+> SeaweedFS `weed mini` on every push.
 
 ## What you are building
 
@@ -30,9 +30,7 @@ setup → status → ingest → proposal review → publish
 ## 0. Prerequisites
 
 - Python **≥ 3.14** and a shell.
-- Docker (only for the local MinIO in Part 1).
-- `mc` (the MinIO client) or the AWS CLI for the one-time bucket creation in
-  Part 1.
+- A `weed` binary or Docker (only for the local S3-compatible store in Part 1).
 
 Install the portable foundation with the S3 extra, and — when you want the
 enhanced retrieval backend — the LanceDB adapter with its S3 extra:
@@ -49,32 +47,36 @@ lumio-wiki --version                # e.g. lumio-wiki 0.1.1
 lumio-wiki doctor                   # version, detected extras, skill location
 ```
 
-## 1. Local MinIO with a dedicated bucket
+## 1. Local SeaweedFS `weed mini` with a dedicated bucket
 
-Start a throwaway MinIO and create a bucket dedicated to this journey. The
-`minioadmin`/`minioadmin` values below are MinIO's **labelled local-test
-defaults** — fine on localhost, never production credentials.
+Start a throwaway `weed mini`; `S3_BUCKET` creates the journey bucket at
+startup. The `admin`/`secret` values below are **labelled local-test
+credentials** — fine on localhost, never production credentials.
+
+With the `weed` binary (leave it running in this terminal):
 
 ```bash
-docker run -d --name lumio-quickstart-minio -p 9000:9000 \
-  -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-  minio/minio server /data
-
-mc alias set local http://localhost:9000 minioadmin minioadmin
-mc mb --ignore-existing local/lumio-quickstart
+AWS_ACCESS_KEY_ID=admin AWS_SECRET_ACCESS_KEY=secret \
+  S3_BUCKET=lumio-quickstart weed mini
 ```
 
-(No `mc`? `aws s3api create-bucket --bucket lumio-quickstart --endpoint-url
-http://localhost:9000` with the same credentials works too.)
+Or with Docker:
+
+```bash
+docker run -d --name lumio-quickstart-seaweedfs -p 8333:8333 \
+  -e AWS_ACCESS_KEY_ID=admin -e AWS_SECRET_ACCESS_KEY=secret \
+  -e S3_BUCKET=lumio-quickstart \
+  chrislusf/seaweedfs:4.45@sha256:fc9f76fa993ad69966ffeb2f65d0318fcae39c6f8e20cf68ef7b3a5cb97769e5
+```
 
 Point Lumio at it — standard AWS credential variables plus the endpoint
 override; exported values win, nothing is written to any file:
 
 ```bash
-export AWS_ACCESS_KEY_ID=minioadmin        # local test credential
-export AWS_SECRET_ACCESS_KEY=minioadmin    # local test credential
+export AWS_ACCESS_KEY_ID=admin             # local test credential
+export AWS_SECRET_ACCESS_KEY=secret        # local test credential
 export AWS_REGION=us-east-1
-export LUMIO_S3_ENDPOINT=http://localhost:9000
+export LUMIO_S3_ENDPOINT=http://localhost:8333
 export LUMIO_S3_ALLOW_HTTP=1               # plain HTTP is localhost-only
 ```
 
@@ -528,6 +530,4 @@ Never point a Maintainer worktree at the S3 prefix as if it were a filesystem.
 - [`docs/chat-sources.md`](chat-sources.md) — private document chat in the web
   app.
 - [`examples/onboarding-journey/`](../examples/onboarding-journey/) — the
-  scriptable journey CI runs.
-journey/) — the
   scriptable journey CI runs.

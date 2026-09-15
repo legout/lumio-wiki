@@ -1,4 +1,4 @@
-"""MinIO integration coverage for CLI remote-LanceDB binding (issue #162).
+"""S3-compatible integration coverage for CLI remote-LanceDB binding (issue #162).
 
 Proves the standalone ``lumio-wiki search`` command consumes the active S3
 Published Version's remote LanceDB index through public seams only: publish a
@@ -6,7 +6,7 @@ real version (with and without ``--retrieval lancedb``), then run the CLI
 against ``s3://bucket/prefix`` with ``LUMIO_RETRIEVAL_BACKEND=lancedb``.
 
 Skips the whole module unless ``LUMIO_S3_ENDPOINT`` is configured, mirroring
-the other MinIO suites.
+the other S3-compatible suites.
 """
 
 from __future__ import annotations
@@ -21,13 +21,13 @@ from lumio_wiki import cli
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
 
-obstore = pytest.importorskip("obstore", reason="obstore required for MinIO integration")
+obstore = pytest.importorskip("obstore", reason="obstore required for S3-compatible integration")
 pytest.importorskip("lumio_lancedb", reason="lumio-lancedb required for the CLI binding journey")
 
-# Skip the whole module unless a MinIO/S3-compatible endpoint is configured.
+# Skip the whole module unless an S3-compatible endpoint is configured.
 if not _os.environ.get("LUMIO_S3_ENDPOINT"):  # pragma: no cover
     pytest.skip(
-        "LUMIO_S3_ENDPOINT not set; skipping CLI remote LanceDB MinIO tests",
+        "LUMIO_S3_ENDPOINT not set; skipping CLI remote LanceDB S3-compatible tests",
         allow_module_level=True,
     )
 
@@ -65,7 +65,7 @@ def _bucket() -> str:
 
 
 @pytest.fixture(scope="module")
-def minio_env():
+def s3_compat_env():
     config, client_options, storage_options = _s3_config()
     bucket = _bucket()
     store = obstore.store.from_url(f"s3://{bucket}", config=config, client_options=client_options)
@@ -108,9 +108,9 @@ def _run_search(monkeypatch, bucket: str, prefix: str, query: str) -> int:
     return rc
 
 
-def test_cli_search_uses_published_remote_lancedb(monkeypatch, capsys, minio_env):
+def test_cli_search_uses_published_remote_lancedb(monkeypatch, capsys, s3_compat_env):
     """Positive journey: BM25 lexical search over the published remote index."""
-    store, bucket, storage_options = minio_env
+    store, bucket, storage_options = s3_compat_env
     run_prefix = f"s3-it/{uuid.uuid4().hex}"
     _RUN_PREFIXES.append(run_prefix)
     manifest = _publish(store, bucket, storage_options, run_prefix, with_lance=True)
@@ -126,9 +126,9 @@ def test_cli_search_uses_published_remote_lancedb(monkeypatch, capsys, minio_env
     assert manifest.version == "v1"
 
 
-def test_cli_search_falls_back_when_no_index_was_published(monkeypatch, capsys, minio_env):
+def test_cli_search_falls_back_when_no_index_was_published(monkeypatch, capsys, s3_compat_env):
     """Missing remote index: truthful zero-index fallback with a disclosed note."""
-    store, bucket, storage_options = minio_env
+    store, bucket, storage_options = s3_compat_env
     run_prefix = f"s3-it/{uuid.uuid4().hex}"
     _RUN_PREFIXES.append(run_prefix)
     _publish(store, bucket, storage_options, run_prefix, with_lance=False)
@@ -140,13 +140,13 @@ def test_cli_search_falls_back_when_no_index_was_published(monkeypatch, capsys, 
     assert "note:" in out and "missing" in out and "zero-index" in out
 
 
-def test_cli_search_falls_back_on_fingerprint_mismatch(monkeypatch, capsys, minio_env):
+def test_cli_search_falls_back_on_fingerprint_mismatch(monkeypatch, capsys, s3_compat_env):
     """A stale (tampered) fingerprint sidecar is rejected and disclosed."""
     import msgspec
     from lumio_wiki.fingerprint_store import FINGERPRINT_FILE
     from lumio_wiki.records import SourceFingerprint
 
-    store, bucket, storage_options = minio_env
+    store, bucket, storage_options = s3_compat_env
     run_prefix = f"s3-it/{uuid.uuid4().hex}"
     _RUN_PREFIXES.append(run_prefix)
     _publish(store, bucket, storage_options, run_prefix, with_lance=True)
@@ -167,11 +167,11 @@ def test_cli_search_falls_back_on_fingerprint_mismatch(monkeypatch, capsys, mini
 # ---------------------------------------------------------------------------
 
 
-def test_cli_status_reader_journey_with_lancedb(monkeypatch, capsys, minio_env):
+def test_cli_status_reader_journey_with_lancedb(monkeypatch, capsys, s3_compat_env):
     """status explains a read-only S3 project: version, fingerprint, healthy lance."""
     import json as _json
 
-    store, bucket, storage_options = minio_env
+    store, bucket, storage_options = s3_compat_env
     run_prefix = f"s3-it/{uuid.uuid4().hex}"
     _RUN_PREFIXES.append(run_prefix)
     manifest = _publish(store, bucket, storage_options, run_prefix, with_lance=True)
@@ -200,10 +200,10 @@ def test_cli_status_reader_journey_with_lancedb(monkeypatch, capsys, minio_env):
 
 
 def test_cli_status_reader_falls_back_when_no_index_was_published(
-    monkeypatch, capsys, minio_env
+    monkeypatch, capsys, s3_compat_env
 ):
     """A version published without lance: status reports the truthful fallback."""
-    store, bucket, storage_options = minio_env
+    store, bucket, storage_options = s3_compat_env
     run_prefix = f"s3-it/{uuid.uuid4().hex}"
     _RUN_PREFIXES.append(run_prefix)
     _publish(store, bucket, storage_options, run_prefix, with_lance=False)

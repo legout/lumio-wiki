@@ -194,8 +194,8 @@ from standard env vars:
 export AWS_ACCESS_KEY_ID=...
 export AWS_SECRET_ACCESS_KEY=...
 export AWS_REGION=eu-west-1
-# For S3-compatible endpoints (MinIO, etc.):
-export LUMIO_S3_ENDPOINT=http://localhost:9000
+# For local S3-compatible endpoints:
+export LUMIO_S3_ENDPOINT=http://localhost:8333
 export LUMIO_S3_ALLOW_HTTP=1
 
 lumio-wiki search s3://my-bucket/kb "technology stack"

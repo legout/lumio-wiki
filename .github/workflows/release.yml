@@ -143,36 +143,36 @@ jobs:
             "lumio-wiki[all]==$version"
           /tmp/extras/bin/python -c "import liteparse, markitdown, openai"
 
-  verify-testpypi-minio:
+  verify-testpypi-s3-compat:
     # The canonical onboarding journey (docs/quickstart.md) against a real
-    # MinIO, installed from TestPyPI using the documented extras set: local
-    # Maintainer journey, S3 publication with and without LanceDB, remote
-    # LanceDB reader, and the expected zero-index fallback. The minioadmin
-    # values are MinIO's labelled local-test defaults on an ephemeral CI
+    # S3-compatible service, installed from TestPyPI using the documented
+    # extras set: local Maintainer journey, S3 publication with and without
+    # LanceDB, remote LanceDB reader, and the expected zero-index fallback.
+    # admin/secret are labelled local-test credentials on an ephemeral CI
     # container — never real credentials.
     needs: publish-testpypi
     runs-on: ubuntu-latest
     services:
-      minio:
-        # ponytail: frozen drop-in; use maintained image once it supports command-free services.
-        image: bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+      seaweedfs:
+        image: chrislusf/seaweedfs:4.45@sha256:fc9f76fa993ad69966ffeb2f65d0318fcae39c6f8e20cf68ef7b3a5cb97769e5
         env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
+          AWS_ACCESS_KEY_ID: admin
+          AWS_SECRET_ACCESS_KEY: secret
+          S3_BUCKET: lumio-release
         ports:
-          - 9000:9000
+          - 8333:8333
         options: >-
-          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-cmd "curl -fsS http://localhost:9333/cluster/status"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
     env:
-      LUMIO_S3_ENDPOINT: http://localhost:9000
+      LUMIO_S3_ENDPOINT: http://localhost:8333
       LUMIO_S3_ALLOW_HTTP: "1"
       LUMIO_S3_REGION: us-east-1
       LUMIO_S3_TEST_BUCKET: lumio-release
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: secret
       AWS_REGION: us-east-1
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -201,7 +201,7 @@ jobs:
     # environment's required reviewers approve. It re-downloads the wheels
     # TestPyPI is actually serving, proves they are byte-identical to the
     # build record, and promotes those exact artifacts to PyPI.
-    needs: [verify-testpypi-wiki, verify-testpypi-minio]
+    needs: [verify-testpypi-wiki, verify-testpypi-s3-compat]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

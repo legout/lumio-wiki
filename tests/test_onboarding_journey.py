@@ -3,13 +3,14 @@
 Three retained checks for the journey documented in ``docs/quickstart.md``:
 
 1. **Privacy** — the walkthrough carries no secrets beyond the explicitly
-   labelled local MinIO test credentials.
+   labelled local SeaweedFS `weed mini` test credentials.
 2. **Fresh environment** — the local half of the journey runs verbatim in a
    clean temporary project (no inherited ``LUMIO_KB_PATH``), ending in the
    truthful Source-Artifact unavailability.
-3. **MinIO** — the scriptable journey executes end-to-end against a real
-   S3-compatible endpoint when one is configured (the same skip contract as
-   the other MinIO suites), proving the S3/LanceDB/fallback half of the docs.
+3. **S3 compatibility** — the scriptable journey executes end-to-end against
+   a real S3-compatible endpoint when one is configured (the same skip
+   contract as the other S3-compatible suites), proving the S3/LanceDB/fallback
+   half of the docs.
 """
 
 from __future__ import annotations
@@ -57,16 +58,18 @@ def _collapse(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
-def test_quickstart_uses_nothing_secret_beyond_labelled_minio_test_defaults():
+def test_quickstart_uses_nothing_secret_beyond_labelled_local_test_credentials():
     """Non-secret placeholders everywhere except the explicitly labelled local
-    MinIO test credentials (issue #180 acceptance criterion)."""
+    S3-compatible test credentials (issue #180 acceptance criterion)."""
     text = QUICKSTART.read_text(encoding="utf-8")
     assert "AKIA" not in text, "no AWS-style access-key ids in the walkthrough"
-    assert re.search(r"minioadmin[^\n]*#[^\n]*local test credential", text) or re.search(
-        r"local test credential[^\n]*minioadmin", text
-    ), "MinIO credentials must be labelled local-test"
+    assert re.search(r"admin[^\n]*#[^\n]*local test credential", text) or re.search(
+        r"local test credential[^\n]*admin", text
+    ), "local credentials must be labelled local-test"
     collapsed = _collapse(text)
-    assert "local-test defaults" in collapsed, "the local-test labelling must be explicit"
+    assert "labelled local-test credentials" in collapsed, (
+        "the local-test labelling must be explicit"
+    )
     secret_envs = re.findall(r"export ([A-Z_0-9]*(?:SECRET|KEY)[A-Z_0-9]*)=", text)
     assert set(secret_envs) <= {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}, (
         f"unexpected secret-bearing exports: {secret_envs}"
@@ -294,20 +297,20 @@ volume is tracked in [Starlight DB](../entities/starlight-db.md).
 
 
 # ---------------------------------------------------------------------------
-# 3. MinIO journey: execute the scriptable journey against a real endpoint.
+# 3. S3-compatible journey: execute the script against a real endpoint.
 # ---------------------------------------------------------------------------
 
-pytest.importorskip("obstore", reason="obstore required for the MinIO journey")
+pytest.importorskip("obstore", reason="obstore required for the S3-compatible journey")
 
-requires_minio = pytest.mark.skipif(
+requires_s3_compat = pytest.mark.skipif(
     not os.environ.get("LUMIO_S3_ENDPOINT"),
-    reason="LUMIO_S3_ENDPOINT not set; skipping onboarding MinIO journey",
+    reason="LUMIO_S3_ENDPOINT not set; skipping onboarding S3-compatible journey",
 )
 
 
-@requires_minio
-def test_minio_smoke_journey_script(tmp_path):
-    """The scriptable journey runs end-to-end against the configured MinIO:
+@requires_s3_compat
+def test_s3_compat_smoke_journey_script(tmp_path):
+    """The scriptable journey runs end-to-end against the configured endpoint:
     S3 publication with and without LanceDB, read-only Reader setup, the
     disclosed zero-index fallback, and truthful mode/backend errors."""
     lumio_wiki = shutil.which("lumio-wiki") or str(Path(sys.executable).parent / "lumio-wiki")

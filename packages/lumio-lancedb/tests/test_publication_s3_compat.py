@@ -1,4 +1,4 @@
-"""MinIO integration: complete S3 publication with a remote LanceDB index.
+"""S3-compatible integration: complete S3 publication with a remote LanceDB index.
 
 Issue #163. Proves the full publication journey against a real S3-compatible
 endpoint: ``publish_s3_version`` with ``lumio_lancedb.remote_publication_builder``
@@ -21,12 +21,12 @@ import pytest
 
 ROOT = Path(__file__).parents[3]
 
-obstore = pytest.importorskip("obstore", reason="obstore required for MinIO integration")
+obstore = pytest.importorskip("obstore", reason="obstore required for S3-compatible integration")
 pytest.importorskip("lumio_lancedb", reason="lumio-lancedb required for publication builder")
 
 if not _os.environ.get("LUMIO_S3_ENDPOINT"):  # pragma: no cover
     pytest.skip(
-        "LUMIO_S3_ENDPOINT not set; skipping remote LanceDB publication MinIO tests",
+        "LUMIO_S3_ENDPOINT not set; skipping remote LanceDB publication S3-compatible tests",
         allow_module_level=True,
     )
 
@@ -99,7 +99,7 @@ def _pointer(store, prefix: str) -> str:
     return msgspec.json.decode(bytes(raw.bytes()), type=S3Pointer).version
 
 
-def test_minio_publish_with_remote_lancedb_builds_healthchecks_and_activates(kb):
+def test_s3_compat_publish_with_remote_lancedb_builds_healthchecks_and_activates(kb):
     """The complete journey: publish v1 WITH a requested remote LanceDB index,
     verify completion metadata and the index, then retrieve through it."""
     store, prefix, builder, storage_options = kb
@@ -146,9 +146,9 @@ def test_minio_publish_with_remote_lancedb_builds_healthchecks_and_activates(kb)
     assert results[0].trace.stages[0].name != "index-fallback"
 
 
-def test_minio_requested_lancedb_failure_blocks_activation(kb):
+def test_s3_compat_requested_lancedb_failure_blocks_activation(kb):
     """A failing index build (or health check) leaves the pointer untouched
-    and the version reported as a cleanup candidate — against MinIO."""
+    and the version reported as a cleanup candidate — against S3-compatible."""
     store, prefix, builder, _ = kb
     # Publish a healthy v1 first (zero-index), then fail the v2 lance build.
     publish_s3_version(store, prefix, source_root=VALID, version="v1")
@@ -170,7 +170,7 @@ def test_minio_requested_lancedb_failure_blocks_activation(kb):
     assert [c.version for c in candidates] == ["v2"]
 
 
-def test_minio_rollback_to_a_lancedb_version_keeps_the_index_bound(kb):
+def test_s3_compat_rollback_to_a_lancedb_version_keeps_the_index_bound(kb):
     """Rollback re-activates a version whose lance index still serves."""
     store, prefix, builder, storage_options = kb
     publish_s3_version(store, prefix, source_root=VALID, version="v1", index_builder=builder())
@@ -200,7 +200,7 @@ def test_minio_rollback_to_a_lancedb_version_keeps_the_index_bound(kb):
 
 
 @pytest.mark.parametrize("missing_table", ["entities", "graph_edges"])
-def test_minio_publish_blocks_when_a_graph_table_is_missing(kb, monkeypatch, missing_table):
+def test_s3_compat_publish_blocks_when_a_graph_table_is_missing(kb, monkeypatch, missing_table):
     """Issue #173: a missing Entity or graph-edge table blocks activation,
     the pointer stays on the previous Published Version, and the failure
     names the exact missing artifact."""
@@ -218,7 +218,9 @@ def test_minio_publish_blocks_when_a_graph_table_is_missing(kb, monkeypatch, mis
         location.connect().drop_table(missing_table)
 
     monkeypatch.setattr(publish_module, "build_graph_tables", _build_then_drop)
-    with pytest.raises(RuntimeError, match=rf"missing table\(s\) {missing_table}"):
+    with pytest.raises(
+        (RuntimeError, ValueError), match=rf"^Table '{missing_table}' was not found$"
+    ):
         publish_s3_version(
             store,
             prefix,
@@ -231,7 +233,7 @@ def test_minio_publish_blocks_when_a_graph_table_is_missing(kb, monkeypatch, mis
     assert [c.version for c in list_cleanup_candidates(store, prefix)] == ["v2"]
 
 
-def test_minio_publish_blocks_when_graph_fingerprint_mismatches(kb, monkeypatch):
+def test_s3_compat_publish_blocks_when_graph_fingerprint_mismatches(kb, monkeypatch):
     """Issue #173: graph tables recorded for a different fingerprint are
     stale artifacts — publication rejects them and keeps v1 active."""
     import lumio_lancedb.publish as publish_module
@@ -262,7 +264,7 @@ def test_minio_publish_blocks_when_graph_fingerprint_mismatches(kb, monkeypatch)
     assert [c.version for c in list_cleanup_candidates(store, prefix)] == ["v2"]
 
 
-def test_minio_published_corpus_traversal_parity(kb):
+def test_s3_compat_published_corpus_traversal_parity(kb):
     """Issue #173 AC1: one published fixture (the full ontology corpus)
     produces identical accepted traversal topology and citation-ready
     retrieval with and without LanceDB."""
@@ -307,15 +309,22 @@ def test_minio_published_corpus_traversal_parity(kb):
     published_kb = snapshot.knowledge_base
     assert published_kb.related_pages("Lumio") == ["LanceDB", "obstore"]
     assert published_kb.related_pages("Lumio", scope="discovery") == [
-        "Knowledge Graph", "LanceDB", "Sage Wiki", "obstore",
+        "Knowledge Graph",
+        "LanceDB",
+        "Sage Wiki",
+        "obstore",
     ]
     results = published_kb.retrieve("deployable chat platform", limit=5)
     assert results and results[0].evidence.page_title in {
-        "Lumio", "LanceDB", "Knowledge Graph", "obstore", "Sage Wiki",
+        "Lumio",
+        "LanceDB",
+        "Knowledge Graph",
+        "obstore",
+        "Sage Wiki",
     }
 
 
-def test_minio_publish_blocks_when_tables_are_stale_under_current_sidecar(kb, monkeypatch):
+def test_s3_compat_publish_blocks_when_tables_are_stale_under_current_sidecar(kb, monkeypatch):
     """Issue #173 per-table provenance: graph tables recorded for a different
     fingerprint are rejected even when the index sidecar is current."""
     import lumio_lancedb.publish as publish_module
@@ -348,7 +357,7 @@ def test_minio_publish_blocks_when_tables_are_stale_under_current_sidecar(kb, mo
     assert _pointer(store, prefix) == "v1"
 
 
-def test_minio_reader_falls_back_truthfully_when_graph_table_deleted(kb):
+def test_s3_compat_reader_falls_back_truthfully_when_graph_table_deleted(kb):
     """Issue #173: a graph-edge table corrupted after publication never
     raises — the reader falls back to the zero-index graph truthfully."""
     from lumio_lancedb import load_graph_state
@@ -380,7 +389,7 @@ def test_minio_reader_falls_back_truthfully_when_graph_table_deleted(kb):
     assert zero_index.edge_count >= 1
 
 
-def test_minio_publish_builds_graph_projections_and_reader_parity(kb):
+def test_s3_compat_publish_builds_graph_projections_and_reader_parity(kb):
     """Issue #171: requested graph tables are complete before activation and
     a Reader loads adjacency identical to the zero-index graph from the
     version-pinned remote prefix (no managed local copy)."""

@@ -25,7 +25,7 @@ For the *why* and the vision, read the domain docs — this README documents
   repository split).
 - [`docs/kb-format.md`](docs/kb-format.md) — canonical Compiled Page frontmatter reference.
 - [`docs/quickstart.md`](docs/quickstart.md) — canonical onboarding journey
-  (MinIO → AWS), runnable via [`examples/onboarding-journey/`](examples/onboarding-journey/).
+  (`weed mini` → AWS), runnable via [`examples/onboarding-journey/`](examples/onboarding-journey/).
 
 ## Install
 
@@ -201,7 +201,7 @@ application lives in a separate private repository (ADR-0025).
   deterministic entity resolution; model-free evaluation (`lumio-wiki eval`,
   `lumio-wiki eval-ontology`).
 - **Ingest & publish** — managed ingest with private Source Registry and
-  Artifact Store (S3/MinIO), proposal pipeline, Page Removal with claim and
+  Artifact Store (S3-compatible), proposal pipeline, Page Removal with claim and
   body-link repair, Published Versions with binding manifests, OKF
   interchange.
 - **Maintenance** — lint, cross-link candidates, Dream Cycle diagnostics

@@ -58,7 +58,7 @@ def remote_publication_builder(
         appending the publisher-supplied ``sidecar_prefix``.
     storage_options:
         LanceDB's own S3 connection options (region, endpoint, credentials,
-        ``allow_http`` for MinIO) — never the obstore client.
+        ``allow_http`` for a local S3-compatible endpoint) — never the obstore client.
     embedder:
         Optional embedder; when provided a semantic vector table is built and
         its model identity lands in the completion metadata. ``None`` builds

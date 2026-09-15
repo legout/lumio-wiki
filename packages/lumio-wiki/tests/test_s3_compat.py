@@ -1,17 +1,17 @@
-"""MinIO integration coverage for the S3 Knowledge Base Location (issue #120).
+"""S3-compatible integration coverage for the S3 Knowledge Base Location (issue #120).
 
 Exercises the real ``obstore`` S3 client against an S3-compatible endpoint
-(MinIO): direct CLI reads, byte-for-byte Snapshot equivalence with the
+(S3-compatible): direct CLI reads, byte-for-byte Snapshot equivalence with the
 filesystem Location, content-digest corruption rejection, and immutable-version
 isolation over a genuine object store.
 
-These tests SKIP gracefully when no MinIO endpoint is configured, so the suite
+These tests SKIP gracefully when no S3-compatible endpoint is configured, so the suite
 is green without infrastructure. Configure the endpoint with environment
 variables (the same ones the CLI reads)::
 
     LUMIO_S3_ENDPOINT=http://localhost:9000
-    LUMIO_S3_ACCESS_KEY_ID=minio
-    LUMIO_S3_SECRET_ACCESS_KEY=minio123
+    LUMIO_S3_ACCESS_KEY_ID=s3_compat
+    LUMIO_S3_SECRET_ACCESS_KEY=s3_compat123
     LUMIO_S3_REGION=us-east-1
     LUMIO_S3_TEST_BUCKET=lumio-wiki-it   # created if missing
 
@@ -32,16 +32,15 @@ from lumio_wiki.s3_location import CURRENT_POINTER_OBJECT, MANIFEST_OBJECT, S3Lo
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests" / "fixtures"
 
-obstore = pytest.importorskip("obstore", reason="obstore required for MinIO integration")
+obstore = pytest.importorskip("obstore", reason="obstore required for S3-compatible integration")
 
 
-# Skip the whole module unless a MinIO/S3-compatible endpoint is configured.
+# Skip the whole module unless an S3-compatible endpoint is configured.
 if not _os.environ.get("LUMIO_S3_ENDPOINT"):  # pragma: no cover
     pytest.skip(
-        "LUMIO_S3_ENDPOINT not set; skipping MinIO integration tests",
+        "LUMIO_S3_ENDPOINT not set; skipping S3-compatible integration tests",
         allow_module_level=True,
     )
-
 
 
 def _s3_config() -> tuple[dict[str, str], dict[str, object]]:
@@ -59,14 +58,12 @@ def _s3_config() -> tuple[dict[str, str], dict[str, object]]:
 
 
 @pytest.fixture(scope="module")
-def minio_store():
+def s3_compat_store():
     """Build an obstore S3 client rooted at a unique test bucket + prefix."""
     config, client_options = _s3_config()
     bucket = _os.environ.get("LUMIO_S3_TEST_BUCKET", "lumio-wiki-it")
     run_prefix = f"s3-it/{uuid.uuid4().hex}"
-    store = obstore.store.from_url(
-        f"s3://{bucket}", config=config, client_options=client_options
-    )
+    store = obstore.store.from_url(f"s3://{bucket}", config=config, client_options=client_options)
     yield store, run_prefix
     # Best-effort cleanup of this run's objects.
     try:
@@ -99,8 +96,8 @@ def _publish(store, prefix, version, root: Path) -> None:
     )
 
 
-def test_minio_direct_read_matches_filesystem(minio_store):
-    store, prefix = minio_store
+def test_s3_compat_direct_read_matches_filesystem(s3_compat_store):
+    store, prefix = s3_compat_store
     _publish(store, prefix, "v1", FIXTURES / "valid")
     location = S3Location(store, prefix)
     snapshot = location.resolve()
@@ -111,8 +108,8 @@ def test_minio_direct_read_matches_filesystem(minio_store):
     )
 
 
-def test_minio_corruption_is_rejected(minio_store):
-    store, prefix = minio_store
+def test_s3_compat_corruption_is_rejected(s3_compat_store):
+    store, prefix = s3_compat_store
     _publish(store, prefix, "v1", FIXTURES / "valid")
     from lumio_wiki.knowledge_base import _FilesystemKbSource, canonical_content
 
@@ -123,8 +120,8 @@ def test_minio_corruption_is_rejected(minio_store):
         S3Location(store, prefix).resolve()
 
 
-def test_minio_immutable_version_isolation(minio_store):
-    store, prefix = minio_store
+def test_s3_compat_immutable_version_isolation(s3_compat_store):
+    store, prefix = s3_compat_store
     _publish(store, prefix, "v1", FIXTURES / "valid")
     snap_v1 = S3Location(store, prefix).resolve()
     v1_titles = {p.title for p in snap_v1.pages}
