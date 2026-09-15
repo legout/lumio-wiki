@@ -15,6 +15,18 @@ This is **planning-contract v1 research evidence**, not approval to implement, m
 
 Authoritative inputs read: both `AGENTS.md`; both `CONTEXT.md`; public Core PRD; private platform PRD; Plan 05; PRD-0006; stabilization audit; ADR-0022; ADR-0025; and artifact/planning classification. Key authority: removal requires real consumer migration, and absence locally is insufficient (`docs/prd/0006-library-stabilization.md:11-14,30-38`); Plan 05 remains proposed/unapproved and explicitly blocks S1/S2 removals and S4 (`docs/plans/05-simplification-release.md:1-23`). ADR-0022 requires writer deletion but legacy marked-log recognition and collision protection (`docs/adr/0022-retire-activity-log-artifact.md:31-48,67-76`). ADR-0025 makes the private app a bounded-range wheel consumer and cross-repo migration participant (`docs/adr/0025-repository-split.md:29-57`).
 
+## Accepted-baseline addendum
+
+Shaping exposed a documentation-authority conflict in the private application:
+its accepted ADR-0022 retired Activity Log production, while its glossary,
+Knowledge Base format, packaging guide, and older ADR text still presented the
+portable log as current. The owner chose ADR-0022. Private docs-only merge
+`43facf97fc40497688b54546b511c5bd392396a6` removes Activity Log as current
+vocabulary, records only validly marked legacy-log recognition, and marks older
+ADR references as historical. It does not change production code. The active
+private writer in `packages/lumio/src/lumio/app.py` therefore remains a hard S1
+migration blocker.
+
 ## Methodology and copyable commands
 
 ```sh
@@ -148,7 +160,7 @@ gates.
 
 ### Relevant verification commands
 
-Public focused commands are listed in Plan S1-S3 (`docs/plans/05-simplification-release.md:72-75,124-128,169-172`). Public candidate certification begins with:
+Public focused commands are listed in Plan S1-S3 (`docs/plans/05-simplification-release.md:84-89,141-144,186-188`). Public candidate certification begins with:
 
 ```sh
 cd /home/volker/coding/lumio-wiki

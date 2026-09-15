@@ -15,9 +15,12 @@ Approval reference: the 2026-09-15 owner selection “Fix plan + inventory”
 authorizes only the stale-validation reconciliation and read-only consumer
 inventory, not S1–S4 implementation, removal, private-repository mutation, or
 release. Capture checkpoint: no new product vocabulary or ADR; PRD-0006 owns
-behavior and non-goals. The owner accepted the first public/private consumer
+behavior and non-goals. Private documentation was reconciled to ADR-0022 in
+`legout/lumio` merge `43facf97fc40497688b54546b511c5bd392396a6` without
+changing its active writer. The owner accepted the first public/private consumer
 inventory as the Plan 05 evidence baseline on 2026-09-15; this acceptance does
-not authorize implementation, removal, private-repository mutation, or release.
+not authorize implementation, removal, further private-repository mutation, or
+release.
 Migration evidence remains unresolved, so S1/S2 removals and S4 are blocked
 before dispatch. Contract version 1; local project skill provenance `unknown`.
 
@@ -50,10 +53,18 @@ checks; release notes do not create a second documentation-only validation unit.
   `packages/lumio-wiki/tests/test_entity_merge.py`,
   `packages/lumio-wiki/tests/test_page_removal.py`,
   `packages/lumio-wiki/tests/test_s3_publish.py`.
+  **Cross-repository consumer lane:** `legout/lumio` file
+  `packages/lumio/src/lumio/app.py` and its publish, page-removal,
+  proposal-pipeline, and private-audit tests. This plan records the dependency;
+  it does not authorize private-repository mutation.
   **Consumes → produces:** successful reviewed mutations and recognized legacy
   artifacts → navigation-only new publications, no new/append Activity Log writes.
-  Prerequisites: P5 and S2's producer-API consumer inventory/migration. Remove
-  reachable merge/removal append calls, `append_activity_log_entry`,
+  Prerequisites: P5 and S2's accepted producer-API inventory, plus a separately
+  approved and verified private-app migration revision. At accepted inventory
+  revision `cf7fd293c717f6efbbbd592137ab7ebeddffd589`, the private app still
+  writes the Activity Log; docs-only merge `43facf97fc40497688b54546b511c5bd392396a6`
+  does not satisfy this prerequisite. Remove reachable merge/removal append calls,
+  `append_activity_log_entry`,
   `make_activity_log_entry`, formatting and producer-only records/exports after
   consumers move. Do not delete historical marked logs from existing immutable
   versions; keep loader recognition, canonical fingerprint exclusion and blocking
@@ -73,9 +84,13 @@ checks; release notes do not create a second documentation-only validation unit.
   ```sh
   uv run pytest -q tests/test_kb_control.py packages/lumio-wiki/tests/test_entity_merge.py packages/lumio-wiki/tests/test_page_removal.py packages/lumio-wiki/tests/test_s3_publish.py
   rg -n 'append_activity_log_entry|make_activity_log_entry|_format_activity_log_line' packages tests eval scripts
+  # From the separately approved private-app migration revision:
+  (cd /home/volker/coding/lumio && uv run pytest -q tests/test_publish.py tests/test_page_removal.py tests/test_proposal_pipeline.py tests/test_audit_log.py)
+  (cd /home/volker/coding/lumio && rg -n 'append_activity_log_entry|make_activity_log_entry|_format_activity_log_line' packages/lumio/src tests)
   ```
 
-  **Done:** no active writer/caller remains (search returns no production matches);
+  **Done:** no active writer/caller remains in either repository (search returns
+  no production matches);
   only historical recognition/collision protections remain, and no old Published
   Version or current navigation capability is removed. Plan/audit references to
   retired symbol names may remain as history.
