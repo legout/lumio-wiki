@@ -130,6 +130,7 @@ of them pulls in another `lumio-*` distribution.
 | `lumio-wiki[documents]` | LiteParse, MarkItDown, AnyDoc | PDF / scanned-PDF / image (LiteParse, OCR + page numbers), office formats — Word/PowerPoint/Excel/OpenDocument/RTF/EPUB/CSV (AnyDoc), HTML and broad formats (MarkItDown). The base wheel handles text and Markdown. |
 | `lumio-wiki[llm]` | `openai` | Unattended Distiller backed by an OpenAI-compatible provider. The base wheel uses the host coding agent as the Distiller (`--distiller passthrough`). |
 | `lumio-wiki[all]` | both of the above | Document conversion + unattended distillation together. Still LanceDB-free. |
+| `lumio-wiki[mcp]` | `mcp` (official SDK) | Read-only MCP stdio server (`lumio-wiki mcp <location>`) over ONE Knowledge Base Location: search, page, related, paths, hot, index, health, status. Never writes; fresh Snapshot per call. |
 
 The LanceDB adapter and the local-embeddings capabilities live on their
 respective distributions:
@@ -153,6 +154,7 @@ Every capability is verified in isolation from a built wheel:
 | Capability | Test | CI |
 |---|---|---|
 | `lumio-wiki` base (no extras) | `packages/lumio-wiki/tests/test_wheel_isolation.py` + `scripts/verify_lumio_wiki_wheel.py` | `ci.yml` (`isolated-lumio-wiki-wheel` job) |
+| `lumio-wiki[mcp]` | installed-wheel startup + `search` smoke against `tests/fixtures/valid` | `ci.yml` (`isolated-lumio-wiki-wheel` job, `[mcp]` venv step) |
 | `lumio-wiki[documents]` | `packages/lumio-wiki/tests/test_wheel_isolation_documents.py` | `ci.yml` (slow wheel suite) |
 | `lumio-wiki[llm]` | `packages/lumio-wiki/tests/test_wheel_isolation_llm.py` | `ci.yml` (slow wheel suite) |
 | `lumio-wiki[all]` | `packages/lumio-wiki/tests/test_wheel_isolation_llm.py::test_all_extra_installs_documents_and_llm_without_lancedb` | `ci.yml` (slow wheel suite) |

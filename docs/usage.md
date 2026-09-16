@@ -27,6 +27,7 @@ pip install 'lumio-wiki[documents]'          # + PDF/image/office/HTML ingestion
 pip install 'lumio-wiki[llm]'                # + unattended OpenAI-compatible Distiller
 pip install 'lumio-wiki[all]'                # documents + llm (still no LanceDB)
 pip install 'lumio-wiki[s3]'                 # + S3-native KB Locations (ADR-0013)
+pip install 'lumio-wiki[mcp]'                # + read-only MCP server over stdio (official SDK)
 pip install lumio-lancedb                    # + enhanced BM25/semantic/hybrid retrieval
 pip install lumio                            # the full deployable web application
 ```
@@ -120,6 +121,44 @@ Notes:
   private: the store never appears in the published Knowledge Base, and
   `source inspect`/`fetch`/`link` are authorized provenance review — not
   Evidence and not claim-level lineage.
+
+### Git transport
+
+`--from` also accepts a git clone URL (any value that does not start with
+`s3://`). Setup runs `git clone <url> <target>` (the URL is passed as a
+single argument, never through a shell), validates the clone as a Knowledge
+Base, and records the clone as `LUMIO_KB_PATH`:
+
+```bash
+lumio-wiki setup --from git@github.com:acme/team-kb.git
+# -> Read-only Knowledge Base cloned at ./team-kb
+```
+
+A missing `git` executable, a failed clone, or an invalid Knowledge Base each
+fail with a bounded error; nothing is configured unless the clone is valid.
+Update a cloned project with `git -C team-kb pull` (or re-run `setup --from`
+after removing the clone).
+
+The git workflow: each Maintainer clones the KB repository, works on a
+branch, and stages changes with `lumio-wiki ingest` (or authors a proposal by
+hand), then opens a pull request. CI runs `lumio-wiki validate` on the PR;
+merging to the default branch publishes the content **in git**. Publishing to
+S3 remains a separate, explicit step: an Owner (pointer/admin credentials)
+runs `lumio-wiki publish-s3`, which uploads the immutable version and
+activates it by advancing `current.json` — no git merge advances the pointer
+by itself.
+
+| Lumio role | Git host (e.g. GitHub) | Lumio app | S3 IAM |
+|---|---|---|---|
+| Reader | read (clone/pull) | `READER` | read-only bucket policy |
+| Maintainer | write (push branches, open/review PRs) | `MAINTAINER` | write objects, no pointer |
+| Owner | admin (merge, protected branches) | `OWNER` | pointer/admin policy |
+
+> **Warning — `.gitignore` is for `.env` only, never for KB content.** The
+> loader reads every `*.md` under the Knowledge Base root regardless of
+> `.gitignore`: a "private" page kept only out of git still gets searched,
+> fingerprinted, and published. Personal content belongs in a separate
+> personal Knowledge Base outside the shared root.
 
 ### lumio-wiki — portable Knowledge Base CLI
 
@@ -218,6 +257,46 @@ $ lumio-wiki related tests/fixtures/valid "Technology Stack" --scope discovery -
 Architecture
 # trace: scope=discovery direction=outgoing max_depth=1 max_edges=1000 max_results=50 returned=1
 ```
+
+### MCP server
+
+`lumio-wiki mcp <kb-path-or-s3-uri>` (requires `pip install 'lumio-wiki[mcp]'`)
+serves ONE Knowledge Base Location over the Model Context Protocol on stdio
+(official `mcp` SDK). Configure it in any MCP host with the plain stdio
+command — for example:
+
+```json
+{
+  "mcpServers": {
+    "lumio-wiki": {
+      "command": "lumio-wiki",
+      "args": ["mcp", "/path/to/kb"]
+    }
+  }
+}
+```
+
+The v1 tool surface (contract version 1):
+
+| Tool | Answers |
+|---|---|
+| `search` | title/path/passage rows for a query (lexical, `limit` default 20). |
+| `page` | one Compiled Page by Canonical Page Title or alias (`found: false` when absent). |
+| `related` | sorted related titles with the requested scope/direction and bounds. |
+| `paths` | shortest directed path between two titles (echoes scope/direction). |
+| `hot` | the Maintainer-pinned Hot Index (`markdown: null` when no pins). |
+| `index` | the root Navigation Index (the full page catalog). |
+| `health` | validation, page, and graph state — derived in memory, never written. |
+| `status` | bound Location, fingerprint, page count, retrieval state. |
+
+The server is strictly read-only: no tool ever creates, modifies, stages, or
+publishes Knowledge Base content, and every tool call resolves a fresh
+immutable Snapshot, so a long-running host never sees stale state.
+Diagnostics never create derived directories or materialize graph artifacts.
+An `s3://` Location binds the same read-only surface (requires
+`lumio-wiki[s3]`); region/endpoint/credentials resolve from the standard
+`LUMIO_S3_*` / `AWS_*` environment rules — never from the URI, which must be
+credential-free.
 
 ### lumio — application CLI
 

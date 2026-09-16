@@ -30,6 +30,10 @@ dev = [
     "markitdown[docx]>=0.1.6",
     "firecrawl-anydoc==0.1.3",
     "openai>=1.40.0",
+    # The MCP server tests run in every CI/local run, so mcp is a dev
+    # dependency (it stays optional for installed wheels via the
+    # lumio-wiki[mcp] extra; base-wheel isolation is proven separately).
+    "mcp>=2.2.0",
 ]
 
 [tool.pyright]

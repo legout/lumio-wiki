@@ -41,17 +41,23 @@ pip install lumio-wiki                       # foundation: load, validate, searc
 pip install 'lumio-wiki[documents]'          # + LiteParse/MarkItDown/AnyDoc for PDF/image/office/HTML ingestion
 pip install 'lumio-wiki[llm]'                # + an unattended OpenAI-compatible Distiller
 pip install 'lumio-wiki[all]'                # documents + llm together (still no LanceDB)
+pip install 'lumio-wiki[s3]'                 # + S3-native KB Locations (immutable Published Versions over object storage)
+pip install 'lumio-wiki[mcp]'                # + read-only MCP stdio server (official SDK; `lumio-wiki mcp <kb>`)
 pip install lumio-lancedb                    # + enhanced BM25/semantic/hybrid retrieval
 ```
 
 The base wheel depends only on `msgspec[yaml]` and `msgpack`; it does not
-install LanceDB/PyArrow or any model provider. Optional capabilities:
+install LanceDB/PyArrow or any model provider. Quick start for MCP-capable
+hosts: `pip install 'lumio-wiki[mcp]'`, then configure the stdio command
+`lumio-wiki mcp <kb-path-or-s3-uri>` (see `docs/usage.md`). Optional
+capabilities:
 
 | Extra | Brings | Capability |
 |---|---|---|
 | `lumio-wiki[documents]` | LiteParse, MarkItDown, AnyDoc | PDF / scanned-PDF / image (OCR + page numbers), office formats, HTML. The base wheel handles text and Markdown. |
 | `lumio-wiki[llm]` | `openai` | Unattended Distiller backed by an OpenAI-compatible provider. The base wheel uses the host coding agent as the Distiller. |
 | `lumio-wiki[all]` | both | Document conversion + unattended distillation together. |
+| `lumio-wiki[mcp]` | `mcp` (official SDK) | Read-only MCP stdio server over one bound Knowledge Base Location. |
 | `lumio-lancedb` | LanceDB, PyArrow | BM25 / vector / semantic / hybrid retrieval. The canonical SDK never imports it. |
 | `lumio-lancedb[embeddings]` | `sentence-transformers` | Local embeddings for the LanceDB adapter. Torch stays out of the base adapter and out of `lumio-wiki`. |
 | `lumio-lancedb[s3]` | `obstore` | Remote (S3) index support. |
@@ -86,6 +92,7 @@ lumio-wiki source inspect <kb> --source-id <id> [--published-version <v>]  # sec
 lumio-wiki source fetch <kb> --source-id <id> [--published-version <v>] --output <path>  # byte-exact original, digest re-verified
 lumio-wiki source link <kb> --source-id <id> [--published-version <v>] [--expires 5m]   # short-lived signed GET URL (max 1h; bearer secret)
 lumio-wiki health <kb-path>                      # Knowledge Base health and diagnostics
+lumio-wiki mcp <kb-path-or-s3-uri>               # read-only MCP stdio server over ONE KB (requires [mcp])
 lumio-wiki doctor                                # install shape: version, optionals, packaged skill location
 lumio-wiki skill path                              # locate packaged SKILL.md
 lumio-wiki skill protocol                          # locate packaged PROTOCOL.md
