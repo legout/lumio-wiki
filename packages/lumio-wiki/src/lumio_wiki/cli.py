@@ -30,6 +30,7 @@ import argparse
 import json
 import mimetypes
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -1016,6 +1017,76 @@ def _run_setup_wizard() -> dict[str, Any]:
     }
 
 
+def _git_clone_target(url: str) -> Path:
+    """Derive the clone target directory from a git URL (git's naming rule)."""
+    name = url.rstrip("/").rsplit("/", 1)[-1]
+    if "@" in name and ":" in name:  # scp-like syntax: git@host:repo(.git)
+        name = name.rsplit(":", 1)[-1]
+    if name.endswith(".git"):
+        name = name[: -len(".git")]
+    return Path.cwd() / (name or "knowledge-base")
+
+
+def _git_stderr_summary(result: subprocess.CompletedProcess[str]) -> str:
+    """Summarize a failed ``git`` run: its last stderr line, bounded length."""
+    lines = [line.strip() for line in (result.stderr or "").splitlines() if line.strip()]
+    detail = lines[-1] if lines else f"git exited with code {result.returncode}"
+    return detail[:200]
+
+
+def _validation_error_summary(report: ValidationReport) -> str:
+    """Summarize a Knowledge Base validation failure in one bounded line."""
+    errors = [
+        f"{issue.file}: {issue.field}: {issue.message}"
+        for issue in report.issues
+        if issue.severity != "warning"
+    ]
+    summary = "; ".join(errors[:3])
+    if len(errors) > 3:
+        summary += f"; (+{len(errors) - 3} more)"
+    return summary[:300]
+
+
+def _clone_git_kb(url: str) -> Path:
+    """Clone a git-hosted Knowledge Base and validate it (bounded).
+
+    Bounded transport for ``setup --from`` (approved design 2026-09-15): the
+    URL is passed to ``git clone`` as a single argv entry — never through a
+    shell — so shell metacharacters in a user-supplied URL stay inert. A
+    missing ``git`` executable, a failed clone, or an invalid cloned KB each
+    raise a bounded :class:`CliError`; the partial clone target is removed on
+    a validation failure so a corrected re-run cannot collide. No credentials
+    are handled here — git's own credential resolution applies.
+    """
+    if shutil.which("git") is None:
+        raise CliError(
+            "--from git transport requires the 'git' executable on PATH; "
+            "install git and re-run setup"
+        )
+    target = _git_clone_target(url)
+    if target.exists():
+        raise CliError(
+            f"--from git clone target already exists: {target}; remove it or "
+            "clone manually into a new directory"
+        )
+    result = subprocess.run(
+        ["git", "clone", url, str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise CliError(f"--from git clone failed: {_git_stderr_summary(result)}")
+    report = validate(target)
+    if not report.is_valid:
+        with suppress(OSError):
+            shutil.rmtree(target)
+        raise CliError(
+            f"--from git clone is not a valid Knowledge Base: {_validation_error_summary(report)}"
+        )
+    return target
+
+
 def _cmd_setup(args: argparse.Namespace) -> int:
     """One-command project setup: KB + .env + AGENTS.md + optional skill install.
 
@@ -1023,7 +1094,9 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     Knowledge Base if it does not exist and records optional S3 publication,
     retrieval-backend, and private source-store configuration in ``.env``.
     Reader form: ``setup --from <s3-uri>`` configures a read-only project
-    against an existing S3 Knowledge Base Location (issue #161, ADR-0019).
+    against an existing S3 Knowledge Base Location (issue #161, ADR-0019);
+    any non-``s3://`` ``--from`` value is a git clone URL that is cloned,
+    validated, and recorded as ``LUMIO_KB_PATH`` (bounded git transport).
     With no location in an interactive terminal a short wizard asks the same
     questions; non-interactively it fails with the required flags. Both forms
     write/update ``AGENTS.md`` and optionally install the Agent Skill
@@ -1069,8 +1142,14 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             "--publish-to records an S3 publication destination for a local "
             "Maintainer worktree; it cannot be combined with --from"
         )
+    # Bounded git transport (approved design 2026-09-15): an s3:// --from
+    # value keeps the S3 reader path byte-for-byte; any other value is a git
+    # clone URL that is cloned, validated, and recorded as LUMIO_KB_PATH.
+    git_url: str | None = (
+        from_uri if from_uri is not None and not from_uri.startswith("s3://") else None
+    )
     for flag, value in (("--from", from_uri), ("--publish-to", publish_to)):
-        if value is not None:
+        if value is not None and not (flag == "--from" and git_url is not None):
             _validate_object_store_uri(flag, value)
     if source_store is not None:
         # A Source Artifact Store is object storage OR a local directory
@@ -1094,7 +1173,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     # 2. Optional capabilities: detect BEFORE any write; print one exact
     # install command. Never mutate the active Python environment (ADR-0019).
     if (
-        from_uri is not None
+        (from_uri is not None and git_url is None)
         or publish_to is not None
         or (source_store is not None and _is_object_store_uri(source_store))
     ):
@@ -1116,10 +1195,16 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
     env_path = project_dir / ".env"
     if from_uri is not None:
-        # Read-only project: no local KB is created; pathless reads resolve
-        # the immutable S3 Published Version from .env.
-        print(f"Read-only Knowledge Base location: {from_uri}")
-        kb_display = from_uri
+        # Read-only project. S3 form: no local KB is created; pathless reads
+        # resolve the immutable S3 Published Version from .env. Git form: the
+        # clone IS the read-only local KB and is validated before any write.
+        if git_url is not None:
+            kb_path = _clone_git_kb(git_url)
+            kb_display = kb_path
+            print(f"Read-only Knowledge Base cloned at {kb_display}")
+        else:
+            print(f"Read-only Knowledge Base location: {from_uri}")
+            kb_display = from_uri
     else:
         if kb_path is None:
             # Unreachable: the location resolution above guarantees one form.
@@ -1199,7 +1284,10 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         print(f"  1. Add Compiled Pages (.md) under {kb_path}")
         print("  2. Run: lumio-wiki validate")
     elif from_uri is not None:
-        print('  1. Run: lumio-wiki search "query" (pathless; reads the S3 Published Version)')
+        if git_url is not None:
+            print("  1. Run: lumio-wiki validate")
+        else:
+            print('  1. Run: lumio-wiki search "query" (pathless; reads the S3 Published Version)')
     else:
         print("  1. Run: lumio-wiki validate")
     print("  2. Start your agent harness in this directory.")
@@ -5133,9 +5221,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Maintainer form: 'setup <local-kb> [--publish-to <s3-uri>]' "
             "creates or adopts a local Knowledge Base and records optional "
             "S3 publication, retrieval backend, and private source-store "
-            "settings in .env. Reader form: 'setup --from <s3-uri>' "
+            "settings in .env. Reader form: 'setup --from <s3-uri-or-git-url>' "
             "configures a read-only project against an existing S3 Knowledge "
-            "Base Location. After setup, subsequent lumio-wiki commands load "
+            "Base Location, or clones a git-hosted Knowledge Base. After "
+            "setup, subsequent lumio-wiki commands load "
             "LUMIO_KB_PATH from .env automatically, so no <kb> argument is "
             "needed. Setup never installs optional capabilities for you: it "
             "prints the exact command (pip install 'lumio-wiki[s3]' / "
@@ -5156,11 +5245,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--from",
         dest="from_uri",
         default=None,
-        metavar="S3-URI",
+        metavar="S3-URI-OR-GIT-URL",
         help=(
-            "Existing S3 Knowledge Base Location URI (e.g. s3://bucket/kb) — "
-            "configures a read-only project; pathless reads resolve the "
-            "active Published Version. Requires lumio-wiki[s3]."
+            "Existing Knowledge Base location. An s3:// URI (e.g. "
+            "s3://bucket/kb) configures a read-only project; pathless reads "
+            "resolve the active Published Version (requires lumio-wiki[s3]). "
+            "Any other value is treated as a git clone URL: the repository "
+            "is cloned into this directory, validated as a Knowledge Base, "
+            "and recorded as LUMIO_KB_PATH (requires the git executable)."
         ),
     )
     setup_parser.add_argument(

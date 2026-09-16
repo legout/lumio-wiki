@@ -121,6 +121,44 @@ Notes:
   `source inspect`/`fetch`/`link` are authorized provenance review — not
   Evidence and not claim-level lineage.
 
+### Git transport
+
+`--from` also accepts a git clone URL (any value that does not start with
+`s3://`). Setup runs `git clone <url> <target>` (the URL is passed as a
+single argument, never through a shell), validates the clone as a Knowledge
+Base, and records the clone as `LUMIO_KB_PATH`:
+
+```bash
+lumio-wiki setup --from git@github.com:acme/team-kb.git
+# -> Read-only Knowledge Base cloned at ./team-kb
+```
+
+A missing `git` executable, a failed clone, or an invalid Knowledge Base each
+fail with a bounded error; nothing is configured unless the clone is valid.
+Update a cloned project with `git -C team-kb pull` (or re-run `setup --from`
+after removing the clone).
+
+The git workflow: each Maintainer clones the KB repository, works on a
+branch, and stages changes with `lumio-wiki ingest` (or authors a proposal by
+hand), then opens a pull request. CI runs `lumio-wiki validate` on the PR;
+merging to the default branch publishes the content **in git**. Publishing to
+S3 remains a separate, explicit step: an Owner (pointer/admin credentials)
+runs `lumio-wiki publish-s3`, which uploads the immutable version and
+activates it by advancing `current.json` — no git merge advances the pointer
+by itself.
+
+| Lumio role | Git host (e.g. GitHub) | Lumio app | S3 IAM |
+|---|---|---|---|
+| Reader | read (clone/pull) | `READER` | read-only bucket policy |
+| Maintainer | write (push branches, open/review PRs) | `MAINTAINER` | write objects, no pointer |
+| Owner | admin (merge, protected branches) | `OWNER` | pointer/admin policy |
+
+> **Warning — `.gitignore` is for `.env` only, never for KB content.** The
+> loader reads every `*.md` under the Knowledge Base root regardless of
+> `.gitignore`: a "private" page kept only out of git still gets searched,
+> fingerprinted, and published. Personal content belongs in a separate
+> personal Knowledge Base outside the shared root.
+
 ### lumio-wiki — portable Knowledge Base CLI
 
 Works from any environment with no model provider and no LanceDB. `<kb>` is
