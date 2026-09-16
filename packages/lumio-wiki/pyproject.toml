@@ -26,12 +26,19 @@ llm = ["openai>=1.40.0"]
 # is imported lazily inside the S3 location module, so importing ``lumio-wiki``
 # never pulls it in. Missing-extra guidance names the exact install command.
 s3 = ["obstore>=0.11.0"]
+# Plan 06, PRD-0007, ADR-0028: the optional read-only MCP server speaks MCP
+# over stdio through the official ``mcp`` SDK (FastMCP API). Declared but NOT
+# installed by default: the base wheel stays lightweight. The SDK is imported
+# lazily inside the MCP server module, so importing ``lumio-wiki`` never pulls
+# it in. Missing-extra guidance names the exact install command.
+mcp = ["mcp>=2.2.0"]
 all = [
   "liteparse>=2.4.0",
   "markitdown[docx]>=0.1.6",
   "firecrawl-anydoc==0.1.3",
   "openai>=1.40.0",
   "obstore>=0.11.0",
+  "mcp>=2.2.0",
 ]
 
 [build-system]

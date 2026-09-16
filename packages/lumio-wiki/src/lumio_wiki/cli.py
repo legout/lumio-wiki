@@ -5194,6 +5194,16 @@ def _add_skill_target_arguments(
     )
 
 
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    """Serve the read-only MCP server over stdio (PRD-0007, ADR-0028)."""
+    from lumio_wiki.mcp_server import run_server
+
+    try:
+        return run_server(str(args.path))
+    except KnowledgeBaseError as exc:
+        raise CliError(str(exc)) from exc
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the ``lumio-wiki`` argument parser."""
     parser = argparse.ArgumentParser(
@@ -6471,6 +6481,20 @@ def build_parser() -> argparse.ArgumentParser:
         description="Print version, detected optional capabilities, and skill path.",
     )
     doctor_parser.set_defaults(func=_cmd_doctor)
+
+    # mcp — read-only MCP server over stdio (PRD-0007, ADR-0028); needs [mcp].
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="Serve ONE read-only Knowledge Base over MCP stdio.",
+        description=(
+            "Start a read-only Model Context Protocol (MCP) server bound to ONE "
+            "Knowledge Base Location: a local directory or an s3:// object-store "
+            "URI (requires lumio-wiki[s3]). Every tool call resolves a fresh "
+            "immutable Snapshot and never writes. Requires lumio-wiki[mcp]."
+        ),
+    )
+    _add_kb_argument(mcp_parser)
+    mcp_parser.set_defaults(func=_cmd_mcp)
 
     # skill (nested)
     skill_parser = subparsers.add_parser(

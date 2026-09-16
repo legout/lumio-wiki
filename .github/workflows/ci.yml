@@ -76,3 +76,36 @@ jobs:
           /tmp/lumio-wiki-venv/bin/python scripts/verify_lumio_wiki_wheel.py \
             dist/lumio-wiki/lumio_wiki-*.whl \
             tests/fixtures/valid tests/fixtures/categorized_kb
+      - name: Smoke the lumio-wiki[mcp] wheel (entry point, binding, search)
+        run: |
+          wheel=$(echo dist/lumio-wiki/lumio_wiki-*.whl)
+          uv venv --python 3.14 /tmp/lumio-wiki-mcp-venv
+          uv pip install --python /tmp/lumio-wiki-mcp-venv/bin/python "${wheel}[mcp]"
+          # Console entry point: wiring + binding + serve startup; the server
+          # exits cleanly on stdin EOF (AC1 from the installed wheel).
+          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/lumio-wiki mcp tests/fixtures/valid < /dev/null
+          # Invalid KB: must fail fast (never hang), exit non-zero, and emit
+          # the bounded message with no traceback. Timeout status 124 would
+          # mask a hanging startup, so it is an explicit failure.
+          status=0
+          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/lumio-wiki mcp tests/fixtures/invalid < /dev/null > /tmp/mcp-smoke-invalid.log 2>&1 || status=$?
+          if [ "$status" -eq 124 ]; then
+            echo "invalid-KB startup must fail fast, not hang" >&2
+            exit 1
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo "expected a non-zero exit for an invalid Knowledge Base" >&2
+            exit 1
+          fi
+          grep -q "is invalid" /tmp/mcp-smoke-invalid.log
+          ! grep -q "Traceback" /tmp/mcp-smoke-invalid.log
+          # In-process tool seam: the search tool answers the expected hit.
+          timeout 60 /tmp/lumio-wiki-mcp-venv/bin/python - <<'EOF'
+          from lumio_wiki.location import FilesystemLocation, open_knowledge_base
+          from lumio_wiki.mcp_server import build_server, search_rows
+          snapshot = open_knowledge_base(FilesystemLocation("tests/fixtures/valid"))
+          rows = search_rows(snapshot, "LanceDB")
+          assert rows["results"] and rows["results"][0]["title"] == "Architecture"
+          build_server(FilesystemLocation("tests/fixtures/valid"))
+          print("mcp wheel smoke ok:", rows["results"][0]["path"])
+          EOF
