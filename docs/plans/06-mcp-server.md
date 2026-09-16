@@ -81,7 +81,9 @@ with environment content. Schemas below are the durable compatibility contract
   redacting `S3Location.from_url` parser — the server imports this resolver
   rather than duplicating URI or credential handling. Resolution then goes
   through the module-level `open_knowledge_base(location)` (`location.py:383`).
-  The `mcp` dependency uses the official SDK's FastMCP API with a `>=` floor at
+  The `mcp` dependency uses the official SDK's high-level decorator API
+  (named `MCPServer` at `mcp.server.mcpserver` in mcp 2.x — the FastMCP
+  rename; execution-time owner disposition 2026-09-16) with a `>=` floor at
   the current stable version at implementation time, recorded in `uv.lock`.
   Missing `[mcp]` follows the existing lazy-extra pattern: bounded message
   naming the exact install command, non-zero exit.
